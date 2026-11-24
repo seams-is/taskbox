@@ -78,7 +78,7 @@ async function api(d: Pick<ConnectDeps, "sys">, method: string, path: string, au
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     redirect: "error",
-    signal: AbortSignal.timeout(15_000),
+    signal: d.sys.timeout(15_000),
   });
 }
 

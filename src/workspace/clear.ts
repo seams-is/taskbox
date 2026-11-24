@@ -18,6 +18,7 @@ import type { Sys } from "../sys.ts";
 import { AGENT, own, PHASE_WORD, type Phase, POOL_USER } from "./model.ts";
 import { readStateFile } from "./read.ts";
 import { gb } from "./show.ts";
+import { realClock } from "../clock.ts";
 
 // Phases in which an account's files are in use, or about to be.
 const BUSY: readonly Phase[] = ["waiting", "active", "saving"];
@@ -172,7 +173,7 @@ export async function clear(d: ClearDeps, agent: string): Promise<number> {
     return 1;
   }
   // A name of its own: an earlier clear's folder at the same time is never renamed onto.
-  let at = (d.now ?? Date.now)();
+  let at = (d.now ?? realClock.now)();
   while (readdirSync(d.usersDir).includes(`${ASIDE}${t.user}-${at}`)) at++;
   const aside = join(d.usersDir, `${ASIDE}${t.user}-${at}`);
   try {

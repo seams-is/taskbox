@@ -47,8 +47,8 @@ import { boxFacts, readWord, workspacesJson, workspacesLines } from "./workspace
 const say = (l: string) => console.log(l);
 
 // watch's line for recent Tailscale SSH logins, from the counts every user may read.
-function watchLogins(p: Paths): () => Promise<string | undefined> {
-  return async () => recentLine(readSeen(p), Date.now());
+function watchLogins(p: Paths, clock: Pick<Sys, "now">): () => Promise<string | undefined> {
+  return async () => recentLine(readSeen(p), clock.now());
 }
 
 async function serviceUid(service: string): Promise<number | undefined> {
@@ -358,7 +358,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     try {
       const cfg = loadConfig(p.app, p.boxSettings);
       who = { remote: cfg.accounts.agent !== undefined && name === cfg.accounts.agent, admin: await isAdmin(ops.sys, name) };
-      logins = recentLine(readSeen(own), Date.now());
+      logins = recentLine(readSeen(own), ops.sys.now());
     } catch {
       who = undefined;
     }
@@ -376,7 +376,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
       return 1;
     }
     const full = uid === 0 || (await isAdmin(ops.sys, deps.user()));
-    const now = Date.now();
+    const now = ops.sys.now();
     let n: number;
     if (full) {
       const v = await readAdminView(ops.sys, own, now);
@@ -480,7 +480,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     const kinds = kindsOf(cfg).map((k) => kindTimings(jobs, k));
     const st = readStateJson<{ gaveWay?: Record<string, unknown>; gaveWayLog?: unknown; kindChoice?: unknown }>(p.loopState) ?? {};
     const log = (Array.isArray(st.gaveWayLog) ? st.gaveWayLog : []).filter((x): x is { at: number } => !!x && typeof x === "object" && Number.isFinite((x as { at?: unknown }).at) && (x as { role?: unknown }).role !== "load");
-    const accept = acceptance(cfg, jobs, log, Date.now(), st.kindChoice === "source");
+    const accept = acceptance(cfg, jobs, log, ops.sys.now(), st.kindChoice === "source");
     if (json) {
       say(JSON.stringify(timingsAnswer(kinds, suggestions(cfg, kinds), accept, labelUsage(jobs, TIMINGS_JOBS))));
       return 0;
@@ -624,7 +624,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
           disk.set(u, r.code === 0 && m ? Number(m[1]) * 1024 : undefined);
         }
       }
-      const inputs = { read, now: Date.now(), disk: (u: string) => disk.get(u), word: (n: string) => readWord(p.workspaceProgress, n, agentUid), box: boxFacts(readInstallId(own.installId), readPin(p.approverPin)) };
+      const inputs = { read, now: ops.sys.now(), disk: (u: string) => disk.get(u), word: (n: string) => readWord(p.workspaceProgress, n, agentUid), box: boxFacts(readInstallId(own.installId), readPin(p.approverPin)) };
       if (c.json) say(workspacesJson(inputs));
       else for (const l of workspacesLines(inputs)) say(l);
       return read.kind === "ok" || read.kind === "missing" ? 0 : 1;
@@ -635,8 +635,8 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
       progress: p.workspaceProgress,
       rootUid: 0,
       uid,
-      now: () => Date.now(),
-      sleep: (ms) => Bun.sleep(ms),
+      now: () => ops.sys.now(),
+      sleep: (ms) => ops.sys.sleep(ms),
       boot: () => {
         const r = Bun.spawnSync(["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"], { env: {}, stdin: "ignore", stderr: "ignore" });
         return r.exitCode === 0 ? parseBoot(r.stdout.toString()) : undefined;
@@ -684,9 +684,10 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
       once: rest.includes("--once"),
       stoppedAt: () => readStopped(dir ? { ...p, stopped: join(dir, "stopped.json") } : p)?.at,
       others: async () => (custom ? [] : otherLogins(ops.sys, S, typist())),
-      logins: custom ? undefined : watchLogins(own),
+      logins: custom ? undefined : watchLogins(own, ops.sys),
       unfinished: () => !custom && updateUnfinished(p),
       loopRunning: async () => (custom || !asService ? undefined : loopRunning(ops.sys, uid, p.loopLabels)),
+      clock: ops.sys,
     });
     return 0;
   }

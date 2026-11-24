@@ -10,6 +10,7 @@ import { connect, isWrapped, wrapped } from "./agents.ts";
 import type { LaptopDeps, RunOpts, RunResult } from "./box.ts";
 import { approver, type ApproverArgs, ownerDeny, ownerStep } from "./owner.ts";
 import { ownerScreen } from "./screen.ts";
+import { realClock } from "../clock.ts";
 
 export const LAPTOP_USAGE = [
   "taskbox                                  the owner's screen: each workspace, redrawn every 3 s",
@@ -122,9 +123,9 @@ async function readCapped(stream: ReadableStream<Uint8Array>, max: number, onLin
 export async function realRun(argv: string[], o: RunOpts = {}): Promise<RunResult> {
   const p = Bun.spawn(argv, { cwd: o.cwd, env: o.env ?? baseEnv(), stdin: o.stdin === undefined ? "ignore" : new Blob([o.stdin]), stdout: "pipe", stderr: "pipe" });
   let timedOut = false;
-  const timer = o.timeoutMs ? setTimeout(() => ((timedOut = true), p.kill(9)), o.timeoutMs) : undefined;
+  const cancel = o.timeoutMs ? realClock.after(o.timeoutMs, () => ((timedOut = true), p.kill(9))) : undefined;
   const [stdout, stderr, code] = await Promise.all([readCapped(p.stdout, STDOUT_MAX, o.onLine), readCapped(p.stderr, STDERR_MAX), p.exited]);
-  if (timer) clearTimeout(timer);
+  cancel?.();
   return { code, stdout, stderr, timedOut };
 }
 
@@ -147,8 +148,8 @@ if (import.meta.main) {
     tty: async (argv) => await Bun.spawn(argv, { env: baseEnv(), stdin: "inherit", stdout: "inherit", stderr: "inherit" }).exited,
     out: (l) => console.log(l),
     ask,
-    now: () => Date.now(),
-    sleep: (ms) => Bun.sleep(ms),
+    now: () => realClock.now(),
+    sleep: (ms) => realClock.sleep(ms),
     home: homedir(),
     env: baseEnv(),
     isTty: process.stdin.isTTY === true,

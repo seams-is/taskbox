@@ -8,6 +8,7 @@ import { KIND_WORD } from "./config.ts";
 import { activePull, clean, type PullState, pullLine, readPull } from "./progress.ts";
 import { computeState } from "./state.ts";
 import { stoppedLine } from "./stopstart.ts";
+import { type Clock, realClock } from "./clock.ts";
 
 export interface LoopView {
   drainingSince?: number; // taskbox stop --drain: when it began, or 0 when it can't be read
@@ -191,15 +192,16 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   return lines;
 }
 
-export async function watch(o: { pullFile: string; pullLinuxFile?: string; loopFile: string; loopRunning: () => Promise<boolean | undefined>; stoppedAt?: () => number | undefined; others?: () => Promise<string[]>; unfinished?: () => boolean; logins?: () => Promise<string | undefined>; once: boolean }): Promise<void> {
+export async function watch(o: { pullFile: string; pullLinuxFile?: string; loopFile: string; loopRunning: () => Promise<boolean | undefined>; stoppedAt?: () => number | undefined; others?: () => Promise<string[]>; unfinished?: () => boolean; logins?: () => Promise<string | undefined>; once: boolean; clock?: Clock }): Promise<void> {
+  const clock = o.clock ?? realClock;
   for (;;) {
-    const lines = screen({ ...o, now: Date.now(), loopRunning: await o.loopRunning(), stoppedAt: o.stoppedAt?.(), others: await o.others?.(), unfinished: o.unfinished?.(), logins: await o.logins?.() });
+    const lines = screen({ ...o, now: clock.now(), loopRunning: await o.loopRunning(), stoppedAt: o.stoppedAt?.(), others: await o.others?.(), unfinished: o.unfinished?.(), logins: await o.logins?.() });
     if (o.once) {
       console.log(lines.join("\n"));
       return;
     }
     // Clear the screen and draw from the top.
     process.stdout.write("\x1b[H\x1b[2J" + lines.join("\n") + "\n");
-    await new Promise((r) => setTimeout(r, 2000));
+    await clock.sleep(2000);
   }
 }

@@ -137,7 +137,7 @@ export class QueueReader {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       redirect: "error",
-      signal: this.deadline ? AbortSignal.any([AbortSignal.timeout(15_000), this.deadline]) : AbortSignal.timeout(15_000),
+      signal: this.deadline ? AbortSignal.any([this.sys.timeout(15_000), this.deadline]) : this.sys.timeout(15_000),
     });
   }
 
@@ -209,7 +209,7 @@ export class QueueReader {
   // the events the classes name are read first, so other runs can't push them out of view (finding
   // 3). A run's jobs are read again only when the run changed since the last look.
   async items(): Promise<WaitingItem[]> {
-    this.deadline = AbortSignal.timeout(this.deadlineMs);
+    this.deadline = this.sys.timeout(this.deadlineMs);
     try {
       return await this.look();
     } finally {

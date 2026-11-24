@@ -16,6 +16,7 @@
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { realClock } from "./clock.ts";
 import { loadConfig } from "./config.ts";
 import { FIRST_HIDDEN_ID, LAST_HIDDEN_ID, type PoolRecord, readPoolRecord } from "./pin.ts";
 import { floorWhy, openFor, parseBoot, POOL_USER, type Workspace } from "./workspace/model.ts";
@@ -160,7 +161,7 @@ const boxEnv = (): GateEnv => ({
   home: (user) => join("/Users", user),
   boot: bootNow,
   floorGB: () => floorNow(APP),
-  now: () => Date.now(),
+  now: () => realClock.now(),
   nproc: GATE_NPROC,
   shell: SHELL,
 });

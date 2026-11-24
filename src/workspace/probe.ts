@@ -15,6 +15,7 @@
 // and the state says why.
 import { createSocket } from "node:dgram";
 import { connect, createServer } from "node:net";
+import { type Clock, realClock } from "../clock.ts";
 
 export const PROBE_TIMEOUT_MS = 3_000;
 // The probe's exit codes: 0 reached and answered; BLOCKED refused by the network; 1 any other
@@ -93,16 +94,20 @@ export async function proveFence(d: ProbeDeps, o: { user: string; lan: { v4?: st
 }
 
 // The guard's listeners, on the box. Each answers a line holding a token with "ok", and records it.
-export function realListen(host: string, proto: Proto): Promise<Listener> {
+export function realListen(host: string, proto: Proto, clock: Clock = realClock): Promise<Listener> {
   if (process.env.TASKBOX_TEST === "1" && !host.startsWith("127.")) throw new Error("a real listener off loopback inside a test");
   const seen = new Set<string>();
   const got = (t: string) => seen.has(t);
   if (proto === "tcp") {
     return new Promise((resolve, reject) => {
       const srv = createServer((s) => {
-        s.setTimeout(PROBE_TIMEOUT_MS, () => s.destroy());
+        // A connection that sends nothing for PROBE_TIMEOUT_MS is closed.
+        let idle = clock.after(PROBE_TIMEOUT_MS, () => s.destroy());
+        s.on("close", () => idle());
         let buf = "";
         s.on("data", (b) => {
+          idle();
+          idle = clock.after(PROBE_TIMEOUT_MS, () => s.destroy());
           buf += b.toString("latin1");
           if (buf.length > 64) return void s.destroy();
           const t = buf.trim();
@@ -136,7 +141,7 @@ export function realListen(host: string, proto: Proto): Promise<Listener> {
 
 // The probe itself, as the user it runs as. tcp and udp send the token to the guard's listener and
 // wait for "ok". tcp-open opens a TCP connection; dns sends a DNS query and waits for any answer.
-export async function probe(args: readonly string[], timeoutMs = PROBE_TIMEOUT_MS): Promise<number> {
+export async function probe(args: readonly string[], timeoutMs = PROBE_TIMEOUT_MS, clock: Clock = realClock): Promise<number> {
   const [kind, host, portText, token] = args;
   const port = Number(portText);
   if (!host || !/^[0-9a-f.:]{2,45}$/i.test(host) || !Number.isInteger(port) || port < 1 || port > 65535 || !token || !TOKEN.test(token)) return 2;
@@ -145,7 +150,7 @@ export async function probe(args: readonly string[], timeoutMs = PROBE_TIMEOUT_M
     const end = (code: number, close: () => void) => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
+      cancel();
       try {
         close();
       } catch {}
@@ -153,7 +158,7 @@ export async function probe(args: readonly string[], timeoutMs = PROBE_TIMEOUT_M
     };
     let close = () => {};
     let connected = false;
-    const timer = setTimeout(() => end(timeoutCode(kind, connected), close), timeoutMs);
+    const cancel = clock.after(timeoutMs, () => end(timeoutCode(kind, connected), close));
     if (kind === "tcp" || kind === "tcp-open") {
       const s = connect({ host, port });
       close = () => s.destroy();

@@ -76,7 +76,7 @@ export async function sourceReader(c: CheckContext): Promise<GetJson | string> {
       headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox", Authorization: `Bearer ${auth}`, ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
       redirect: "error",
-      signal: AbortSignal.timeout(15_000),
+      signal: c.sys.timeout(15_000),
     });
   const jwt = appJwt(appId, pem, c.sys.now());
   const inst = await call("GET", `/repos/${owner}/${repo}/installation`, jwt);

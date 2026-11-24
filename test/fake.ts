@@ -187,20 +187,57 @@ export class FakeSys implements Sys {
   // Fake time: each sleep waits in a queue by deadline (ties in call order). One timer wakes per
   // setImmediate turn, and the clock moves to its deadline. A sleep that lost a race stays queued,
   // so a test that reads elapsed fake time must not await real I/O between the two reads.
-  timers: { at: number; wake: () => void }[] = [];
+  // The timers after, every and timeout make (clock.ts) wait in the same queue, but only a sleep
+  // moves the clock: a timer fires once the clock reaches it on the way to a sleep's deadline, or,
+  // when a test has moved the clock past it, once anything is queued. So a timer nobody cancels, such as a
+  // fetch's time limit, never moves the clock by itself, and an interval never runs the clock on.
+  timers: { at: number; wake: () => void; sleep: boolean }[] = [];
+  private pumping = false;
   sleep(ms: number): Promise<void> {
-    return new Promise((wake) => {
-      const at = this.clock + ms;
-      let i = this.timers.length;
-      while (i > 0 && this.timers[i - 1]!.at > at) i--;
-      this.timers.splice(i, 0, { at, wake });
-      if (this.timers.length === 1) this.pump();
-    });
+    return new Promise((wake) => this.queue({ at: this.clock + ms, wake, sleep: true }));
+  }
+  after(ms: number, f: () => void): () => void {
+    const t = { at: this.clock + ms, wake: f, sleep: false };
+    this.queue(t);
+    return () => this.unqueue(t);
+  }
+  every(ms: number, f: () => void): () => void {
+    const step = Math.max(1, ms);
+    let t = { at: this.clock + step, wake: () => {}, sleep: false };
+    const fire = () => {
+      t = { at: t.at + step, wake: fire, sleep: false };
+      this.queue(t);
+      f();
+    };
+    t.wake = fire;
+    this.queue(t);
+    return () => this.unqueue(t);
+  }
+  timeout(ms: number): AbortSignal {
+    const c = new AbortController();
+    this.after(ms, () => c.abort(new DOMException("The operation timed out.", "TimeoutError")));
+    return c.signal;
+  }
+  private queue(t: { at: number; wake: () => void; sleep: boolean }): void {
+    let i = this.timers.length;
+    while (i > 0 && this.timers[i - 1]!.at > t.at) i--;
+    this.timers.splice(i, 0, t);
+    this.pump();
+  }
+  private unqueue(t: { at: number; wake: () => void; sleep: boolean }): void {
+    const i = this.timers.indexOf(t);
+    if (i >= 0) this.timers.splice(i, 1);
   }
   private pump(): void {
+    if (this.pumping) return;
+    this.pumping = true;
     setImmediate(() => {
-      const t = this.timers.shift();
+      this.pumping = false;
+      const t = this.timers[0];
       if (!t) return;
+      // Only timers wait: nothing sleeps, so the clock stays where it is.
+      if (!t.sleep && t.at > this.clock && !this.timers.some((x) => x.sleep)) return;
+      this.timers.shift();
       this.clock = Math.max(this.clock, t.at);
       t.wake();
       if (this.timers.length) this.pump();

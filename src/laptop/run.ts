@@ -2,6 +2,7 @@
 // It gets an empty environment plus a fixed PATH and TERM, so nothing the caller's environment holds
 // reaches it: no agent socket, no password helper, no display, no security-key helper, no TS_
 // setting. No input, unless the caller gives it whole. Output is capped, and every run has a time limit.
+import { realClock } from "../clock.ts";
 
 export const ENV: Readonly<Record<string, string>> = Object.freeze({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TERM: "dumb" });
 
@@ -51,14 +52,14 @@ export const realRun: Runner = async (argv, o) => {
       p.kill("SIGKILL");
     } catch {}
   };
-  const timer = setTimeout(() => {
+  const stopTimer = realClock.after(o.limitMs, () => {
     timedOut = true;
     kill();
-  }, o.limitMs);
+  });
   // A program that leaves its output open after it is killed doesn't hold the controller either.
-  let late: ReturnType<typeof setTimeout> | undefined;
+  let stopLate: (() => void) | undefined;
   const hardStop = new Promise<"late">((r) => {
-    late = setTimeout(() => r("late"), o.limitMs + 2_000);
+    stopLate = realClock.after(o.limitMs + 2_000, () => r("late"));
   });
   try {
     const out = Promise.all([
@@ -77,7 +78,7 @@ export const realRun: Runner = async (argv, o) => {
     const [stdout, stderr, code] = r;
     return { code: timedOut || tooBig ? null : code, stdout, stderr, timedOut, tooBig };
   } finally {
-    clearTimeout(timer);
-    clearTimeout(late);
+    stopTimer();
+    stopLate?.();
   }
 };

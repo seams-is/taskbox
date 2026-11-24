@@ -1421,13 +1421,12 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   // start itself is covered.
   const selfWatch: SelfWatch = { live: new Set(), started: false, lastTick: null, halted: () => box.halt !== undefined };
   // The hold's line is written on this tick too, so it shows while every slot runs a job.
-  const selfCheck = setInterval(() => {
+  const selfCheck = d.sys.every(SELF_CHECK_MS, () => {
     checkSelf(d, selfWatch);
     try {
       showHold(d, box);
     } catch {}
-  }, SELF_CHECK_MS);
-  selfCheck.unref?.();
+  });
   const updated = () => commitNow() !== startCommit || (d.relabel?.() ?? false);
   // Linux runs jobs only after its Softnet proof passed for this image and this install.
   const proven = () => proofHolds(readProof(d.paths.projectState), forKind(d.cfg, "linux").image, installedCommit(d.paths.installed));
@@ -1528,7 +1527,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
       }),
     );
   } finally {
-    clearInterval(selfCheck);
+    selfCheck();
   }
   if (box.fatal !== undefined) throw box.fatal;
   // A drain's end leaves the loop down, as taskbox stop does. A taskbox start in the time the other

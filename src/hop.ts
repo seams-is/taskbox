@@ -257,7 +257,7 @@ export const SAFE_UNTAR = ["--no-same-owner", "--no-same-permissions", "--no-xat
 export async function publicRelease(sys: Sys, repo: string, tag: string): Promise<PublicRelease> {
   const res = await sys.fetch(`https://api.github.com/repos/${repo}/releases/tags/${tag}`, {
     redirect: "error",
-    signal: AbortSignal.timeout(CALL_LIMIT_MS),
+    signal: sys.timeout(CALL_LIMIT_MS),
     headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox" },
   });
   if (res.status === 404) throw new HopStop(`There is no release ${tag} on ${repo}. Check the release in the update line you typed.`, true);
@@ -274,7 +274,7 @@ export async function publicRelease(sys: Sys, repo: string, tag: string): Promis
     if (size === undefined) throw new HopStop(`release ${tag} on ${repo} has no ${name}.`);
     if (size > limit) throw new HopStop(`release ${tag}'s ${name} is larger than taskbox takes.`);
     const url = `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
-    const got = await sys.fetch(url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_LIMIT_MS), headers: { "User-Agent": "taskbox" } });
+    const got = await sys.fetch(url, { redirect: "follow", signal: sys.timeout(DOWNLOAD_LIMIT_MS), headers: { "User-Agent": "taskbox" } });
     if (!got.ok) throw new HopStop(`could not download ${name} of ${tag} (${got.status}).`);
     await readCapped(got, limit, chunk, () => new HopStop(`release ${tag}'s ${name} is larger than taskbox takes.`));
   };
