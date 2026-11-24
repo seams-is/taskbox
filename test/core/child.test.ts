@@ -41,6 +41,8 @@ describe("the child runner", () => {
     const r = children.start(s.op, "/opt/taskbox/bin/taskbox", ["op", "run", s.op.id]);
     expect(children.start(s.op, "/x", [])).toBe(r);
     const p = s.sys.spawned.at(-1)!;
+    // Its own process group, so the guard's bootout doesn't end it.
+    expect(p.opts.group).toBe(true);
     p.opts.onLine!(reportLine({ phase: "verifying" }));
     p.opts.onLine!("a plain line from the child");
     p.opts.onLine!(reportLine({ event: { type: "update.verified", text: "The release's signature checks." } }));

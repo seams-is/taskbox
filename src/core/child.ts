@@ -101,10 +101,13 @@ export interface Running {
 }
 
 // Starts the op's child and watches it. Lines that aren't reports go to the guard's log, cut short.
-// A child that exits without ending its op ends it as failed, with its exit code.
+// A child that exits without ending its op ends it as failed, with its exit code. The child leads a
+// process group of its own: launchd ends the guard's whole process group when the guard is booted
+// out, and a child left in it ends with it (seen in a Tart guest: SIGTERM, then gone).
 export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[]): Running {
   let cur = op;
   const p = d.sys.spawn(cmd, args, {
+    group: true,
     onLine: (line) => {
       const r = parseReport(line);
       if (r) cur = applyReport(d, cur, r);

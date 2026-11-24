@@ -28,6 +28,9 @@ export interface SpawnOptions {
   stdin?: string | Uint8Array;
   env?: Record<string, string>; // added to the fixed child environment
   onLine?: (line: string) => void;
+  // The child leads a process group of its own, so launchd's bootout of the caller's job, which ends
+  // the job's process group, doesn't end it (core/child.ts).
+  group?: boolean;
 }
 
 export type ProbeResult = "refused" | "open" | "timeout" | "error";
@@ -98,6 +101,7 @@ export function realSys(home: string): Sys {
         stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]),
         stdout: "pipe",
         stderr: "pipe",
+        ...(opts.group ? { detached: true } : {}),
       });
       const read = async (s: ReadableStream<Uint8Array>) => {
         let buf = "";
