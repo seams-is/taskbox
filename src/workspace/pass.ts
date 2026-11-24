@@ -22,7 +22,7 @@
 //    is left, and the fence is proved with a control (probe.ts);
 // 9. root's workspaces.json, through a temporary name, fsync and a rename.
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, rmSync, statfsSync, unlinkSync, writeSync } from "node:fs";
+import { lstatSync, renameSync, statfsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { POOL_USER, poolOf } from "../access.ts";
 import { readRecord, uidOf } from "../accounts.ts";
@@ -39,8 +39,10 @@ import { applyRequest, expectFor, signedParts } from "./box.ts";
 import { anchorsInOrder, bootOut, bridgesAbove, BRIDGES, PGREP, fenceExpected, fenceMatches, fenceRules, killAllAs, killVMs, lanAddresses, ownPrefixes, PFCTL, PREFIX_MAX, removeCrontab, SCREEN_SHARING_ANCHOR, stopAll, vmsOf, WS_ANCHOR } from "./fence.ts";
 import { advance, boxPause, CPU_MAX, CPU_STEP, type Ctx, emptyState, held, NOTE_MAX, OPEN, onBoot, OUTCOMES_MAX, parseBoot, POOL_USER as POOL_NAME, queued, whyWaiting, type BoxNow, type WsNotes, type WsState } from "./model.ts";
 import { type ProbeDeps, proveFence, realListen } from "./probe.ts";
-import { readStateFile, readUpTo } from "./read.ts";
-import { failMode, type FileRead, readRequest, REQUEST_MAX, REQUEST_FOR_MS, requestName, requestOrder, SPOOL_MAX, spoolOver, STATE_MAX, type StateRead, stateText } from "./store.ts";
+import { readStateFile } from "./read.ts";
+import { syncFolder, writeOwnedText } from "../core/rootfile.ts";
+import { failMode, type FileRead, readRequest, REQUEST_MAX, REQUEST_FOR_MS, requestName, requestOrder, SPOOL_MAX, SPOOL_PER_PASS, STATE_MAX, type StateRead, stateText } from "./store.ts";
+import { drainSpool as drainCoreSpool, readSpoolFile as readCoreSpoolFile, spoolProblem } from "../core/spool.ts";
 
 export { readStateFile };
 
@@ -120,29 +122,7 @@ async function agentUid(d: WsDeps): Promise<number | undefined> {
 // replaced, never followed: the new name is removed first and made with O_EXCL. stateText refuses a
 // state the readers would refuse.
 export function writeStateFile(d: Pick<WsDeps, "chown" | "rootUid">, path: string, s: WsState): void {
-  const text = stateText(s);
-  const tmp = `${path}.new`;
-  rmSync(tmp, { force: true });
-  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
-  try {
-    writeSync(fd, text);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  d.chown?.(tmp, d.rootUid ?? 0, 0);
-  chmodSync(tmp, 0o644);
-  renameSync(tmp, path);
-  syncFolder(dirname(path));
-}
-
-function syncFolder(dir: string): void {
-  const fd = openSync(dir, constants.O_RDONLY);
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
+  writeOwnedText(path, stateText(s), { mode: 0o644, owner: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}) });
 }
 
 // A state whose bytes are torn (store.ts readState's torn) and that is root's plain file at 644 is a
@@ -162,66 +142,10 @@ export function moveBadState(path: string, now: number, rootUid = 0): string | u
   }
 }
 
-// Why the spool can't be read, or undefined. Its folder must be root's alone, so the agent can't
-// swap the spool itself; the spool must be a real folder, the agent account's, mode 700.
-export function spoolProblem(spool: string, agent: number, rootUid = 0): string | undefined {
-  try {
-    const up = lstatSync(dirname(spool));
-    if (!up.isDirectory() || up.uid !== rootUid || (up.mode & 0o022) !== 0) return `${dirname(spool)} isn't root's alone`;
-  } catch {
-    return `${dirname(spool)} is missing`;
-  }
-  let st;
-  try {
-    st = lstatSync(spool);
-  } catch {
-    return "the spool is missing";
-  }
-  if (!st.isDirectory()) return "the spool isn't a folder";
-  if (st.uid !== agent) return "the spool isn't the agent account's";
-  if ((st.mode & 0o7777) !== 0o700) return "the spool isn't mode 700";
-  return undefined;
-}
-
-// The spool's names and times, read with lstat (no link followed), at most SPOOL_SCAN of them.
-// plain: a regular file at lstat. Only those are ever chosen or counted.
-function listSpool(spool: string): { name: string; mtimeMs: number; plain: boolean }[] {
-  const out: { name: string; mtimeMs: number; plain: boolean }[] = [];
-  const dir = opendirSync(spool);
-  try {
-    for (let e = dir.readSync(); e !== null && out.length < SPOOL_SCAN; e = dir.readSync()) {
-      try {
-        const st = lstatSync(join(spool, e.name));
-        out.push({ name: e.name, mtimeMs: st.mtimeMs, plain: st.isFile() });
-      } catch {}
-    }
-  } finally {
-    dir.closeSync();
-  }
-  return out;
-}
-
-// One spool file, opened with no link followed and without blocking on a FIFO. Its bytes are read
-// only when it is a plain file with one link, the agent's, and at most REQUEST_MAX bytes; otherwise
-// the stat alone goes to readRequest, which refuses it.
+// The spool's rules are core/spool.ts's, shared with v3's other spools.
+export { spoolProblem };
 export function readSpoolFile(path: string, agent: number): Omit<FileRead, "mode"> | undefined {
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch {
-    return undefined;
-  }
-  try {
-    const st = fstatSync(fd);
-    const f = { bytes: new Uint8Array(0), uid: st.uid, nlink: st.nlink, isFile: st.isFile() };
-    if (!st.isFile() || st.nlink !== 1 || st.uid !== agent) return f;
-    if (st.size > REQUEST_MAX) return { ...f, bytes: new Uint8Array(REQUEST_MAX + 1) };
-    return { ...f, bytes: readUpTo(fd, st.size) };
-  } catch {
-    return undefined;
-  } finally {
-    closeSync(fd);
-  }
+  return readCoreSpoolFile(path, agent, REQUEST_MAX);
 }
 
 // A refused request's outcome, by the id its file name gave, so the command that wrote it can answer.
@@ -239,84 +163,20 @@ async function drainSpool(d: WsDeps, mem: WsMemory, s: WsState, o: { agent: numb
     r.problems.push("the agent account isn't the one accounts.json records, so the spool is closed");
     return s;
   }
-  const why = spoolProblem(spool, o.agent, d.rootUid ?? 0);
-  if (why) {
-    r.problems.push(`${why}, so the spool is closed`);
-    return s;
-  }
-  const all = listSpool(spool);
-  // Links, FIFOs and anything else that isn't a plain file are removed, never chosen; unlink removes
-  // a name, never what a link points to. A folder can't be removed, and is passed over.
-  let stuck = 0;
-  for (const e of all.filter((x) => !x.plain)) {
-    try {
-      unlinkSync(join(spool, e.name));
-      r.did.push(`removed the spool's ${e.name}, which isn't a plain file`);
-    } catch {
-      stuck++;
-    }
-  }
-  if (stuck) r.problems.push(`the spool holds ${stuck} name${stuck === 1 ? "" : "s"} that aren't plain files and can't be removed`);
-  // A name whose unlink failed before, such as a file with the immutable flag, never takes a slot or
-  // counts toward the cap. Names that are gone are forgotten.
-  const here = new Set(all.map((x) => x.name));
-  for (const n of [...mem.stuck]) if (!here.has(n)) mem.stuck.delete(n);
-  if (mem.stuck.size) r.problems.push(`the spool holds ${mem.stuck.size} file${mem.stuck.size === 1 ? "" : "s"} that can't be removed, passed over`);
-  let entries = all.filter((x) => x.plain && !mem.stuck.has(x.name));
-  // A plain file that isn't named as a request, such as a temporary name a command left when it
-  // stopped, goes once it is older than a request may be. Root only unlinks it.
-  const old = entries.filter((x) => requestName(x.name) === undefined && d.sys.now() - x.mtimeMs > REQUEST_FOR_MS);
-  for (const e of old) {
-    try {
-      unlinkSync(join(spool, e.name));
-    } catch {
-      mem.stuck.add(e.name);
-    }
-  }
-  if (old.length) r.did.push(`removed ${old.length} of the spool's files that aren't requests, over 2 minutes old`);
-  entries = entries.filter((x) => !old.includes(x));
-  // A flood: the oldest past SPOOL_MAX go.
-  if (spoolOver(entries.length)) {
-    entries.sort((a, b) => a.mtimeMs - b.mtimeMs || (a.name < b.name ? -1 : 1));
-    const drop = entries.slice(0, entries.length - SPOOL_MAX);
-    for (const e of drop) {
-      try {
-        unlinkSync(join(spool, e.name));
-      } catch {
-        mem.stuck.add(e.name);
-      }
-    }
-    entries = entries.slice(drop.length);
-    r.did.push(`dropped the ${drop.length} oldest of the spool's files, past ${SPOOL_MAX}`);
-  }
   const installId = readInstallId(d.p.installId, d.rootUid ?? 0) ?? "";
-  const until = d.sys.now() + SPOOL_BUDGET_MS;
-  for (const name of requestOrder(entries)) {
-    if (d.sys.now() >= until) {
-      r.did.push("left the rest of the spool for the next pass");
-      break;
-    }
+  const rules = { dir: spool, owner: o.agent, rootUid: d.rootUid ?? 0, isRequest: (n: string) => requestName(n) !== undefined, order: (e: readonly { name: string; mtimeMs: number }[], n: number) => requestOrder(e, n), perPass: SPOOL_PER_PASS, max: SPOOL_MAX, scan: SPOOL_SCAN, budgetMs: SPOOL_BUDGET_MS, forMs: REQUEST_FOR_MS, requestMax: REQUEST_MAX };
+  await drainCoreSpool(rules, mem, d.sys, r, async (name, f) => {
     const id = requestName(name)!.id;
-    const path = join(spool, name);
-    const f = readSpoolFile(path, o.agent);
-    // Unlinked before it is applied, so a request that crashes the guard can't crash it again.
-    try {
-      unlinkSync(path);
-    } catch {
-      mem.stuck.add(name);
-      r.problems.push(`the spool's ${name} couldn't be removed, so it wasn't applied`);
-      continue;
-    }
     try {
       const now = o.ctx.now;
       if (!f) {
         s = refused(s, id, now, "The request couldn't be opened as a plain file.");
-        continue;
+        return;
       }
-      const rr = readRequest(name, f, { agentUid: o.agent, now });
+      const rr = readRequest(name, f, { agentUid: o.agent!, now });
       if (!rr.ok) {
         s = refused(s, id, now, `The request was refused: ${rr.why}.`);
-        continue;
+        return;
       }
       let checked;
       const parts = signedParts(rr.request);
@@ -329,7 +189,7 @@ async function drainSpool(d: WsDeps, mem: WsMemory, s: WsState, o: { agent: numb
       s = refused(s, id, o.ctx.now, "taskbox couldn't apply this request.");
       r.problems.push(`the request ${id} couldn't be applied`);
     }
-  }
+  });
   return s;
 }
 

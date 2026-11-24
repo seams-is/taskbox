@@ -6,7 +6,8 @@
 // laptop's controller. A later release reuses AWAY_ONLY and awayChecks as they are.
 import { restartPlanRow } from "./awaychecks.ts";
 import { upsCheck } from "./ups.ts";
-import { type Check, CHECK_EXTRA, type CheckContext, freeGB, otherLogins, PRESTART, runChecks, screenSharingOn } from "./checks.ts";
+import { type Check, type CheckContext, freeGB, otherLogins, runChecks, screenSharingOn } from "./checks.ts";
+import { rows } from "./rows/index.ts";
 import { forKind, KIND_WORD, kindsOf } from "./config.ts";
 import { awayLoginsDetail, readSeen } from "./logins.ts";
 import { footer, UPDATE_FIX } from "./state.ts";
@@ -163,7 +164,7 @@ export const AWAY_ONLY: [string, (c: CheckContext) => Promise<Row>][] = [
 
 // The rows for leaving first, then every check row. Screen Sharing on reads OK while the guard is.
 export async function awayChecks(c: CheckContext): Promise<Check[]> {
-  return withGuard(await runChecks([...AWAY_ONLY, ...PRESTART, ...CHECK_EXTRA], c));
+  return withGuard(await runChecks(rows("away", c), c));
 }
 export function withGuard(rows: Check[]): Check[] {
   const guard = rows.find((k) => k.name === "Screen Sharing guard");

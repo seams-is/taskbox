@@ -5,7 +5,10 @@ import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
 import { appendJob, type JobRecord, type Phases, runnerResult, type Wait } from "./jobs.ts";
-import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, PRESTART, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
+import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
+import { rows } from "./rows/index.ts";
+import { afterEnd, beforeStart, type JobHook, withHookFields } from "./core/hooks.ts";
+import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
 import { AGENT_LABEL, awayOf, forKind, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf } from "./config.ts";
 import { guestOf } from "./guest.ts";
@@ -43,7 +46,7 @@ export interface LoopDeps {
   log: Log;
   checks: CheckContext;
   slot: number;
-  // Tests replace the pre-start check; the box always runs PRESTART.
+  // Tests replace the pre-start check; the box always runs the prestart rows (rows/index.ts).
   prestart?: (c: CheckContext) => Promise<Check[]>;
   // Tests replace the sharing check made while a VM waits.
   sharing?: () => Promise<{ status: string }>;
@@ -72,6 +75,8 @@ export interface LoopDeps {
   // The workspaces now, as the loop needs them (held.ts): on the box, root's state read by
   // workspace/hold.ts. Absent: none, so no slot is held.
   workspaces?: () => WorkspacesNow;
+  // The job hooks (core/hooks.ts). Absent: every package's (hooks/index.ts).
+  hooks?: JobHook[];
 }
 
 // A start or stop of a VM: from when its engine was asked, to when it was done. Open until then.
@@ -794,7 +799,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   try {
     // Free disk counts the floor for this VM and for each one running.
     const ctx = { ...d.checks, vmsRunning: others.length, downloadGB: d.box?.downloadGB ?? 0 };
-    checks = d.prestart ? await d.prestart(ctx) : await runChecks(PRESTART, ctx);
+    checks = d.prestart ? await d.prestart(ctx) : await runChecks(rows("prestart", ctx), ctx);
   } catch (e) {
     checks = [{ name: "Pre-start check", status: "FAIL", detail: `errored: ${(e as Error).message}` }];
   }
@@ -915,7 +920,18 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   let startDone: ((now: number) => void) | undefined;
   // From the clone on, an error is this VM's failure, so the turn passes to the other kind.
   let cloned = false;
+  // Set once every hook let this start through, so each hook hears of its end (core/hooks.ts).
+  const hooks = d.hooks ?? jobHooks();
+  const hookJob = { slot: d.slot, kind, vm, labels, ...(turn.role ? { role: turn.role } : {}), ...(turn.className ? { className: turn.className } : {}) };
+  let hooked = false;
   try {
+    const hold = await beforeStart(hooks, d, hookJob);
+    if (hold) {
+      d.log.write(`slot ${d.slot}: no VM started: ${hold}`);
+      outcome = "held-back";
+      return outcome;
+    }
+    hooked = true;
     cloned = true;
     const me = d.box?.held.get(d.slot);
     // up from the clone, for memory and disk. vm once its guest answers, below, so the Linux proof
@@ -1242,31 +1258,37 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     }
     // One line for taskbox jobs, for every VM that started: a job it ran, or why it ran none. A VM
     // that gave way ran none and would fill the list every few minutes, so it has no line.
-    if (vmStartedAt !== undefined && outcome !== "gave-way") {
+    const line: JobRecord | undefined =
+      vmStartedAt !== undefined && outcome !== "gave-way"
+        ? {
+            v: 1,
+            startedAt: vmStartedAt,
+            jobAt,
+            endedAt: d.sys.now(),
+            repo: served?.name ?? d.cfg.jobsFrom,
+            vmKind: kind,
+            slot: d.box && d.box.count > 1 ? d.slot : undefined,
+            job: jobName,
+            result: jobRecordResult(outcome, result, jobAt !== undefined),
+            why: outcome === "done" ? undefined : outcome,
+            vmDeleted: deleted.code === 0,
+            guard: guardSeen,
+            cpus: d.cfg.vmCpus,
+            memoryMB: d.cfg.vmMemoryMB,
+            beside,
+            pressure: highest === undefined ? undefined : pressureWord(highest),
+            waits: waits.length ? waits : undefined,
+            phases: Object.keys(phases).length ? phases : undefined,
+            className: turn.className,
+            labels,
+            usage: summarise(samples),
+          }
+        : undefined;
+    // Each hook hears of the end, once the VM is gone, and may add fields to the job's line (core/hooks.ts).
+    const extra = hooked ? await afterEnd(hooks, d, { ...hookJob, outcome, vmDeleted: deleted.code === 0, ...(line ? { record: { ...line } } : {}) }).catch(() => ({})) : {};
+    if (line) {
       try {
-        appendJob(d.paths, {
-          v: 1,
-          startedAt: vmStartedAt,
-          jobAt,
-          endedAt: d.sys.now(),
-          repo: served?.name ?? d.cfg.jobsFrom,
-          vmKind: kind,
-          slot: d.box && d.box.count > 1 ? d.slot : undefined,
-          job: jobName,
-          result: jobRecordResult(outcome, result, jobAt !== undefined),
-          why: outcome === "done" ? undefined : outcome,
-          vmDeleted: deleted.code === 0,
-          guard: guardSeen,
-          cpus: d.cfg.vmCpus,
-          memoryMB: d.cfg.vmMemoryMB,
-          beside,
-          pressure: highest === undefined ? undefined : pressureWord(highest),
-          waits: waits.length ? waits : undefined,
-          phases: Object.keys(phases).length ? phases : undefined,
-          className: turn.className,
-          labels,
-          usage: summarise(samples),
-        });
+        appendJob(d.paths, withHookFields(line, extra));
       } catch (e) {
         d.log.write(`could not record the job for taskbox jobs: ${(e as Error).message}`);
       }
@@ -1680,7 +1702,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         // The same pre-start checks as any VM's start.
         const dl = kindDeps(d, "linux");
         const ctx = { ...dl.checks, vmsRunning: c.box.others(d.slot).length };
-        const pre = await (dl.prestart ? dl.prestart(ctx) : runChecks(PRESTART, ctx)).catch(() => [{ name: "Pre-start check", status: "FAIL" as const, detail: "errored" }]);
+        const pre = await (dl.prestart ? dl.prestart(ctx) : runChecks(rows("prestart", ctx), ctx)).catch(() => [{ name: "Pre-start check", status: "FAIL" as const, detail: "errored" }]);
         if (!allOk(pre)) {
           d.log.write(`no Linux proof: a check failed (${pre.filter((x) => x.status === "FAIL").map((x) => x.name).join(", ")})`);
           // 10 minutes, so a waiting macOS VM isn't made to give way every minute (v2.1.1).

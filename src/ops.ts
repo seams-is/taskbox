@@ -8,12 +8,14 @@ import { ANCHOR, PFCTL } from "./guard.ts";
 import { BOOTOUT_WAIT_S, dropReloadJob, keepInert, labelsBack, RELOAD_JOB, reloadPlistPath, setSetuid } from "./install.ts";
 export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
-import { allOk, type Check, type CheckContext, CHECK_EXTRA, serviceUnlocksDisk, loginSessions, otherLogins, PRESTART, runChecks, treeProblem } from "./checks.ts";
+import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, treeProblem } from "./checks.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
 import { checkAnswer, logAnswer, statusAnswer } from "./answers.ts";
 import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } from "./loop.ts";
 import { kitFor } from "./vm.ts";
 import { removeRequests } from "./requests.ts";
+import { rows } from "./rows/index.ts";
+import { oneShotPlist, oneShotScript, reloadThroughLaunchd } from "./core/child.ts";
 import { halfMade, readRecord, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
 import { readBoxFile } from "./boxsettings.ts";
 import { POOL_GROUP } from "./access.ts";
@@ -26,8 +28,6 @@ import { LAST_CLASS } from "./classes.ts";
 import { timingsLine } from "./timings.ts";
 import { readJobs } from "./jobs.ts";
 import { currentSession, loadBlind, readLoad } from "./load.ts";
-import { TEST_REPO_ROW, testRepoRow } from "./loadcmd.ts";
-import { SECOND_KEY_ROW, secondKeyRow } from "./queue.ts";
 import { AGENTS_FIX, computeState, footer, headline, NOTHING, type State, UPDATE_FIX } from "./state.ts";
 import { loopRunning, readStopped } from "./stopstart.ts";
 import type { Sys } from "./sys.ts";
@@ -201,7 +201,8 @@ export async function statusJson(d: OpsDeps, me: string): Promise<number> {
 
 // Every check with its fix, then what the box runs.
 export async function check(c: CheckContext, d: OpsDeps, versions: Versions, json = false): Promise<number> {
-  const checks: Check[] = await runChecks([...PRESTART, ...CHECK_EXTRA, [SECOND_KEY_ROW, secondKeyRow], ...(loadRepoOf(c.cfg) ? [[TEST_REPO_ROW, testRepoRow] as [string, typeof testRepoRow]] : [])], c);
+  // Every row check shows, from every package (rows/index.ts).
+  const checks: Check[] = await runChecks(rows("check", c), c);
   if (json) {
     d.say(JSON.stringify(checkAnswer(checks, asService(d) || d.uid === 0)));
     return checks.some((k) => k.status === "FAIL") ? 1 : 0;
@@ -431,15 +432,12 @@ export async function restartServices(d: OpsDeps, now: string, was: string, chow
     }
     try {
       writeFileSync(d.paths.tailscaledPlist, want, { mode: 0o644 });
-      const token = reloadToken(d.paths);
-      const job = reloadPlistPath(d.paths);
-      writeFileSync(token, "", { mode: 0o600 });
-      // One left from an undo before is booted out and replaced.
-      await d.sys.run("/bin/launchctl", ["bootout", `system/${RELOAD_JOB}`], { timeoutMs: LAUNCHCTL_MS });
-      writeFileSync(job, reloadPlist(reloadScript(TAILSCALED_LABEL, d.paths.tailscaledPlist, token, job)), { mode: 0o644 });
-      chown(job, 0, 0);
-      const r = await d.sys.run("/bin/launchctl", ["bootstrap", "system", job], { timeoutMs: LAUNCHCTL_MS });
-      if (r.code !== 0) missed.push("tailscaled");
+      // One left from an undo before is booted out and replaced (core/child.ts).
+      const loaded = await reloadThroughLaunchd(
+        { sys: d.sys, write: (path, text, mode) => writeFileSync(path, text, { mode }), chown, timeoutMs: LAUNCHCTL_MS },
+        { job: RELOAD_JOB, target: TAILSCALED_LABEL, plist: d.paths.tailscaledPlist, token: reloadToken(d.paths), self: reloadPlistPath(d.paths), waitS: BOOTOUT_WAIT_S },
+      );
+      if (!loaded) missed.push("tailscaled");
       else {
         movedSocket = true;
         said.push("tailscaled loads again from this install's plist within a minute, by a launchd job of its own, so a session over Tailscale drops for a few seconds.");
@@ -464,37 +462,10 @@ export function reloadToken(p: Pick<Paths, "tailscaleSocket">): string {
   return join(dirname(p.tailscaleSocket), "taskbox-tailscaled-reload");
 }
 export function reloadScript(label: string, plist: string, token: string, self: string): string {
-  const q = (s: string) => `'${s.replace(/'/g, "")}'`;
-  const end = `/bin/rm -f ${q(self)}; exec /bin/launchctl bootout system/${RELOAD_JOB}`;
-  return [
-    // No token: an undo's run ended, or this is a boot after one. tailscaled is loaded if it isn't.
-    `[ -f ${q(token)} ] || { /bin/launchctl print system/${label} >/dev/null 2>&1 || /bin/launchctl bootstrap system ${q(plist)}; ${end}; }`,
-    `/bin/rm -f ${q(token)}`,
-    `/bin/launchctl bootout system/${label}`,
-    `i=0; while /bin/launchctl print system/${label} >/dev/null 2>&1 && [ $i -lt ${BOOTOUT_WAIT_S} ]; do /bin/sleep 1; i=$((i+1)); done`,
-    `for n in 1 2 3 4 5; do /bin/launchctl bootstrap system ${q(plist)} && break; /bin/sleep 2; done`,
-    end,
-  ].join("\n");
+  return oneShotScript({ job: RELOAD_JOB, target: label, plist, token, self, waitS: BOOTOUT_WAIT_S });
 }
 export function reloadPlist(script: string): string {
-  const x = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${RELOAD_JOB}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/sh</string>
-    <string>-c</string>
-    <string>${x(script)}</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-</dict>
-</plist>
-`;
+  return oneShotPlist(RELOAD_JOB, script);
 }
 
 
