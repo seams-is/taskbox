@@ -1,7 +1,7 @@
 // taskbox check: every row, OK, FAIL or SKIP, each FAIL with its fix. --away adds the rows for
 // leaving the box for days, and the verdict (v2's away).
 import type { BoxCtx, CommandSpec } from "../command.ts";
-import { captured } from "../cmdkit.ts";
+import { captured, oneJsonLine, UNREADABLE } from "../cmdkit.ts";
 
 async function context(c: BoxCtx) {
   const { loadConfig, withSourceKey } = await import("../config.ts");
@@ -18,6 +18,7 @@ export const commands: CommandSpec[] = [
     options: [{ name: "--away" }],
     shell: true,
     sharedReads: true,
+    verdict: true,
     did: "Ran the checks.",
     async run(c) {
       const { loadVersions } = await import("../config.ts");
@@ -38,7 +39,8 @@ export const commands: CommandSpec[] = [
         return { v3: { answers: 3, kind: "error", error: "unreadable" }, exit: 1 };
       }
       const r = await captured(c, (ops) => (c.opts.away ? away(ctx, ops, true) : check(ctx, ops, loadVersions(c.p.app), true)));
-      const v3 = JSON.parse(r.lines.find((l) => l.trim() !== "") ?? "{}") as Record<string, unknown>;
+      const v3 = oneJsonLine(r.lines);
+      if (!v3) return { v3: UNREADABLE, exit: 1 };
       const { answers: _a, kind: _k, ...fields } = v3;
       return { v3, exit: r.exit, result: c.opts.away ? { away: true, ...fields } : fields };
     },

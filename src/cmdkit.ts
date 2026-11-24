@@ -9,15 +9,22 @@ export async function captured(c: BoxCtx, f: (ops: OpsDeps) => Promise<number>):
   return { lines, exit };
 }
 
-// The one line of JSON a v2.x handler printed for --json, as the version 3 answer.
-export async function v3Answer(c: BoxCtx, f: (ops: OpsDeps) => Promise<number>): Promise<{ v3: Record<string, unknown>; exit: number }> {
-  const r = await captured(c, f);
-  const line = r.lines.filter((l) => l.trim() !== "");
+// The one line of JSON a v2.x handler printed for --json, as the version 3 answer. Anything else,
+// a stray text line among them, is v3's unreadable.
+export function oneJsonLine(lines: readonly string[]): Record<string, unknown> | undefined {
+  const line = lines.filter((l) => l.trim() !== "");
   try {
     const v = line.length === 1 ? (JSON.parse(line[0]!) as unknown) : undefined;
-    if (v && typeof v === "object" && !Array.isArray(v)) return { v3: v as Record<string, unknown>, exit: r.exit };
+    if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
   } catch {}
-  return { v3: { answers: 3, kind: "error", error: "unreadable" }, exit: 1 };
+  return undefined;
+}
+export const UNREADABLE = { answers: 3, kind: "error", error: "unreadable" };
+
+export async function v3Answer(c: BoxCtx, f: (ops: OpsDeps) => Promise<number>): Promise<{ v3: Record<string, unknown>; exit: number }> {
+  const r = await captured(c, f);
+  const v = oneJsonLine(r.lines);
+  return v ? { v3: v, exit: r.exit } : { v3: UNREADABLE, exit: 1 };
 }
 
 // The box's settings, or undefined when they can't be read: the handler says so in its own words.

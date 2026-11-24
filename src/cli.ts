@@ -338,7 +338,7 @@ async function answer(c: BoxCtx, name: string | null): Promise<number> {
       if (o.error) error = o.error;
     }
     if (!a && result === null) result = {};
-    error ??= errorOf(exit, lines);
+    if (!spec.verdict) error ??= errorOf(exit, lines);
   }
   let release: string | null = null;
   try {

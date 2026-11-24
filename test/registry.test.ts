@@ -10,6 +10,8 @@ import { paths } from "../src/config.ts";
 import { CMD_DIR, loadRegistry, parseLine, registry, registryProblem } from "../src/registry.ts";
 import { renamed } from "../src/renames.ts";
 import { readEnvelopes } from "../src/schema.ts";
+import { readAnswer } from "../src/laptop/schema.ts";
+import { boxChecksBody } from "../src/laptop/screens.ts";
 import { FakeSys } from "./fake.ts";
 import { fakeLaunchd, healthyBox, quietBox, tempRoot, testBox } from "./helpers.ts";
 
@@ -299,15 +301,21 @@ describe("--json: one envelope per command (§3.1)", () => {
     expect(e.lines).toEqual(text.said);
   });
 
-  test("check's lines are its rows, made from the result, with the footer; a FAIL is exit 1 with an error", async () => {
+  // M2: check's exit 1 is its verdict, not a failure of the command: the envelope carries every row.
+  test("check's lines are its rows, made from the result; a FAIL is exit 1 with every row, and the laptop shows them all", async () => {
     const r = await run(["check", "--json"], CALLERS.ci, { healthy: true });
     const e = JSON.parse(r.said[0]!);
     expect(readEnvelopes(r.said[0]!, { command: "check" }).ok).toBe(true);
     const rows = e.result.checks as { name: string; status: string }[];
+    const failed = rows.filter((k) => k.status === "FAIL");
+    expect(failed.length).toBeGreaterThan(0);
     expect(e.lines.slice(0, rows.length).map((l: string) => l.split(" ")[0])).toEqual(rows.map((k) => k.status));
     expect(e.lines.at(-1)).toMatch(/^Next: /);
-    const failed = rows.some((k) => k.status === "FAIL");
-    expect([r.code, e.exit, e.error === null]).toEqual([failed ? 1 : 0, failed ? 1 : 0, !failed]);
+    expect([r.code, e.exit, e.ok, e.error]).toEqual([1, 1, false, null]);
+    const read = readAnswer("check", r.said[0]!);
+    expect(read.ok).toBe(true);
+    const shown = boxChecksBody(read.ok ? read.answer.checks : []).join("\n");
+    for (const k of failed) expect(shown).toContain(`FAIL  ${k.name}`);
   });
 
   test("a command with no v3 answer still answers one envelope, from its text", async () => {
@@ -348,5 +356,14 @@ describe("hello and the answers version (§3.1)", () => {
   test("any other command takes one version, and refuses a list", async () => {
     expect((await run(["status", "--json", "--answers", "4,3"])).code).toBe(2);
     expect((await run(["status", "--json", "--answers", "x"])).code).toBe(2);
+  });
+});
+
+// L6: a handler's JSON line read with a stray line among the output is v3's unreadable, never a crash.
+describe("a v2.x handler's JSON line", () => {
+  test("one object is the answer; a stray line, two lines or none is unreadable", async () => {
+    const { oneJsonLine } = await import("../src/cmdkit.ts");
+    expect(oneJsonLine(['{"answers":3,"kind":"check","checks":[]}', ""])).toEqual({ answers: 3, kind: "check", checks: [] });
+    for (const lines of [["FAIL Sleep: after 10 minutes", '{"answers":3}'], ["not json"], [], ["[1]"]]) expect(oneJsonLine(lines)).toBeUndefined();
   });
 });
