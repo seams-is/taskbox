@@ -1,6 +1,7 @@
 // The remote user's login shell: taskbox's commands that read the box, nothing else.
 import { describe, expect, test } from "bun:test";
-import { commandFor, words } from "../src/shell.ts";
+import { commandFor, refusal, words } from "../src/shell.ts";
+import { readEnvelopes } from "../src/schema.ts";
 
 describe("remote's shell", () => {
   test("takes taskbox's reading commands, with or without the word taskbox", () => {
@@ -79,5 +80,47 @@ describe("remote's shell", () => {
   test("words: quotes keep spaces; an unclosed quote is refused", () => {
     expect(words(`a "b c" 'd e' f`)).toEqual(["a", "b c", "d e", "f"]);
     expect(words(`a "b`)).toBeUndefined();
+  });
+});
+
+describe("the review's points on the shell", () => {
+  // L2: a raw command whose words no parser here checks never reaches taskbox.
+  test("a raw shell command that isn't one of #47's verbs is refused", async () => {
+    const { registry } = await import("../src/registry.ts");
+    const specs = [...registry(), { path: ["later"], summary: "x", who: ["agent"], shell: true, raw: true, run: async () => 0 } as never];
+    expect("no" in commandFor("later anything at all", specs)).toBe(true);
+  });
+
+  // L3: an old name reaches taskbox as its own words alone, so taskbox's rename line is all that runs.
+  test("an old name passes as its own words, and --json, and nothing else", () => {
+    expect(commandFor("jobs --anything /etc/passwd")).toEqual({ args: ["jobs"] });
+    expect(commandFor("jobs 50 --json x")).toEqual({ args: ["jobs", "50", "--json"] });
+    expect(commandFor("watch --once")).toEqual({ args: ["watch", "--once"] });
+  });
+
+  // L7: a refusal is a usage error, exit 2, and an envelope when the line asked for --json.
+  test("a refusal is exit 2, and with --json an error envelope", () => {
+    expect(refusal("status --force")).toEqual({ out: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]", code: 2 });
+    const r = refusal("logs -f --json");
+    expect(r?.code).toBe(2);
+    const e = JSON.parse(r!.out);
+    expect([e.answers, e.ok, e.exit, e.error.code]).toEqual([4, false, 2, "usage"]);
+    expect(readEnvelopes(r!.out).ok).toBe(true);
+    expect(refusal("status")).toBeUndefined();
+  });
+
+  // Nit: the usage of a command the shell doesn't run, or a noun's other verbs, isn't shown here.
+  test("a line naming a command the shell doesn't run gets the shell's own list", () => {
+    for (const line of ["load start --x", "workspace", "workspace clear nova"]) {
+      const c = commandFor(line);
+      expect({ line, no: "no" in c ? c.no : "" }).toEqual({ line, no: expect.stringMatching(/^Here you can type: /) });
+    }
+  });
+
+  // Nit: workspace end's refusal names workspace end, not #47's release.
+  test("workspace end's refusal names its own command", () => {
+    const c = commandFor("workspace end nova-1 --as x");
+    expect("no" in c && c.no).toContain("taskbox workspace end");
+    expect("no" in c && c.no).not.toContain("taskbox release");
   });
 });

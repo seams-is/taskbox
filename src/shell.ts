@@ -10,7 +10,10 @@
 // workspace agent's commands (#47) are checked in full with workspace/agent.ts's parser too. None of
 // them gives anyone more of the box: signed carries the owner's signed steps as base64url, so the word
 // filter below stays as strict as it is. v2.6.0's old names pass, so taskbox says what they became.
-import { parseLine, firstWords, shellCommands } from "./registry.ts";
+import { type CommandSpec, parse } from "./command.ts";
+import { realClock } from "./clock.ts";
+import { envelope } from "./envelope.ts";
+import { firstWords, registry, shellCommands } from "./registry.ts";
 import { renamed } from "./renames.ts";
 import { isAgentCommand, parseAgent } from "./workspace/agent.ts";
 
@@ -34,37 +37,56 @@ export function words(line: string): string[] | undefined {
 }
 
 // The taskbox arguments a line asks for, or why not. "taskbox status" and "status" both work.
-export function commandFor(line: string): { args: string[] } | { no: string } {
+export function commandFor(line: string, specs: readonly CommandSpec[] = registry()): { args: string[] } | { no: string } {
   const w = words(line.trim());
   if (!w) return { no: "Only taskbox's own commands work here, with plain words and quotes." };
   const args = w[0] === "taskbox" ? w.slice(1) : w;
   if (!args.length) return { args: ["status"] };
-  const here = `Here you can type: ${shellWords().join(", ")}. Admin work is done at the box, as your admin user.`;
-  // An old name taskbox renamed: taskbox says what it is now, if the new one runs here.
+  const shell = specs.filter((s) => s.shell);
+  const here = `Here you can type: ${firstWords(shell).join(", ")}. Admin work is done at the box, as your admin user.`;
+  // An old name taskbox renamed: taskbox says what it is now, if the new one runs here. It goes as
+  // its own words alone, and --json, so taskbox's rename line is all that runs.
   const old = renamed(args);
   if (old) {
-    const now = parseLine(old.replacement.split(" "));
-    return now.ok && now.spec.shell ? { args } : { no: here };
+    const now = parse(specs, old.replacement.split(" "));
+    return now.ok && now.spec.shell ? { args: [...old.old.split(" "), ...(args.includes("--json") ? ["--json"] : [])] } : { no: here };
   }
-  const p = parseLine(args);
-  if (!p.ok) return p.path && shellCommands().some((s) => s.path[0] === p.path![0]) ? { no: p.usage ? `${p.line} ${p.usage}` : p.line } : { no: here };
+  const p = parse(specs, args);
+  if (!p.ok) {
+    // A command the shell runs, typed wrong, gets its own line; anything else the shell's list.
+    const mine = p.path && p.usage && shell.some((s) => s.path.join(" ") === p.path!.join(" "));
+    return mine ? { no: `${p.line} ${p.usage}` } : { no: here };
+  }
   if (!p.spec.shell) return { no: here };
-  const verb = p.spec.agent ?? p.spec.path[0];
-  if (p.spec.raw && isAgentCommand(verb)) {
+  if (p.spec.raw) {
+    // Its words are checked here by #47's parser, or it doesn't run: a raw command no parser here
+    // knows would reach taskbox unchecked.
+    const verb = p.spec.agent ?? p.spec.path[0];
+    if (!isAgentCommand(verb)) return { no: here };
     const c = parseAgent([verb, ...p.args]);
-    if ("no" in c) return { no: c.no };
+    if ("no" in c) return { no: p.spec.agent ? c.no.replaceAll(`taskbox ${verb}`, `taskbox ${p.spec.path.join(" ")}`) : c.no };
   }
   return { args };
+}
+
+// What the shell prints for a line it refuses, and its exit: 2, a usage error (§2.4). A line that
+// asked for --json gets an error envelope (§3.1). Undefined for a line it runs.
+export function refusal(line: string, specs: readonly CommandSpec[] = registry()): { out: string; code: 2 } | undefined {
+  const c = commandFor(line, specs);
+  if (!("no" in c)) return undefined;
+  if (!(words(line.trim()) ?? []).includes("--json")) return { out: c.no, code: 2 };
+  return { out: JSON.stringify(envelope({ command: "error", box: null, at: realClock.now(), exit: 2, lines: [c.no], error: { code: "usage", message: c.no, fix: null, who: null } })), code: 2 };
 }
 
 const env = () => ({ PATH: "/usr/bin:/bin", HOME: "/var/empty", USER: process.env.USER ?? "", LOGNAME: process.env.USER ?? "", TERM: /^[a-z0-9-]{1,32}$/.test(process.env.TERM ?? "") ? process.env.TERM! : "dumb", LANG: "en_GB.UTF-8" });
 
 async function run(line: string): Promise<number> {
-  const c = commandFor(line);
-  if ("no" in c) {
-    console.log(c.no);
-    return 1;
+  const no = refusal(line);
+  if (no) {
+    console.log(no.out);
+    return no.code;
   }
+  const c = commandFor(line) as { args: string[] };
   // No command here reads input, so none gets the session's: a line typed after it is the shell's.
   const p = Bun.spawn([TASKBOX, ...c.args], { stdin: "ignore", stdout: "inherit", stderr: "inherit", env: env() });
   return await p.exited;
