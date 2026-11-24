@@ -1,36 +1,21 @@
-// The commands that need root, typed by someone who isn't root. An admin's command re-runs itself
+// The commands that need root, typed by someone who isn't root (each is marked root in src/cmd/). An admin's command re-runs itself
 // through sudo, which asks for the admin's password. Anyone else is told to switch users, since
 // sudo asks for the password of the user typing it and a standard user's never works. Both paths
 // are fixed: nothing looks up PATH, and no environment passes through.
-import { RELEASE_TAG } from "./github.ts";
+import { pathOf, rootCommands } from "./registry.ts";
 import type { Sys } from "./sys.ts";
 
-export const ROOT_COMMANDS = ["update", "undo", "remove", "unlock", "connect", "disconnect", "approver", "clear"];
+// The commands marked root in the registry (src/cmd/), by their paths, such as "connect github".
+export const rootPaths = (): string[] => rootCommands().map(pathOf);
 export const TASKBOX = "/opt/taskbox/bin/taskbox";
 export const SUDO = "/usr/bin/sudo";
 
-// What a root command may be given. update takes one release tag (a trial's too, from v2.6.1) or
-// nothing; the others take nothing. Root checks it again after the re-run.
-export function argsProblem(cmd: string, rest: string[]): string | undefined {
-  if (cmd === "connect") {
-    const load = rest[1] === "--load" && (rest.length === 3 ? rest[2] === "off" : rest.length === 4);
-    const ok = rest[0] === "github" && (rest.length === 1 || (rest.length === 2 && rest[1] === "--new-key") || load);
-    return ok ? undefined : "Type taskbox connect github, taskbox connect github --new-key for a new key for the same App, or taskbox connect github --load and the test repo and its runner group (--load off takes it out).";
-  }
-  if (cmd === "disconnect") return rest.length === 1 && rest[0] === "github" ? undefined : "Type taskbox disconnect github.";
-  if (cmd === "update") return rest.length === 0 || (rest.length === 1 && RELEASE_TAG.test(rest[0]!)) ? undefined : "Type taskbox update for the newest release, or taskbox update and a release, such as v2.6.1 or v3.0.0-rc.1.";
-  // At the box, approver only clears the key: the owner makes it on the laptop.
-  // clear takes one agent's name, which the clear itself checks again as root.
-  if (cmd === "clear") return rest.length === 1 && /^[a-z][a-z0-9]{0,15}$/.test(rest[0]!) ? undefined : "Type taskbox clear and an agent's name, such as nova, to delete the files of its workspace account.";
-  if (cmd === "approver") return rest.length === 1 && rest[0] === "--reset" ? undefined : "Type taskbox approver --reset to clear the approver key this box trusts. You make the key on your laptop.";
-  return rest.length ? `Type taskbox ${cmd} with nothing after it.` : undefined;
-}
-
 export type Elevation = { say: string; argv?: string[] };
 
-export function elevation(cmd: string, rest: string[], admin: boolean): Elevation {
-  if (!admin) return { say: `Switch to your admin user and type taskbox ${cmd}.` };
-  return { say: `taskbox ${cmd} needs your admin password.`, argv: [SUDO, "-p", "Password for %u: ", "--", TASKBOX, cmd, ...rest] };
+// What a root command's run says, and the sudo line it runs. Root parses the line again after the re-run.
+export function elevation(path: string, rest: string[], admin: boolean): Elevation {
+  if (!admin) return { say: `Switch to your admin user and type taskbox ${path}.` };
+  return { say: `taskbox ${path} needs your admin password.`, argv: [SUDO, "-p", "Password for %u: ", "--", TASKBOX, ...path.split(" "), ...rest] };
 }
 
 // Whether a user is an admin. dseditgroup says 0 for a member and 67 for a user who isn't one.

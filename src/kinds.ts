@@ -158,7 +158,7 @@ export interface ScheduleDeps {
   history: () => Partial<Record<Kind, KindHistory>>;
   // v2.6.0: the load test's window now (load.ts). Absent: off.
   load?: () => { on: boolean; only: boolean } | undefined;
-  // v2.6.0: what the source last listed, for taskbox load on --only and the report.
+  // v2.6.0: what the source last listed, for taskbox load start --only and the report.
   seen?: (s: Snapshot) => void;
   // How many slots are held for workspaces now (held.ts). decide() sees the others only.
   // Absent: none.

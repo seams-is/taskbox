@@ -162,7 +162,7 @@ describe("approverPlan", () => {
   test("a new key with no statement is refused, naming both fingerprints and the way to reset", async () => {
     const p = await approverPlan(pinned(A), B, undefined, BOX, verifier(true));
     expect("refuse" in p && p.refuse).toMatch(new RegExp(`new approver key, ${fingerprint(B).replace(/[+/]/g, ".")}, with no statement signed by the old key\\. The box keeps ${fingerprint(A).replace(/[+/]/g, ".")}`));
-    expect("refuse" in p && p.refuse).toMatch(/taskbox approver --reset/);
+    expect("refuse" in p && p.refuse).toMatch(/taskbox key reset approver/);
   });
 
   test("a new key with the old key's statement and a good signature rotates", async () => {
@@ -232,7 +232,7 @@ describe("approverPlan", () => {
   test("a key cleared at the box is refused as a first key", async () => {
     const pin = reset(pinned(A, 5));
     const p = await approverPlan(pin, A, undefined, BOX, verifier(true));
-    expect("refuse" in p && p.refuse).toMatch(/was cleared at this box with taskbox approver --reset/);
+    expect("refuse" in p && p.refuse).toMatch(/was cleared at this box with taskbox key reset approver/);
     expect(await approverPlan(pin, undefined, undefined, BOX, NO_VERIFIER)).toEqual({ change: "none" });
   });
 
@@ -272,12 +272,14 @@ describe("trustedKey", () => {
 
 
 describe("taskbox approver at the box", () => {
-  test("is an admin's command that takes --reset and nothing else", async () => {
-    const { argsProblem, elevation, ROOT_COMMANDS } = await import("../src/elevate.ts");
-    expect(ROOT_COMMANDS).toContain("approver");
-    expect(argsProblem("approver", ["--reset"])).toBeUndefined();
-    for (const rest of [[], ["--reset", "now"], ["reset"], ["--Reset"]]) expect(argsProblem("approver", rest)).toBe("Type taskbox approver --reset to clear the approver key this box trusts. You make the key on your laptop.");
-    expect(elevation("approver", ["--reset"], true).argv).toEqual(["/usr/bin/sudo", "-p", "Password for %u: ", "--", "/opt/taskbox/bin/taskbox", "approver", "--reset"]);
-    expect(elevation("approver", ["--reset"], false).argv).toBeUndefined();
+  test("is an admin's command, key reset approver, that takes nothing else", async () => {
+    const { elevation, rootPaths } = await import("../src/elevate.ts");
+    const { parseLine } = await import("../src/registry.ts");
+    expect(rootPaths()).toContain("key reset approver");
+    expect(parseLine(["key", "reset", "approver"]).ok).toBe(true);
+    for (const rest of [["now"], ["--reset"], ["--Reset"]]) expect(parseLine(["key", "reset", "approver", ...rest]).ok).toBe(false);
+    expect(parseLine(["key", "reset"]).ok).toBe(false);
+    expect(elevation("key reset approver", [], true).argv).toEqual(["/usr/bin/sudo", "-p", "Password for %u: ", "--", "/opt/taskbox/bin/taskbox", "key", "reset", "approver"]);
+    expect(elevation("key reset approver", [], false).argv).toBeUndefined();
   });
 });

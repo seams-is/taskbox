@@ -1,5 +1,5 @@
 // Where installs live. /opt/taskbox is a root-owned link to one install folder, /opt/taskbox-<commit>-<6
-// characters>, and /opt/taskbox.prev links to the install before it, kept for taskbox undo. Moving
+// characters>, and /opt/taskbox.prev links to the install before it, kept for taskbox rollback. Moving
 // either link is one rename, which macOS makes atomic, so an update or undo never leaves the box
 // without /opt/taskbox. /usr/local/bin/taskbox links to /opt/taskbox/bin/taskbox, so every user
 // types plain taskbox.

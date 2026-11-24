@@ -561,7 +561,7 @@ describe("the screens", () => {
     expect(activePull(mac, undefined)).toBe(mac);
   });
 
-  test("taskbox jobs names each job's kind; a line from before v2.1.0 is macOS", () => {
+  test("taskbox job list names each job's kind; a line from before v2.1.0 is macOS", () => {
     const r: JobRecord = { v: 1, startedAt: Date.parse("2026-11-17T10:00:00Z"), endedAt: Date.parse("2026-11-17T10:06:00Z"), repo: "example-org/ci", job: "db-tests", result: "passed", vmDeleted: true, guard: "ok", vmKind: "linux" };
     expect(jobLines(r)[0]).toContain("example-org/ci  Linux  db-tests");
     expect(jobLines({ ...r, vmKind: undefined })[0]).toContain("example-org/ci  macOS  db-tests");
@@ -639,7 +639,7 @@ describe("the screens", () => {
     expect(readFileSync(target, "utf8")).toBe("{}");
     expect(lstatSync(link.file).isSymbolicLink()).toBe(false);
   });
-  test("taskbox log leaves out VMs that gave way", () => {
+  test("taskbox logs leaves out VMs that gave way", () => {
     const at = "2026-11-17T10:00:00.000Z";
     const lines = [`${at} job job-a gave-way`, `${at} job job-b done`];
     expect(plainLogEntries(lines, Date.parse(at)).map((e) => e.text)).toEqual(["A job ran and finished."]);
@@ -686,7 +686,7 @@ describe("the install", () => {
     expect(said).toContain("  runnerLinux 2.338.2: matches its pin");
     expect(sys.requests.some((r) => r.url.endsWith("actions-runner-linux-arm64-2.338.2.tar.gz"))).toBe(true);
     expect(existsSync(join(d.paths.opt, "runner/actions-runner-linux.tar.gz"))).toBe(true);
-    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
+    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
   });
 
   test("a Linux kind with no Linux runner pinned installs nothing", async () => {
@@ -702,7 +702,7 @@ describe("the install", () => {
     expect(said).toContain("  runner 2.338.2: matches its pin");
     expect(said.some((l) => l.includes("runnerLinux"))).toBe(false);
     expect(existsSync(join(d.paths.opt, "runner/actions-runner-linux.tar.gz"))).toBe(false);
-    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
+    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
   });
 
   // P3: install.sh run again over a service with state keeps that state; the key goes in root's folder.

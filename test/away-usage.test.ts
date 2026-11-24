@@ -1,5 +1,5 @@
 // v2.5.0: what each job used, sampled through the VM engine, kept in the job line, and shown in
-// taskbox jobs and per label in taskbox timings.
+// taskbox job list and per label in taskbox job timings.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { ANSWERS, jobsAnswer, timingsAnswer } from "../src/answers.ts";
@@ -97,7 +97,7 @@ describe("the job line", () => {
     expect(jobs.every((j) => j.usage === undefined && j.labels === undefined)).toBe(true);
   });
 
-  test("taskbox jobs shows them, and a line with an odd record isn't shown", () => {
+  test("taskbox job list shows them, and a line with an odd record isn't shown", () => {
     const base: JobRecord = { v: 1, startedAt: 1, endedAt: 2, repo: "example-org/app", result: "passed", vmDeleted: true, guard: "ok", labels: ["taskbox-macos"], usage: { samples: 3, memPeakMB: 6246, memP90MB: 5530, memTotalMB: 8192, cpuPeak: 3.8, cpuP90: 2.5, cpus: 4 } };
     expect(validJob(base)).toBe(true);
     expect(jobLines(base).at(-1)).toBe("              Used: memory 6.1 GB at peak, 90% of the time under 5.4 GB, of 8.0 GB; CPUs 3.8 at peak, 90% under 2.5, of 4. 3 samples.");
@@ -109,7 +109,7 @@ describe("the job line", () => {
   });
 });
 
-describe("per label in taskbox timings", () => {
+describe("per label in taskbox job timings", () => {
   test("the median and 90th percentile of each job's peaks, by its first label", () => {
     const u = (mem: number, cpu: number) => ({ samples: 5, memPeakMB: mem, memP90MB: mem, memTotalMB: 8192, cpuPeak: cpu, cpuP90: cpu, cpus: 4 });
     const jobs = [
@@ -207,7 +207,7 @@ describe("during a job", () => {
   });
 });
 
-describe("taskbox timings", () => {
+describe("taskbox job timings", () => {
   test("has a section for what each label's jobs used", async () => {
     const { timingsScreen } = await import("../src/timings.ts");
     const { CFG } = await import("./helpers.ts");

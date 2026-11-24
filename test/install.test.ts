@@ -205,7 +205,7 @@ describe("an install run to the end", () => {
     const { d, said, root } = installDeps(sys, "yes");
     const log = launchdLog(sys, d.paths.opt);
     await asRoot(() => install(d, { first: true }));
-    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
+    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
     // The install folder, behind /opt/taskbox, with Softnet's setuid bit and the command on PATH.
     const folder = basename(linkTarget(d.paths.opt)!);
     expect(folder).toMatch(/^taskbox-abc1234def56-/);

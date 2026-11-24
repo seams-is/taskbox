@@ -321,7 +321,7 @@ describe("the loop with 2 slots", () => {
       if (drainAt === undefined && live.length === 2) {
         const st = JSON.parse(readFileSync(d.paths.loopState, "utf8"));
         if (Object.values(st.slots).map((s) => (s as { slot: string }).slot).sort().join() !== "running a job,waiting for a job") return;
-        // taskbox stop --drain, while one slot runs a job and the other's VM waits for one.
+        // taskbox drain, while one slot runs a job and the other's VM waits for one.
         writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
         drainAt = sys.now();
       }
@@ -685,7 +685,7 @@ describe("the loop with 2 slots", () => {
     expect(await runLoop(d)).toBe(0);
     expect(drainAt).toBeDefined();
     expect(clones.filter((t) => t > drainAt!)).toEqual([]);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("because a drain began (taskbox stop --drain)");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("because a drain began (taskbox drain)");
   });
 
   test("a Whole stops a download under way, says why, and starts no VM while it holds", async () => {

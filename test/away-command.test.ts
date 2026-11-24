@@ -1,4 +1,4 @@
-// v2.5.0 `taskbox away` (src/away.ts): every check row, then the rows for leaving, a verdict, and
+// v2.5.0 `taskbox check --away` (src/away.ts): every check row, then the rows for leaving, a verdict, and
 // --json. remote runs it too; no row names a user.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -72,9 +72,9 @@ describe("the rows for leaving", () => {
 
   test("images: one waiting reads its download, two read their downloads", async () => {
     const { c } = box();
-    expect((await row("Images", c)).detail).toBe("the macOS image isn't on the box yet. Nothing to do: wait for its download before leaving (taskbox watch)");
+    expect((await row("Images", c)).detail).toBe("the macOS image isn't on the box yet. Nothing to do: wait for its download before leaving (taskbox status -w)");
     const linux = { ...CFG, linux: { label: "taskbox-linux", image: CFG.image.replace("macos", "linux"), vmCpus: 4, vmMemoryMB: 8192 } };
-    expect((await row("Images", { ...c, cfg: linux } as never)).detail).toBe("the macOS and Linux images aren't on the box yet. Nothing to do: wait for their downloads before leaving (taskbox watch)");
+    expect((await row("Images", { ...c, cfg: linux } as never)).detail).toBe("the macOS and Linux images aren't on the box yet. Nothing to do: wait for their downloads before leaving (taskbox status -w)");
   });
 
   test("room: the floor and the biggest image", async () => {
@@ -129,7 +129,7 @@ describe("the verdict and --json", () => {
     expect(awayAnswer(checks, false).checks[0]).toEqual({ name: "Sleep", status: "FAIL" });
   });
 
-  test("taskbox away prints every row, the verdict and the three lines", async () => {
+  test("taskbox check --away prints every row, the verdict and the three lines", async () => {
     const { c, d, sys } = box();
     const said: string[] = [];
     const code = await away(c, { sys, paths: d.paths, uid: 501, serviceUid: 501, say: (l) => said.push(l), ask: async () => "" });
@@ -151,7 +151,7 @@ describe("the verdict and --json", () => {
   });
 
   test("remote's shell takes it", () => {
-    expect(commandFor("away")).toEqual({ args: ["away"] });
-    expect(commandFor("taskbox away --json")).toEqual({ args: ["away", "--json"] });
+    expect(commandFor("check --away")).toEqual({ args: ["check", "--away"] });
+    expect(commandFor("taskbox check --away --json")).toEqual({ args: ["check", "--away", "--json"] });
   });
 });

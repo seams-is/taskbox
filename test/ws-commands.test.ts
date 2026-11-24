@@ -362,7 +362,7 @@ describe("taskbox workspaces", () => {
   });
   test("disk use it can't read is said so; no word is no line", () => {
     const l = workspacesLines({ ...base, disk: () => undefined, word: () => undefined, read: { kind: "ok", state: s } });
-    expect(l[0]).toBe("nova-1  nova  taskbox-ws1  Active  disk use shows at taskbox clear");
+    expect(l[0]).toBe("nova-1  nova  taskbox-ws1  Active  disk use shows at taskbox workspace clear");
     expect(l.some((x) => x.includes("Last word"))).toBe(false);
   });
   test("stale, bad and missing states", () => {

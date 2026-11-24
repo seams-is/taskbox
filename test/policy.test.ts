@@ -134,7 +134,7 @@ describe("policyFor", () => {
   });
 });
 
-describe("taskbox policy's arguments", () => {
+describe("taskbox policy show's arguments", () => {
   test("an owner, admins and --whole", () => {
     expect(policyArgs([])).toEqual({ admins: [], whole: false });
     expect(policyArgs(["--owner", "you@example.com", "--admin", "boss", "--admin", "deputy", "--whole"])).toEqual({ owner: "you@example.com", admins: ["boss", "deputy"], whole: true });
@@ -143,7 +143,7 @@ describe("taskbox policy's arguments", () => {
     expect(policyArgs(["--owner"])).toMatch(/--owner needs your Tailscale login/);
     expect(policyArgs(["--owner", "not a login"])).toMatch(/--owner needs/);
     expect(policyArgs(["--admin", "a b"])).toMatch(/--admin needs/);
-    expect(policyArgs(["--apply"])).toMatch(/^taskbox policy \[--owner/);
+    expect(policyArgs(["--apply"])).toMatch(/^taskbox policy show \[--owner/);
   });
 });
 

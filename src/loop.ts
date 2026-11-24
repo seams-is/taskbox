@@ -167,7 +167,7 @@ export class Slots {
   downloadGB = 0;
   // Whether this loop run has ended a hold kept from before v2.2.0 (endOldHold).
   oldHoldEnded = false;
-  // The slots that are empty and waiting on a drain (taskbox stop --drain). All of them: drained.
+  // The slots that are empty and waiting on a drain (taskbox drain). All of them: drained.
   readonly drained = new Set<number>();
   drainedAt: number | undefined; // when the last slot found the drain done
   drainShown: number | undefined; // the drain's start, as the loop's state shows it
@@ -575,7 +575,7 @@ export async function sealGuest(d: LoopDeps, vm: string): Promise<string> {
   return got.length ? got.map((t) => `${t.port} ${t.r}`).join(", ") : "blocked";
 }
 
-// A job's result for taskbox jobs: the runner's own word when it gave one, else what the loop saw.
+// A job's result for taskbox job list: the runner's own word when it gave one, else what the loop saw.
 export function jobRecordResult(outcome: JobOutcome, runner: JobRecord["result"] | undefined, ran: boolean): JobRecord["result"] {
   // gave-way ends a VM only while no job has started, so it ran none.
   if (outcome === "ceiling" || outcome === "pressure") return "stopped";
@@ -648,7 +648,7 @@ const slotHeld = (d: LoopDeps): boolean => isHeld(d.slot, d.box?.count ?? slotCo
 // The waits that end a VM waiting for a job, and let a running one finish. A drain (taskbox stop
 // --drain) goes first. Then a slot held for a workspace, which starts no VM.
 function drainOrHold(d: LoopDeps): { key: string; text: string } | undefined {
-  if (existsSync(d.paths.drain)) return { key: "drain", text: "taskbox stop --drain: running jobs finish, then the loop stops" };
+  if (existsSync(d.paths.drain)) return { key: "drain", text: "taskbox drain: running jobs finish, then the loop stops" };
   // A held slot always has a reason: a Whole, or a state the loop can't trust.
   if (slotHeld(d)) return { key: "workspace", text: holdReason(d.workspaces?.() ?? NONE)!.text };
   return undefined;
@@ -898,7 +898,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
 
   const t = engineOf(d);
   let outcome: JobOutcome = "done";
-  // For taskbox jobs: what this VM did, filled in as it happens.
+  // For taskbox job list: what this VM did, filled in as it happens.
   let vmStartedAt: number | undefined;
   let jobAt: number | undefined;
   let jobName: string | undefined;
@@ -932,7 +932,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // Shared mode: the same size whoever else is on the box, set on the clone only.
     const sized = await t.size(vm, d.cfg.vmCpus, d.cfg.vmMemoryMB);
     if (sized.code !== 0) throw new Error("tart set failed on the VM's size");
-    // Who else is logged in, for taskbox jobs. A list that can't be read is left out, never empty.
+    // Who else is logged in, for taskbox job list. A list that can't be read is left out, never empty.
     const logins = await loginSessions(d.sys).catch(() => undefined);
     beside = logins?.known ? logins.users.filter((u) => u !== d.cfg.accounts.service) : undefined;
     vmStartedAt = d.sys.now();
@@ -1144,7 +1144,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
             d.box.gaveWay[kind] = (d.box.gaveWay[kind] ?? 0) + 1;
             d.box.gaveWayAt[kind] = d.sys.now();
             // A dated log of give-ways, kept across restarts for a week and at most 500, for the
-            // acceptance criteria in taskbox timings.
+            // acceptance criteria in taskbox job timings.
             const now = d.sys.now();
             const was = readStateJson<{ gaveWayLog?: unknown }>(d.paths.loopState)?.gaveWayLog;
             const log = (Array.isArray(was) ? was : []).filter((x): x is { at: number; kind: string } => !!x && typeof x === "object" && Number.isFinite((x as { at?: unknown }).at) && now - (x as { at: number }).at < 7 * 86_400_000);
@@ -1240,7 +1240,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     } finally {
       stopDone?.(d.sys.now());
     }
-    // One line for taskbox jobs, for every VM that started: a job it ran, or why it ran none. A VM
+    // One line for taskbox job list, for every VM that started: a job it ran, or why it ran none. A VM
     // that gave way ran none and would fill the list every few minutes, so it has no line.
     if (vmStartedAt !== undefined && outcome !== "gave-way") {
       try {
@@ -1268,7 +1268,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
           usage: summarise(samples),
         });
       } catch (e) {
-        d.log.write(`could not record the job for taskbox jobs: ${(e as Error).message}`);
+        d.log.write(`could not record the job for taskbox job list: ${(e as Error).message}`);
       }
     }
     // A fresh token: the first is an hour old by the ceiling.
@@ -1563,7 +1563,7 @@ function showHold(d: Pick<LoopDeps, "paths" | "workspaces">, box: Slots): void {
 async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
   const multi = c.box.count > 1;
   let last: { kind: Kind; outcome: JobOutcome } | undefined;
-  // Each wait since the last VM, with its reason and length, for taskbox jobs.
+  // Each wait since the last VM, with its reason and length, for taskbox job list.
   let waits: Wait[] = [];
   let waiting: { key: string; since: number } | undefined;
   let heldEmptyShown: boolean | undefined;
@@ -1633,7 +1633,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const onDisk = (k: Kind) => (listed.has(forKind(d.cfg, k).image) ? 0 : 1);
         for (const k of due.sort((a, b) => onDisk(a) - onDisk(b))) {
           c.box.downloadGB = forKind(d.cfg, k).imageGB ?? 0;
-          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (existsSync(d.paths.drain) && "a drain began (taskbox stop --drain); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after"))
+          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (existsSync(d.paths.drain) && "a drain began (taskbox drain); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after"))
             .finally(() => (c.box.downloadGB = 0))
             .catch((e: Error) => {
               const why = `the ${KIND_WORD[k]} image: ${e.message}`;

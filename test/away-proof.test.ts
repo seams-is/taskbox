@@ -96,7 +96,7 @@ describe("a pass that still holds", () => {
     expect(infraProofLine(false, "the Linux guest never answered", Date.UTC(2026, 10, 18, 14, 30)).linuxProof).toMatch(/^couldn't run: the Linux guest never answered\. It tries again at \d\d:\d\d$/);
   });
 
-  test("taskbox away reads it OK whatever its age, as ci and as remote", async () => {
+  test("taskbox check --away reads it OK whatever its age, as ci and as remote", async () => {
     const { sys, d } = linuxBox();
     const { writeProof } = await import("../src/proof.ts");
     writeProof(d.paths.projectState, { v: 1, at: sys.now() - 10 * 86_400_000, ok: true, image: LINUX_IMAGE, commit: "c0ffee0", detail: "x" });

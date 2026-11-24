@@ -32,7 +32,7 @@ import { AGENTS_FIX, computeState, footer, headline, NOTHING, type State, UPDATE
 import { loopRunning, readStopped } from "./stopstart.ts";
 import type { Sys } from "./sys.ts";
 import { readLoopState, runningJobs, slotsShown } from "./watch.ts";
-import { SHELL_COMMANDS } from "./shell.ts";
+import { commandList, firstWords, registry, shellCommands } from "./registry.ts";
 import { placeTailscaledLog } from "./logins.ts";
 import { bootOutUnknown, KNOWN_DAEMONS, MAX_HOLD_MS, readRollbackWatch, removeRollbackWatch, retryAfterMs, rollbackWatchPaths, rollbackWatchState, writeRollbackWatch } from "./hop.ts";
 
@@ -111,21 +111,20 @@ export function slotsLine(cfg: Config): string {
   return `${n} VMs at once, macOS at most ${Math.min(MACOS_MAX, n)} (Apple's licence). Before each start: memory for one more VM, and ${cfg.minFreeDiskGB} GB free disk for it and for each VM running, so ${cfg.minFreeDiskGB * n} GB with ${n}${merge.length ? `. Merge jobs first: ${merge.join(", ")}` : ""}`;
 }
 
-export const COMMANDS = "Commands: status, watch, jobs, timings, load, logins, stop, start, check, away, watchdog, canary, clean, log, policy, workspaces, and as your admin user: update, undo, remove, unlock, connect, disconnect, approver, clear.";
-
 // Who typed the command, for the list of commands they can run. Without it the list is the service account's.
 export interface Reader {
   remote: boolean; // the remote user, through its own shell
   admin: boolean;
 }
 
-// Only the commands this user can run: the service runs the loop's own commands, the agent only its shell's,
-// anyone else reads the box, and an admin user also updates it.
+// Only the commands this user can run, from the registry (src/cmd/): the service account sees every
+// command, the agent only its shell's, anyone else the readers, and an admin user also root's.
 export function commandsFor(d: OpsDeps, who?: Reader): string {
-  if (!who || asService(d)) return COMMANDS;
-  if (who.remote) return `Commands: ${SHELL_COMMANDS.join(", ")}.`;
-  const reads = "status, watch, jobs, timings, load report, log, logins, check, workspaces";
-  return who.admin ? `Commands: ${reads}, and update, undo, remove, unlock, connect, disconnect, clear.` : `Commands: ${reads}.`;
+  if (!who || asService(d)) return commandList();
+  if (who.remote) return `Commands: ${firstWords(shellCommands()).join(", ")}.`;
+  const shown = registry().filter((s) => !s.internal);
+  const reads = firstWords(shown.filter((s) => s.who.includes("anyone") && !s.root)).join(", ");
+  return who.admin ? `Commands: ${reads}, and ${firstWords(shown.filter((s) => s.root)).join(", ")}.` : `Commands: ${reads}.`;
 }
 
 async function stateFrom(d: OpsDeps): Promise<State> {
@@ -240,7 +239,7 @@ export async function check(c: CheckContext, d: OpsDeps, versions: Versions, jso
 // each new image; this is for freeing space now.
 export async function cleanBox(d: OpsDeps, loop: LoopDeps): Promise<number> {
   if (!asService(d)) {
-    d.say(`Run taskbox clean as ${d.paths.service}: the images and VMs are ${d.paths.service}'s.`);
+    d.say(`Run taskbox prune as ${d.paths.service}: the images and VMs are ${d.paths.service}'s.`);
     return 1;
   }
   const df = async () => Number((await d.sys.run("/bin/df", ["-Pk", "/System/Volumes/Data"])).stdout.trim().split("\n").pop()?.split(/\s+/)[3]) * 1024;
@@ -254,11 +253,11 @@ export async function cleanBox(d: OpsDeps, loop: LoopDeps): Promise<number> {
   // While the loop downloads, its download is left alone.
   const downloading = running && [d.paths.pull, d.paths.pullLinux].some((f) => readPull(f)?.state === "downloading");
   const notes = downloading ? [] : await removeOldImages(loop);
-  if (downloading) d.say("Old images left alone: the loop is downloading. Type taskbox clean again once it's done.");
+  if (downloading) d.say("Old images left alone: the loop is downloading. Type taskbox prune again once it's done.");
   const freed = (await df()) - before;
   const lines = [...notes];
   if (cleaned.removed) lines.push(`Removed ${cleaned.removed} leftover VM${cleaned.removed > 1 ? "s" : ""}.`);
-  if (cleaned.failed) lines.push(`${cleaned.failed} leftover VM${cleaned.failed > 1 ? "s" : ""} couldn't be removed. taskbox log says why.`);
+  if (cleaned.failed) lines.push(`${cleaned.failed} leftover VM${cleaned.failed > 1 ? "s" : ""} couldn't be removed. taskbox logs says why.`);
   if (leftovers && running) lines.push(`${leftovers} VM${leftovers > 1 ? "s" : ""} left alone: the loop is running and may be using them. Type taskbox stop: it cleans them once the loop has ended.`);
   for (const l of lines) d.say(l);
   const s = await stateNow(d);
@@ -515,7 +514,7 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
       d.paths,
       () => d.sys.now(),
       () => {
-        d.say("An update, undo or rollback is running. Type taskbox undo again once it ends.");
+        d.say("An update, undo or rollback is running. Type taskbox rollback again once it ends.");
         return 1;
       },
       () => undo(d, { ...o, locked: true }),
@@ -1029,12 +1028,12 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
   return { kept };
 }
 
-// taskbox approver --reset (docs/workspaces-design.md, section 5.3): clears the approver key the box
+// taskbox key reset approver (docs/workspaces-design.md, section 5.3): clears the approver key the box
 // trusts, for a lost laptop, at the box only, after a typed yes. Workspaces stay off until the next
 // taskbox update pins the key taskbox.json names, after its own yes.
 export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {
   if (o.overSsh) {
-    for (const l of ["taskbox approver --reset runs at the box only: the key it clears is the one that proves you approved a workspace.", "", "Now: unchanged.", "Did: Nothing changed.", "Next: At the box, log in as your admin user and type taskbox approver --reset."]) d.say(l);
+    for (const l of ["taskbox key reset approver runs at the box only: the key it clears is the one that proves you approved a workspace.", "", "Now: unchanged.", "Did: Nothing changed.", "Next: At the box, log in as your admin user and type taskbox key reset approver."]) d.say(l);
     return 1;
   }
   const pin = readPin(d.paths.approverPin, d.rootUid ?? 0);

@@ -2,8 +2,8 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { COMMANDS } from "../src/ops.ts";
-import { SHELL_COMMANDS } from "../src/shell.ts";
+import { parseLine } from "../src/registry.ts";
+import { shellWords } from "../src/shell.ts";
 
 const repo = join(import.meta.dir, "..");
 const readme = readFileSync(join(repo, "README.md"), "utf8");
@@ -17,7 +17,7 @@ describe("the docs", () => {
   test("README's agent line names exactly the commands the agent's shell runs, in order", () => {
     const line = readme.split("\n").find((l) => l.startsWith("- The agent account is for reading the box."))!;
     const named = [...line.split("and nothing else")[0]!.matchAll(/`([a-z]+)`/g)].map((m) => m[1]);
-    expect(named).toEqual(SHELL_COMMANDS);
+    expect(named).toEqual(shellWords());
   });
 
   test("README, docs and .github name no org's issues and no team", () => {
@@ -40,10 +40,14 @@ describe("the docs", () => {
     expect(timeout).toBeLessThanOrEqual(example.jobTimeoutMinutes);
     expect(block).toMatch(/uses: actions\/checkout@[0-9a-f]{40} /);
   });
-  test("every taskbox command README and the docs name is one the box has, or one README says is gone", () => {
-    const known = new Set([...COMMANDS.matchAll(/([a-z]+)[,.]/g)].map((m) => m[1]!).concat(SHELL_COMMANDS, ["hold", "share"]));
+  test("every taskbox command README and the docs name is one the box has, or hold and share, which README says are gone", () => {
     for (const f of [join(repo, "README.md"), join(repo, "docs/tailnet-policy.md"), join(repo, "docs/build-tailscale.md")]) {
-      for (const [, cmd] of readFileSync(f, "utf8").matchAll(/`taskbox ([a-z]+)/g)) expect({ f, cmd, known: known.has(cmd!) }).toEqual({ f, cmd, known: true });
+      for (const [, line] of readFileSync(f, "utf8").matchAll(/`taskbox ([a-z][a-z -]*)/g)) {
+        const words = line!.trim().split(" ").filter((w) => /^[a-z]/.test(w));
+        // The longest run of words that is a command: prose after a command's name is the doc's own.
+        const known = ["hold", "share"].includes(words[0]!) || words.some((_, k) => parseLine(words.slice(0, words.length - k)).ok || (parseLine(words.slice(0, words.length - k)) as { usage?: string }).usage !== undefined);
+        expect({ f, line, known }).toEqual({ f, line, known: true });
+      }
       expect({ f, pair: /taskbox pair/.test(readFileSync(f, "utf8")) }).toEqual({ f, pair: false });
     }
   });

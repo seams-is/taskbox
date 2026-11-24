@@ -1,4 +1,4 @@
-// The UPS row in taskbox away (v2.5.0). Under the restart plan accept, a UPS keeps the box and the
+// The UPS row in taskbox check --away (v2.5.0). Under the restart plan accept, a UPS keeps the box and the
 // router up through a short power cut, so a cut doesn't leave the box at the FileVault screen.
 // macOS sees a UPS only over its USB cable, in pmset -g ps; one without the cable can't be seen.
 // The row reads OK when a UPS is seen and the box runs on AC through it, WARN when none is seen

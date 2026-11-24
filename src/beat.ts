@@ -66,7 +66,7 @@ export function restartsState(loop: { selfRestartCount?: number; selfRestartSinc
   const since = loop.selfRestartSince;
   if (n < RESTARTS_TO_REPORT || since === undefined || now - since > RESTARTS_WINDOW_MS) return undefined;
   // By itself or by the guard (loopwatch.ts): the count holds both.
-  return { word: "Failing", detail: `the loop has been restarted ${n} times since ${hhmm(since)}, because it kept stopping`, next: `At the box: as ${serviceName()}, type taskbox stop, then taskbox start. Agents look at taskbox log.` };
+  return { word: "Failing", detail: `the loop has been restarted ${n} times since ${hhmm(since)}, because it kept stopping`, next: `At the box: as ${serviceName()}, type taskbox stop, then taskbox start. Agents look at taskbox logs.` };
 }
 
 export const staleRestart = () => `At the box: as ${serviceName()}, type taskbox stop, then taskbox start.`;

@@ -1,6 +1,6 @@
 // The watchdog and canary workflows (v2.5.0, docs/away-ready-design.md, "Alerts"), made from the
-// box's own settings so their labels can't drift from the box. `taskbox watchdog` and `taskbox
-// canary` print them, filled in from templates/: every label the box serves, the wait, and each
+// box's own settings so their labels can't drift from the box. `taskbox template show box-check`
+// and `taskbox template show test-job` print them, filled in from templates/: every label the box serves, the wait, and each
 // interval as a cron line. Each run's name carries a fingerprint of those settings, and `taskbox
 // away` reads the latest run through the job source's App (Actions read only) to tell whether the
 // copy in the repo is this box's, turned on, and running. A later release reuses these as they are.
@@ -116,7 +116,7 @@ export function readWorkflows(v: unknown): WorkflowsRecord | undefined {
 }
 
 export async function deployedRow(c: CheckContext, which: "watchdog" | "canary", get?: GetJson): Promise<Row> {
-  const make = `taskbox ${which}`;
+  const make = `taskbox template show ${which === "watchdog" ? "box-check" : "test-job"}`;
   const file = which === "watchdog" ? WATCHDOG_FILE : CANARY_FILE;
   const settings = which === "watchdog" ? watchdogSettings(c.cfg) : canarySettings(c.cfg);
   const fix = `From away: type ${make}, put what it prints in ${file} of ${c.cfg.jobsFrom}, and commit it yourself, so GitHub's emails reach you (templates/README.md). Then run it once from its Actions tab (Run workflow)`;

@@ -1,4 +1,4 @@
-// taskbox jobs: one record per job the box ran, for all time, newest first. The loop appends a line
+// taskbox job list: one record per job the box ran, for all time, newest first. The loop appends a line
 // after each VM is deleted. The file sits in a folder the install makes the service's and readable by every
 // user, so the owner and agents can read it as remote too. Nothing leaves the box.
 // A job controls its own name and the runner's lines, so every text field is cleaned when written
@@ -172,7 +172,7 @@ const WHY: Record<string, string> = {
   update: "An update arrived before any job started, so the box deleted the waiting VM.",
   "no-guest": "The VM never came up, so the box deleted it.",
   "softnet-root": "Softnet ran as root, so the box stopped and deleted the VM.",
-  failed: "The box hit an error with this VM; taskbox log has the line.",
+  failed: "The box hit an error with this VM; taskbox logs has the line.",
   "prestart-failed": "A check failed while the VM waited, so the box deleted it.",
   pressure: "Memory pressure turned very high, so the box ended the VM.",
   halted: "Another slot stopped the loop, so the box deleted this waiting VM.",
@@ -216,15 +216,15 @@ export function jobLines(r: JobRecord, repoWidth = 16): string[] {
     const waited = p.jobStarted === undefined ? "no job" : p.queued !== undefined ? `waited ${s(d(p.jobStarted, p.queued))} from queued` : `took a job ${s(d(p.jobStarted, p.runnerStarted))} after it was ready`;
     out.push(`${" ".repeat(14)}Boot ${s(p.runnerStarted)}, ${waited}${p.jobDone !== undefined ? `, ran ${s(d(p.jobDone, p.jobStarted))}` : ""}${p.deleted !== undefined && p.jobDone !== undefined ? `, cleanup ${s(d(p.deleted, p.jobDone))}` : ""}.`);
   }
-  if (!r.vmDeleted) out.push(`${" ".repeat(14)}The VM wasn't deleted. taskbox clean removes it once no job runs.`);
+  if (!r.vmDeleted) out.push(`${" ".repeat(14)}The VM wasn't deleted. taskbox prune removes it once no job runs.`);
   return out;
 }
 
 
 export function jobsScreen(all: JobRecord[], limit: number | "all"): string[] {
   const shown = limit === "all" ? all : all.slice(0, limit);
-  if (!all.length) return ["taskbox jobs: no jobs yet."];
-  const more = shown.length < all.length ? ` Type taskbox jobs --all for every one.` : "";
+  if (!all.length) return ["taskbox job list: no jobs yet."];
+  const more = shown.length < all.length ? ` Type taskbox job list --all for every one.` : "";
   const repoWidth = Math.max(16, ...shown.map((r) => clean(r.repo).slice(0, 40).length + 2));
-  return [`taskbox jobs: ${shown.length} of ${all.length}, newest first.${more}`, "", ...shown.flatMap((r) => [...jobLines(r, repoWidth), ""])].slice(0, -1);
+  return [`taskbox job list: ${shown.length} of ${all.length}, newest first.${more}`, "", ...shown.flatMap((r) => [...jobLines(r, repoWidth), ""])].slice(0, -1);
 }

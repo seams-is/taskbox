@@ -119,8 +119,8 @@ describe("no lease: only the guard under its current label writes workspaces", (
   });
 
   test("the guard's start: the label decides the pass, and the agent is put back only under the current label", () => {
-    const src = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
-    const fn = src.slice(src.indexOf('if (cmd === "guard")'), src.indexOf('if (cmd === "loop")'));
+    const src = readFileSync(new URL("../src/cmd/daemons.ts", import.meta.url), "utf8");
+    const fn = src.slice(src.indexOf('path: ["guard"]'), src.indexOf('path: ["loop"]'));
     expect(fn).toContain("workspacesFor(xpc, workspaceRunner({ sys, cfg, p, chown }, glog), fenceRunner({ sys, cfg, p }))");
     expect(fn).toContain("wrong ? Promise.resolve() : guardAgent(");
     // Nothing between the label's check and the pf watch stops the guard.

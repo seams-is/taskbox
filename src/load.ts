@@ -1,6 +1,6 @@
 // The load test (v2.6.0, docs/load-test-design.md). A test repo of the owner's own sends the box
-// short sleep jobs while a session is on. Each `taskbox load on` starts a numbered session that ends
-// at `taskbox load off`, or by itself at most LOAD_MAX_MS later.
+// short sleep jobs while a session is on. Each `taskbox load start` starts a numbered session that ends
+// at `taskbox load stop`, or by itself at most LOAD_MAX_MS later.
 // Two files, each with one writer, so neither can undo the other's change (both reviews): load.json
 // holds the sessions, written by the commands; load-seen.json holds what the job source last listed
 // and each session's numbers, written by the loop. Both are copied for every user like the loop's
@@ -25,7 +25,7 @@ export interface LoadSession {
   n: number;
   startedAt: number;
   until: number; // when it ends by itself
-  endedAt?: number; // when taskbox load off, or the box, ended it
+  endedAt?: number; // when taskbox load stop, or the box, ended it
   only: boolean;
   checklist?: string[]; // v2.5.0's checklist items not met at load on, as it stood (seam)
   readsAtStart?: number; // the job source's reads so far, for the report
@@ -139,7 +139,7 @@ export function readLoad(p: Paths, shared = false): LoadFile {
 }
 
 function writeWhole(file: string, v: unknown): void {
-  // taskbox load on can come before the loop has ever run, and the loop makes this folder.
+  // taskbox load start can come before the loop has ever run, and the loop makes this folder.
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(v), { mode: 0o600 });
@@ -250,7 +250,7 @@ export function loadBlind(f: LoadFile, now: number): string | undefined {
   return seen.loadProblem;
 }
 
-// taskbox load on. forMs: at most LOAD_MAX_MS, at least LOAD_MIN_MS. checklist: the v2.5.0
+// taskbox load start. forMs: at most LOAD_MAX_MS, at least LOAD_MIN_MS. checklist: the v2.5.0
 // checklist's box items not met (a seam until v2.5.0 is in). Refused while a session is on.
 export function loadOn(p: Paths, now: number, o: { forMs?: number; only: boolean; checklist?: string[] }): LoadSession | string {
   const f = readLoad(p);
@@ -263,7 +263,7 @@ export function loadOn(p: Paths, now: number, o: { forMs?: number; only: boolean
   return s;
 }
 
-// taskbox load off: ends the session on now. undefined when none was on.
+// taskbox load stop: ends the session on now. undefined when none was on.
 export function loadOff(p: Paths, now: number): LoadSession | undefined {
   const f = readLoad(p);
   const cur = currentSession(f, now);

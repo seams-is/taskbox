@@ -61,7 +61,7 @@ describe("the log", () => {
   test("a missing file is no error", () => {
     expect(() => rotate(join(tempRoot(), "none.log"))).not.toThrow();
   });
-  test("taskbox log reads across a move", async () => {
+  test("taskbox logs reads across a move", async () => {
     const p = box();
     const now = Date.parse("2026-11-12T16:00:00Z");
     writeFileSync(`${p.log}.1`, "2026-11-12T14:05:00.000Z pulling img\n");

@@ -80,7 +80,7 @@ export function markStopped(paths: Paths, at: number): void {
   mirrorJson(paths, "stopped", { at });
 }
 
-// taskbox stop --drain: no new job starts, waiting VMs end, and running jobs finish. Then the loop
+// taskbox drain: no new job starts, waiting VMs end, and running jobs finish. Then the loop
 // stops itself (loop.ts, whyWait and slotWorker), so the box is free with no job failed.
 export async function drain(d: StopDeps): Promise<number> {
   if (!(await loopRunning(d.sys, d.uid, d.paths.loopLabels))) {
@@ -90,7 +90,7 @@ export async function drain(d: StopDeps): Promise<number> {
   writeFileSync(d.paths.drain, JSON.stringify({ at: d.sys.now() }), { mode: 0o600 });
   const jobs = runningJobs(d.paths);
   d.say(jobs.length ? `Draining: ${jobs.join(" and ")} ${jobs.length === 1 ? "finishes" : "finish"}, then the loop stops. No new job starts.` : "Draining: no job is running, so the loop stops within a minute, or once a download under way stops. No new job starts.");
-  d.say("Jobs that come meanwhile wait on GitHub. taskbox watch shows the drain, and taskbox start cancels it.");
+  d.say("Jobs that come meanwhile wait on GitHub. taskbox status -w shows the drain, and taskbox start cancels it.");
   return 0;
 }
 
@@ -143,10 +143,10 @@ export async function stop(d: StopDeps): Promise<number> {
   // Only now: a VM is never removed while a loop may still use it.
   if (d.cleanVms) {
     const r = await d.cleanVms().catch((e: unknown) => (d.log?.(`stop: checking for the loop's VMs failed: ${e instanceof Error ? e.message : String(e)}`), undefined));
-    if (!r) d.say("Couldn't check for VMs the loop left. taskbox log says why.");
+    if (!r) d.say("Couldn't check for VMs the loop left. taskbox logs says why.");
     else {
       if (r.removed) d.say(`Removed the ${r.removed === 1 ? "VM" : `${r.removed} VMs`} the loop left.`);
-      if (r.failed) d.say(`${r.failed === 1 ? "A VM" : `${r.failed} VMs`} the loop left couldn't be removed. Type taskbox clean to try again.`);
+      if (r.failed) d.say(`${r.failed === 1 ? "A VM" : `${r.failed} VMs`} the loop left couldn't be removed. Type taskbox prune to try again.`);
     }
   }
   d.say(`Stopped. No jobs or downloads run until you type taskbox start or log in as ${d.paths.service} again. A download carries on from where it stopped.`);
@@ -159,7 +159,7 @@ export async function start(d: StopDeps): Promise<number> {
   if (await loopRunning(d.sys, d.uid, d.paths.loopLabels)) {
     rmSync(d.paths.stopped, { force: true });
     mirrorJson(d.paths, "stopped", null);
-    d.say(draining ? "Drain cancelled. The loop carries on and starts jobs again." : "Already running. Type taskbox watch to see what it does.");
+    d.say(draining ? "Drain cancelled. The loop carries on and starts jobs again." : "Already running. Type taskbox status -w to see what it does.");
     return draining ? 0 : ALREADY;
   }
   // Load the LaunchAgent if stop unloaded it; start it if it's loaded but not running. Between the
@@ -176,7 +176,7 @@ export async function start(d: StopDeps): Promise<number> {
   }
   rmSync(d.paths.stopped, { force: true });
   mirrorJson(d.paths, "stopped", null);
-  d.say("Started. Type taskbox watch to see what it does.");
+  d.say("Started. Type taskbox status -w to see what it does.");
   return 0;
 }
 

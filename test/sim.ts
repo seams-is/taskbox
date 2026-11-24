@@ -184,7 +184,7 @@ export function asJobLines(runs: SimRun[], withSource: boolean, t0 = 1_800_000_0
   }));
 }
 
-// A day of the box's own jobs, from taskbox jobs --all --json, as a replay: each job's kind, its
+// A day of the box's own jobs, from taskbox job list --all --json, as a replay: each job's kind, its
 // labels (the merge label for a job of a ranked class), when it was queued and how long it ran. Names
 // are dropped, so a saved day names none of the repo's jobs. Jobs with no queue time (no source)
 // are taken as queued when their VM was asked for.

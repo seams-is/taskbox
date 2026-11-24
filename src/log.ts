@@ -4,7 +4,7 @@ import { appendFileSync, renameSync, statSync } from "node:fs";
 import { type Clock, realClock } from "./clock.ts";
 
 // The log moves to <file>.1 once it reaches 5 MB, replacing the one before, so the two never pass
-// 10 MB. taskbox log reads both.
+// 10 MB. taskbox logs reads both.
 export const LOG_ROTATE_BYTES = 5_000_000;
 export function rotate(file: string, max = LOG_ROTATE_BYTES): void {
   try {

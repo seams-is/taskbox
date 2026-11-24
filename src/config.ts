@@ -169,7 +169,7 @@ export interface ClassRule {
   when: { event?: string[]; label?: LabelMatch };
 }
 
-// v2.4.0 timings for the scheduler's rules, each a setting with a default. taskbox timings measures
+// v2.4.0 timings for the scheduler's rules, each a setting with a default. taskbox job timings measures
 // what they should be.
 export interface Timings {
   giveWayMinutes: number; // a waiting VM with no job gives way after this, when another kind is busy
@@ -455,7 +455,7 @@ export interface AwaySettings {
   proofRetryMinutes: number; // a Linux proof that couldn't run tries again after this
   publicAddress: PublicAddressSource[];
   restartPlan?: RestartPlan;
-  // The watchdog and canary workflows (taskbox watchdog, taskbox canary): how often each runs, and how
+  // The watchdog and canary workflows (taskbox template show box-check, taskbox template show test-job): how often each runs, and how
   // long a job for the box may wait before the watchdog fails. 0 runs the watchdog by hand only.
   watchdogIntervalMinutes: number;
   watchdogWaitMinutes: number;
@@ -661,7 +661,7 @@ export interface Paths {
   tailscaledLog: string; // /var/log/taskbox-tailscaled.log: tailscaled's output, root's, group admin, 640, kept under 2 MB by the guard (logins.ts)
   loginsRecord: string; // /var/log/taskbox-logins.json: the guard's record of every Tailscale SSH login for 8 days, root's, group admin, 640
   loginsSeen: string; // /var/db/taskbox-logins.json: the same with no tailnet user, device or address, root's, read by anyone
-  shared: string; // /opt/taskbox-state/<project>: the service's, readable by every user, for taskbox jobs
+  shared: string; // /opt/taskbox-state/<project>: the service's, readable by every user, for taskbox job list
   installId: string; // /opt/taskbox-state/install-id: root's, read-only, made once (answers.ts)
   accountsRecord: string; // /opt/taskbox-state/accounts.json: root's, the accounts taskbox made (accounts.ts)
   boxSettings: string; // /opt/taskbox-state/box.json: root's, the box's own settings (boxsettings.ts)
@@ -687,7 +687,7 @@ export interface Paths {
   state: string; // /Users/<service>/.taskbox: the box's key, and a folder per project
   project: string; // the project this box serves, from taskbox.json
   projectState: string; // /Users/<service>/.taskbox/<project>
-  prev: string; // /opt/taskbox.prev: root's link to the install before, kept for taskbox undo
+  prev: string; // /opt/taskbox.prev: root's link to the install before, kept for taskbox rollback
   key: string; // the runner App's key: /opt/taskbox-keys/runner.pem, or oldKey while that is missing
   oldKey: string; // ~/.taskbox/app-key.pem: where the runner App's key was before v2.8.0, read only
   actionsKeyDir: string; // /opt/taskbox-keys: root's, 755, outside every install folder
@@ -697,7 +697,7 @@ export interface Paths {
   pull: string; // the download's progress, written by the loop: the macOS image's
   pullLinux: string; // the Linux image's download
   stopped: string; // written by taskbox stop; removed by taskbox start and at the service's next login
-  drain: string; // written by taskbox stop --drain; removed once drained, by taskbox start, and at the loop's start
+  drain: string; // written by taskbox drain; removed once drained, by taskbox start, and at the loop's start
   tartHome: string; // Tart's own folder, ~<service>/.tart, where it caches the image
   // The loop's launchd label, then its label under an earlier install's prefix while it may still run.
   loopLabels: string[];

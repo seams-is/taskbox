@@ -9,7 +9,8 @@ import { CANT_REACH, cantReach, Stop } from "../src/install.ts";
 import { AGENTS_THEN_UPDATE, computeState, headline } from "../src/state.ts";
 import { screen } from "../src/watch.ts";
 import { paths } from "../src/config.ts";
-import { argsProblem, elevation, isAdmin, ROOT_COMMANDS, SUDO, TASKBOX } from "../src/elevate.ts";
+import { elevation, isAdmin, rootPaths, SUDO, TASKBOX } from "../src/elevate.ts";
+import { parseLine } from "../src/registry.ts";
 import { commandLinkProblem, INSTALL_NAME, linkTarget, placeCommandLink, prune, relink, swapIn, updateUnfinished } from "../src/layout.ts";
 import { type OpsDeps, unlockAsks, unlock } from "../src/ops.ts";
 import { FakeSys, NETSTAT_CLEAN } from "./fake.ts";
@@ -44,24 +45,27 @@ describe("a root command typed by someone who isn't root", () => {
   });
 
   test("anyone else gets one line, and nothing runs", () => {
-    for (const cmd of ROOT_COMMANDS) {
+    for (const cmd of rootPaths()) {
       const e = elevation(cmd, [], false);
       expect(e.argv).toBeUndefined();
       expect(e.say).toBe(`Switch to your admin user and type taskbox ${cmd}.`);
     }
   });
 
-  test("update takes one commit or nothing; the others take nothing", () => {
-    expect(argsProblem("update", [])).toBeUndefined();
-    expect(argsProblem("update", ["v2.0.0"])).toBeUndefined();
-    expect(argsProblem("update", ["4e101cf"])).toBeDefined();
-    expect(argsProblem("update", ["main"])).toBeDefined();
-    expect(argsProblem("update", ["v2.0"])).toBeDefined();
-    expect(argsProblem("update", ["v2.0.0", "x"])).toBeDefined();
-    expect(argsProblem("update", ["--preserve-env"])).toBeDefined();
-    expect(argsProblem("undo", [])).toBeUndefined();
-    expect(argsProblem("remove", ["-y"])).toBeDefined();
-    expect(argsProblem("unlock", ["ci"])).toBeDefined();
+  test("update takes one release or nothing; the others take nothing", () => {
+    const ok = (...a: string[]) => parseLine(a).ok;
+    expect(ok("update")).toBe(true);
+    expect(ok("update", "v2.0.0")).toBe(true);
+    expect(ok("update", "--to", "v3.0.0-rc.1")).toBe(true);
+    expect(ok("update", "4e101cf")).toBe(false);
+    expect(ok("update", "main")).toBe(false);
+    expect(ok("update", "v2.0")).toBe(false);
+    expect(ok("update", "v2.0.0", "x")).toBe(false);
+    expect(ok("update", "v2.0.0", "--to", "v2.0.0")).toBe(false);
+    expect(ok("update", "--preserve-env")).toBe(false);
+    expect(ok("rollback")).toBe(true);
+    expect(ok("remove", "-y")).toBe(false);
+    expect(ok("unlock", "ci")).toBe(false);
   });
 
   test("admin is dseditgroup's 0 only; 67, an error or an odd name count as not", async () => {

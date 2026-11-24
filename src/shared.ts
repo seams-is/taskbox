@@ -91,7 +91,7 @@ function ownTail(file: string, maxBytes: number): string {
   }
 }
 
-// The log's copy keeps its last 256 KB: enough for taskbox log's last day, and it never grows.
+// The log's copy keeps its last 256 KB: enough for taskbox logs's last day, and it never grows.
 export const LOG_COPY_BYTES = 256_000;
 export function mirrorLogLine(p: Paths, line: string): void {
   const file = join(p.shared, FILES.log);

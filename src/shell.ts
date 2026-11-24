@@ -5,14 +5,17 @@
 // can't plant anything that catches a password, and admin work never goes through remote. It runs
 // taskbox by its full path, with a fixed environment.
 //
-// Workspaces (docs/workspaces-design.md, section 3) add the agent's commands: queue, wait,
-// progress, release, deny, signed and workspaces. Each line for one of them is checked in full here,
-// with workspace/agent.ts's parser, before taskbox runs, and again by taskbox. None of them gives
-// anyone more of the box: signed carries the owner's signed steps as base64url, so the word filter
-// below stays as strict as it is.
-import { AGENT_COMMANDS, isAgentCommand, parseAgent } from "./workspace/agent.ts";
+// The commands it runs are those marked shell in the registry (src/cmd/). Each line is parsed here
+// as taskbox parses it, so a word or flag a command doesn't take is refused before taskbox runs. The
+// workspace agent's commands (#47) are checked in full with workspace/agent.ts's parser too. None of
+// them gives anyone more of the box: signed carries the owner's signed steps as base64url, so the word
+// filter below stays as strict as it is. v2.6.0's old names pass, so taskbox says what they became.
+import { parseLine, firstWords, shellCommands } from "./registry.ts";
+import { renamed } from "./renames.ts";
+import { isAgentCommand, parseAgent } from "./workspace/agent.ts";
 
-export const SHELL_COMMANDS = ["status", "watch", "jobs", "timings", "load", "log", "logins", "check", "hello", "away", "watchdog", "canary", ...AGENT_COMMANDS];
+// The first word of each command the shell runs, in the registry's order.
+export const shellWords = (): string[] => firstWords(shellCommands());
 const TASKBOX = "/opt/taskbox/bin/taskbox";
 
 // One line, as words: plain words, and "double" or 'single' quoted ones. Anything a shell would read
@@ -36,7 +39,16 @@ export function commandFor(line: string): { args: string[] } | { no: string } {
   if (!w) return { no: "Only taskbox's own commands work here, with plain words and quotes." };
   const args = w[0] === "taskbox" ? w.slice(1) : w;
   if (!args.length) return { args: ["status"] };
-  if (!SHELL_COMMANDS.includes(args[0]!)) return { no: `Here you can type: ${SHELL_COMMANDS.join(", ")}. Admin work is done at the box, as your admin user.` };
+  const here = `Here you can type: ${shellWords().join(", ")}. Admin work is done at the box, as your admin user.`;
+  // An old name taskbox renamed: taskbox says what it is now, if the new one runs here.
+  const old = renamed(args);
+  if (old) {
+    const now = parseLine(old.replacement.split(" "));
+    return now.ok && now.spec.shell ? { args } : { no: here };
+  }
+  const p = parseLine(args);
+  if (!p.ok) return p.path && shellCommands().some((s) => s.path[0] === p.path![0]) ? { no: p.usage ? `${p.line} ${p.usage}` : p.line } : { no: here };
+  if (!p.spec.shell) return { no: here };
   if (isAgentCommand(args[0])) {
     const c = parseAgent(args);
     if ("no" in c) return { no: c.no };
@@ -63,7 +75,7 @@ if (import.meta.main) {
   const argv = process.argv.slice(2).filter((a) => !["-l", "--login", "-i"].includes(a));
   if (argv[0] === "-c") process.exit(await run(argv[1] ?? ""));
   if (argv.length) process.exit(await run(argv.join(" ")));
-  console.log(`taskbox. Type ${SHELL_COMMANDS.join(", ")}, or exit.`);
+  console.log(`taskbox. Type ${shellWords().join(", ")}, or exit.`);
   // Bun reads stdin a line at a time and stops at its end, whether it's a terminal or a pipe.
   process.stdout.write("taskbox> ");
   for await (const line of console) {

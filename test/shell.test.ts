@@ -5,14 +5,25 @@ import { commandFor, words } from "../src/shell.ts";
 describe("remote's shell", () => {
   test("takes taskbox's reading commands, with or without the word taskbox", () => {
     expect(commandFor("status")).toEqual({ args: ["status"] });
-    expect(commandFor("taskbox jobs 50")).toEqual({ args: ["jobs", "50"] });
+    expect(commandFor("taskbox job list -n 50")).toEqual({ args: ["job", "list", "-n", "50"] });
+    expect(commandFor("logs --json")).toEqual({ args: ["logs", "--json"] });
+    expect(commandFor("template show box-check")).toEqual({ args: ["template", "show", "box-check"] });
     expect(commandFor("taskbox hello")).toEqual({ args: ["hello"] });
     expect(commandFor("  ")).toEqual({ args: ["status"] });
   });
   test("refuses su, other programs, admin commands and anything a shell would read as more than words", () => {
-    for (const line of ["su admin", "su -", "sudo -i", "taskbox update", "taskbox undo", "taskbox remove", "taskbox unlock", "taskbox stop", "bash", "/bin/zsh", "scp -t /tmp", "sftp-server", "status; su admin", "status && sh", "status | sh", "status $(id)", "status `id`", "status > /tmp/x", "hold --reason 'a\\nb'", "status\nsu", "cd /tmp", "export PATH=/tmp", 'taskbox hold --for 3h --reason "x"', "share"]) {
+    for (const line of ["su admin", "su -", "sudo -i", "taskbox update", "taskbox rollback", "taskbox remove", "taskbox unlock", "taskbox stop", "bash", "/bin/zsh", "scp -t /tmp", "sftp-server", "status; su admin", "status && sh", "status | sh", "status $(id)", "status `id`", "status > /tmp/x", "hold --reason 'a\\nb'", "status\nsu", "cd /tmp", "export PATH=/tmp", 'taskbox hold --for 3h --reason "x"', "share"]) {
       expect("no" in commandFor(line)).toBe(true);
     }
+  });
+  test("passes v2.6.0's old names whose new command it runs, so taskbox says what they became", () => {
+    for (const line of ["watch", "watch --once", "jobs 50", "timings", "log", "away --json", "watchdog", "canary", "load", "load workflow"]) expect({ line, ok: "args" in commandFor(line) }).toEqual({ line, ok: true });
+    // The new command is the service account's or root's: refused here, as before.
+    for (const line of ["clean", "undo", "stop --drain", "load on", "load off"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
+  });
+  test("refuses a flag or word the command doesn't take, with the command's own line", () => {
+    expect(commandFor("status --force")).toEqual({ no: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]" });
+    for (const line of ["status myproject", "job list -n x", "job list --tail", "job", "check --away --away", "logs --json=1", "template show nothing", "policy show", "connect github", "key reset approver"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
   });
   test("takes the agent's workspace commands, each checked in full", () => {
     for (const line of [

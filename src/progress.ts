@@ -1,5 +1,5 @@
 // The image download, as the owner sees it. The loop records Tart's own percent in a file; check
-// and `taskbox watch` read it. The box's line is fast, so a download that stops starts again
+// and `taskbox status -w` read it. The box's line is fast, so a download that stops starts again
 // from the beginning: no speed, stall or resume reading.
 import { serviceName } from "./names.ts";
 import { renameSync, writeFileSync } from "node:fs";

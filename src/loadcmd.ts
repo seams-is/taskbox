@@ -1,4 +1,4 @@
-// taskbox load on, load on --only, load off and load report (v2.6.0, docs/load-test-design.md).
+// taskbox load start, load on --only, load off and load report (v2.6.0, docs/load-test-design.md).
 // on and off are the service account's, at the box, like stop and start. report is anyone's,
 // remote too, read from the copies every user may read.
 import { readFileSync } from "node:fs";
@@ -18,7 +18,7 @@ import { serviceName } from "./names.ts";
 
 const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
 
-// The checklist: taskbox away's checks not met, by name (v2.5.0, src/away.ts). load on names them
+// The checklist: taskbox check --away's checks not met, by name (v2.5.0, src/away.ts). load on names them
 // and the report keeps them as they stood, so a slow result on a box that fails the checklist isn't
 // read as the scheduler's. It never stops load on: the owner chose to test now.
 export async function checklistNotMet(c: CheckContext): Promise<string[]> {
@@ -29,7 +29,7 @@ export async function checklistNotMet(c: CheckContext): Promise<string[]> {
   }
 }
 
-// taskbox load workflow: the test repo's workflow, made from the box's settings, as taskbox canary
+// taskbox template show load: the test repo's workflow, made from the box's settings, as taskbox template show test-job
 // makes the canary (v2.5.0, src/watchdog.ts). Its canary pattern asks for the same jobs as the
 // canary: one per kind, on each kind's own label.
 export function loadSettings(cfg: Config) {
@@ -93,7 +93,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
   }
   if (sub === "on" || sub === "off") {
     if (!asService) {
-      d.say(`Type taskbox load ${sub} as ${serviceName()}, at the box.`);
+      d.say(`Type taskbox load ${sub === "on" ? "start" : "stop"} as ${serviceName()}, at the box.`);
       return 1;
     }
     if (sub === "off") {
@@ -113,18 +113,18 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
     const i = rest.indexOf("--for");
     const forMs = i >= 0 ? parseFor(rest[i + 1] ?? "") : undefined;
     if (i >= 0 && (forMs === undefined || forMs < LOAD_MIN_MS)) {
-      d.say("taskbox load on --for takes hours and minutes, such as 2h or 90m: at least 10m, at most 4h.");
+      d.say("taskbox load start --for takes hours and minutes, such as 2h or 90m: at least 10m, at most 4h.");
       return 1;
     }
     const slots = Number.isInteger(cfg.vmsAtOnce) ? cfg.vmsAtOnce! : 1;
     if (!only && slots < 2) {
-      d.say("With one VM at a time, the load test can't run beside the real repo: it never takes the real repo's last slot. Type taskbox load on --only to give it the box for a while.");
+      d.say("With one VM at a time, the load test can't run beside the real repo: it never takes the real repo's last slot. Type taskbox load start --only to give it the box for a while.");
       return 1;
     }
     const f = readLoad(d.paths);
     const cur = currentSession(f, now);
     if (cur) {
-      d.say(`Load test session ${cur.n} is on already, until ${hhmm(cur.until)} UTC. Type taskbox load off first.`);
+      d.say(`Load test session ${cur.n} is on already, until ${hhmm(cur.until)} UTC. Type taskbox load stop first.`);
       return 1;
     }
     const blind = loadBlind(f, now);
@@ -143,7 +143,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
         }
       }
     }
-    // v2.5.0's checklist first, as taskbox away runs it.
+    // v2.5.0's checklist first, as taskbox check --away runs it.
     const checklist = await checklistNotMet({ sys: d.sys, cfg, paths: d.paths, uid: d.uid, serviceUid: d.serviceUid });
     const s = loadOn(d.paths, now, { ...(forMs !== undefined ? { forMs } : {}), only, checklist });
     if (typeof s === "string") {
@@ -152,7 +152,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
     }
     d.say(`Load test session ${s.n} is on until ${hhmm(s.until)} UTC, ${only ? "with the box to itself: the real repo's jobs wait on GitHub" : "beside the real repo, never taking its last slot"}.`);
     if (blind) d.say(`Test jobs run only while the box can see the queue, and now ${blind}. taskbox load says when that changes.`);
-    if (checklist.length) d.say(`taskbox away has ${checklist.length} thing${checklist.length > 1 ? "s" : ""} not met: ${checklist.join(", ")}. The session runs; the report names them, so a slow result there isn't read as the scheduler's. taskbox away has each fix.`);
+    if (checklist.length) d.say(`taskbox check --away has ${checklist.length} thing${checklist.length > 1 ? "s" : ""} not met: ${checklist.join(", ")}. The session runs; the report names them, so a slow result there isn't read as the scheduler's. taskbox check --away has each fix.`);
     if ((forMs ?? LOAD_MAX_MS) > LOAD_MAX_MS) d.say("It ends by itself after 4 hours, the most a session runs.");
     d.say("Now start the test repo's load workflow on GitHub: Actions, load, Run workflow.");
     return 0;
@@ -181,7 +181,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
     d.say(json ? JSON.stringify(loadReportAnswer(r)) : loadReportLines(r).join("\n"));
     return 0;
   }
-  // taskbox load: the session now.
+  // taskbox load status: the session now.
   const f = readLoad(d.paths, shared);
   const s = currentSession(f, now);
   const last = f.sessions.at(-1);
