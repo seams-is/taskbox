@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyReport, Children, oneShotLabel, oneShotPlist, oneShotScript, parseReport, reloadThroughLaunchd, reportLine } from "../../src/core/child.ts";
+import { adoptOrphans, applyReport, Children, oneShotLabel, reporter, reportsPath, runChild, oneShotPlist, oneShotScript, parseReport, reloadThroughLaunchd, reportLine } from "../../src/core/child.ts";
 import { eventLog, readEvents } from "../../src/core/events.ts";
 import { begin, type Op, type OpType, readOp } from "../../src/core/ops.ts";
 import { RELOAD_JOB } from "../../src/ops.ts";
@@ -152,10 +152,92 @@ describe("review fixes: L11", () => {
 
 describe("the child's side, once its guard is gone", () => {
   test("a report to a channel that is gone says false, and never throws", async () => {
-    const { report } = await import("../../src/core/child.ts");
     const { closeSync, openSync } = await import("node:fs");
-    const fd = openSync(join(mkdtempSync(join(tmpdir(), "taskbox-fd-")), "f"), "w");
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-fd-"));
+    const fd = openSync(join(dir, "f"), "w");
     closeSync(fd);
-    expect(report({ phase: "after" }, fd)).toBe(false);
+    expect(reporter({ op: "op_01JD8Q4AAAAAAAAAAAAAAAAAAA", reports: join(dir, "r"), fd }).send({ phase: "after" })).toBe(false);
+  });
+});
+
+describe("an op whose guard was reloaded", () => {
+  const types: OpType[] = [update];
+  // The op as the first guard left it: its child started, two reports applied, then the guard gone.
+  function orphan(o: { boot?: string } = {}) {
+    const s = setup();
+    const r = runChild({ ...s.d, pid: 111, boot: "boot-1" }, s.op, "/x", [], { events: ["update."] });
+    const p = s.sys.spawned.at(-1)!;
+    expect(p.opts.env).toMatchObject({ TASKBOX_OP: s.op.id, TASKBOX_OP_REPORTS: reportsPath(s.d.ops, s.op.id) });
+    const rep = reporter({ op: s.op.id, reports: reportsPath(s.d.ops, s.op.id), fd: -1 });
+    // Reports 1 and 2 reached the first guard on fd 3, and the handoff file too.
+    for (const x of [{ phase: "verifying" }, { event: { type: "update.verified", text: "ok" } }]) {
+      rep.send(x);
+      p.opts.onReport!(readFileSync(reportsPath(s.d.ops, s.op.id), "utf8").trim().split("\n").at(-1)!);
+    }
+    void r;
+    return { ...s, rep, boot: o.boot ?? "boot-1" };
+  }
+  const adopt = (s: ReturnType<typeof orphan>, alive: boolean, boot = s.boot) => adoptOrphans({ ...s.d, pid: 222, boot, alive: () => alive, types });
+  test("the runner records the child, and the reports it applied", () => {
+    const s = orphan();
+    const rec = readOp(s.d.ops, s.op.id);
+    expect(rec.kind === "ok" && rec.value.child).toMatchObject({ guardPid: 111, boot: "boot-1", applied: 2, events: ["update."] });
+  });
+  test("the next guard takes the reports the child wrote after, once each, to its end", () => {
+    const s = orphan();
+    s.rep.send({ phase: "installing" });
+    s.rep.send({ end: { state: "succeeded", result: { installed: "3.0.1" } } });
+    const changed = adopt(s, false);
+    expect(changed.map((o) => o.state)).toEqual(["succeeded"]);
+    const rec = readOp(s.d.ops, s.op.id);
+    expect(rec.kind === "ok" && rec.value).toMatchObject({ state: "succeeded", phase: "installing", result: { installed: "3.0.1" } });
+    // Each event once: the first guard's verified, then the next guard's progress and end.
+    expect(s.events().map((e) => e.type)).toEqual(["op.progress", "update.verified", "op.progress", "op.succeeded"]);
+    expect(adopt(s, false)).toEqual([]);
+  });
+  test("a child still running keeps its op running, and is followed on later passes", () => {
+    const s = orphan();
+    s.rep.send({ phase: "installing" });
+    adopt(s, true);
+    let rec = readOp(s.d.ops, s.op.id);
+    expect(rec.kind === "ok" && [rec.value.state, rec.value.phase]).toEqual(["running", "installing"]);
+    s.rep.send({ end: { state: "failed", why: "the proof failed" } });
+    adopt(s, true);
+    rec = readOp(s.d.ops, s.op.id);
+    expect(rec.kind === "ok" && rec.value).toMatchObject({ state: "failed", why: "the proof failed" });
+  });
+  test("a child that ended without its end fails the op", () => {
+    const s = orphan();
+    expect(adopt(s, false)[0]).toMatchObject({ state: "failed", why: "its process ended before it finished" });
+  });
+  test("after a restart of the box, a running op is failed: the box restarted", () => {
+    const s = orphan();
+    s.rep.send({ phase: "installing" });
+    expect(adopt(s, false, "boot-2")[0]).toMatchObject({ state: "failed", why: "the box restarted" });
+  });
+  test("after a restart, a type that resumes keeps its op for its own package to carry on", () => {
+    const s = orphan();
+    const changed = adoptOrphans({ ...s.d, pid: 222, boot: "boot-2", alive: () => false, types: [{ ...update, onBoot: () => "resume" }] });
+    expect(changed).toEqual([]);
+    const rec = readOp(s.d.ops, s.op.id);
+    expect(rec.kind === "ok" && rec.value.state).toBe("running");
+  });
+  test("the guard that runs the child never adopts it", () => {
+    const s = orphan();
+    expect(adoptOrphans({ ...s.d, pid: 111, boot: "boot-1", alive: () => false, types })).toEqual([]);
+  });
+  test("a report written twice, or a forged line in the handoff file, isn't applied", () => {
+    const s = orphan();
+    const path = reportsPath(s.d.ops, s.op.id);
+    writeFileSync(path, `${readFileSync(path, "utf8")}not a report\n${reportLine({ n: 2, end: { state: "succeeded" } })}\n`);
+    expect(adopt(s, false)[0]).toMatchObject({ state: "failed" });
+  });
+  test("the child's side writes the handoff file first, numbered, even with no fd 3", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-handoff-"));
+    const rep = reporter({ op: "op_01JD8Q4AAAAAAAAAAAAAAAAAAA", reports: join(dir, "r"), fd: -1 });
+    expect(rep.send({ phase: "a" })).toBe(false);
+    rep.send({ phase: "b" });
+    expect(readFileSync(join(dir, "r"), "utf8").trim().split("\n").map((l) => parseReport(l)?.n)).toEqual([1, 2]);
+    expect(statSync(join(dir, "r")).mode & 0o777).toBe(0o600);
   });
 });

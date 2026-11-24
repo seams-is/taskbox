@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { begin, cancel, end, keepOps, KEEP_MS, listOps, onBoot, type Op, opEvent, type OpType, readOp, toPhase, writeOp } from "../../src/core/ops.ts";
@@ -170,5 +170,17 @@ describe("review fixes: L6 in ops", () => {
     const op = end(started(drain), "succeeded", T);
     writeOp(f, op);
     expect(keepOps(f, T + 365 * 86_400_000)).toEqual([]);
+  });
+});
+
+describe("a record's handoff file", () => {
+  test("goes with its record", () => {
+    const f = { dir: mkdtempSync(join(tmpdir(), "taskbox-ops-")), owner: uid };
+    const old = end(started(drain), "succeeded", T);
+    writeOp(f, old);
+    writeFileSync(join(f.dir, `${old.id}.reports`), "");
+    writeOp(f, { ...started(drain, {}, "x"), startedAt: T + KEEP_MS + 1 });
+    keepOps(f, T + KEEP_MS + 1);
+    expect(existsSync(join(f.dir, `${old.id}.reports`))).toBe(false);
   });
 });

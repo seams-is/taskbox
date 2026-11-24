@@ -7,12 +7,12 @@
 // LaunchDaemon of launchd's own (oneShot below). launchd ends a job's whole process group on bootout,
 // so a reload run from the child would end the child that asked for it, and leave the daemon unloaded.
 // v2's undo already reloads tailscaled this way (ops.ts restartServices); v3 makes it the one way.
-import { lstatSync, writeSync } from "node:fs";
-import { dirname } from "node:path";
+import { closeSync, constants, lstatSync, openSync, writeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Sys } from "../sys.ts";
 import type { EventLog } from "./events.ts";
-import { isObj, plain, safeParse, writeOwnedText } from "./rootfile.ts";
-import { end, type Op, opEvent, type OpFolder, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
+import { isObj, plain, readOwnedText, safeParse, writeOwnedText } from "./rootfile.ts";
+import { end, listOps, type Op, opEvent, type OpFolder, type OpType, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
 import { canonical, type Json } from "./statement.ts";
 
 // A report line: this prefix, then one JSON object, on the child's fd 3 and nowhere else. The
@@ -22,6 +22,7 @@ export const REPORT_FD = 3;
 export const REPORT_MAX = 4000;
 
 export interface Report {
+  n?: number; // the report's number from its child, from 1, so no report applies twice
   phase?: string;
   progress?: Progress;
   event?: { type: string; text: string; data?: Record<string, Json> };
@@ -35,18 +36,45 @@ export function reportLine(r: Report): string {
   return line;
 }
 
-// The child's side: one report, written whole to its report channel. False once nobody reads it, as
-// after its guard was reloaded (seen in a Tart guest: EPIPE): the child carries on, and its op's end
-// is the next guard's to settle (see the PR's notes for WP4).
-export function report(r: Report, fd = REPORT_FD): boolean {
-  const line = `${reportLine(r)}\n`;
-  try {
-    writeSync(fd, line);
-    return true;
-  } catch {
-    return false;
-  }
+// The op's handoff file, <id>.reports beside its record: the child's own, root's at 600 in root's
+// ops folder. The child writes every report there first, numbered, then on fd 3. A guard reloaded
+// part-way (by the child's own one-shot, say) takes the pipe with it; the next guard reads the
+// reports it missed from here (adoptOrphans), so the op still reaches its end.
+export const reportsPath = (f: Pick<OpFolder, "dir">, id: string) => join(f.dir, `${id}.reports`);
+export const REPORTS_MAX = 1024 * 1024;
+
+// The child's side. send() numbers the report, appends it to the handoff file, then writes it on fd 3.
+// It says false once nobody reads fd 3, as after its guard was reloaded (seen in a Tart guest: EPIPE);
+// the report is in the handoff file all the same.
+export function reporter(o: { op: string; reports: string; fd?: number }) {
+  let n = 0;
+  let pipe = true;
+  const fd = o.fd ?? REPORT_FD;
+  return {
+    send(r: Report): boolean {
+      const line = `${reportLine({ ...r, n: ++n })}\n`;
+      const h = openSync(o.reports, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+      try {
+        writeSync(h, line);
+      } finally {
+        closeSync(h);
+      }
+      if (!pipe || fd < 0) return (pipe = false);
+      try {
+        writeSync(fd, line);
+      } catch {
+        pipe = false;
+      }
+      return pipe;
+    },
+  };
 }
+
+// The reporter a child makes from the environment its runner gave it.
+export const reporterFromEnv = (env: Record<string, string | undefined> = process.env) => {
+  if (!env.TASKBOX_OP || !env.TASKBOX_OP_REPORTS) throw new Error("this isn't an op's child");
+  return reporter({ op: env.TASKBOX_OP, reports: env.TASKBOX_OP_REPORTS });
+};
 
 // The guard's side: a report from one line, strictly, or undefined for any other line.
 export function parseReport(line: string): Report | undefined {
@@ -57,7 +85,8 @@ export function parseReport(line: string): Report | undefined {
   } catch {
     return undefined;
   }
-  if (!isObj(v) || !Object.keys(v).every((k) => ["phase", "progress", "event", "end"].includes(k)) || !Object.keys(v).length) return undefined;
+  if (!isObj(v) || !Object.keys(v).every((k) => ["n", "phase", "progress", "event", "end"].includes(k)) || !Object.keys(v).some((k) => k !== "n")) return undefined;
+  if (v.n !== undefined && !(Number.isSafeInteger(v.n) && (v.n as number) >= 1)) return undefined;
   if (v.phase !== undefined && !(typeof v.phase === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(v.phase))) return undefined;
   if (v.progress !== undefined) {
     const p = v.progress;
@@ -80,12 +109,31 @@ export interface ChildDeps {
   ops: OpFolder;
   events: EventLog;
   log: (line: string) => void;
+  pid?: number; // this guard's pid, process.pid by default
+  boot?: string; // this boot, kern.boottime's seconds, so the next guard can tell a restart
 }
+
+// What the op's record keeps of its child, so the next guard can follow it.
+export interface ChildInfo {
+  pid: number;
+  guardPid: number;
+  boot?: string;
+  applied: number; // the number of the last report applied
+  events: string[];
+}
+const childOf = (op: Op): ChildInfo | undefined => {
+  const c = op.child;
+  if (!isObj(c) || !Number.isSafeInteger(c.pid) || !Number.isSafeInteger(c.guardPid) || !Number.isSafeInteger(c.applied) || (c.boot !== undefined && typeof c.boot !== "string") || !Array.isArray(c.events) || !c.events.every((e) => typeof e === "string")) return undefined;
+  return c as unknown as ChildInfo;
+};
 
 // Applies one report to the op, writing the record and its events. A report that can't apply (a phase
 // that goes back, an event type its op doesn't allow) is logged and dropped; the op carries on.
 // events: the event types this op's child may write, each a whole type or a family ending in ".".
 export function applyReport(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, op: Op, r: Report, events: readonly string[] = []): Op {
+  const c = childOf(op);
+  // A numbered report applies once: the next guard may read one the first already took.
+  if (r.n !== undefined && c && r.n <= c.applied) return op;
   let next = op;
   try {
     if (r.phase !== undefined) next = toPhase(next, r.phase, r.progress ?? null);
@@ -93,8 +141,9 @@ export function applyReport(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">
     if (r.end) next = end(next, r.end.state, d.sys.now(), { ...(r.end.result ? { result: r.end.result } : {}), ...(r.end.why ? { why: r.end.why } : {}) });
   } catch (e) {
     d.log(`${op.id}: a report was dropped: ${(e as Error).message.slice(0, 120)}`);
-    return op;
+    next = op;
   }
+  if (r.n !== undefined && c) next = { ...next, child: { ...c, applied: r.n } };
   if (next !== op) {
     writeOp(d.ops, next);
     const ev = opEvent(op, next);
@@ -127,17 +176,23 @@ export interface Running {
 // Reports come only on the child's own channel (REPORT_FD); its output goes to the log as text.
 export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Running {
   let cur = op;
+  const events = [...(o.events ?? [])];
   const p = d.sys.spawn(cmd, args, {
     group: true,
+    env: { TASKBOX_OP: op.id, TASKBOX_OP_REPORTS: reportsPath(d.ops, op.id) },
     onLine: (line) => {
       if (line.trim()) d.log(`${op.id}: ${line.replace(/[^\x20-\x7e]/g, " ").slice(0, 200)}`);
     },
     onReport: (line) => {
       const r = parseReport(line);
-      if (r) cur = applyReport(d, cur, r, o.events);
+      if (r) cur = applyReport(d, cur, r, events);
       else d.log(`${op.id}: a line on the report channel isn't a report`);
     },
   });
+  // The record names its child and this guard, so a guard after this one can follow it.
+  const child: ChildInfo = { pid: p.pid ?? 0, guardPid: d.pid ?? process.pid, ...(d.boot ? { boot: d.boot } : {}), applied: 0, events };
+  cur = { ...cur, child };
+  writeOp(d.ops, cur);
   const done = (p.done ?? p.exited).then(
     (code) => {
       if (cur.state === "running") cur = applyReport(d, cur, { end: { state: "failed", why: `its process ended with exit ${code} before it finished` } });
@@ -150,6 +205,61 @@ export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: {
   );
   return { op: () => cur, done, kill: () => p.kill() };
 }
+
+export interface AdoptDeps extends Pick<ChildDeps, "sys" | "ops" | "events" | "log"> {
+  pid: number; // this guard's
+  boot?: string; // this boot; unread, a restart isn't judged
+  alive: (pid: number) => boolean;
+  types?: readonly OpType[]; // to ask a type what a restart does to its op
+}
+
+// The next guard's half (design §3.3, §4.10.1): every running op whose child another guard started.
+// - After a restart of the box, the op fails, "the box restarted", unless its type resumes it, in
+//   which case its own package carries it on.
+// - Otherwise the reports the child wrote since the last one applied are taken from its handoff file,
+//   once each, in order. A child that is gone without its end fails its op.
+// The ops that ended here.
+export function adoptOrphans(d: AdoptDeps): Op[] {
+  const ended: Op[] = [];
+  for (const op of listOps(d.ops).ops) {
+    const c = childOf(op);
+    if (op.state !== "running" || !c || c.guardPid === d.pid) continue;
+    let cur = op;
+    if (d.boot !== undefined && c.boot !== undefined && c.boot !== d.boot) {
+      const t = d.types?.find((x) => x.type === op.type);
+      if (t?.onBoot(op) === "resume") continue;
+      cur = applyReport(d, cur, { end: { state: "failed", why: "the box restarted" } });
+    } else {
+      // Read whether it lives first: an end it wrote before it exited is in the file read after.
+      const alive = d.alive(c.pid);
+      const f = readOwnedText(reportsPath(d.ops, op.id), { owner: d.ops.owner, max: REPORTS_MAX });
+      if (f.kind === "ok") {
+        for (const line of f.text.split("\n")) {
+          const r = parseReport(line);
+          if (!r || r.n === undefined) continue;
+          const now = childOf(cur);
+          if (!now || r.n !== now.applied + 1) continue;
+          cur = applyReport(d, cur, r, c.events);
+          if (cur.state !== "running") break;
+        }
+      } else if (f.kind === "bad") d.log(`${op.id}: its child's reports can't be read: ${f.why}`);
+      if (cur.state === "running" && !alive) cur = applyReport(d, cur, { end: { state: "failed", why: "its process ended before it finished" } });
+    }
+    if (cur.state !== "running") ended.push(cur);
+  }
+  return ended;
+}
+
+// Whether a pid is a live process, by signal 0. EPERM is a live process of another user.
+export const pidAlive = (pid: number): boolean => {
+  if (!Number.isSafeInteger(pid) || pid <= 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
 
 // The guard's children, one per op.
 export class Children {

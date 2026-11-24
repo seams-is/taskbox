@@ -257,6 +257,10 @@ export function keepOps(f: OpFolder, now: number): string[] {
       unlinkSync(join(f.dir, `${op.id}.json`));
       gone.push(op.id);
     } catch {}
+    // Its child's handoff file (child.ts) goes with it.
+    try {
+      unlinkSync(join(f.dir, `${op.id}.reports`));
+    } catch {}
   }
   return gone;
 }

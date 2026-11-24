@@ -14,7 +14,7 @@ const clock = (t = { now: 0 }) => ({ now: () => t.now, t });
 
 describe("the pass registry", () => {
   test("the guard's passes, in v2's order, then v3's keeping", () => {
-    expect(passMakers().map((m) => m.name)).toEqual(["workspaces", "loop-watch", "logins", "tailscaled", "keeping"]);
+    expect(passMakers().map((m) => m.name)).toEqual(["workspaces", "loop-watch", "logins", "tailscaled", "keeping", "ops"]);
   });
   test("each pass starts at its stage, and runs one at a time, never awaited by the tick", async () => {
     const c = clock();
@@ -133,5 +133,30 @@ describe("review fixes: L2", () => {
     const list = makePasses([{ name: "x", make: () => { throw new Error("no"); } }, { name: "y", make: () => ({ name: "y", at: "tick", next: () => undefined }) }], {} as PassCtx, (l) => lines.push(l));
     expect(list.map((p) => p.name)).toEqual(["y"]);
     expect(lines).toEqual(["the x pass couldn't start: no"]);
+  });
+});
+
+describe("the ops pass", () => {
+  test("only the one writer runs it, every tick, and it ends an op whose child the last guard ran", async () => {
+    const { opsPass } = await import("../../src/passes/ops.ts");
+    const { begin, readOp, writeOp } = await import("../../src/core/ops.ts");
+    const { reportLine, reportsPath } = await import("../../src/core/child.ts");
+    const root = mkdtempSync(join(tmpdir(), "taskbox-opspass-"));
+    const s = rootState(root);
+    mkdirSync(s.ops, { recursive: true });
+    const sys = new FakeSys();
+    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "{ sec = 1700000000, usec = 0 }", stderr: "" } : undefined));
+    const uid = process.getuid!();
+    const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
+    expect(opsPass.make({ ...c, writer: false })).toBeUndefined();
+    const b = begin([], { type: "update", phases: ["a", "b"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "taskbox" }, sys.now());
+    if (b.kind !== "start") throw new Error();
+    writeOp({ dir: s.ops, owner: uid }, { ...b.op, child: { pid: 999_999, guardPid: -5, boot: "1700000000", applied: 0, events: [] } });
+    writeFileSync(reportsPath({ dir: s.ops }, b.op.id), `${reportLine({ n: 1, phase: "b", end: { state: "succeeded" } })}\n`, { mode: 0o600 });
+    const pass = opsPass.make(c)!;
+    expect(pass.at).toBe("after");
+    await pass.next(sys.now(), false)!();
+    const r = readOp({ dir: s.ops, owner: uid }, b.op.id);
+    expect(r.kind === "ok" && r.value.state).toBe("succeeded");
   });
 });
