@@ -104,7 +104,7 @@ describe("the registry", () => {
 
 // Every command in §2 that this tree has, with a good line and bad ones. A bad line is exit 2.
 const TABLE: { good: string[]; bad: string[] }[] = [
-  { good: ["status", "status --json", "status -w", "status --watch", "status --state /tmp/x"], bad: ["status myproject", "status --force", "status -f", "status --json --json", "status --state", "status --state x --json"] },
+  { good: ["status", "status --json", "status -w", "status --watch", "status --state /tmp/x"], bad: ["status myproject", "status --force", "status -f", "status --json --json", "status --state", "status --state x --json", "status -w --json"] },
   { good: ["logs", "logs --json"], bad: ["logs -n", "logs --follow", "logs x"] },
   { good: ["check", "check --away", "check --away --json"], bad: ["check --away --away", "check away", "check --yes"] },
   { good: ["logins", "logins --all --json"], bad: ["logins --refused", "logins x"] },
