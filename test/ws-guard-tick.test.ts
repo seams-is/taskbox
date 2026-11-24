@@ -121,7 +121,7 @@ describe("no lease: only the guard under its current label writes workspaces", (
   test("the guard's start: under the current label, the workspace pass and the agent beside the pf watch", () => {
     const src = readFileSync(new URL("../src/cmd/daemons.ts", import.meta.url), "utf8");
     const fn = src.slice(src.indexOf('path: ["guard"]'), src.indexOf('path: ["loop"]'));
-    expect(fn).toContain("guardWatch(sys, cfg, p, undefined, workspaceRunner({ sys, cfg, p, chown }, glog))");
+    expect(fn).toContain("guardWatch(sys, cfg, p, keepGoing, workspaceRunner({ sys, cfg, p, chown }, glog))");
     expect(fn).toContain("guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog)");
   });
 });

@@ -5,8 +5,7 @@
 // is no step at the box. Pairing grants nothing: it lets the controller notice a swapped or
 // reinstalled box.
 import { renameSync, rmSync } from "node:fs";
-import { ask as boxAsk, chooseBoxes, configOrStop, type Deps, helloStop, isStop, tailnetOrStop } from "./reach.ts";
-import { READS } from "./schema.ts";
+import { chooseBoxes, configOrStop, type Deps, helloOf, helloStop, isStop, tailnetOrStop } from "./reach.ts";
 import { type Config, configProblem, knownHostsFor, MAX_BOXES, readConfig, writeConfig, writeKnownHosts } from "./home.ts";
 import { stopScreen } from "./commands.ts";
 import { footer, header, type Screen } from "./screens.ts";
@@ -59,7 +58,7 @@ export async function pair(d: Deps): Promise<Screen> {
   const trial = `${own}.pairing`;
   writeKnownHosts(trial, peer.node, peer.hostKeys[0]!);
   try {
-    const h = await boxAsk(d, { address: peer.address, node: peer.node, knownHosts: trial }, peer.name, "hello", `hello --json --answers ${READS.join(",")}`, 20_000);
+    const h = await helloOf(d, { address: peer.address, node: peer.node, knownHosts: trial }, peer.name);
     if (isStop(h)) return none(h.stop, h.next);
     const bad = helloStop(peer.name, h, null);
     if (bad) return none(bad.stop, bad.next);

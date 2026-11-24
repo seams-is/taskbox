@@ -205,8 +205,11 @@ export type Read<T> =
   | { ok: false; why: "version"; theirs: number }
   | { ok: false; why: "box-error"; error: { code: string; message: string; fix: string | null } };
 
-export function readAnswerOf<T>(kind: Kind, stdout: string, installId?: string | null): Read<T> {
+// want: the version hello agreed. After it agreed 4, a version 3 answer is refused.
+export function readAnswerOf<T>(kind: Kind, stdout: string, installId?: string | null, want?: number): Read<T> {
   const lines = stdout.split("\n").filter((l) => l.trim() !== "");
+  // The size first, so nothing over the cap is parsed.
+  if (lines.some((l) => Buffer.byteLength(l) > ANSWER_MAX_BYTES)) return { ok: false, why: "unreachable", detail: "an answer too long" };
   let v: unknown;
   try {
     v = lines.length === 1 ? JSON.parse(lines[0]!) : undefined;
@@ -215,7 +218,7 @@ export function readAnswerOf<T>(kind: Kind, stdout: string, installId?: string |
   if (isObj(v) && Number.isSafeInteger(v.answers) && !(READS as readonly unknown[]).includes(v.answers)) return { ok: false, why: "version", theirs: v.answers as number };
   // N-1: a box still on version 3 (v2.6.1 after a rollback) answers its v2.x line.
   if (isObj(v) && v.answers === 3) {
-    if (Buffer.byteLength(lines[0]!) > ANSWER_MAX_BYTES) return { ok: false, why: "unreachable", detail: "an answer too long" };
+    if (want === 4) return { ok: false, why: "unreachable", detail: "a version 3 answer after hello agreed 4" };
     if (v.kind === "error") {
       const why = V3_SHAPES.error(v);
       return why ? { ok: false, why: "unreachable", detail: why } : { ok: false, why: "box-error", error: { code: String(v.error), message: `The box says ${String(v.error)}.`, fix: null } };

@@ -52,6 +52,7 @@ export interface Checks {
 export type Answer<K extends Kind> = K extends "hello" ? Hello : K extends "status" ? Status : K extends "jobs" ? Jobs : K extends "log" ? Log : Checks;
 
 // One answer, read from the box's stdout, in version 4 or 3. installId, when given, must match.
-export function readAnswer<K extends Kind>(kind: K, stdout: string, installId?: string | null): Read<Answer<K>> {
-  return readAnswerOf<Answer<K>>(kind, stdout, installId);
+// want: the version hello agreed with this box.
+export function readAnswer<K extends Kind>(kind: K, stdout: string, installId?: string | null, want?: number): Read<Answer<K>> {
+  return readAnswerOf<Answer<K>>(kind, stdout, installId, want);
 }

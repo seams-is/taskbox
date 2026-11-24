@@ -3,10 +3,10 @@
 // its own checks as remote sees them.
 import { claudeSetup, DENY_RULES } from "./claude.ts";
 import { boxChecks, pairedNames } from "./commands.ts";
-import { ask as boxAsk, chooseBoxes, type Connected, type Deps, helloStop, isStop, peerOrStop, type Stop, tsDeps } from "./reach.ts";
+import { chooseBoxes, helloOf, type Connected, type Deps, helloStop, isStop, peerOrStop, type Stop, tsDeps } from "./reach.ts";
 import { knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { TailnetState } from "./tailscale.ts";
-import { ANSWERS, READS } from "./schema.ts";
+import { ANSWERS } from "./schema.ts";
 import { footer, header, type Screen } from "./screens.ts";
 import { APP_NAMES, readTailnet, tailnetProblem, whichApp } from "./tailscale.ts";
 
@@ -75,7 +75,7 @@ async function boxLines(d: Deps, box: Paired, state: TailnetState | undefined): 
   const knownHosts = knownHostsFor(d.home, box.node);
   writeKnownHosts(knownHosts, box.node, box.hostKey);
   const target = { address: p.address, node: box.node, knownHosts };
-  const h = await boxAsk(d, target, box.name, "hello", `hello --json --answers ${READS.join(",")}`, 20_000);
+  const h = await helloOf(d, target, box.name);
   if (isStop(h)) {
     add("remote", false, h.stop, h.next);
     add("Box release", false, "not checked", SKIP);
