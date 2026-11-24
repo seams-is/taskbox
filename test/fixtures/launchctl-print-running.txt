@@ -1,0 +1,80 @@
+gui/502/local.taskbox.loop = {
+	active count = 1
+	path = /Library/LaunchAgents/local.taskbox.loop.plist
+	type = LaunchAgent
+	state = running
+
+	program = /opt/taskbox/bin/bun
+	arguments = {
+		/opt/taskbox/bin/bun
+		--no-install
+		--no-env-file
+		--cwd=/
+		--config=/opt/taskbox/app/bunfig.run.toml
+		/opt/taskbox/app/src/cli.ts
+		loop
+	}
+
+	stdout path = /dev/null
+	stderr path = /dev/null
+	inherited environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.XXXXXXXXXX/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		PATH => /opt/taskbox/bin:/usr/bin:/bin:/usr/sbin:/sbin
+		XPC_SERVICE_NAME => local.taskbox.loop
+	}
+
+	LWCR = {
+		"reqs" => {
+			"signing-identifier" => "bun"
+			"validation-category" => 6
+			"team-identifier" => "7FRXF46ZSN"
+		}
+		"vers" => 1
+		"comp" => 1
+		"ccat" => 0
+	}
+
+	domain = gui/502 [100002]
+	asid = 100002
+	minimum runtime = 30
+	exit timeout = 5
+	runs = 1
+	pid = 1114
+	immediate reason = speculative
+	forks = 6
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)
+	checked allocations reason = no host
+	checked allocations flags = 0x0
+	last exit code = (never exited)
+
+	semaphores = {
+		successful exit => 0
+	}
+
+	resource coalition = {
+		ID = 993
+		type = resource
+		state = active
+		active count = 1
+		name = local.taskbox.loop
+	}
+
+	jetsam coalition = {
+		ID = 994
+		type = jetsam
+		state = active
+		active count = 1
+		name = local.taskbox.loop

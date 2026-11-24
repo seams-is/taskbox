@@ -1,0 +1,2 @@
+# The bun config the box runs with, given by --config so no bunfig.toml in the caller's folder is read.
+# It sets nothing.

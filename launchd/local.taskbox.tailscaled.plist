@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- tailscaled, run by root from boot, for remote access over Tailscale. Its
+     interface is the fixed utun99, which the guard's pf rules name (src/guard.ts). Its state is in
+     root's own folder. launchd starts it again if it ends. The environment is PATH and two switches
+     (tailscale v1.104.5, ssh/tailssh/tailssh.go, read; not documented by Tailscale):
+     TS_SSH_DISABLE_FORWARDING makes Tailscale SSH refuse every port and socket forward. tailscaled
+     dials as root, so a forward would reach what the box reaches.
+     TS_SSH_DISABLE_SFTP makes it refuse SFTP, and so scp. tailscaled serves SFTP with its own file
+     server, run as the user, which never goes through the user's shell: with it on, remote could
+     read and write files as remote, past taskbox's restricted shell. SHELL is the shell tailscaled
+     falls back to when it can't read a user's own from dscl. Without it, the fallback is /bin/sh,
+     a full shell as remote. With it, the fallback is taskbox's restricted shell for every user.
+     The Tailscale row in taskbox check fails while the installed copy of this file differs from
+     this one, while launchd's job lacks any of these, or while /etc/tailscale/tailscaled-env.txt,
+     which tailscaled reads its switches from, exists.
+     Its output goes to /private/var/log/taskbox-tailscaled.log, which names the tailnet user of
+     every Tailscale SSH login. The install makes it first, root's, group admin, mode 640, so only
+     admins read it. launchd appends to a file that is there, keeping its mode. The guard puts
+     that mode back if it changes, and keeps the file under 2 MB (src/logins.ts). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.taskbox.tailscaled</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/taskbox/bin/tailscaled</string>
+    <string>--tun=utun99</string>
+    <string>--statedir=/var/db/taskbox-tailscale</string>
+    <string>--socket=/var/run/taskbox-tailscaled.socket</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>TS_SSH_DISABLE_FORWARDING</key>
+    <string>true</string>
+    <key>TS_SSH_DISABLE_SFTP</key>
+    <string>true</string>
+    <key>SHELL</key>
+    <string>/opt/taskbox/bin/taskbox-shell</string>
+  </dict>
+  <key>UserName</key>
+  <string>root</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/private/var/log/taskbox-tailscaled.log</string>
+  <key>StandardErrorPath</key>
+  <string>/private/var/log/taskbox-tailscaled.log</string>
+</dict>
+</plist>

@@ -1,0 +1,32 @@
+# taskbox canary (docs/away-ready-design.md, "Alerts"). Made by `taskbox canary` from the box's own
+# settings: don't edit the copy in your repo; change the settings and make it again. It goes in
+# .github/workflows/taskbox-canary.yml of the repo whose jobs your box runs, beside the watchdog.
+#
+# It asks the box for one tiny job per kind of VM, so on a quiet day the watchdog still has a job to
+# watch: if the box is dead, the canary waits, and the watchdog fails. It runs on the box: each one
+# starts a fresh VM and takes that slot for a few minutes, so it can delay a real job by as much.
+# It uses no hosted minutes, holds no secret and gets no token.
+name: taskbox canary
+run-name: taskbox canary __FINGERPRINT__
+
+on:
+__SCHEDULE__
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  canary:
+    strategy:
+      fail-fast: false
+      matrix:
+        label: __LABELS__
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 15
+    # At most two canaries per label at once: the first waits for the box and keeps its age, which
+    # the watchdog sees; a newer one takes the place of the second, so a dead box never piles them up.
+    concurrency:
+      group: taskbox-canary-${{ matrix.label }}
+      cancel-in-progress: false
+    steps:
+      - run: echo ok

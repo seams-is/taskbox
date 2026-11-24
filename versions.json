@@ -1,0 +1,41 @@
+{
+  "$comment": "Every tool the box runs, pinned by version and SHA-256. A change here is a PR the owner merges.",
+  "$undoFloor": { "bun": "1.4.4" },
+  "bun": {
+    "version": "1.4.4",
+    "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-darwin-aarch64.zip",
+    "sha256": "c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510"
+  },
+  "tart": {
+    "version": "2.41.1",
+    "url": "https://github.com/openai/tart/releases/download/2.41.1/tart.tar.gz",
+    "sha256": "e680a734febccfce7d4e910c1f7f13fc3b00f19a181c945e2d746de3214c32c2"
+  },
+  "softnet": {
+    "version": "0.25.0",
+    "url": "https://github.com/openai/softnet/releases/download/0.25.0/softnet.tar.gz",
+    "sha256": "5a2e8ef779f0a2169b88d273ee806c0d64321ec7714c0dc99bf217523ae9b008"
+  },
+  "tailscale": {
+    "$comment": "tailscale and tailscaled v1.104.5, built twice by build-tailscale.yml, the two builds identical, and attached to the published, immutable release tailscale-v1.104.5 of the box's release repo (org, repo and releaseRepo in taskbox.json) as this asset. The install reads the asset with the App's token, then checks the tarball and each binary against these. url is the same asset, kept only for installs from before asset, which run the next update.",
+    "$todo": "This asset is on the release of seams-is/taskbox-archive, which v2.6.1 boxes read with their App's token. No box reads this repo for it yet. The first release of this repo re-publishes it: run build-tailscale.yml here (its tarball now carries Tailscale's LICENSE), publish the draft tailscale-v1.104.5 release, then pin the new asset ID and tarball SHA-256 here in a PR. The two binaries are built the same way, so their SHA-256s should not change; the PR checks them.",
+    "version": "1.104.5",
+    "asset": 755695620,
+    "url": "https://api.github.com/repos/seams-is/taskbox-archive/releases/assets/755695620",
+    "sha256": "7e4a6016a5fc7fa37b47c73f694c4c99d58f0516d2df71a1ec267061e8e21a57",
+    "files": {
+      "tailscale": "964c2a0550680e79ee260130959087042e14ae17d3f671938a31d5ba186d2454",
+      "tailscaled": "237ed22e03dea17896a81b7f2883752c2e1dc8d1ad199334c063843a8507da56"
+    }
+  },
+  "runner": {
+    "version": "2.338.2",
+    "url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-osx-arm64-2.338.2.tar.gz",
+    "sha256": "25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b1258e919a388"
+  },
+  "runnerLinux": {
+    "version": "2.338.2",
+    "url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-arm64-2.338.2.tar.gz",
+    "sha256": "670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945"
+  }
+}

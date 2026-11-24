@@ -1,0 +1,183 @@
+# Builds tailscale and tailscaled for the box (darwin/arm64), twice, on two
+# fresh GitHub-hosted runners, and fails unless the two builds are identical.
+# docs/build-tailscale.md says how to run it and check a run.
+#
+# Run by hand only. It takes no inputs: the Tailscale version, the Go version
+# and the Go archive hashes are pinned below and change only through a
+# reviewed PR. It uses no third-party actions and no secrets. Its last job
+# attaches the build, with Tailscale's and Go's licences, to a draft taskbox
+# release, with the job token only.
+
+name: build-tailscale
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: build-tailscale
+  cancel-in-progress: false
+
+env:
+  TAILSCALE_VERSION: v1.104.5
+  GO_VERSION: '1.27.4'
+  GO_SHA256_DARWIN_ARM64: 91a44a2b8a716600ad94a4f143e156116620db8828086a6e3602291be9bd0bb4
+  GO_SHA256_LINUX_AMD64: 7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Two different hosts and operating systems, so a match is stronger
+          # evidence than two runs on the same image.
+          - name: macos
+            runner: macos-15
+            go_archive: darwin-arm64
+          - name: linux
+            runner: ubuntu-24.04
+            go_archive: linux-amd64
+    name: build (${{ matrix.name }})
+    # Guards against a mistake only. A branch can edit this line, so the
+    # owner checks the run's branch and commit on the run page (step D2).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions: {}
+    env:
+      GOTOOLCHAIN: local
+      GOENV: 'off'
+      GOFLAGS: -mod=readonly -trimpath -buildvcs=false
+      GOPROXY: https://proxy.golang.org
+      GOSUMDB: sum.golang.org
+      GONOSUMDB: ''
+      GOPRIVATE: ''
+      GOINSECURE: ''
+      CGO_ENABLED: '0'
+      GOOS: darwin
+      GOARCH: arm64
+    steps:
+      - name: Fetch and check Go
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.go_archive }}" in
+            darwin-arm64) want="$GO_SHA256_DARWIN_ARM64" ;;
+            linux-amd64) want="$GO_SHA256_LINUX_AMD64" ;;
+            *) echo "unknown archive"; exit 1 ;;
+          esac
+          f="go${GO_VERSION}.${{ matrix.go_archive }}.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/$f" "https://go.dev/dl/$f"
+          echo "$want  $RUNNER_TEMP/$f" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/go-root"
+          tar -C "$RUNNER_TEMP/go-root" -xzf "$RUNNER_TEMP/$f"
+          echo "$RUNNER_TEMP/go-root/go/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GOPATH="$RUNNER_TEMP/gopath" GOCACHE="$RUNNER_TEMP/gocache" GOMODCACHE="$RUNNER_TEMP/gomodcache"
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOTOOLCHAIN GOFLAGS GOPROXY GOSUMDB
+          go install "tailscale.com/cmd/tailscale@${TAILSCALE_VERSION}" "tailscale.com/cmd/tailscaled@${TAILSCALE_VERSION}"
+          # Cross builds land in GOPATH/bin/darwin_arm64; native builds in GOPATH/bin.
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          for b in tailscale tailscaled; do
+            src="$GOPATH/bin/darwin_arm64/$b"; [ -f "$src" ] || src="$GOPATH/bin/$b"
+            cp "$src" "$out/$b"
+          done
+          # The licences that come with the binaries: Tailscale's (BSD-3-Clause) and Go's (BSD-3-Clause).
+          cp "$GOMODCACHE/tailscale.com@${TAILSCALE_VERSION}/LICENSE" "$out/LICENSE-tailscale"
+          cp "$(go env GOROOT)/LICENSE" "$out/LICENSE-go"
+          cd "$out"
+          shasum -a 256 tailscale tailscaled | tee SHA256SUMS
+          go version -m tailscaled | head -20
+
+      - name: Upload
+        # Pinned by commit SHA (docs/build-tailscale.md, What it pins).
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2, GitHub-owned
+        with:
+          name: tailscale-${{ matrix.name }}
+          path: ${{ runner.temp }}/out/
+          retention-days: 7
+          if-no-files-found: error
+
+  compare:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Download both builds
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0, GitHub-owned
+        with:
+          path: ${{ runner.temp }}/builds
+      - name: Compare
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/builds"
+          a=$(cd tailscale-macos && shasum -a 256 tailscale tailscaled)
+          b=$(cd tailscale-linux && shasum -a 256 tailscale tailscaled)
+          echo "macos:"; echo "$a"
+          echo "linux:"; echo "$b"
+          if [ "$a" != "$b" ]; then
+            echo "::error::The two builds differ. Do not install either."
+            exit 1
+          fi
+          {
+            echo "### tailscale ${TAILSCALE_VERSION}, Go ${GO_VERSION}, darwin/arm64"
+            echo
+            echo "Workflow file at ${GITHUB_REF} ${GITHUB_SHA}. This text is written by the workflow itself: check the branch and commit on the run page header, not here."
+            echo
+            echo "Both builds are identical. Check these on the box before installing:"
+            echo
+            echo '```'
+            echo "$a"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The two identical builds, as one file on a draft taskbox release named tailscale-<version>
+  # (docs/build-tailscale.md, Checking a run). The owner reads the hashes in the summary above, publishes the
+  # draft, and a reviewed PR pins the file's asset URL and SHA-256 in versions.json. The pin is what
+  # the box trusts: this job can't change what an install accepts. A tailscale-* tag is never a
+  # taskbox release, which is a v* tag (src/github.ts).
+  release:
+    needs: compare
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download the macOS build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0, GitHub-owned
+        with:
+          name: tailscale-macos
+          path: ${{ runner.temp }}/out
+      - name: Pack and attach to a draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/out"
+          chmod 755 tailscale tailscaled
+          chmod 644 LICENSE-tailscale LICENSE-go
+          tar --owner=0 --group=0 --numeric-owner --mtime='2000-01-01 00:00Z' -czf tailscale.tar.gz tailscale tailscaled LICENSE-tailscale LICENSE-go
+          shasum -a 256 tailscale tailscaled tailscale.tar.gz | tee SHA256SUMS
+          tag="tailscale-${TAILSCALE_VERSION}"
+          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "tailscale ${TAILSCALE_VERSION} for the box" \
+            --notes "tailscale and tailscaled ${TAILSCALE_VERSION}, built twice with Go ${GO_VERSION} by run ${GITHUB_RUN_ID} at ${GITHUB_SHA}. Not a taskbox release." \
+            tailscale.tar.gz SHA256SUMS
+          {
+            echo "### Draft release ${tag}"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

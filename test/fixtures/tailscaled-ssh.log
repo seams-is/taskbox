@@ -1,0 +1,26 @@
+2026/11/20 13:59:58 magicsock: disco: node [AbCdE] d:0123456789abcdef now using 192.0.2.10:41641 mtu=1360 tx=1a2b3c4d5e6f
+2026/11/20 13:59:59 netcheck: report: udp=true v6=false mapvarydest=false portmap= v4a=198.51.100.20:41641 derp=1
+2026/11/20 14:00:00 ssh-conn-20261120T140000-0a1b2c3d4e: handling conn: 100.101.102.104:50122->remote@100.64.0.1:22
+2026/11/20 14:00:00 ssh-conn-20261120T140000-0a1b2c3d4e: starting session: sess-20261120T140000-1f2e3d4c5b
+2026/11/20 14:00:00 ssh-session(sess-20261120T140000-1f2e3d4c5b): handling new SSH connection from agent@example.com (100.101.102.104) to ssh-user "remote"
+2026/11/20 14:00:00 ssh-session(sess-20261120T140000-1f2e3d4c5b): access granted to agent@example.com as ssh-user "remote"
+2026/11/20 14:00:02 ssh-session(sess-20261120T140000-1f2e3d4c5b): Session complete
+2026/11/20 14:03:05 ssh-conn-20261120T140305-a1b2c3d4e5: handling conn: 100.101.102.103:52344->pat@100.64.0.1:22
+2026/11/20 14:03:20 control: netmap: self: [AbCdE] auth=machine-authorized u=tagged-devices
+2026/11/20 14:03:47 ssh-conn-20261120T140305-a1b2c3d4e5: starting session: sess-20261120T140347-5f6e7d8c9b
+2026/11/20 14:03:47 ssh-session(sess-20261120T140347-5f6e7d8c9b): handling new SSH connection from pat@example.com (100.101.102.103) to ssh-user "pat"
+2026/11/20 14:03:47 ssh-session(sess-20261120T140347-5f6e7d8c9b): access granted to pat@example.com as ssh-user "pat"
+2026/11/20 14:04:00 ssh-conn-20261120T140305-a1b2c3d4e5: starting session: sess-20261120T140400-00aa11bb22
+2026/11/20 14:04:00 ssh-session(sess-20261120T140400-00aa11bb22): handling new SSH connection from pat@example.com (100.101.102.103) to ssh-user "pat"
+2026/11/20 14:04:00 ssh-session(sess-20261120T140400-00aa11bb22): access granted to pat@example.com as ssh-user "pat"
+2026/11/20 14:04:30 ssh-session(sess-20261120T140400-00aa11bb22): Wait: code=1
+2026/11/20 14:05:10 ssh-session(sess-20261120T140347-5f6e7d8c9b): Wait: code=130
+2026/11/20 14:10:00 ssh-conn-20261120T141000-b2c3d4e5f6: handling conn: 100.101.102.103:52400->pat@100.64.0.1:22
+2026/11/20 14:12:00 ssh-conn-20261120T141000-b2c3d4e5f6: failed to fetch next SSH action: fetch failed from https://unused/machine/ssh/action/from/11/to/22?ssh_user=pat&local_user=pat: context canceled
+2026/11/20 14:20:00 ssh-conn-20261120T142000-c3d4e5f6a7: handling conn: 100.101.102.105:40000->root@100.64.0.1:22
+2026/11/20 14:20:00 ssh-conn-20261120T142000-c3d4e5f6a7: tailnet policy does not permit you to SSH to this node: failed to evaluate policy, result: rejected
+2026/11/20 14:30:00 ssh-conn-20261120T143000-d4e5f6a7b8: handling conn: [fd7a:115c:a1e0::5]:51000->remote@[fd7a:115c:a1e0::1]:22
+2026/11/20 14:30:00 ssh-conn-20261120T143000-d4e5f6a7b8: starting session: sess-20261120T143000-e5f6a7b8c9
+2026/11/20 14:30:00 ssh-session(sess-20261120T143000-e5f6a7b8c9): handling new SSH connection from agent@example.com (fd7a:115c:a1e0::5) to ssh-user "remote"
+2026/11/20 14:30:00 ssh-session(sess-20261120T143000-e5f6a7b8c9): access granted to agent@example.com as ssh-user "remote"
+2026/11/20 14:30:01 ssh-session(sess-20261120T143000-e5f6a7b8c9): Wait: exec: "/opt/taskbox/bin/taskbox-shell": permission denied

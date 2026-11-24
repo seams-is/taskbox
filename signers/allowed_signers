@@ -1,0 +1,7 @@
+# The release key that signs taskbox v3's public releases, pinned here by a PR
+# the owner merges. v2.6.1 verifies the hop to v3 against this file alone (src/hop.ts), never against
+# a file inside the release it verifies. One or two lines, each in this form:
+# taskbox-release namespaces="taskbox-release" sk-ecdsa-sha2-nistp256@openssh.com AAAA... a note
+#
+# The owner's Secure Enclave key, made 24 Nov 2026 (SHA256:6svEoyQYx/wAnyJMe9gNoIup7oa5Oq9DDOJz1MOVrGw).
+taskbox-release namespaces="taskbox-release" sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb20AAAAIbmlzdHAyNTYAAABBBO76dE5sODLbNbwVZsTmlygSMDPVXwG07fz3Ply7dJpxybBwrKfacX1DWmmwpmKQGgyB8qBxChqUsz59ggcyxD0AAAAEc3NoOg== secure-enclave 2026-11-24

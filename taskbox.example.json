@@ -1,0 +1,34 @@
+{
+  "$comment": "One box's settings, with made-up values. Copy it to taskbox.json in your private copy of taskbox and change each value: README, A new owner, says what each is, and every setting left out has a default. away.restartPlan is your choice: accept is the one the README recommends.",
+  "org": "example-org",
+  "repo": "taskbox",
+  "project": "app",
+  "appId": 123456,
+  "runnerGroup": "taskbox",
+  "jobsFrom": "example-org/app",
+  "label": "taskbox-macos",
+  "mergeLabel": "taskbox-macos-merge",
+  "runnerNamePrefix": "example-box",
+  "imageName": "macos-golden-gate-xcode 27.2",
+  "image": "ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fbac071c663bf249007b9b387e16b7d576144588acb1d93f9",
+  "slots": 1,
+  "vmsAtOnce": 2,
+  "jobTimeoutMinutes": 55,
+  "vmMaxHours": 24,
+  "minFreeDiskGB": 60,
+  "imageGB": 77,
+  "vmCpus": 4,
+  "vmMemoryMB": 8192,
+  "linux": {
+    "label": "taskbox-linux",
+    "mergeLabel": "taskbox-linux-merge",
+    "imageName": "ubuntu-runner-arm64 24.04",
+    "image": "ghcr.io/cirruslabs/ubuntu-runner-arm64@sha256:dbc204bb40c046150ca212e5c1a38419f0f59b19d2602467dc6c67caea81186b",
+    "imageGB": 12,
+    "vmCpus": 4,
+    "vmMemoryMB": 8192
+  },
+  "away": {
+    "restartPlan": "accept"
+  }
+}

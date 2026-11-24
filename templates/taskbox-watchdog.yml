@@ -1,0 +1,92 @@
+# taskbox watchdog (docs/away-ready-design.md, "Alerts"). Made by `taskbox watchdog` from the box's
+# own settings: don't edit the copy in your repo; change the settings and make it again. It goes in
+# .github/workflows/taskbox-watchdog.yml of the repo whose jobs your box runs.
+#
+# It runs on a GitHub-hosted runner, so it works when the box is dead, asleep or at the FileVault
+# screen. It fails when a job for one of the box's labels has waited longer than WAIT_MINUTES while
+# no job for the box is running, and GitHub emails you about the failed run. It needs no secret and
+# reads this repo's Actions only. Its run name carries a fingerprint of the settings it was made
+# from, so `taskbox away` can tell whether this copy matches the box.
+name: taskbox watchdog
+run-name: taskbox watchdog __FINGERPRINT__${{ inputs.test_alert && ' (test alert)' || '' }}
+
+on:
+__SCHEDULE__
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: "Fail on purpose, to check GitHub emails you"
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+
+concurrency:
+  group: taskbox-watchdog
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LABELS: "__LABELS__"
+      WAIT_MINUTES: "__WAIT__"
+      TEST_ALERT: ${{ inputs.test_alert || false }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      # A job asks for the box when one of its labels is one of the box's. GitHub matches labels
+      # without regard to case, and so does this.
+      BOX_JOBS: |
+        [.jobs[] | select(any(.labels[]; ascii_downcase as $l | $labels | map(ascii_downcase) | index($l)))]
+      # One line for each queued job for the box that has waited too long.
+      LATE_JOBS: |
+        .[] | select(.status == "queued")
+        | ($now - (.created_at | fromdateiso8601)) as $s
+        | select($s > $wait * 60)
+        | "\(.name) has waited \($s / 60 | floor) min for \(.labels | join(", "))"
+    steps:
+      - name: Jobs waiting for the box
+        shell: bash
+        run: |
+          set -uo pipefail
+          set -f
+          if [ "$TEST_ALERT" = "true" ]; then
+            echo "A test alert: this run fails on purpose. If GitHub emails you about it, the watchdog can reach you."
+            exit 1
+          fi
+          now=$(date -u +%s)
+          labels=$(printf '%s\n' $LABELS | jq -R . | jq -s .)
+          jobs="$RUNNER_TEMP/jobs.json"
+          echo '[]' > "$jobs"
+          for status in queued in_progress; do
+            if ! runs=$(gh api --paginate "repos/$REPO/actions/runs?status=$status&per_page=100" --jq '.workflow_runs[].id'); then
+              echo "::warning::GitHub's API didn't answer, so nothing is known about the box this time."
+              exit 0
+            fi
+            for run in $runs; do
+              if ! page=$(gh api --paginate "repos/$REPO/actions/runs/$run/jobs?per_page=100"); then
+                echo "::warning::GitHub's API didn't answer, so nothing is known about the box this time."
+                exit 0
+              fi
+              if ! printf '%s' "$page" | jq -s --argjson labels "$labels" "[.[] | $BOX_JOBS] | add // []" > "$RUNNER_TEMP/these.json"; then
+                echo "::warning::A page of jobs couldn't be read, so nothing is known about the box this time."
+                exit 0
+              fi
+              jq -s 'add' "$jobs" "$RUNNER_TEMP/these.json" > "$RUNNER_TEMP/all.json" && mv "$RUNNER_TEMP/all.json" "$jobs"
+            done
+          done
+          running=$(jq '[.[] | select(.status == "in_progress")] | length' "$jobs")
+          late=$(jq -r --argjson now "$now" --argjson wait "$WAIT_MINUTES" "$LATE_JOBS" "$jobs")
+          if [ -n "$late" ] && [ "$running" = "0" ]; then
+            printf 'Jobs for the box have waited over %s minutes, and none is running. The box may be off, asleep, at the FileVault screen or offline.\n' "$WAIT_MINUTES"
+            printf 'From the laptop, type taskbox status.\n\n%s\n' "$late"
+            exit 1
+          fi
+          if [ -n "$late" ]; then
+            if [ "$running" = "1" ]; then are="1 is"; else are="$running are"; fi
+            echo "Jobs for the box have waited over $WAIT_MINUTES minutes, but $are running: the box is busy."
+          else
+            echo "No job for the box has waited over $WAIT_MINUTES minutes."
+          fi
