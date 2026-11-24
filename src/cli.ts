@@ -222,8 +222,9 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
   const { uid } = deps;
   // Anyone but the service account and root reads the copies every user may read (shared.ts), from a folder that is
   // its alone. A folder that isn't is read as no state at all, and said once.
-  const shared = uid !== cu && uid !== 0 && spec.sharedReads === true;
-  const why = shared ? sharedProblem(own, cu) : undefined;
+  const reader = uid !== cu && uid !== 0;
+  const shared = reader && spec.sharedReads === true;
+  const why = reader ? sharedProblem(own, cu) : undefined;
   // With --json, a controller reads one line of JSON: an error in taskbox's own words, no path.
   if (shared && why && base.json) {
     say(errorJson(base, spec.path.join("."), EXIT.failed, errorFromV3("state-unreadable"), "state-unreadable"));
@@ -232,7 +233,8 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
   if (shared && why) say(`The box's state can't be shown to you: ${why}. Nothing to do: agents fix it.`);
   const p = shared ? sharedPaths(why ? { ...own, shared: "/nonexistent/taskbox-state" } : own) : own;
   const sys = deps.sys(uid === cu ? p.serviceHome : (deps.env.HOME ?? "/"));
-  const c: BoxCtx = { ...base, names, own, p, S, cu, ops: { sys, paths: p, uid, serviceUid: cu, say, ask: deps.ask } };
+  const view = reader ? sharedPaths(why ? { ...own, shared: "/nonexistent/taskbox-state" } : own) : own;
+  const c: BoxCtx = { ...base, names, own, p, S, cu, view, ops: { sys, paths: p, uid, serviceUid: cu, say, ask: deps.ask } };
   const name = boxName(deps);
 
   // On a box, --box must name this box (§2.1), so a script written for the laptop runs here unchanged.
@@ -277,7 +279,7 @@ async function withFooter(c: BoxCtx, said: string[], o: Outcome, to: (l: string)
   const { stateNow } = await import("./ops.ts");
   const { footer } = await import("./state.ts");
   const out: { did?: string; next?: string } = typeof o === "number" ? {} : o;
-  const lines = footer(await stateNow(c.ops), out.did ?? c.spec.did ?? "Nothing changed.", out.next);
+  const lines = footer(await stateNow({ ...c.ops, paths: c.view }), out.did ?? c.spec.did ?? "Nothing changed.", out.next);
   for (const l of lines) to(l);
 }
 

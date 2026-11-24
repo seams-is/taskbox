@@ -37,7 +37,7 @@ function box() {
   return { root, p };
 }
 
-async function run(argv: string[], who: Caller = CALLERS.ci, o: { terminal?: boolean; healthy?: boolean; setup?: (sys: FakeSys) => void; guardTicks?: () => boolean } = {}) {
+async function run(argv: string[], who: Caller = CALLERS.ci, o: { terminal?: boolean; healthy?: boolean; setup?: (sys: FakeSys) => void; guardTicks?: () => boolean; prep?: (p: ReturnType<typeof paths>) => void } = {}) {
   const sys = new FakeSys();
   o.setup?.(sys);
   if (o.healthy) healthyBox(sys);
@@ -61,7 +61,11 @@ async function run(argv: string[], who: Caller = CALLERS.ci, o: { terminal?: boo
     err: (l) => errs.push(l),
     terminal: () => o.terminal ?? true,
     hostname: () => "taskbox-1.local",
-    root: box().root,
+    root: (() => {
+      const b = box();
+      o.prep?.(b.p);
+      return b.root;
+    })(),
     chown: () => {},
     ...(o.guardTicks ? { guardTicks: o.guardTicks } : {}),
   };
@@ -269,6 +273,25 @@ describe("v2.6.0's old names (§2.6)", () => {
 });
 
 describe("the footer on every command (§3.1)", () => {
+  // L5: anyone but the service account and root gets a footer from the copies every user may read.
+  test("a reader's footer is read from the shared copies, for every command", async () => {
+    const reader = { uid: 9503, user: "pat", env: { HOME: "/Users/pat" } };
+    // The service account's own state says something only it may read.
+    const prep = (p: ReturnType<typeof paths>) => {
+      mkdirSync(dirname(p.loopState), { recursive: true });
+      writeFileSync(p.loopState, JSON.stringify({ failing: "a private fault", failingWho: "agents" }));
+    };
+    const status = (await run(["status"], reader, { prep })).said.find((l) => l.startsWith("Now: "));
+    expect(status).toBeDefined();
+    expect(status).not.toContain("private");
+    for (const argv of [["hello"], ["logins"], ["template", "show", "box-check"]]) {
+      const r = await run(argv, reader, { prep });
+      const line = [...r.said, ...r.errs].find((l) => l.startsWith("Now: "));
+      expect({ argv, line }).toEqual({ argv, line: status });
+    }
+  });
+
+
   test("hello and load status, which skipped it in v2.x, end with Now, Did and Next", async () => {
     for (const argv of [["hello"], ["load", "status"]]) {
       const r = await run(argv);
@@ -351,6 +374,10 @@ describe("hello and the answers version (§3.1)", () => {
     expect([newer.code, newer.v.error.fix]).toEqual([1, "update the box"]);
     const older = await hello("2,1");
     expect([older.code, older.v.error.fix]).toEqual([1, "update the laptop"]);
+  });
+
+  test("--answers given twice is refused", async () => {
+    expect((await run(["hello", "--json", "--answers", "4", "--answers", "3"])).code).toBe(2);
   });
 
   test("any other command takes one version, and refuses a list", async () => {

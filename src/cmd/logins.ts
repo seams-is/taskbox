@@ -30,7 +30,7 @@ async function read(c: BoxCtx, json: boolean): Promise<{ v3?: Record<string, unk
     for (const l of seenScreen(s, now)) c.say(l);
     n = Object.values(seenAnswer(s, now).kinds).reduce((a, k) => a + k.logins, 0);
   }
-  for (const l of footer(await stateNow(c.ops), `Listed ${n} Tailscale SSH ${n === 1 ? "login" : "logins"}.`)) c.say(l);
+  for (const l of footer(await stateNow({ ...c.ops, paths: c.view }), `Listed ${n} Tailscale SSH ${n === 1 ? "login" : "logins"}.`)) c.say(l);
   return { exit: 0 };
 }
 

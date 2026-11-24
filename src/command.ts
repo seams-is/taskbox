@@ -187,6 +187,9 @@ export interface BoxCtx extends Ctx {
   S: string; // the service account
   cu: number | undefined; // its uid
   ops: OpsDeps;
+  // What this user may read for the footer: the service's and root's own paths, anyone else's the
+  // copies every user may read, for every command.
+  view: Paths;
 }
 
 export type Parsed =
@@ -248,6 +251,7 @@ export function parse(specs: readonly CommandSpec[], argv: readonly string[]): P
     if (flag === "--help") help = true;
     else if (flag === "--version") version = true;
     else if (flag === "--answers") {
+      if (answers !== undefined) return bad("--answers is given twice.");
       const v = take("a version, such as 4");
       if (typeof v !== "string") return v;
       answers = v;
