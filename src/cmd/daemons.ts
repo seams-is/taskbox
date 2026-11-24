@@ -46,8 +46,8 @@ export const commands: CommandSpec[] = [
       if (labelProblem(xpc) !== undefined) {
         // A second guard exits (§4.10.1): with the guard under the current label loaded, two would be
         // two writers of root's state.
-        const current = await sys.run("/bin/launchctl", ["print", `system/${GUARD_LABEL}`], { timeoutMs: 10_000 }).catch(() => ({ code: -1 }));
-        if (current.code === 0) {
+        const first = await sys.run("/bin/launchctl", ["print", `system/${GUARD_LABEL}`], { timeoutMs: 10_000 }).catch(() => ({ code: -1 }));
+        if (first.code === 0) {
           glog.write(`A guard ${was ? `under ${was}` : "that launchd didn't start"} exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
           c.say(`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`);
           return 1;
@@ -57,7 +57,27 @@ export const commands: CommandSpec[] = [
         // box is never left with no guard. It writes no workspace and doesn't put the agent back.
         glog.write(`This guard runs as ${was || "no label"}, and none runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} runs.`);
         const cfg = loadConfig(p.app, p.boxSettings);
-        await guardWatch(sys, cfg, p, keepGoing, fenceRunner({ sys, cfg, p }));
+        // Once a minute it asks launchd again: when the guard under the current label runs, this one
+        // steps down, so there is one writer as soon as there can be.
+        let current = false;
+        let asking = false;
+        const stopAsking = sys.every(60_000, () => {
+          if (asking || current) return;
+          asking = true;
+          void sys
+            .run("/bin/launchctl", ["print", `system/${GUARD_LABEL}`], { timeoutMs: 10_000 })
+            .then((r) => {
+              current = r.code === 0;
+            })
+            .catch(() => undefined)
+            .finally(() => (asking = false));
+        });
+        try {
+          await guardWatch(sys, cfg, p, () => !current && keepGoing(), fenceRunner({ sys, cfg, p }));
+        } finally {
+          stopAsking();
+        }
+        if (current) glog.write(`The guard under ${GUARD_LABEL} runs now: this one exits, so there is one writer.`);
         return 1;
       }
       // Runs until launchd stops it. launchd starts it again if it ends. The agent is put back beside

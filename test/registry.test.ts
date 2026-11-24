@@ -230,6 +230,22 @@ describe("a second guard (§4.10.1)", () => {
   });
 });
 
+describe("a lone guard steps down", () => {
+  test("once launchd has the guard under the current label, the lone one exits with its line", async () => {
+    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
+    let prints = 0;
+    // The current guard isn't loaded at the start, and is by the second look, a minute on.
+    const setup = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: ++prints > 1 ? 0 : 113, stdout: "", stderr: "" } : undefined));
+    let ticks = 0;
+    const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", XPC_SERVICE_NAME: previousLabels("com.example.taskbox").guard } }, { setup, healthy: true, guardTicks: () => ++ticks < 200 });
+    expect(r.code).toBe(1);
+    expect(prints).toBe(2);
+    // It stopped well before the test's own limit of ticks.
+    expect(ticks).toBeLessThan(200);
+    expect(readFileSync(paths(r.root, testBox()).guardLog, "utf8")).toContain(`The guard under ${GUARD_LABEL} runs now: this one exits, so there is one writer.`);
+  });
+});
+
 describe("v2.6.0's old names (§2.6)", () => {
   const ROWS: [string[], string, string][] = [
     [["watch"], "taskbox watch is now taskbox status -w.", "status -w"],
