@@ -488,7 +488,8 @@ describe("the agents' wrappers", () => {
       ["wait", "nova-1"],
       ["progress", "nova-1", "Frame 1200 of 4000", "--step", "1200/4000", "--can-pause"],
       ["progress", "nova-1", "Saved after frame 1800", "--saved"],
-      ["release", "nova-1", "--json"],
+      // The laptop's release is the box's workspace end.
+      ["workspace", "end", "nova-1", "--json"],
     ]);
     // wait runs as long as the box does.
     expect(f.calls[1]!.o.timeoutMs).toBe(0);

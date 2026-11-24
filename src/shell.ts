@@ -49,8 +49,9 @@ export function commandFor(line: string): { args: string[] } | { no: string } {
   const p = parseLine(args);
   if (!p.ok) return p.path && shellCommands().some((s) => s.path[0] === p.path![0]) ? { no: p.usage ? `${p.line} ${p.usage}` : p.line } : { no: here };
   if (!p.spec.shell) return { no: here };
-  if (isAgentCommand(args[0])) {
-    const c = parseAgent(args);
+  const verb = p.spec.agent ?? p.spec.path[0];
+  if (p.spec.raw && isAgentCommand(verb)) {
+    const c = parseAgent([verb, ...p.args]);
     if ("no" in c) return { no: c.no };
   }
   return { args };

@@ -83,6 +83,9 @@ export interface CommandSpec {
   sharedReads?: boolean;
   // Its own parser checks every word (the workspace agent's commands, #47). No flag is read here.
   raw?: boolean;
+  // For a raw command: the verb #47's parser (workspace/agent.ts) knows it by, where that isn't its
+  // first word. workspace end is #47's release.
+  agent?: string;
   // Its text is a file to copy (YAML, a policy file): the footer goes to stderr.
   file?: boolean | ((c: Ctx) => boolean);
   // Rules between its words and flags that a flag's own check can't see. A line saying why, or undefined.

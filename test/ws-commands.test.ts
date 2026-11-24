@@ -58,7 +58,8 @@ describe("the agent commands' words", () => {
     expect("no" in parseAgent(["workspaces", "--all"])).toBe(true);
   });
   test("every usage line names its command", () => {
-    for (const [c, u] of Object.entries(USAGE)) expect(u.startsWith(`taskbox ${c}`)).toBe(true);
+    // release is the box's taskbox workspace end.
+    for (const [c, u] of Object.entries(USAGE)) expect(u.startsWith(`taskbox ${c === "release" ? "workspace end" : c}`)).toBe(true);
   });
 });
 

@@ -111,22 +111,18 @@ describe("no lease: only the guard under its current label writes workspaces", (
     expect([ran, fenced]).toEqual([0, 3]);
   });
 
-  test("a guard under the wrong label still keeps Screen Sharing's pf rules", async () => {
+  test("workspacesFor gives a wrong label the fence alone, beside the pf watch", async () => {
     let ran = 0;
     const r = await watchFor(5, workspacesFor("com.example.taskbox.guard", async () => void ran++));
     expect(ran).toBe(0);
     expect(r.reads()).toBeGreaterThanOrEqual(5);
   });
 
-  test("the guard's start: the label decides the pass, and the agent is put back only under the current label", () => {
+  test("the guard's start: under the current label, the workspace pass and the agent beside the pf watch", () => {
     const src = readFileSync(new URL("../src/cmd/daemons.ts", import.meta.url), "utf8");
     const fn = src.slice(src.indexOf('path: ["guard"]'), src.indexOf('path: ["loop"]'));
-    expect(fn).toContain("workspacesFor(xpc, workspaceRunner({ sys, cfg, p, chown }, glog), fenceRunner({ sys, cfg, p }))");
-    expect(fn).toContain("wrong ? Promise.resolve() : guardAgent(");
-    // Nothing between the label's check and the pf watch stops the guard.
-    const between = fn.slice(fn.indexOf("labelProblem(xpc)"), fn.indexOf("guardWatch("));
-    expect(between).not.toContain("return");
-    expect(fn).toContain("guardWatch(sys, cfg, p, undefined, ws)");
+    expect(fn).toContain("guardWatch(sys, cfg, p, undefined, workspaceRunner({ sys, cfg, p, chown }, glog))");
+    expect(fn).toContain("guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog)");
   });
 });
 

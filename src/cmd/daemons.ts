@@ -32,24 +32,27 @@ export const commands: CommandSpec[] = [
         c.say("The guard runs by itself. Type taskbox check to see it.");
         return 1;
       }
-      const { loadConfig } = await import("../config.ts");
+      const { GUARD_LABEL, loadConfig } = await import("../config.ts");
       const { Log } = await import("../log.ts");
-      const { fenceRunner, guardWatch, labelProblem, workspaceRunner, workspacesFor } = await import("../guard.ts");
+      const { guardWatch, labelProblem, workspaceRunner } = await import("../guard.ts");
       const { guardAgent } = await import("../install.ts");
       const p = c.p;
       const chown = c.chown;
+      const glog = new Log(p.guardLog, undefined, 1_000_000);
+      // A second guard exits unless launchd started it under the current label (§4.10.1): two guards
+      // would be two writers of root's state. launchd starts the one under the current label.
+      const xpc = c.env.XPC_SERVICE_NAME;
+      if (labelProblem(xpc) !== undefined) {
+        const was = xpc ? xpc.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 60) : "";
+        glog.write(`A guard ${was ? `under ${was}` : "that launchd didn't start"} exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
+        c.say(`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`);
+        return 1;
+      }
       // Runs until launchd stops it. launchd starts it again if it ends. The agent is put back beside
       // the first pass, never before it, so the rules aren't held up by fdesetup.
-      const glog = new Log(p.guardLog, undefined, 1_000_000);
       const sys = c.deps.sys("/var/root");
       const cfg = loadConfig(p.app, p.boxSettings);
-      // Only under its current label does it write workspaces or put the agent back: a second guard
-      // would be a second writer (guard.ts labelProblem). Screen Sharing's pf rules are kept either way.
-      const xpc = process.env.XPC_SERVICE_NAME;
-      const wrong = labelProblem(xpc);
-      if (wrong) glog.write(wrong);
-      const ws = workspacesFor(xpc, workspaceRunner({ sys, cfg, p, chown }, glog), fenceRunner({ sys, cfg, p }));
-      await Promise.all([wrong ? Promise.resolve() : guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog), guardWatch(sys, cfg, p, undefined, ws)]);
+      await Promise.all([guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog), guardWatch(sys, cfg, p, undefined, workspaceRunner({ sys, cfg, p, chown }, glog))]);
       return 1;
     },
   },

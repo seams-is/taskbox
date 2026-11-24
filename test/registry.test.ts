@@ -29,6 +29,7 @@ function box() {
   writeFileSync(join(p.app, "taskbox.json"), readFileSync(join(import.meta.dir, "../taskbox.example.json"), "utf8"));
   writeFileSync(join(p.app, "versions.json"), readFileSync(join(import.meta.dir, "../versions.json"), "utf8"));
   mkdirSync(dirname(p.jobsFile), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(p.guardLog), { recursive: true });
   writeFileSync(p.installed, JSON.stringify({ commit: "c0ffee0c0ffee0c0ffee0c0ffee0c0ffee0c0ff", tag: "v3.0.0-rc.1", pr: 2, title: "feat: install the box", mergedAt: "2026-11-12T10:00:00Z", files: {} }));
   return { root, p };
 }
@@ -60,7 +61,7 @@ async function run(argv: string[], who: Caller = CALLERS.ci, o: { terminal?: boo
     chown: () => {},
   };
   const code = await main(argv, deps);
-  return { code, said, errs, ttys };
+  return { code, said, errs, ttys, sys, root: deps.root };
 }
 
 describe("the registry", () => {
@@ -118,6 +119,8 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["rollback", "remove", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
   { good: ["connect github", "connect github --new-key", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "disconnect"] },
   { good: ["install --bootstrap /tmp/x", "guard", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
+  // #47's release, under the workspace noun, so WP4's release list can register.
+  { good: [], bad: ["release nova-1"] },
 ];
 
 describe("the command line", () => {
@@ -129,6 +132,9 @@ describe("the command line", () => {
     // Every command in the registry is in the table, so a new one is tested when it comes.
     const tabled = new Set(TABLE.flatMap((r) => r.good.map((l) => { const p = parseLine(l.split(" ")); return p.ok ? p.path.join(" ") : ""; })));
     const raw = registry().filter((s) => s.raw).map((s) => s.path.join(" "));
+    expect(parseLine(["workspace", "end", "nova-1"]).ok).toBe(true);
+    // WP4's release list registers beside everything here.
+    expect(registryProblem([...registry(), { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBeUndefined();
     for (const s of registry()) if (!raw.includes(s.path.join(" "))) expect({ cmd: s.path.join(" "), tabled: tabled.has(s.path.join(" ")) }).toEqual({ cmd: s.path.join(" "), tabled: true });
   });
 
@@ -177,6 +183,18 @@ describe("the command line", () => {
   test("root's commands re-run through sudo with every word, for each path", async () => {
     const r = await run(["connect", "github", "--load", "off"], CALLERS.admin);
     expect([r.code, r.said, r.ttys]).toEqual([0, ["taskbox connect github needs your admin password."], [["/usr/bin/sudo", "-p", "Password for %u: ", "--", "/opt/taskbox/bin/taskbox", "connect", "github", "--load", "off"]]]);
+  });
+});
+
+describe("a second guard (§4.10.1)", () => {
+  test("exits unless launchd started it under the current label, touching nothing, and says so in the guard's log", async () => {
+    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
+    for (const xpc of [previousLabels("com.example.taskbox").guard, `${GUARD_LABEL}x`, undefined]) {
+      const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", ...(xpc ? { XPC_SERVICE_NAME: xpc } : {}) } });
+      expect({ xpc, code: r.code, said: r.said, calls: r.sys.calls.length }).toEqual({ xpc, code: 1, said: [`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`], calls: 0 });
+      const log = readFileSync(paths(r.root, testBox()).guardLog, "utf8");
+      expect(log).toContain(`exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
+    }
   });
 });
 
