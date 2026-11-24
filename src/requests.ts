@@ -1,8 +1,8 @@
-// The requests folder from before v2.2.0, where any user could leave a hold or a share. It is ci's,
+// The requests folder from before v2.2.0, where any user could leave a hold or a share. It is the service's,
 // mode 1733, so any user may still put a file, a link or a folder of their own in it. Whoever clears
-// it, ci or root, never walks into what someone else made: a name that is a folder is removed only
+// it, the service or root, never walks into what someone else made: a name that is a folder is removed only
 // when it is empty, and nothing is followed. So a folder a user swaps for a link mid-way gets root or
-// ci nowhere.
+// the service nowhere.
 import { lstatSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 

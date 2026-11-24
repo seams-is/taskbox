@@ -1,7 +1,8 @@
-// `taskbox stop` and `taskbox start`, as ci at the box. Stop unloads the loop's LaunchAgent from ci's
-// login session, so no job or download runs. It lasts until `taskbox start`, or ci's next login,
+// `taskbox stop` and `taskbox start`, as the service at the box. Stop unloads the loop's LaunchAgent from the service's
+// login session, so no job or download runs. It lasts until `taskbox start`, or the service's next login,
 // which loads the LaunchAgent again: a login means the owner wants the box running, and a stop
 // that outlived it would leave the box down after a power cut with no sign why.
+import { serviceName } from "./names.ts";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { mirrorJson } from "./shared.ts";
 import { AGENT_LABEL, LAUNCHCTL_MS, type Paths, previousLabels, readStateJson } from "./config.ts";
@@ -35,7 +36,7 @@ async function runningLabel(sys: Sys, uid: number, labels: string[]): Promise<st
   return undefined;
 }
 
-// Every label launchd holds in ci's session, with its state: running, SIGTERMed while it exits, or
+// Every label launchd holds in the service's session, with its state: running, SIGTERMed while it exits, or
 // spawn scheduled while KeepAlive waits out its throttle. A loaded label can run again by itself, so
 // stop takes out every one.
 async function loadedLabels(sys: Sys, uid: number, labels: string[]): Promise<{ label: string; state: string }[]> {
@@ -63,7 +64,7 @@ export function readStopped(paths: Paths): { at: number } | undefined {
 // What a stopped box says, in watch and check.
 export function stoppedLine(at: number): string {
   const t = new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  return `stopped by taskbox stop at ${t}. Type taskbox start, or log in as ci again, and it carries on.`;
+  return `stopped by taskbox stop at ${t}. Type taskbox start, or log in as ${serviceName()} again, and it carries on.`;
 }
 
 // The job each slot is running, by the loop's own state.
@@ -125,7 +126,7 @@ export async function stop(d: StopDeps): Promise<number> {
       mirrorJson(d.paths, "stopped", null);
       const why = refused ?? `launchd still has it ${STOP_WAIT_MS / 1000} s after it was taken out`;
       d.log?.(`stop: ${loaded.map((l) => `${l.label} (${l.state})`).join(", ")} still loaded: ${why}`);
-      d.say(`Could not stop the loop (${why}). Log out ci: that stops it too.`);
+      d.say(`Could not stop the loop (${why}). Log out ${d.paths.service}: that stops it too.`);
       return 1;
     }
     // A label whose process is already exiting has had its bootout.
@@ -148,7 +149,7 @@ export async function stop(d: StopDeps): Promise<number> {
       if (r.failed) d.say(`${r.failed === 1 ? "A VM" : `${r.failed} VMs`} the loop left couldn't be removed. Type taskbox clean to try again.`);
     }
   }
-  d.say("Stopped. No jobs or downloads run until you type taskbox start or log in as ci again. A download carries on from where it stopped.");
+  d.say(`Stopped. No jobs or downloads run until you type taskbox start or log in as ${d.paths.service} again. A download carries on from where it stopped.`);
   return 0;
 }
 
@@ -170,7 +171,7 @@ export async function start(d: StopDeps): Promise<number> {
   if (boot.code !== 0) await d.sys.run("/bin/launchctl", ["kickstart", `${domain(d.uid)}/${label}`], { timeoutMs: LAUNCHCTL_MS });
   for (let i = 0; i < 10 && !(await loopRunning(d.sys, d.uid, d.paths.loopLabels)); i++) await d.sys.sleep(500);
   if (!(await loopRunning(d.sys, d.uid, d.paths.loopLabels))) {
-    d.say(`Could not start the loop (${clean(boot.stderr.trim()).slice(0, 120) || `launchctl exit ${boot.code}`}). Log out ci and log in again: that starts it.`);
+    d.say(`Could not start the loop (${clean(boot.stderr.trim()).slice(0, 120) || `launchctl exit ${boot.code}`}). Log out ${d.paths.service} and log in again: that starts it.`);
     return 1;
   }
   rmSync(d.paths.stopped, { force: true });

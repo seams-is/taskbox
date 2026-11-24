@@ -3,6 +3,7 @@
 // one with every phase it enters, and again on each turn of a wait that repeats, never from a timer,
 // so a hung await stops it. A beat past its own deadline plus the grace reads Failing for every
 // reader, after Stopped, ci away and Downloading.
+import { serviceName } from "./names.ts";
 
 export interface Beat {
   at: number;
@@ -65,20 +66,20 @@ export function restartsState(loop: { selfRestartCount?: number; selfRestartSinc
   const since = loop.selfRestartSince;
   if (n < RESTARTS_TO_REPORT || since === undefined || now - since > RESTARTS_WINDOW_MS) return undefined;
   // By itself or by the guard (loopwatch.ts): the count holds both.
-  return { word: "Failing", detail: `the loop has been restarted ${n} times since ${hhmm(since)}, because it kept stopping`, next: "At the box: as ci, type taskbox stop, then taskbox start. Agents look at taskbox log." };
+  return { word: "Failing", detail: `the loop has been restarted ${n} times since ${hhmm(since)}, because it kept stopping`, next: `At the box: as ${serviceName()}, type taskbox stop, then taskbox start. Agents look at taskbox log.` };
 }
 
-export const STALE_RESTART = "At the box: as ci, type taskbox stop, then taskbox start.";
+export const staleRestart = () => `At the box: as ${serviceName()}, type taskbox stop, then taskbox start.`;
 export function beatState(loop: Parameters<typeof staleBeat>[0] & { endingAt?: number }, now: number): { word: "Failing"; detail: string; next: string } | undefined {
   const st = staleBeat(loop, now);
   if (!st) return undefined;
   const which = (loop.slotCount ?? 1) > 1 ? `slot ${st.slot}, ` : "";
   const detail = `the loop hasn't moved since ${hhmm(st.beat.at)} (${which}${st.beat.phase})`;
   // A loop ending on purpose is left alone by its own check and by the guard: nothing restarts it.
-  if (loop.endingAt !== undefined) return { word: "Failing", detail: `${detail}, while it was ending`, next: STALE_RESTART };
+  if (loop.endingAt !== undefined) return { word: "Failing", detail: `${detail}, while it was ending`, next: staleRestart() };
   return {
     word: "Failing",
     detail,
-    next: "Waits by itself: the loop restarts itself within a minute or two, and if it is frozen, the guard restarts it a few minutes later. If this stays, at the box: as ci, type taskbox stop, then taskbox start.",
+    next: `Waits by itself: the loop restarts itself within a minute or two, and if it is frozen, the guard restarts it a few minutes later. If this stays, at the box: as ${serviceName()}, type taskbox stop, then taskbox start.`,
   };
 }

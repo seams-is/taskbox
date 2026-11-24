@@ -37,13 +37,13 @@ At the box, about twenty minutes, connected by Ethernet. On your release's GitHu
 2. Open this page in that window, then use the two links:
    1. Your GitHub App's page: your organisation's Settings, Developer settings, GitHub Apps, then the App whose ID is `appId`. Open the Credentials tab, then Key pairs, and click "New key". Safari saves the key in Downloads, as a file ending in `.private-key.pem`.
    2. Download taskbox: `https://github.com/` then your `org`, `/taskbox/archive/refs/heads/main.zip`. The repo is named `taskbox`, so the folder is `taskbox-main`. If Safari asks whether to allow downloads from github.com, click Allow. Safari unpacks it into a `taskbox-main` folder in Downloads. If Downloads shows `taskbox-main.zip` instead, double-click it.
-3. Make the `ci` user. In System Settings, Users & Groups, click Add User. Choose Standard, Full name CI, account name `ci`. Type its password twice and keep it: you type it after every restart.
-4. Open Terminal and type `sh ~/Downloads/taskbox-main/install.sh`. It asks for your admin password.
-5. It checks the box and the `ci` user, then shows the `Release:`, its PR, its merge date and its `Commit:`. If the release and the seven characters match your release's page, type `yes`. Anything else stops it with nothing installed.
-6. Close the Private window. That signs the box out of GitHub. If you turned Bluetooth on, turn it off.
-7. When it says "Now log in as ci", log out and log in as `ci`. macOS shows its new-user screens: skip each one, and for Apple Account choose "Set Up Later". Click Allow if macOS asks about the local network. If macOS says a background item was added (it may name "bun"), that's the box's loop: leave it on. Leave the box like that.
+3. Open Terminal and type `sh ~/Downloads/taskbox-main/install.sh`. It asks for your admin password.
+4. It checks the box, then shows the `Release:`, its PR, its merge date and its `Commit:`. It also says it makes the service account, named in `accounts.service` (`taskbox` in the example settings). If the release and the seven characters match your release's page, type `yes`. Anything else stops it with nothing installed.
+5. It makes the service account: type a password for it twice, and keep it, since you type it after every restart. Then macOS asks for your admin name and password, and the service account's password again, so it can unlock the disk. It makes the agent account (`accounts.agent`) too, with no password, and says its name: a laptop pairs with that name.
+6. Before it signs the box in to Tailscale, it prints the `tagOwners` entry: add it in the admin console and save (docs/tailnet-policy.md). Then close the Private window. That signs the box out of GitHub. If you turned Bluetooth on, turn it off.
+7. When it says "Now log in as" the service account, log out and log in as it. macOS shows its new-user screens: skip each one, and for Apple Account choose "Set Up Later". Click Allow if macOS asks about the local network. If macOS says a background item was added (it may name "bun"), that's the box's loop: leave it on. Leave the box like that.
 
-Done: as `ci`, type `taskbox watch` in Terminal and leave it open. It shows the 77 GB download of macOS 27 with Xcode 27.2 as it goes, then what the box is doing. Use Ethernet: taskbox away fails on Wi-Fi, and a phone hotspot can use up the phone's data. Then type `taskbox check`: every line should say OK. A FAIL line has its fix on it.
+Done: as the service account, type `taskbox watch` in Terminal and leave it open. It shows the 77 GB download of macOS 27 with Xcode 27.2 as it goes, then what the box is doing. Use Ethernet: taskbox away fails on Wi-Fi, and a phone hotspot can use up the phone's data. Then type `taskbox check`: every line should say OK. A FAIL line has its fix on it.
 
 ### Your first job
 
@@ -76,12 +76,12 @@ Then the loop (running, or how to start it), the VM (starting, waiting for a job
 
 ### Seeing the box's screen from your laptop (optional)
 
-Screen Sharing is off on a new box, and taskbox names nobody for it by default: a new box's `taskbox.json` has `screenSharingUsers` empty. To use Screen Sharing:
+Screen Sharing is off on a new box, and taskbox names nobody for it by default: a new box's `taskbox.json` has `accounts.people` empty. To use Screen Sharing:
 
 1. At the box, as your admin user, make an account for yourself: System Settings, Users & Groups, Add User. Choose Standard, never Administrator. Use any name.
-2. Tell the agents that name. They make a PR that adds it to `screenSharingUsers` in `taskbox.json`, and a release once you merge it. Then type `taskbox update` as your admin user.
-3. In System Settings, General, Sharing, turn on Screen Sharing. Click its info button. Under Allow access for, choose Only these users, and list only that account.
-4. As `ci`, type `taskbox check`. A pass: `OK   Sharing services off: only Screen Sharing, for` that name, `over Tailscale`. A FAIL line names what to change.
+2. Tell the agents that name. They make a PR that adds it to `accounts.people` in `taskbox.json`, and a release once you merge it. Then type `taskbox update` as your admin user. Before the yes it says it lets that account use Screen Sharing; after it, Screen Sharing's list of allowed users has that account and the admins, through the Administrators group macOS puts on the list.
+3. In System Settings, General, Sharing, turn on Screen Sharing.
+4. As the service account, type `taskbox check`. A pass: `OK   Sharing services off: only Screen Sharing, for` that name, `over Tailscale`. A FAIL line names what to change.
 
 From your laptop, connect to the box over Tailscale, by the name `runnerNamePrefix` gives it, as that account.
 
@@ -89,10 +89,10 @@ From your laptop, connect to the box over Tailscale, by the name `runnerNamePref
 
 The box is always in one state: Stopped, Downloading, Ready, Running, Updating, Needs you or Failing. Every command ends with three lines: `Now:` the state, `Did:` what changed, `Next:` one step. Needs you names something only you can do. Failing means agents have work to do and you don't.
 
-As `ci`:
+As the service account:
 - `taskbox` or `taskbox status`: the state, the install, the download, the network and the last job, once. The network line says whether the box is online, and how much the download received in the last minute.
 - `taskbox watch`: the same, redrawn every two seconds, with the time it was last drawn. Ctrl-C stops watching; the box carries on.
-- `taskbox stop` and `taskbox start`: no jobs or downloads run until `taskbox start`, or until `ci` logs in again. If a job is running, stop asks first, since stopping fails that job on GitHub. Stop waits for the loop to end, then deletes the VMs it left, so their CPUs, memory and disk are free. Type it in `ci`'s own login session, at the box or over Screen Sharing.
+- `taskbox stop` and `taskbox start`: no jobs or downloads run until `taskbox start`, or until the service account logs in again. If a job is running, stop asks first, since stopping fails that job on GitHub. Stop waits for the loop to end, then deletes the VMs it left, so their CPUs, memory and disk are free. Type it in the service account's own login session, at the box or over Screen Sharing.
 - `taskbox stop --drain`: no new job starts, a VM waiting for a job ends, and running jobs finish. Then the loop stops by itself, as `taskbox stop` leaves it, with no job failed. Use it to give the box to other work, such as a render. `taskbox status` and `watch` say the box is draining. Jobs that come meanwhile wait on GitHub. A download under way stops, and no Linux proof starts. The drain survives the loop's own restarts, such as an update, and `taskbox start` cancels it.
 - `taskbox check`: every check, OK or FAIL. A FAIL line has its fix on it.
 - `taskbox clean`: removes old images, unfinished downloads and VMs left over, and says how much space came back. The loop does this itself after each new image. While the box's image is part downloaded, it cleans nothing, because Tart would delete that download.
@@ -105,13 +105,17 @@ As `ci`:
   - whether the VM was deleted, and the guard at the VM's start.
   A second line has the run's link and commit, "not known" until the box may read the Actions runs of the repo in `jobsFrom`. Any user can type it. The history stays on the box, in `/opt/taskbox-state`.
 
-As your admin user. Each asks for your admin password, unless you typed it in the last few minutes. As `ci` they say to switch to your admin user, and nothing runs. taskbox never asks for a password while you're logged in as `ci`: if something does, don't type it.
+As your admin user. Each asks for your admin password, unless you typed it in the last few minutes. As the service account they say to switch to your admin user, and nothing runs. taskbox never asks for a password while you're logged in as the service account: if something does, don't type it.
 - `taskbox update`: installs the newest release, or the one typed after it, such as `v2.5.0`, after showing its PR and the files it changes. A merge on `main` reaches the box only in a release.
 - `taskbox undo`: goes back to the install before, which the box keeps. It refuses an install from before undo existed, one with a pin retired for a flaw, and one whose files changed.
 - `taskbox remove`: takes taskbox off the box, then names the two browser steps left.
-- `taskbox unlock`: lets `ci`'s password unlock the disk after a restart. After your admin password, macOS asks for an admin's name and password, then for `ci`'s.
+- `taskbox unlock`: lets the service account's password unlock the disk after a restart. The install does this itself; `unlock` is for a box where it didn't. After your admin password, macOS asks for an admin's name and password, then for the service account's.
+- `taskbox approver --reset`: clears the approver key this box trusts, after you type yes. Use it when the laptop that holds the key is lost. The box never takes that key again. Workspaces stay off until the next `taskbox update` shows the new key `taskbox.json` names, with its fingerprint, and you type yes.
+- `taskbox clear <agent>`: deletes the files of that agent's workspace account, after you type yes and their size. It refuses while the workspace is waiting, Active or Saving, or while any of the account's processes is left. It deletes as that account, never as root, then makes its home again, empty, at mode 700. At the box only.
 
-After a restart (a power cut or a macOS update), type `ci`'s password at the FileVault screen. `taskbox check`'s Restart password line says whether one password is enough.
+Any user can type `taskbox workspaces`: each workspace with its agent, account and state, and the last steps the box applied. Every user sees the same names: the box's workspaces state is readable by all of them.
+
+After a restart (a power cut or a macOS update), type the service account's password at the FileVault screen. `taskbox check`'s Restart password line says whether one password is enough.
 
 To cancel a job, use its Cancel button on GitHub.
 
@@ -121,11 +125,11 @@ The box can have other users, such as a person's own account for heavy apps, lik
 
 - Each VM gets 4 CPUs and 8 GB (`vmCpus`, `vmMemoryMB`), whoever else is logged in. A VM starts only while memory pressure is normal and the VM's memory and 4 GB more are free. At the top pressure level, the loop ends the job.
 - Jobs share the box with every user all the time. `taskbox hold` and `taskbox share` are gone from v2.2.0, with `holdUsers` and `holdMaxHours`. Typed now, each says so in one line and changes nothing.
-  - Your lever is `taskbox stop` and `taskbox start`, as `ci`. `taskbox stop` stops every job and download until `taskbox start`, or until `ci` logs in again. If jobs are running, it names them and asks first.
+  - Your lever is `taskbox stop` and `taskbox start`, as the service account. `taskbox stop` stops every job and download until `taskbox start`, or until the service account logs in again. If jobs are running, it names them and asks first.
   - A hold kept from before the update, and any request left for one, end at the loop's first read after it, with one line in `taskbox log`. The next install removes the old requests folder, `/opt/taskbox-state/<project>-requests`. A folder another user left in it with files stays, and the folder with it; the loop's log and the install say so once. Nothing reads it, and taskbox never walks into it.
   - Hold lines in `taskbox jobs` from before v2.2.0 are no longer shown. A job line's waits may still name a hold.
-- `status`, `watch`, `log`, `check` and `jobs` work for every user. The loop keeps a copy of its state for them in `/opt/taskbox-state`, with nothing secret in it and no path into `ci`'s folder. A copy that isn't `ci`'s alone isn't shown.
-- `taskbox check` as `ci` or root lists each user and whether it's an admin. As anyone else it gives counts and names nobody.
+- `status`, `watch`, `log`, `check` and `jobs` work for every user. The loop keeps a copy of its state for them in `/opt/taskbox-state`, with nothing secret in it and no path into the service account's folder. A copy that isn't the service account's alone isn't shown.
+- `taskbox check` as the service account or root lists each user and whether it's an admin. As anyone else it gives counts and names nobody.
 - Free disk counts every user's files. A VM needs 60 GB free to start, and 60 GB more for each VM already running (v2.2.0): 120 GB before a second starts. Before the image is held, its download needs room for it too, and it waits until there is.
 
 ## Linux VMs (v2.1.0)
@@ -136,8 +140,8 @@ Jobs labelled `taskbox-linux` run in a fresh arm64 Ubuntu 24.04 VM with Docker, 
 - The image is Cirrus Labs' `ubuntu-runner-arm64` 24.04, pinned by digest in `taskbox.json` under `linux`, with its own CPUs and memory. It is an 11.3 GB download. The loop pulls it between VMs, at most once an hour until it is in, so a Linux download that fails or has no room never holds up macOS jobs.
 - The Linux runner is pinned in `versions.json` as `runnerLinux`, the same release as the macOS one.
 - Which VM a slot starts is the scheduler's choice: see Scheduling (v2.4.0).
-- The job source is read as a read-only App of your own, installed on the `jobsFrom` repository only. The first App never gets that repository: its key could then mint tokens for its source. Its ID is the source's `appId` in `taskbox.json` (before v2.4.0, `actionsAppId`). Its key is `/opt/taskbox-keys/actions-key.pem`: a folder of root's that nobody else can write, outside every install and outside ci's home, holding a file that is ci's at mode 600. ci can read the key but can't replace it or put a link in its place. One token is kept for 55 minutes, and each list is read with its ETag.
-- `taskbox update` places the key. It takes the one `*.private-key.pem` in your Downloads, and asks GitHub whether that key is the job source App's, with Actions read and nothing else, installed on the `jobsFrom` repository only. Anything else stops the update with one line saying why, and nothing is placed. A pass places it, or replaces the key in place in one step, then deletes the Downloads copy. A first install never takes it: the first App's key needs Downloads to itself. `taskbox remove` deletes it.
+- The job source is read as a read-only App of your own, installed on the `jobsFrom` repository only. The first App never gets that repository: its key could then mint tokens for its source. Its ID is the source's `appId` in `taskbox.json` (before v2.4.0, `actionsAppId`). Its key is `/opt/taskbox-keys/actions-<App ID>.pem`: a folder of root's that nobody else can write, outside every install and outside the service account's home, holding a file that is the service account's at mode 600. The service can read the key but can't replace it or put a link in its place. One token is kept for 55 minutes, and each list is read with its ETag.
+- `taskbox connect github` places the key (Connect a job source). Each `taskbox update` asks GitHub again whether the key in place is the job source App's, with Actions read and nothing else, installed on the `jobsFrom` repository only. An App that gained rights or repos stops the update, with one line saying why. An App that is gone or uninstalled lets the update go on, and the box follows the jobs its VMs take until you connect again. `taskbox remove` deletes the key.
 - With one slot and no job source, the box takes turns: a VM waits `turnIdleMinutes` (5) for a job of its kind, then gives way to the other kind. Once both kinds have given way in a row, each turn is `quietTurnMinutes` (30), so an idle box starts 2 VMs an hour. After a job the box starts the same kind again, up to 3 in a row. `taskbox status` and `check` say which way the box is choosing, and why.
 - Before a VM gives way, its runner is deleted on GitHub. GitHub refuses that once it has given the runner a job, and then the VM keeps waiting for it.
 - A VM that fails passes the slot to the other kind. After 3 failures in a row, that kind is paused for an hour, and the box reads Failing. A VM that gave way has no line in `taskbox jobs` or `taskbox log`.
@@ -149,17 +153,25 @@ Jobs labelled `taskbox-linux` run in a fresh arm64 Ubuntu 24.04 VM with Docker, 
 
 ### Connect a job source
 
-A job source lets the box see what waits, so it starts the right VM for it, puts the classes you set first, and never guesses. Without one the box works, following the jobs its VMs take. You make a read-only GitHub App of your own, once. Agents make the PR in step 3. The rest is yours, one step at a time.
+A job source lets the box see what waits, so it starts the right VM for it, puts the classes you set first, and never guesses. Without one the box works, following the jobs its VMs take. taskbox makes the source's read-only GitHub App for you, with two clicks. Nothing is copied by hand, and no PR or release is needed: the source is kept in the box's own settings, `/opt/taskbox-state/box.json`.
 
-1. On your Mac, open your organisation's Settings, then Developer settings, then GitHub Apps, and click New GitHub App. Name it what you like, such as `<your org>-taskbox-queue`. For Homepage URL, use your copy of taskbox. Under Webhook, untick Active. Under Permissions, Repository permissions, set Actions to Read-only, and leave every other one at No access. GitHub adds Metadata read by itself. Under Where can this GitHub App be installed, choose Only on this account. Click Create GitHub App. A pass: the App's page shows its App ID.
-2. On that page, click Install App, then Install beside your organisation. Choose Only select repositories, pick your `jobsFrom` repository and nothing else, and click Install. A pass: the installation lists that one repository.
-3. Tell the agents the App ID. They make a PR to your copy of taskbox that adds the source to `taskbox.json`: `"sources": [{ "type": "github-actions", "appId": <the ID>, "repos": ["<your jobsFrom>"] }]`. You merge it, and they make a release.
-4. At the box, as your admin user, open a Private window in Safari and sign in to GitHub. On the App's page, open the Credentials tab, then Key pairs, and click "New key". Safari saves it in Downloads, as a file ending in `.private-key.pem`. It must be the only file there ending that way.
-5. In Terminal, type `taskbox update`. A pass: a line saying the key was proved with GitHub and placed, then the Downloads file's name and that it was removed. If the key is the wrong App's, or the App can do more than read Actions, or it is installed on more than that repository, the update stops with one line saying why, and nothing is placed or installed.
-6. Close the Private window.
-7. As `ci`, type `taskbox check`. A pass: the key's row says `OK`, `in root's folder, ci's, mode 600`, and the `Job source:` line says `github-actions` with your App's ID. After the loop's next VM, the `Choosing:` line says `by the job source's waiting jobs`.
+1. At the box, in Terminal, as your admin user: `taskbox connect github`. Over Screen Sharing is fine; over SSH it refuses.
+2. Safari opens at the box. If it shows GitHub's sign-in, sign in there, as an owner of your organisation. This is the one place you sign in.
+3. Click **Create GitHub App**. The App has Actions read and Metadata read, and nothing else, with no webhook.
+4. On the next page, choose Only select repositories, pick your `jobsFrom` repository and nothing else, and click **Install**.
+5. Terminal says Connected, and asks you to sign out of GitHub in that Safari window. Do that.
+6. As the service account, type `taskbox check`. A pass: the key's row says `OK`, with the App's name and `from this box's settings`, and the "Box settings" row says `box.json sets sources`. After the loop's next VM, the `Choosing:` line says `by the job source's waiting jobs`.
 
-To replace the key, for example after a key is deleted on GitHub: steps 4 to 7 again. To stop using the source: agents make a PR that sets `"sources": [{ "type": "none" }]`.
+If the box already has a job source App from before, `taskbox connect github` checks it with GitHub and keeps it in the box's own settings, with no new App. The next `taskbox update` does the same by itself.
+
+- **Run it again** on a connected box: it checks the App, and offers to replace it with a new one. The App in use stays until the new one passes.
+- **A new key for the runner App**, the one whose ID is `appId`: make it on the App's page (Credentials, Key pairs, New key), then type `taskbox update`. Before the yes, taskbox checks the key in Downloads with GitHub, places it in `/opt/taskbox-keys` and deletes the file. Nothing else changes.
+- **A new key for the same App:** `taskbox connect github --new-key`. Safari opens the App's settings. Open Credentials, then Key pairs, and generate a new private key. taskbox takes the file from Downloads as soon as it is saved, checks it, places it and deletes the file. Then delete the old key on the same page, under Credentials, Key pairs; taskbox shows its fingerprint.
+- **Stopped halfway** (Ctrl-C, or the install wasn't clicked): the next `taskbox connect github` finds the App it made, and asks whether to finish or drop it.
+- **The runner group's runners:** `taskbox check` and `taskbox away` look at each runner in the box's group. One without the box's name, or with a label the box's settings don't name (such as `ubuntu-latest`), fails the check, named.
+- **Disconnect:** `taskbox disconnect github`. It uninstalls the App and removes its key. GitHub keeps the App until you delete it, and the line says where.
+
+To give the App a new key: `taskbox connect github --new-key`. To stop using the source: `taskbox disconnect github`.
 
 ### Turning Linux on, after the update to v2.1.0
 
@@ -167,8 +179,8 @@ At the box. macOS jobs carry on throughout.
 
 1. As your admin user, type `taskbox update`. It installs v2.1.0.
 2. As your admin user, type `taskbox update` once more. The install before v2.1.0 doesn't fetch the Linux runner; this run does.
-3. As `ci`, type `taskbox watch`. The `Linux:` line shows the 11.3 GB download, then `Image ready`. Between macOS jobs, the VM line then says `Linux: Proving a Linux VM under Softnet reaches nothing on the box or the LAN`, for about 5 minutes.
-4. As `ci`, type `taskbox check`. A pass is a `Linux proof:` line that starts `OK, a Linux VM under Softnet reached none of the box's bridge address, the box's LAN address, the router` and ends `DNS and the internet worked`. A `FAIL` line names what the VM reached: Linux jobs wait, and agents fix it. There is nothing for you to do.
+3. As the service account, type `taskbox watch`. The `Linux:` line shows the 11.3 GB download, then `Image ready`. Between macOS jobs, the VM line then says `Linux: Proving a Linux VM under Softnet reaches nothing on the box or the LAN`, for about 5 minutes.
+4. As the service account, type `taskbox check`. A pass is a `Linux proof:` line that starts `OK, a Linux VM under Softnet reached none of the box's bridge address, the box's LAN address, the router` and ends `DNS and the internet worked`. A `FAIL` line names what the VM reached: Linux jobs wait, and agents fix it. There is nothing for you to do.
 5. Only once step 4 passes, let the jobs repo send Linux jobs to the box, for example with a repo variable its workflows read.
 
 ## Two VMs at once (v2.2.0)
@@ -193,8 +205,8 @@ From v2.2.0 the box runs `vmsAtOnce` VMs at once: for example 2 on a Mac with 10
 At the box, one step at a time. Running jobs finish first.
 
 1. As your admin user, type `taskbox update`. It installs v2.2.0. The loop ends its waiting VMs, waits for any running job, then restarts.
-2. As `ci`, type `taskbox watch`. A pass: a `VM 1:` and a `VM 2:` line. Within a few minutes one says `macOS: Ready, waiting for a job from GitHub.` The other proves Linux for about 5 minutes, since the proof runs again for each install, then says `Linux: Ready, waiting for a job from GitHub.`
-3. As `ci`, type `taskbox check`. A pass: every line OK, and a `Slots:` line that starts `2 VMs at once, macOS at most 2`. If `Free disk` fails, its line says how much it needs.
+2. As the service account, type `taskbox watch`. A pass: a `VM 1:` and a `VM 2:` line. Within a few minutes one says `macOS: Ready, waiting for a job from GitHub.` The other proves Linux for about 5 minutes, since the proof runs again for each install, then says `Linux: Ready, waiting for a job from GitHub.`
+3. As the service account, type `taskbox check`. A pass: every line OK, and a `Slots:` line that starts `2 VMs at once, macOS at most 2`. If `Free disk` fails, its line says how much it needs.
 4. In the same `taskbox check`, find the `Linux proof:` line. A pass: it starts `OK` and names `another job VM` among what the Linux VM reached none of. That shows a Linux job VM couldn't reach the macOS VM beside it. A `FAIL` line naming `another job VM` means one VM reached the other: Linux jobs wait, and agents fix it. If the OK line doesn't name `another job VM`, no other VM was up when the proof ran. The loop proves again by itself once one is up: type `taskbox check` again in 15 minutes.
 5. Agents make the jobs repo's PR that puts `taskbox-macos-merge` and `taskbox-linux-merge` on the merge_group jobs. You merge it. Until then merge jobs run as PR jobs do.
 
@@ -226,8 +238,8 @@ Which VM each slot starts, and when a waiting VM gives way. The design is [docs/
 At the box, one step at a time. Running jobs finish first. v2.3.0 must be installed.
 
 1. As your admin user, type `taskbox update`. It installs v2.4.0. The loop ends its waiting VMs, waits for any running job, then restarts. The Linux proof runs again for the new install, about 5 minutes.
-2. As `ci`, type `taskbox watch`. A pass: each `VM` line has a `Why:` line under it, such as `Why: the box can't see the queue, so a macOS VM waits ready for the next job.`
-3. As `ci`, type `taskbox check`. A pass: every line OK, a `Job source:` line, and a `Timings:` line that starts `give way 3 min, floor 8 min`.
+2. As the service account, type `taskbox watch`. A pass: each `VM` line has a `Why:` line under it, such as `Why: the box can't see the queue, so a macOS VM waits ready for the next job.`
+3. As the service account, type `taskbox check`. A pass: every line OK, a `Job source:` line, and a `Timings:` line that starts `give way 3 min, floor 8 min`.
 4. After a day of jobs, type `taskbox timings`. A pass: each kind shows its jobs measured. Once each kind has 10, it suggests a value for each timing, and the agents bring any change as a PR.
 5. If you want the box to see the queue: Connect a job source, above.
 
@@ -286,8 +298,8 @@ One step at a time.
 1. Make a new private repo in your organisation, with a README. Give it no secrets: the box never runs jobs that hold them. A pass: the repo's page shows the README, and its Settings, Secrets and variables, Actions, lists none.
 2. At the box, or from the laptop, type `taskbox load workflow`. Save what it prints as `.github/workflows/load.yml` in the test repo, and commit it. A pass: the repo's Actions tab lists `load`. When the box's labels change, make it again.
 3. In your organisation's Settings, Actions, Runner groups, click New runner group. Give it a name of its own. Under Repository access, choose Selected repositories and pick only the test repo. Leave "Allow public repositories" unticked. A pass: the new group lists the test repo alone, and the box's own group still lists only the real repo.
-4. Add the test repo to the source's `repos` in `taskbox.json`, after `jobsFrom`: `{ "name": "<org>/<test repo>", "role": "load", "runnerGroup": "<the new group>" }`. The agents bring it as a PR you merge, and make a release.
-5. At the box, as your admin user, type `taskbox update`. Then as `ci`, type `taskbox check`. A pass: every row OK, the `Test repo` row among them, which says the test repo's runner group lists it alone.
+4. At the box, as your admin user, type `taskbox connect github --load <org>/<test repo> "<the new group>"`. It checks the App with GitHub and keeps the test repo in the box's own settings. A pass: it says the test repo is in this box's settings.
+5. As `ci`, type `taskbox check`. A pass: every row OK, the `Test repo` row among them, which says the test repo's runner group lists it alone.
 6. In your organisation's Settings, GitHub Apps, open your job source App, then Configure. Under Repository access, add the test repo beside the real one. A pass: both repos are listed, and no other. Nothing to do at the box: it reads the test repo from the next session on.
 
 ### Running a load test
@@ -302,7 +314,7 @@ One step at a time.
 In this order.
 
 1. In the job source App's Configure page, remove the test repo. A pass: only the real repo is listed. The box goes on serving the real repo.
-2. Take the test repo out of the source's `repos` (a PR you merge), then type `taskbox update` at the box. A pass: `taskbox check` is all OK, with no `Test repo` row.
+2. At the box, as your admin user, type `taskbox connect github --load off`. A pass: `taskbox check` is all OK, with no `Test repo` row.
 3. Delete the test repo's runner group, then the test repo.
 
 `taskbox undo` past v2.6.0 works with the test repo still connected: the box's own runner group still lists only the real repo, and the release before reads only its own repo. A later update run by that older release refuses an App on two repos, so do step 1 first. After an undo, `taskbox timings` counts the test repo's job lines as real ones, so read its numbers from after the last session.
@@ -330,18 +342,19 @@ v2.6.1 changes nothing a job sees. It gets the box ready for v3, which comes fro
 - The box is reached over Tailscale only. The tailnet policy in [docs/tailnet-policy.md](docs/tailnet-policy.md) decides who reaches it, and says what to do if the box is lost.
 - A laptop running taskbox as a controller reads `hello` and `--json` on `status`, `jobs`, `log` and `check`. Each prints one line of JSON with a version number, and text cut to printable ASCII. `hello` gives the box's release and its install ID, `/opt/taskbox-state/install-id`: made once by the install, root's and read-only, and no password. Read the answer, never the exit code: over Tailscale SSH, a refused command still exits 0 (ran, at the box), probably because macOS's `login` sits between tailscaled and the shell (not checked). A refusal in `--json` says `"kind":"error"`.
 - The install signs the box in, with Tailscale SSH on, port forwarding refused, and MagicDNS's answers off. Remote Login stays off.
-- `remote` is for reading the box. Its login shell is taskbox's own: it runs `status`, `watch`, `jobs`, `timings`, `load`, `log`, `logins`, `check`, `hello`, `away`, `watchdog` and `canary`, and nothing else. Its home is `/private/var/taskbox-remote`, an empty folder that is root's and read-only. The install never changes `/Users/remote`, where macOS protects some folders even from root. Admin work is never done through `remote`: it is done at the box, as the admin user.
-- A person's own account logs in over Tailscale SSH, when the tailnet policy allows it, or over Screen Sharing, when it is in `screenSharingUsers`.
-- Every Tailscale SSH login is kept. A login comes from macOS's own login records, which root's `login` writes with the address it came from, so no client can fake one. The guard reads them every minute, and asks Tailscale once who has that address: that names the tailnet user and the device. It keeps them for 8 days, in `/var/log/taskbox-logins.json` for admins, and as counts with no names in `/var/db/taskbox-logins.json` for every user. Any user with a full shell can type `last` and see the accounts and addresses anyway; `remote` can't.
+- The box's accounts are named in `taskbox.json`'s `accounts`, by role (v2.7.0). `service` runs the loop and holds the App's key. `agent` is for reading the box over Tailscale SSH. `people` are your own standard accounts. taskbox makes the service and the agent, and never makes, changes or deletes a person's account. No role may be an admin. `taskbox policy` prints the tailnet policy for them. With `approverKey` set, taskbox also makes `taskbox-ws1`, the account a workspace runs in: hidden, with no password, in a group of its own, and denied cron and at. The box trusts the key only once it is pinned at the box: `taskbox update` shows its fingerprint before your yes, and a new key needs a statement signed by the old one, and its fingerprint's last 6 characters typed at the box. An update that changes the files that decide trust names them before your yes.
+- The agent account is for reading the box. Its login shell is taskbox's own: it runs `status`, `watch`, `jobs`, `timings`, `load`, `log`, `logins`, `check`, `hello`, `away`, `watchdog`, `canary`, `queue`, `wait`, `progress`, `release`, `deny`, `signed` and `workspaces`, and nothing else. The last seven are an agent's workspace commands: each writes one request for the guard, or reads root's state, and none gives anyone more of the box. It has no password. Its home is `/private/var/taskbox-<agent>`, an empty folder that is root's and read-only. The install never changes `/Users/<agent>`, where macOS protects some folders even from root. The agent can't log in at the box's screen. Admin work is never done through it: it is done at the box, as the admin user.
+- A person's own account logs in over Screen Sharing, when it is in `accounts.people`, and over Tailscale SSH only when it is also in `accounts.ssh`, which is empty by default.
+- Every Tailscale SSH login is kept. A login comes from macOS's own login records, which root's `login` writes with the address it came from, so no client can fake one. The guard reads them every minute, and asks Tailscale once who has that address: that names the tailnet user and the device. It keeps them for 8 days, in `/var/log/taskbox-logins.json` for admins, and as counts with no names in `/var/db/taskbox-logins.json` for every user. Any user with a full shell can type `last` and see the accounts and addresses anyway; the agent can't.
 - tailscaled writes its log to `/var/log/taskbox-tailscaled.log`: root's, group admin, mode 640. If the guard finds it readable by every user, it moves it aside for root only, makes a new one and restarts tailscaled. It keeps it under 2 MB, with the last part in `taskbox-tailscaled.log.0`. The log is read for two things only, each shown as unverified, since a client on the tailnet can write lines there: whether check mode asked, and sessions with no login record. "Check asked" means tailscaled logged a check it fetched. A wait of 5 seconds or more before a session is shown as that wait, "likely a check". A session with no terminal, such as `ssh box taskbox status`, has a login record too, so it is a login like any other.
 - If tailscaled's LaunchDaemon is on disk but not loaded for 30 seconds, the guard loads it, says so in its log, and tries again later if that fails. `taskbox undo` loads tailscaled again from a one-shot LaunchDaemon of its own, so an undo typed over Tailscale SSH can't leave it unloaded.
-- SFTP and `scp` to `remote` fail. tailscaled serves SFTP with its own file server, run as the user, which never goes through the user's shell. So the box's tailscaled runs with SFTP turned off (`TS_SSH_DISABLE_SFTP`), and the Tailscale row in `taskbox check` fails if its LaunchDaemon differs from taskbox's. v2.0.0 and v2.0.1 left SFTP on.
+- SFTP and `scp` to the agent fail. tailscaled serves SFTP with its own file server, run as the user, which never goes through the user's shell. So the box's tailscaled runs with SFTP turned off (`TS_SSH_DISABLE_SFTP`), and the Tailscale row in `taskbox check` fails if its LaunchDaemon differs from taskbox's. v2.0.0 and v2.0.1 left SFTP on.
 - Screen Sharing works over Tailscale only. macOS can't bind it to one network, so pf drops its port, 5900, on every interface but Tailscale's (`utun99`, set by `tailscaleTun`).
 - The guard keeps those pf rules in place: a root LaunchDaemon that runs at boot and every minute. Each time it finds them missing it puts them back and drops Screen Sharing's connections from off Tailscale. `taskbox check` shows it on the "Screen Sharing guard" line.
 - If the rules went missing when a VM started, the box starts no VM while Screen Sharing is on, until a later release shows VM starts leave them alone.
 - While Screen Sharing is on, the box starts VMs only if:
   - the guard is running;
-  - Screen Sharing allows only the users in `screenSharingUsers`, each a standard user, in System Settings, General, Sharing, Screen Sharing, behind the info button. taskbox names nobody by default;
+  - Screen Sharing allows only the users in `accounts.people`, each a standard user, and the admins, in System Settings, General, Sharing, Screen Sharing, behind the info button. taskbox names nobody by default. The admins come through the Administrators group, which macOS puts on the list. taskbox keeps it, so an admin can do admin work at the box from a laptop, still over Tailscale only and its policy. Anyone else on the list fails the row;
   - no VNC password is set, and nobody may ask permission to share the screen.
   Otherwise the "Sharing services off" line fails, and the next step is to turn Screen Sharing off. A VM still waiting for a job is deleted when that line starts failing.
 - A VM reaches the box for DNS only: Softnet blocks the box's bridge address for every VM.
@@ -353,9 +366,18 @@ v2.6.1 changes nothing a job sees. It gets the box ready for v3, which comes fro
 v2.3.0 renames taskbox's launchd services to `local.taskbox.loop`, `local.taskbox.guard` and `local.taskbox.tailscaled`. The update to it is run by v2.2.x's own code, which knows only the old names, so it takes two updates:
 1. As your admin user, type `taskbox update`. It installs v2.3.0, and every service keeps its old name for now.
 2. `taskbox check` then has a FAIL line, "Service names": type `taskbox update` once more. Before the yes, it says it also moves the services to their new names. It moves the guard and tailscaled at once, with a few seconds without Tailscale. The loop moves by itself once no job runs: in the Tart test, about 9 minutes after the second update.
-`taskbox undo` after step 1 goes back to v2.2.x as it was. After step 2, it still goes back to v2.2.x, and puts the guard's and tailscaled's old names back; log ci out and in, and the loop follows.
+`taskbox undo` after step 1 goes back to v2.2.x as it was. After step 2, it still goes back to v2.2.x, and puts the guard's and tailscaled's old names back; log the service account out and in, and the loop follows.
 
 This repo carries no old-named plists. A private copy for a box first installed under other labels keeps its three old plists in `launchd/`, with `previousLabelPrefix`, until the box has had both updates: a box still on v2.2.x is updated by code that reads them.
+
+## Updating a box to v2.7.0
+
+v2.7.0 names the box's accounts in `accounts`, by role. A box installed before it keeps its accounts, so nothing is made or renamed. In your own copy, before you merge v2.7.0, `taskbox.json` must have `accounts` with the box's own names: `"service": "ci"`, `"agent"` as your `remoteUser` (or `"remote"`), and `"people"` as your `screenSharingUsers`. Keep those two old keys beside it, with the same names, for this release. Without `accounts`, v2.7.0's code refuses to run, and `taskbox undo` goes back.
+1. As your admin user, type `taskbox update`. One update is enough.
+2. `taskbox check`: the "Service account" and "Agent account" lines should say OK, and the agent line names the account a laptop pairs with.
+3. `taskbox policy --owner <your Tailscale login>` prints the tailnet policy's entries. From v2.7.0 a person gets Tailscale SSH only when named in `accounts.ssh`, so a box from before it loses the `check` rule for its people unless `accounts.ssh` names them. If so, replace taskbox's `ssh` and `sshTests` entries in the admin console with the ones printed. From v2.7.0 on, an update names any such change before the yes.
+`taskbox undo` goes back with nothing on the box changed.
+`remoteUser` and `screenSharingUsers` stay in this box's `taskbox.json`, equal to `accounts`, for v2.7.0 only, since v2.6.x's code reads them during the update.
 
 ## Releases
 
@@ -365,12 +387,12 @@ A release is a version tag, such as v2.0.0, on a commit on taskbox `main`, publi
 
 - `install.sh`: the first install. It fetches the pinned bun, checks its hash and hands over to `src/cli.ts`. It is the one shell file.
 - `src/install.ts`: the first install and every update, one code path. `src/layout.ts`: where installs live. `/opt/taskbox` links to the install folder, and an update or undo moves that link in one step. `/usr/local/bin/taskbox` puts the command on every user's PATH.
-- `src/vm.ts`: the VM engine, the one interface the loop, the checks and the install use. `docs/vm-engines.md` says what any engine must give. `src/tart.ts`: Tart, the one engine, and every Tart command taskbox runs. `src/guest.ts`: what differs inside a macOS and a Linux guest. `src/kinds.ts`: asks the scheduler which VM a slot starts next. `src/scheduler.ts`: the scheduler, a function with no side effects. `src/source.ts`: job sources. `src/classes.ts`: priority classes. `src/timings.ts`: `taskbox timings`. `src/shell.ts`: `remote`'s login shell. `src/logins.ts`: `taskbox logins`, and the guard's reading of tailscaled's log.
+- `src/vm.ts`: the VM engine, the one interface the loop, the checks and the install use. `docs/vm-engines.md` says what any engine must give. `src/tart.ts`: Tart, the one engine, and every Tart command taskbox runs. `src/guest.ts`: what differs inside a macOS and a Linux guest. `src/kinds.ts`: asks the scheduler which VM a slot starts next. `src/scheduler.ts`: the scheduler, a function with no side effects. `src/source.ts`: job sources. `src/classes.ts`: priority classes. `src/timings.ts`: `taskbox timings`. `src/shell.ts`: the agent's login shell. `src/access.ts`: the roles and the `accounts` block. `src/accounts.ts`: the accounts taskbox makes. `src/policy.ts`: `taskbox policy`. `src/boxsettings.ts`: the box's own settings. `src/connect.ts`, `src/connectflow.ts` and `src/listen.ts`: `taskbox connect github`. `src/logins.ts`: `taskbox logins`, and the guard's reading of tailscaled's log. `src/approver.ts`: the approver key, which turns workspaces on, and what an update does with a new one. `src/pin.ts`: root's files for the pinned key and the workspace account. `src/gate.ts`: the workspace account's login shell, which opens only while its workspace is Active in this boot. `src/workspace/agent.ts`: the agent's workspace commands. `src/workspace/show.ts`: `taskbox workspaces`. `src/workspace/clear.ts`: `taskbox clear`, which deletes a workspace account's files as that account.
 - `src/loop.ts`: the runner loop. Per job it runs the checks, registers a one-job runner, clones the pinned image, starts it with Softnet, runs the job and deletes the VM. Softnet blocks the box's own public address for the VM, which it reads each time from Cloudflare's trace, so a job can't reach the router through it. If it can't read the address, it starts no VM.
 - `src/checks.ts` and `src/ops.ts`: `taskbox check` and the other commands at the box. The checks are also run before every VM.
 - `taskbox.json`: one box's settings: the organisation, the App ID, the runner group, the repo it serves, the project, the users, each kind's label, image and size, and the limits. It is never in this repo: each owner keeps their own in a private copy. `taskbox.example.json`: the same shape with made-up values.
 - `versions.json`: every tool the box runs, pinned by version and SHA-256.
-- `launchd/`: the LaunchAgent that runs the loop in `ci`'s login session, and the guard's and tailscaled's LaunchDaemons, all labelled `local.taskbox.*`. A box installed under other labels names their prefix in `previousLabelPrefix`, and its copy of taskbox keeps the three plists under that prefix too, the same but for the Label. The update to the first release with the new labels is run by the install before it, which reads those files, so every service keeps its old name and runs the new code. Type `taskbox update` once more: the new code boots out the old guard and tailscaled, removes the old files and loads the new ones. The loop sees the new LaunchAgent and restarts as for an update, once no job runs, under its new label. The public copy carries none of this.
+- `launchd/`: the LaunchAgent that runs the loop in the service account's login session, and the guard's and tailscaled's LaunchDaemons, all labelled `local.taskbox.*`. A box installed under other labels names their prefix in `previousLabelPrefix`, and its copy of taskbox keeps the three plists under that prefix too, the same but for the Label. The update to the first release with the new labels is run by the install before it, which reads those files, so every service keeps its old name and runs the new code. Type `taskbox update` once more: the new code boots out the old guard and tailscaled, removes the old files and loads the new ones. The loop sees the new LaunchAgent and restarts as for an update, once no job runs, under its new label. The public copy carries none of this.
 - `src/guard.ts`: the guard's pf rules, and the record it leaves for `taskbox check` and the loop.
 - `docs/build-tailscale.md` and its workflow: builds tailscaled twice, compares the builds, and attaches them to a draft release for `versions.json` to pin.
 

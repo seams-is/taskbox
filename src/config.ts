@@ -1,6 +1,9 @@
 // Settings, pins and paths. Paths take a root so tests run in a temp folder.
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { type Accounts, oldKeyProblem, POOL_USER, validateAccounts, workspacesProblem } from "./access.ts";
+import type { KeyChange } from "./approver.ts";
+import { layer, readBoxFile } from "./boxsettings.ts";
 import { type EngineName, ENGINES } from "./vm.ts";
 
 export interface Config {
@@ -50,9 +53,17 @@ export interface Config {
   // Whether a box-check job has shown that a VM start leaves the guard's pf rules in place. Until
   // then a start that took them away stops VMs while Screen Sharing is on.
   vmnetPfProven?: boolean;
-  // Remote access. Tailscale SSH logs in as remoteUser, a standard user. Screen
-  // Sharing is for screenSharingUsers only, and pf keeps port 5900 to tailscaled's interface.
-  remoteUser?: string;
+  // v2.7.0: every account taskbox uses, by its role (src/access.ts). Tailscale SSH logs in as
+  // accounts.agent, Screen Sharing is for accounts.people only, and pf keeps port 5900 to
+  // tailscaled's interface.
+  accounts: Accounts;
+  // Workspaces (docs/workspaces-design.md): the owner's approver key turns them on, with one pool
+  // account. The box trusts it only once it is pinned at the box (approver.ts). approverKeyChange is
+  // the old key's signed statement naming a new one.
+  approverKey?: string; // shape only, not trust: approver.ts trustedKey decides
+  approverKeyChange?: KeyChange;
+  // Read by v2.6.x's code during the update to v2.7.0. Accepted beside accounts for one release
+  // when it equals accounts.people; v2.7.0's code never reads it.
   screenSharingUsers?: string[];
   tailscaleTun?: string; // tailscaled's --tun: a fixed utun number, so pf can name it
   // v2.1.0: a second VM kind, an arm64 Ubuntu VM with Docker, for jobs labelled linux.label. The
@@ -70,6 +81,9 @@ export interface Config {
   // v2.4.0 (docs/scheduling-design.md): where the box reads what is waiting, how it ranks it, and the
   // timings its rules use. Every value is the owner's: the code names no org, repo, App or label.
   sources?: SourceSettings[];
+  // Set by loadConfig, never in a file: the keys the box's own settings set, or why they were set aside.
+  boxKeys?: string[];
+  boxProblem?: string;
   classes?: ClassRule[];
   timings?: Partial<Timings>;
   // v2.5.0 (docs/away-ready-design.md): how the box behaves while the owner is away. Checked by checkAway.
@@ -126,7 +140,7 @@ export interface LoadRepo {
   role: "load";
   runnerGroup: string;
 }
-export type SourceSettings = { type: "github-actions"; appId: number; repos: (string | LoadRepo)[] } | { type: "none" };
+export type SourceSettings = { type: "github-actions"; appId: number; repos: (string | LoadRepo)[]; app?: string } | { type: "none" };
 
 // Every repo the box serves, the real one first, each with its role and runner group (v2.6.0).
 export type Role = "jobs" | "load";
@@ -181,6 +195,20 @@ export function sourceOf(cfg: Config): SourceSettings {
 }
 
 // The read-only App's ID when the source is GitHub Actions, else undefined.
+// The job source's key file, named by its App's ID (connect-github design), so a key and
+// the source naming it always agree. actions-key.pem, from before, is read while it is the only one.
+export function sourceKeyPath(p: Pick<Paths, "actionsKeyDir">, appId: number | undefined): string {
+  const legacy = join(p.actionsKeyDir, "actions-key.pem");
+  if (appId === undefined) return legacy;
+  const named = join(p.actionsKeyDir, `actions-${appId}.pem`);
+  return !existsSync(named) && existsSync(legacy) ? legacy : named;
+}
+
+// The paths with the job source's own key file in actionsKey.
+export function withSourceKey<P extends Paths>(p: P, cfg: Config): P {
+  return { ...p, actionsKey: sourceKeyPath(p, sourceAppId(cfg)) };
+}
+
 export function sourceAppId(cfg: Config): number | undefined {
   const s = sourceOf(cfg);
   return s.type === "github-actions" ? s.appId : undefined;
@@ -222,15 +250,13 @@ export function pathsForKind(p: Paths, kind: Kind): Paths {
   return kind === "linux" ? { ...p, pull: p.pullLinux, runnerTarball: p.runnerTarballLinux } : p;
 }
 
-const USER_NAME = /^[A-Za-z_][A-Za-z0-9._-]{0,31}$/;
 export const DEFAULT_TUN = "utun99";
-export const DEFAULT_REMOTE_USER = "remote";
-// The remote user's login shell: taskbox's commands only (src/shell.ts).
+// The agent account's login shell: taskbox's commands only (src/shell.ts).
 export const REMOTE_SHELL = "/opt/taskbox/bin/taskbox-shell";
+// The pool account's login shell: the gate (docs/workspaces-design.md, section 5.4), from the install.
+export const GATE_SHELL = "/opt/taskbox/bin/taskbox-gate";
 // The box's tag on the tailnet: the policy's rules for it are the only ones that reach it.
 export const TAILNET_TAG = "tag:taskbox";
-// Nobody by default (v2.1.1): a fresh box names its own Screen Sharing users in taskbox.json.
-export const DEFAULT_SCREEN_SHARING_USERS: string[] = [];
 
 export interface Pin {
   version: string;
@@ -254,10 +280,12 @@ export interface Versions {
   tailscale?: { version: string; asset: number; url?: string; sha256: string; files?: { tailscale?: string; tailscaled?: string } };
 }
 
-// A state file that ci (or a job that reached ci) could have replaced. Read without following a
+// A state file that the service (or a job that reached the service) could have replaced. Read without following a
 // symlink or blocking on a pipe, capped in size, and only as a JSON object. Anything else reads as
 // missing. Root reads these during update and undo.
-export function readStateJson<T extends object>(path: string, maxBytes = 1_000_000): T | undefined {
+// oneLink false is for a file in a folder only root writes, such as accounts.json, where a second name
+// made from elsewhere gives nobody more.
+export function readStateJson<T extends object>(path: string, maxBytes = 1_000_000, oneLink = true): T | undefined {
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -266,8 +294,8 @@ export function readStateJson<T extends object>(path: string, maxBytes = 1_000_0
   }
   try {
     const st = fstatSync(fd);
-    // One link only: ci can't hard-link a file it can't read into its own folder for root to parse.
-    if (!st.isFile() || st.nlink !== 1 || st.size > maxBytes) return undefined;
+    // One link only: the service can't hard-link a file it can't read into its own folder for root to parse.
+    if (!st.isFile() || (oneLink && st.nlink !== 1) || st.size > maxBytes) return undefined;
     const v: unknown = JSON.parse(readFileSync(fd, "utf8"));
     return v && typeof v === "object" && !Array.isArray(v) ? (v as T) : undefined;
   } catch {
@@ -277,7 +305,7 @@ export function readStateJson<T extends object>(path: string, maxBytes = 1_000_0
   }
 }
 
-// The last part of a text file ci could have replaced, on the same terms as readStateJson.
+// The last part of a text file the service could have replaced, on the same terms as readStateJson.
 export function readStateTail(path: string, maxBytes = 2_000_000): string {
   let fd: number;
   try {
@@ -337,7 +365,7 @@ function checkLabels(c: Config): void {
 }
 
 // v2.4.0: sources, classes and timings.
-function checkScheduling(c: Config, warn: (line: string) => void = () => {}): void {
+export function checkScheduling(c: Config, warn: (line: string) => void = () => {}): void {
   if ("sources" in c) {
     const s: unknown = c.sources;
     if (!Array.isArray(s) || s.length > 1) throw new Error("taskbox.json: sources is a list of one job source, for now");
@@ -364,7 +392,9 @@ function checkScheduling(c: Config, warn: (line: string) => void = () => {}): vo
         if (r.runnerGroup === c.runnerGroup) throw new Error("taskbox.json: a test repo's runnerGroup is a runner group of its own, never the box's runnerGroup");
       }
       if (c.actionsAppId !== undefined && c.actionsAppId !== x.appId) throw new Error("taskbox.json: actionsAppId and the source's appId differ");
-      for (const k of Object.keys(x)) if (!["type", "appId", "repos"].includes(k)) throw new Error(`taskbox.json: a source has no setting ${k.slice(0, 30)}`);
+      // app: the App's slug, kept by taskbox connect github for the lines that name it.
+      if ("app" in x && (typeof x.app !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(x.app))) throw new Error("taskbox.json: a source's app is the App's slug");
+      for (const k of Object.keys(x)) if (!["type", "appId", "repos", "app"].includes(k)) throw new Error(`taskbox.json: a source has no setting ${k.slice(0, 30)}`);
     }
   }
   if ("classes" in c) {
@@ -400,6 +430,17 @@ function checkScheduling(c: Config, warn: (line: string) => void = () => {}): vo
       if (!Number.isInteger(v) || (v as number) < b[0] || (v as number) > b[1]) throw new Error(`taskbox.json: timings.${k} is ${b[0]} to ${b[1]}`);
     }
   }
+}
+
+// The accounts block (v2.7.0), in its own function, apart from the scheduling settings. The
+// service account holds the App key, so it is never the agent or a person (access.ts).
+function checkAccounts(c: Config): void {
+  const old = oldKeyProblem(c as unknown as Record<string, unknown>);
+  if (old) throw new Error(old);
+  if (!("accounts" in c)) throw new Error("taskbox.json: accounts names the box's accounts: { \"service\": ..., \"agent\": ..., \"people\": [...] }");
+  c.accounts = validateAccounts(c.accounts);
+  const ws = workspacesProblem(c);
+  if (ws) throw new Error(ws);
 }
 
 // v2.5.0 away-ready settings (docs/away-ready-design.md), each with a default. publicAddress names
@@ -462,10 +503,35 @@ export function checkAway(c: Config, warn: (line: string) => void = () => {}): v
   if (w.watchdogWaitMinutes >= w.canaryIntervalMinutes) throw new Error("taskbox.json: away.watchdogWaitMinutes must be shorter than away.canaryIntervalMinutes");
 }
 
+// The release's taskbox.json, with the box's own source over it when boxFile is given. A box file that
+// can't be read, or whose source fails with this release, is set aside: the release's settings are
+// used alone, and boxProblem says why for taskbox check and the update (docs/connect-github-design.md).
 // warn hears each setting taskbox passes over: from v2.6.1 an unknown key inside away or timings is
 // read past with a warning, so a later release's taskbox.json can add one (docs/v3-design.md §5.7).
-export function loadConfig(dir: string, warn: (line: string) => void = () => {}): Config {
-  const c = readJson<Config>(join(dir, "taskbox.json"));
+export function loadConfig(dir: string, boxFile?: string, rootUid = 0, warn: (line: string) => void = () => {}): Config {
+  return loadConfigFrom(readJson<Record<string, unknown>>(join(dir, "taskbox.json")), boxFile, rootUid, warn);
+}
+
+// The same, from a taskbox.json already read, such as the release's before the owner's yes.
+export function loadConfigFrom(release: Record<string, unknown>, boxFile?: string, rootUid = 0, warn: (line: string) => void = () => {}): Config {
+  if (boxFile === undefined) return checkConfig(structuredClone(release) as unknown as Config, warn);
+  const bf = readBoxFile(boxFile, rootUid);
+  let problem = bf.problem;
+  if (bf.settings) {
+    try {
+      const c = checkConfig(structuredClone(layer(release, bf.settings)) as unknown as Config, warn);
+      c.boxKeys = Object.keys(bf.settings).filter((k) => k !== "$comment");
+      return c;
+    } catch (e) {
+      problem = (e as Error).message.replace(/^taskbox\.json: /, "with box.json, ");
+    }
+  }
+  const c = checkConfig(structuredClone(release) as unknown as Config, warn);
+  if (problem) c.boxProblem = problem;
+  return c;
+}
+
+function checkConfig(c: Config, warn: (line: string) => void = () => {}): Config {
   if (!Number.isInteger(c.appId) || c.appId <= 0) throw new Error("taskbox.json has no App ID yet");
   if (typeof c.org !== "string" || !GITHUB_NAME.test(c.org)) throw new Error("taskbox.json: org is a GitHub organisation's name");
   if (typeof c.repo !== "string" || !GITHUB_NAME.test(c.repo)) throw new Error("taskbox.json: repo is the name of taskbox's repo in org");
@@ -498,18 +564,11 @@ export function loadConfig(dir: string, warn: (line: string) => void = () => {})
   if ("quietTurnMinutes" in c && (!Number.isInteger(c.quietTurnMinutes) || c.quietTurnMinutes! < (c.turnIdleMinutes ?? DEFAULT_TURN_IDLE_MINUTES) || c.quietTurnMinutes! > 240)) throw new Error("taskbox.json: quietTurnMinutes is turnIdleMinutes to 240");
   if ("engine" in c && !(ENGINES as readonly unknown[]).includes(c.engine)) throw new Error(`taskbox.json: engine is one of ${ENGINES.join(", ")}`);
   if ("actionsAppId" in c && (!Number.isInteger(c.actionsAppId) || c.actionsAppId! <= 0 || c.actionsAppId === c.appId)) throw new Error("taskbox.json: actionsAppId is the second App's ID, never the first's");
-  if ("kind" in c || "base" in c) throw new Error("taskbox.json: kind is set by taskbox, never in the file");
+  if ("kind" in c || "base" in c || "boxKeys" in c || "boxProblem" in c) throw new Error("taskbox.json: kind is set by taskbox, never in the file, and so are boxKeys and boxProblem");
   for (const k of ["holdUsers", "holdMaxHours", "remoteHoldHoursPerDay"]) if (k in c) throw new Error(`taskbox.json: ${k} is gone: hold and share went in v2.2.0, and jobs share the box all the time`);
   if ("softnetBlock" in c) throw new Error("taskbox.json: softnetBlock is gone: every VM is blocked from the box, its public address and the tailnet already");
   if ("noVMWhileLoggedIn" in c) throw new Error("taskbox.json: noVMWhileLoggedIn is gone: the box shares itself with jobs");
-  // ci holds the App key, so it is never the remote user or a Screen Sharing user.
-  if ("remoteUser" in c && (typeof c.remoteUser !== "string" || !USER_NAME.test(c.remoteUser) || c.remoteUser.toLowerCase() === CI_USER)) {
-    throw new Error("taskbox.json: remoteUser is one standard user's name, never ci");
-  }
-  const ss: unknown = "screenSharingUsers" in c ? c.screenSharingUsers : [];
-  if (!Array.isArray(ss) || ss.some((n) => typeof n !== "string" || !USER_NAME.test(n) || n.toLowerCase() === CI_USER)) {
-    throw new Error("taskbox.json: screenSharingUsers is a list of the box's other users, never ci");
-  }
+  checkAccounts(c);
   if ("tailscaleTun" in c && (typeof c.tailscaleTun !== "string" || !/^utun\d{1,3}$/.test(c.tailscaleTun))) {
     throw new Error("taskbox.json: tailscaleTun is a utun name, such as utun99");
   }
@@ -518,18 +577,23 @@ export function loadConfig(dir: string, warn: (line: string) => void = () => {})
 
 // The project's name and an earlier label prefix, from a taskbox.json that may not be complete yet,
 // for the paths every command needs before anything else is read.
-export function boxNames(dir: string): { project: string; previousLabelPrefix?: string } {
+export type BoxNames = { project: string; service: string; agent?: string; previousLabelPrefix?: string };
+
+export function boxNames(dir: string): BoxNames {
   let c: unknown;
   try {
     c = readJson<unknown>(join(dir, "taskbox.json"));
   } catch {
     throw new Error("taskbox.json can't be read");
   }
-  const o = c && typeof c === "object" ? (c as { project?: unknown; previousLabelPrefix?: unknown }) : {};
+  const o = c && typeof c === "object" ? (c as { project?: unknown; previousLabelPrefix?: unknown; accounts?: unknown }) : {};
   if (typeof o.project !== "string" || !PROJECT_NAME.test(o.project)) throw new Error("taskbox.json has no project");
+  if (o.accounts === undefined) throw new Error("taskbox.json has no accounts.service");
+  // validateAccounts says which field is wrong, as "taskbox.json: ...".
+  const a = validateAccounts(o.accounts);
   const prev = o.previousLabelPrefix;
   const ok = typeof prev === "string" && LABEL_PREFIX_SHAPE.test(prev) && prev !== LABEL_PREFIX;
-  return ok ? { project: o.project, previousLabelPrefix: prev } : { project: o.project };
+  return { project: o.project, service: a.service, ...(a.agent !== undefined ? { agent: a.agent } : {}), ...(ok ? { previousLabelPrefix: prev } : {}) };
 }
 
 // The repo v2 releases are read from (v2.6.1): releaseRepo when set, else repo.
@@ -546,7 +610,6 @@ export function loadVersions(dir: string): Versions {
   return readJson<Versions>(join(dir, "versions.json"));
 }
 
-export const CI_USER = "ci";
 // launchd's names for taskbox's three services, and their plist files' names. "local." is the usual
 // start for a job that belongs to no one's domain.
 export const LABEL_PREFIX = "local.taskbox";
@@ -556,6 +619,12 @@ export const LAUNCHCTL_MS = 60_000;
 export const AGENT_LABEL = `${LABEL_PREFIX}.loop`;
 export const TAILSCALED_LABEL = `${LABEL_PREFIX}.tailscaled`;
 export const GUARD_LABEL = `${LABEL_PREFIX}.guard`;
+// tailscaled's socket, in a folder of root's that only root and the service account may enter
+// (tssocket.ts), so no other account on the box, a workspace's pool account included, reaches
+// tailscaled's local API. Every caller and the LaunchDaemon's --socket name it from here.
+export const TAILSCALE_SOCKET = "/var/run/taskbox-tailscale/tailscaled.socket";
+// Where it was before, for remove and for an undo to a release that still uses it.
+export const OLD_TAILSCALE_SOCKET = "/var/run/taskbox-tailscaled.socket";
 const LABEL_PREFIX_SHAPE = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
 const GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 export const PROJECT_NAME = /^[a-z][a-z0-9-]{0,30}$/;
@@ -582,7 +651,9 @@ export interface Paths {
   tailscaledPlist: string; // /Library/LaunchDaemons/<TAILSCALED_LABEL>.plist, run by root
   tailscaledEnvFile: string; // /etc/tailscale/tailscaled-env.txt: tailscaled reads its switches from it, so it must not exist
   tailscale: string; // the tailscale command, which talks to tailscaled over its socket
-  tailscaleSocket: string;
+  tailscaleSocket: string; // TAILSCALE_SOCKET
+  tailscaleSocketDir: string; // its folder: root's, 700, with an access entry for the service account
+  oldTailscaleSocket: string; // OLD_TAILSCALE_SOCKET
   tailscaleState: string; // /var/db/taskbox-tailscale: root's alone
   guardState: string; // /var/run/taskbox-guard.json: what the guard last found, written by root
   loopWatchState: string; // /var/run/taskbox-loopwatch.json: the guard's last restart of a stuck loop, written by root
@@ -590,28 +661,44 @@ export interface Paths {
   tailscaledLog: string; // /var/log/taskbox-tailscaled.log: tailscaled's output, root's, group admin, 640, kept under 2 MB by the guard (logins.ts)
   loginsRecord: string; // /var/log/taskbox-logins.json: the guard's record of every Tailscale SSH login for 8 days, root's, group admin, 640
   loginsSeen: string; // /var/db/taskbox-logins.json: the same with no tailnet user, device or address, root's, read by anyone
-  shared: string; // /opt/taskbox-state/<project>: ci's, readable by every user, for taskbox jobs
+  shared: string; // /opt/taskbox-state/<project>: the service's, readable by every user, for taskbox jobs
   installId: string; // /opt/taskbox-state/install-id: root's, read-only, made once (answers.ts)
-  remoteHome: string; // /private/var/taskbox-remote: remote's home, root's and empty (install.ts placeRemote)
+  accountsRecord: string; // /opt/taskbox-state/accounts.json: root's, the accounts taskbox made (accounts.ts)
+  boxSettings: string; // /opt/taskbox-state/box.json: root's, the box's own settings (boxsettings.ts)
+  agentHome?: string; // /private/var/taskbox-<agent>: the agent's home, root's and empty (install.ts placeAgent)
+  approverPin: string; // /opt/taskbox-state/approver.json: root's, the approver key the box trusts (pin.ts)
+  poolRecord: string; // /opt/taskbox-state/pool.json: root's, the pool account and group taskbox made (pin.ts)
+  poolHome: string; // /Users/<pool account>: its own, mode 700
+  workspaces: string; // /opt/taskbox-state/workspaces.json: root's, 644, the guard its only writer (workspace/store.ts)
+  workspaceSpool: string; // /opt/taskbox-state/workspace-spool: the agent account's, 700; root only reads and unlinks in it
+  workspaceProgress: string; // /opt/taskbox-state/workspace-progress: the agent account's, 700; the agent's last words (workspace/agent.ts)
+  verifyTmp: string; // /var/run/taskbox-verify: root's, 755, where ssh-keygen as nobody reads a signature (approval.ts)
+  cronDeny: string; // /usr/lib/cron/cron.deny: users cron refuses
+  atDeny: string; // /usr/lib/cron/at.deny: users at refuses
+  cronAllow: string; // /usr/lib/cron/cron.allow: when there, the only users cron takes
+  atAllow: string; // /usr/lib/cron/at.allow: when there, the only users at takes
   jobsFile: string; // one line per job, for all time
   requests: string; // /opt/taskbox-state/<project>-requests: where holds and shares were left before v2.2.0; cleared, then removed
   rmPlist: string; // Screen Sharing's VNC password and permission settings
   vncPassword: string;
-  ciHome: string;
-  state: string; // /Users/ci/.taskbox: the box's key, and a folder per project
+  service: string; // accounts.service, the account that runs the loop
+  agent?: string; // accounts.agent
+  serviceHome: string; // /Users/<service>
+  state: string; // /Users/<service>/.taskbox: the box's key, and a folder per project
   project: string; // the project this box serves, from taskbox.json
-  projectState: string; // /Users/ci/.taskbox/<project>
+  projectState: string; // /Users/<service>/.taskbox/<project>
   prev: string; // /opt/taskbox.prev: root's link to the install before, kept for taskbox undo
-  key: string;
+  key: string; // the runner App's key: /opt/taskbox-keys/runner.pem, or oldKey while that is missing
+  oldKey: string; // ~/.taskbox/app-key.pem: where the runner App's key was before v2.8.0, read only
   actionsKeyDir: string; // /opt/taskbox-keys: root's, 755, outside every install folder
-  actionsKey: string; // the second App's key in it: ci's, mode 600, Actions read on jobsFrom only
+  actionsKey: string; // the second App's key in it: the service's, mode 600, Actions read on jobsFrom only
   log: string;
   loopState: string;
   pull: string; // the download's progress, written by the loop: the macOS image's
   pullLinux: string; // the Linux image's download
-  stopped: string; // written by taskbox stop; removed by taskbox start and at ci's next login
+  stopped: string; // written by taskbox stop; removed by taskbox start and at the service's next login
   drain: string; // written by taskbox stop --drain; removed once drained, by taskbox start, and at the loop's start
-  tartHome: string; // Tart's own folder, ~ci/.tart, where it caches the image
+  tartHome: string; // Tart's own folder, ~<service>/.tart, where it caches the image
   // The loop's launchd label, then its label under an earlier install's prefix while it may still run.
   loopLabels: string[];
   previousLabelPrefix?: string; // from taskbox.json, for remove
@@ -619,11 +706,14 @@ export interface Paths {
 
 // Each project's state is in its own folder, so a second project in its own VM later gets its own
 // without moving anything. The project's name comes from taskbox.json (projectOf).
-export function paths(root: string, project: string, previousLabelPrefix?: string): Paths {
+export function paths(root: string, box: BoxNames): Paths {
+  const { project, service, agent, previousLabelPrefix } = box;
   if (!PROJECT_NAME.test(project)) throw new Error(`not a project name: ${project.replace(/[^\x20-\x7e]/g, "").slice(0, 30)}`);
+  // Checked again here, since a path is made from each name.
+  validateAccounts({ service, ...(agent !== undefined ? { agent } : {}) });
   const opt = join(root, "opt/taskbox");
-  const ciHome = join(root, "Users", CI_USER);
-  const state = join(ciHome, ".taskbox");
+  const serviceHome = join(root, "Users", service);
+  const state = join(serviceHome, ".taskbox");
   const proj = join(state, project);
   return {
     opt,
@@ -642,7 +732,9 @@ export function paths(root: string, project: string, previousLabelPrefix?: strin
     tailscaledPlist: join(root, "Library/LaunchDaemons", `${TAILSCALED_LABEL}.plist`),
     tailscaledEnvFile: join(root, "private/etc/tailscale/tailscaled-env.txt"),
     tailscale: join(opt, "bin/tailscale"),
-    tailscaleSocket: join(root, "private/var/run/taskbox-tailscaled.socket"),
+    tailscaleSocket: join(root, "private", TAILSCALE_SOCKET),
+    tailscaleSocketDir: join(root, "private", dirname(TAILSCALE_SOCKET)),
+    oldTailscaleSocket: join(root, "private", OLD_TAILSCALE_SOCKET),
     tailscaleState: join(root, "private/var/db/taskbox-tailscale"),
     guardState: join(root, "private/var/run/taskbox-guard.json"),
     loopWatchState: join(root, "private/var/run/taskbox-loopwatch.json"),
@@ -652,17 +744,37 @@ export function paths(root: string, project: string, previousLabelPrefix?: strin
     loginsSeen: join(root, "private/var/db/taskbox-logins.json"),
     shared: join(root, "opt/taskbox-state", project),
     installId: join(root, "opt/taskbox-state/install-id"),
-    remoteHome: join(root, "private/var/taskbox-remote"),
+    accountsRecord: join(root, "opt/taskbox-state/accounts.json"),
+    boxSettings: join(root, "opt/taskbox-state/box.json"),
+    approverPin: join(root, "opt/taskbox-state/approver.json"),
+    poolRecord: join(root, "opt/taskbox-state/pool.json"),
+    poolHome: join(root, "Users", POOL_USER),
+    workspaces: join(root, "opt/taskbox-state/workspaces.json"),
+    workspaceSpool: join(root, "opt/taskbox-state/workspace-spool"),
+    workspaceProgress: join(root, "opt/taskbox-state/workspace-progress"),
+    verifyTmp: join(root, "private/var/run/taskbox-verify"),
+    cronDeny: join(root, "usr/lib/cron/cron.deny"),
+    atDeny: join(root, "usr/lib/cron/at.deny"),
+    cronAllow: join(root, "usr/lib/cron/cron.allow"),
+    atAllow: join(root, "usr/lib/cron/at.allow"),
+    ...(agent !== undefined ? { agent, agentHome: join(root, "private/var", `taskbox-${agent}`) } : {}),
     jobsFile: join(root, "opt/taskbox-state", project, "jobs.jsonl"),
     requests: join(root, "opt/taskbox-state", `${project}-requests`),
     rmPlist: join(root, "Library/Preferences/com.apple.RemoteManagement.plist"),
     vncPassword: join(root, "Library/Preferences/com.apple.VNCSettings.txt"),
-    ciHome,
+    service,
+    serviceHome,
     state,
     project,
     projectState: proj,
     prev: `${opt}.prev`,
-    key: join(state, "app-key.pem"),
+    // Read when it is used: the first update to v2.8.0 is run by the release before, which leaves the
+    // key in the service's home, so it is read there until runner.pem is written.
+    get key() {
+      const runner = join(root, "opt/taskbox-keys/runner.pem");
+      return !existsSync(runner) && existsSync(this.oldKey) ? this.oldKey : runner;
+    },
+    oldKey: join(state, "app-key.pem"),
     actionsKeyDir: join(root, "opt/taskbox-keys"),
     actionsKey: join(root, "opt/taskbox-keys/actions-key.pem"),
     log: join(proj, "loop.log"),
@@ -671,7 +783,7 @@ export function paths(root: string, project: string, previousLabelPrefix?: strin
     pullLinux: join(proj, "pull-linux.json"),
     stopped: join(proj, "stopped.json"),
     drain: join(proj, "drain.json"),
-    tartHome: join(ciHome, ".tart"),
+    tartHome: join(serviceHome, ".tart"),
     loopLabels: previousLabelPrefix ? [AGENT_LABEL, previousLabels(previousLabelPrefix).loop] : [AGENT_LABEL],
     ...(previousLabelPrefix ? { previousLabelPrefix } : {}),
   };
@@ -685,7 +797,7 @@ export interface Installed {
   tag?: string; // the release, such as v2.0.0
   installedAt: string;
   files: Record<string, string>; // path under opt to SHA-256
-  format?: number; // 2 from this PR on: the install has undo, and state under ~ci/.taskbox/<project>
+  format?: number; // 2 from this PR on: the install has undo, and state under ~<service>/.taskbox/<project>
   // v2.6.1: a release installed by the hop to v3, with its statement, signature and signing key.
   release?: { repo: string; statement: string; signature: string; signer: string };
 }

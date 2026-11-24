@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { beatState } from "./beat.ts";
 import type { Check, CheckContext } from "./checks.ts";
-import { awayOf, CI_USER } from "./config.ts";
+import { awayOf } from "./config.ts";
 import { CLOCK_LIMIT_S, GitHubError, githubLine, githubState } from "./ghfail.ts";
 import { GitHub } from "./github.ts";
 import { Log } from "./log.ts";
@@ -25,7 +25,7 @@ const ago = (ms: number) => {
 // The App's key, its installation and the clock, by one read-only call, as ci or root. For anyone
 // else, who can't read the key, the loop's last recorded runner request and its age.
 export async function githubRow(c: CheckContext, gh?: GitHub): Promise<Row> {
-  const mayReadKey = c.uid === 0 || (c.ciUid !== undefined && c.uid === c.ciUid);
+  const mayReadKey = c.uid === 0 || (c.serviceUid !== undefined && c.uid === c.serviceUid);
   if (!mayReadKey) {
     const loop = readLoop(c.paths.loopState);
     const r = loop.github;
@@ -114,8 +114,8 @@ export async function restartPlanRow(c: CheckContext): Promise<Row> {
   const fv = await c.sys.run("/usr/bin/fdesetup", ["isactive"], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: "" }));
   if (fv.stdout.trim() === "true") return fail("the plan is FileVault off, but FileVault is on. At the box, as your admin user: System Settings, Privacy & Security, FileVault, turn it off");
   const auto = await c.sys.run("/usr/bin/defaults", ["read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: "" }));
-  if (auto.code !== 0 || auto.stdout.trim() !== CI_USER) return fail(`the plan is FileVault off, but ci doesn't log in by itself, so a restart stops at the login window. At the box, as your admin user: System Settings, Users & Groups, "Automatically log in as": ${CI_USER}`);
-  return ok("FileVault is off by the owner's choice, and ci logs in by itself after a restart");
+  if (auto.code !== 0 || auto.stdout.trim() !== c.paths.service) return fail(`the plan is FileVault off, but ${c.paths.service} doesn't log in by itself, so a restart stops at the login window. At the box, as your admin user: System Settings, Users & Groups, "Automatically log in as": ${c.paths.service}`);
+  return ok(`FileVault is off by the owner's choice, and ${c.paths.service} logs in by itself after a restart`);
 }
 
 // In taskbox check (CHECK_EXTRA) and taskbox away. The restart plan is in taskbox away only: a box

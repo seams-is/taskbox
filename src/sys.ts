@@ -12,6 +12,8 @@ export interface RunOptions {
   stdin?: string | Uint8Array;
   timeoutMs?: number;
   env?: Record<string, string>; // added to childEnv's, never in place of it
+  cwd?: string; // the child's folder; the caller's when absent
+  group?: boolean; // the child leads a process group of its own, and a timeout kills the whole group
 }
 
 export interface Proc {
@@ -67,9 +69,20 @@ export function realSys(home: string): Sys {
         stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]),
         stdout: "pipe",
         stderr: "pipe",
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        ...(opts.group ? { detached: true } : {}),
       });
       let timer: ReturnType<typeof setTimeout> | undefined;
-      if (opts.timeoutMs) timer = setTimeout(() => p.kill(9), opts.timeoutMs);
+      const kill = () => {
+        if (opts.group) {
+          try {
+            process.kill(-p.pid, "SIGKILL");
+            return;
+          } catch {}
+        }
+        p.kill(9);
+      };
+      if (opts.timeoutMs) timer = setTimeout(kill, opts.timeoutMs);
       const [stdout, stderr, code] = await Promise.all([
         new Response(p.stdout).text(),
         new Response(p.stderr).text(),

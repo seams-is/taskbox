@@ -1,5 +1,5 @@
 // taskbox jobs: one record per job the box ran, for all time, newest first. The loop appends a line
-// after each VM is deleted. The file sits in a folder the install makes ci's and readable by every
+// after each VM is deleted. The file sits in a folder the install makes the service's and readable by every
 // user, so the owner and agents can read it as remote too. Nothing leaves the box.
 // A job controls its own name and the runner's lines, so every text field is cleaned when written
 // and again when shown. Times, numbers and results come from the loop.
@@ -65,7 +65,7 @@ export function runnerResult(line: string): JobRecord["result"] | undefined {
 export function appendJob(p: Paths, r: JobRecord): void {
   const line = { ...r, job: r.job === undefined ? undefined : clean(r.job).slice(0, 120) };
   appendFileSync(p.jobsFile, `${JSON.stringify(line)}\n`, { mode: 0o644 });
-  chmodSync(p.jobsFile, 0o644); // whatever ci's umask
+  chmodSync(p.jobsFile, 0o644); // whatever the service's umask
 }
 
 const RESULTS = new Set(["passed", "failed", "cancelled", "finished", "stopped", "no job", "box failure"]);
@@ -109,12 +109,12 @@ export function validJob(r: unknown): r is JobRecord {
   );
 }
 
-// The folder and file must be ci's, not links, and writable by ci only; anything else reads as none.
-export function readJobs(p: Paths, ciUid: number | undefined, maxBytes = 5_000_000): JobRecord[] | undefined {
-  if (ciUid === undefined) return undefined;
+// The folder and file must be the service's, not links, and writable by the service only; anything else reads as none.
+export function readJobs(p: Paths, serviceUid: number | undefined, maxBytes = 5_000_000): JobRecord[] | undefined {
+  if (serviceUid === undefined) return undefined;
   try {
     const dir = lstatSync(dirname(p.jobsFile));
-    if (!dir.isDirectory() || dir.uid !== ciUid || (dir.mode & 0o022) !== 0) return undefined;
+    if (!dir.isDirectory() || dir.uid !== serviceUid || (dir.mode & 0o022) !== 0) return undefined;
   } catch {
     return undefined;
   }
@@ -127,8 +127,8 @@ export function readJobs(p: Paths, ciUid: number | undefined, maxBytes = 5_000_0
   }
   try {
     const st = fstatSync(fd);
-    // ci's alone and not a link. A hard link someone else made changes nothing they can read.
-    if (!st.isFile() || st.uid !== ciUid || (st.mode & 0o022) !== 0) return undefined;
+    // The service's alone and not a link. A hard link someone else made changes nothing they can read.
+    if (!st.isFile() || st.uid !== serviceUid || (st.mode & 0o022) !== 0) return undefined;
     // The last maxBytes only, read from the end, so a huge file costs its reader nothing more.
     const len = Math.min(st.size, maxBytes);
     const buf = Buffer.alloc(len);

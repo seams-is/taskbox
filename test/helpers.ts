@@ -1,11 +1,11 @@
 import { spyOn } from "bun:test";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import * as fs from "node:fs";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { Check } from "../src/checks.ts";
-import { assetUrl, type Config, paths } from "../src/config.ts";
+import { assetUrl, type BoxNames, type Config, paths } from "../src/config.ts";
 import type { InstallDeps } from "../src/install.ts";
 import { GitHub } from "../src/github.ts";
 import { Log } from "../src/log.ts";
@@ -35,11 +35,17 @@ export const CFG: Config = {
   vmMemoryMB: 8192,
   vmMaxHours: 24,
   minFreeDiskGB: 60,
+  accounts: { service: "taskbox", agent: "taskbox-agent", people: [] },
 };
+
+// The names paths() takes, for the example's accounts. An earlier label prefix when given.
+export function testBox(previousLabelPrefix?: string): BoxNames {
+  return { project: "app", service: "taskbox", agent: "taskbox-agent", ...(previousLabelPrefix ? { previousLabelPrefix } : {}) };
+}
 
 export function tempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "taskbox-root-"));
-  const p = paths(root, "app");
+  const p = paths(root, testBox());
   mkdirSync(join(p.opt, "runner"), { recursive: true });
   mkdirSync(p.projectState, { recursive: true });
   writeFileSync(p.runnerTarball, "runner tarball bytes");
@@ -47,14 +53,14 @@ export function tempRoot(): string {
   return root;
 }
 
-// The box's own reads on a quiet box: the firewall and FileVault on, sharing off, ci its only user and
+// The box's own reads on a quiet box: the firewall and FileVault on, sharing off, the service its only user and
 // nobody logged in, no default route and no tailnet. A test's own responders come first.
 const QUIET: [string, RunResult][] = [
   ["/bin/launchctl print-disabled system", out('disabled services = {\n\t"com.openssh.sshd" => disabled\n\t"com.apple.screensharing" => disabled\n}\n')],
   ["/usr/sbin/netstat -an -p tcp", out(NETSTAT_CLEAN)],
   ["/bin/ps -axo uid=,comm=", out("0 /sbin/launchd\n")],
-  ["/usr/bin/dscl . -list /Users UniqueID", out("root 0\nci 502\n")],
-  ["/usr/bin/id -u ci", out("502\n")],
+  ["/usr/bin/dscl . -list /Users UniqueID", out("root 0\ntaskbox 502\n")],
+  ["/usr/bin/id -u taskbox", out("502\n")],
   ["/usr/bin/who", out("")],
   ["/sbin/route -n get default", { code: 1, stdout: "", stderr: "route: writing to routing socket: not in table\n" }],
   ["/sbin/ifconfig", out("lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n")],
@@ -62,16 +68,44 @@ const QUIET: [string, RunResult][] = [
   ["/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate", out("Firewall is enabled. (State = 1)\n")],
   ["/usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode", out("Firewall stealth mode is on\n")],
   ["/usr/bin/fdesetup isactive", out("true\n")],
+  // No Tailscale SSH login in macOS's login records (logins.ts).
+  ["/usr/bin/last --libxo json -y -s", out('{"last-information": {"last": []}}\n')],
 ];
 function out(stdout: string): RunResult {
   return { code: 0, stdout, stderr: "" };
 }
 export function quietBox(sys: FakeSys): void {
   sys.fallbacks.push((cmd, args) => QUIET.find(([line]) => line === [cmd, ...args].join(" "))?.[1]);
+  quietAccounts(sys);
+}
+
+// The accounts as v2.7.0 reads them on a quiet box: the service there, spelled as in taskbox.json and
+// not an admin, no agent yet, and Screen Sharing's list as macOS leaves it, with the admins' group
+// only (ran: macOS 27). A test's own responders, and the boxes above, come first.
+const QUIET_ACCOUNTS: [string, RunResult][] = [
+  ["/usr/bin/dscl . -read /Users/taskbox RecordName", out("RecordName: taskbox\n")],
+  ["/usr/bin/dscl . -list /Users UniqueID", out("root 0\ntaskbox 502\n")],
+  ["/usr/bin/dscl . -read /Users/taskbox GeneratedUID", out("GeneratedUID: 0F0F0F0F-0000-0000-0000-000000000502\n")],
+  ["/usr/sbin/dseditgroup -o checkmember -m taskbox admin", { code: 67, stdout: "", stderr: "" }],
+  ["/usr/bin/id -u taskbox-agent", { code: 1, stdout: "", stderr: "id: taskbox-agent: no such user\n" }],
+  // The agent's keys as a made agent has them, for a test whose agent is there: hidden, no password.
+  ["/usr/bin/dscl . -read /Users/taskbox-agent ShadowHashData", out("No such key: ShadowHashData\n")],
+  ["/usr/bin/dscl . -read /Users/taskbox-agent AuthenticationAuthority", out("No such key: AuthenticationAuthority\n")],
+  ["/usr/bin/dscl . -read /Groups/com.apple.access_screensharing GroupMembership NestedGroups", out("No such key: GroupMembership\nNestedGroups: ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050\n")],
+];
+export function quietAccounts(sys: FakeSys): void {
+  sys.fallbacks.push((cmd, args) => QUIET_ACCOUNTS.find(([line]) => line === [cmd, ...args].join(" "))?.[1]);
+  keyFolderAcl(sys);
+}
+
+// root's key folder's ACL (actionskey.ts keyDirProblem): every entry off, then the service's one.
+// There is no service user here, so chmod's ACL calls are answered, not run.
+export function keyFolderAcl(sys: FakeSys): void {
+  sys.fallbacks.push((cmd, args) => (cmd === "/bin/chmod" && (args[0] === "-N" || (args[0] === "+a" && args[1] === "user:taskbox allow search")) ? out("") : undefined));
 }
 
 // What taskbox's own services answer as they are stopped, started and cleared: launchctl, pf's
-// anchor, and ci's own file removals.
+// anchor, and the service's own file removals.
 export function servicesObey(sys: FakeSys): void {
   sys.fallbacks.push((cmd, args) => {
     if (cmd === "/bin/launchctl" && ["bootout", "bootstrap", "kickstart", "enable"].includes(args[0]!)) return out("");
@@ -106,7 +140,7 @@ export function loopDeps(sys: FakeSys, root: string, prestart: () => Promise<Che
   githubRoutes(sys);
   quietBox(sys);
   guestTakesEverything(sys);
-  const p = paths(root, "app");
+  const p = paths(root, testBox());
   const log = new Log(p.log);
   return {
     sys,
@@ -114,7 +148,7 @@ export function loopDeps(sys: FakeSys, root: string, prestart: () => Promise<Che
     paths: p,
     gh: new GitHub(sys, CFG, PEM, log),
     log,
-    checks: { sys, cfg: CFG, paths: p, uid: 501, ciUid: 501 },
+    checks: { sys, cfg: CFG, paths: p, uid: 501, serviceUid: 501 },
     slot: 1,
     prestart,
     // Memory to spare and the pinned image in place, unless a test says otherwise.
@@ -139,9 +173,11 @@ export function settingsDir(): string {
 // The commands no fake answered since the last test, as setup.ts checks after each one.
 export { unknownCommands } from "./setup.ts";
 
-// A box that passes the install's preflight, with ci made in System Settings: a secure token, and
-// not an admin. No other user is made.
+// A box that passes the install's preflight: the service there already, and not an admin, able to
+// unlock the disk. The agent isn't there until the install makes it, with its ID. No other user is made.
 export function healthyBox(sys: FakeSys): void {
+  quietAccounts(sys);
+  let agentUid: number | undefined;
   sys.responders.push((cmd, args) => {
     if (cmd === "/usr/bin/sw_vers") return out("27.1\n");
     if (cmd.endsWith("socketfilterfw")) return out(args[0] === "--getglobalstate" ? "Firewall is enabled. (State = 1)" : "Firewall stealth mode is on");
@@ -150,9 +186,20 @@ export function healthyBox(sys: FakeSys): void {
     if (cmd === "/usr/sbin/system_profiler") return out("          S.M.A.R.T. status: Verified\n");
     if (cmd === "/bin/df") return out("Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/disk3s5 1900000000 1 1500000000 1% /System/Volumes/Data\n");
     if (cmd === "/usr/sbin/netstat") return out(NETSTAT_CLEAN);
-    // ci's ID is the test's own, so what the install gives ci is the test's to give.
-    if (cmd === "/usr/bin/id") return args[1] === "ci" ? out(`${process.getuid!()}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user\n` };
-    if (cmd === "/usr/sbin/sysadminctl" && args[0] === "-secureTokenStatus") return { code: 0, stdout: "", stderr: "Secure token is ENABLED for user CI" };
+    // tailscaled's socket folder, as the install leaves it (tssocket.ts): root's, 700, with one entry for the service.
+    if (cmd === "/bin/ls" && args[0] === "-led" && args[1]?.endsWith("/taskbox-tailscale")) return out(`drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:taskbox allow search\n`);
+    if (args.includes("taskbox-agent") || args.includes("/Users/taskbox-agent")) {
+      if (cmd === "/usr/bin/id") return agentUid === undefined ? { code: 1, stdout: "", stderr: "no such user" } : out(`${agentUid}\n`);
+      if (cmd === "/usr/bin/dscl" && args[1] === "-create" && args[3] === "UniqueID") agentUid = Number(args[4]);
+      if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "GeneratedUID") return agentUid === undefined ? { code: 56, stdout: "", stderr: "" } : out(`GeneratedUID: 0F0F0F0F-0000-0000-0000-000000000${agentUid}\n`);
+      // The install's writes to the agent's record take.
+      if (cmd === "/usr/bin/dscl" && args[1] !== "-read") return out("");
+    }
+    // The service's ID is the test's own, so what the install gives the service is the test's to give.
+    if (cmd === "/usr/bin/id") return args[1] === "taskbox" ? out(`${process.getuid!()}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user\n` };
+    // The service can unlock the disk: its GeneratedUID is in the disk's unlock list.
+    if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "GeneratedUID") return out("GeneratedUID: 0F0F0F0F-0000-0000-0000-000000000502\n");
+    if (cmd === "/usr/sbin/diskutil" && args[1] === "listCryptoUsers") return out("Cryptographic users for disk3s5 (1 found)\n+-- 0F0F0F0F-0000-0000-0000-000000000502\n    Type: Local Open Directory User\n");
     if (cmd === "/usr/sbin/dseditgroup") return { code: 67, stdout: "", stderr: "no" };
     if (cmd === "/bin/launchctl" && args[0] === "print-disabled") return out('"com.openssh.sshd" => disabled\n"com.apple.screensharing" => disabled\n');
     // The box's own settings, already true, so the install's writes of them (settleBox) take.
@@ -172,6 +219,8 @@ export function healthyBox(sys: FakeSys): void {
 export function installDeps(sys: FakeSys, answer: string, root = mkdtempSync(join(tmpdir(), "taskbox-install-"))): { d: InstallDeps; said: string[]; root: string } {
   // The folders every Mac has.
   for (const f of ["usr", "Library/LaunchAgents", "Library/LaunchDaemons"]) mkdirSync(join(root, f), { recursive: true });
+  // /private/var is on every Mac: the agent's home goes there.
+  mkdirSync(join(root, "private/var"), { recursive: true });
   const ownerHome = join(root, "Users/owner");
   mkdirSync(join(ownerHome, "Downloads"), { recursive: true });
   writeFileSync(join(ownerHome, "Downloads/example-taskbox.2026-11-12.private-key.pem"), PEM);
@@ -181,10 +230,11 @@ export function installDeps(sys: FakeSys, answer: string, root = mkdtempSync(joi
   const said: string[] = [];
   const d: InstallDeps = {
     sys,
-    paths: paths(root, "app"),
+    paths: paths(root, testBox()),
     log: new Log(),
     say: (l) => said.push(l),
     ask: async () => answer,
+    tty: () => 0,
     chown: () => {},
     owner: "owner",
     ownerHome,
@@ -193,8 +243,8 @@ export function installDeps(sys: FakeSys, answer: string, root = mkdtempSync(joi
     bootstrap: configDir,
     rootUid: process.getuid!(),
   };
-  // A first install makes ci's home when ci has never logged in.
-  sys.responders.push((cmd) => (cmd === "/usr/sbin/createhomedir" ? (mkdirSync(d.paths.ciHome, { recursive: true }), out("")) : undefined));
+  // A first install makes the service's home when it has never logged in.
+  sys.responders.push((cmd) => (cmd === "/usr/sbin/createhomedir" ? (mkdirSync(d.paths.serviceHome, { recursive: true }), out("")) : undefined));
   return { d, said, root };
 }
 
@@ -259,7 +309,7 @@ export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<s
   sys.responders.push((cmd, args) => {
     if (cmd !== "/bin/chmod") return undefined;
     if (args.join(" ") === `-R go-w ${args[2]}`) return out("");
-    // The Softnet folder's ACL, cleared and given to ci (tart.ts closeFolder): no ci user here.
+    // The Softnet folder's ACL, cleared and given to the service (tart.ts closeFolder): no such user here.
     if (args[0] === "-N" || args[0] === "+a") return out("");
     if (!["4755", "u-s", "700", "755"].includes(args[0]!) || !args[1]!.startsWith(tmpdir())) return undefined;
     const r = Bun.spawnSync(["/bin/chmod", args[0]!, args[1]!], { env: {} });
@@ -302,13 +352,14 @@ export function fakeTailscale(sys: FakeSys, signedIn = false): void {
 }
 
 // The test runs as its own user, so what a root install leaves as root's alone, Softnet with its
-// setuid bit (in bin, or in its own softnet folder, which is root's too) and taskbox jobs'
-// parent folder, is read as root's. Everything else is read as it is.
+// setuid bit (in bin, or in its own softnet folder, which is root's too), is read as root's.
+// taskbox jobs' parent folder holds box.json too, so it is the install's rootUid's, as the
+// install's own folders are (placeShared). Everything else is read as it is.
 export async function asRoot<T>(f: () => Promise<T>): Promise<T> {
   const real = fs.lstatSync;
   const spy = spyOn(fs, "lstatSync").mockImplementation(((path: string, o?: never) => {
     const st = real(path, o);
-    return /\/(bin\/softnet|softnet\/softnet|softnet|opt\/taskbox-state)$/.test(String(path)) ? Object.assign(st, { uid: 0, gid: 0 }) : st;
+    return /\/(bin\/softnet|softnet\/softnet|softnet)$/.test(String(path)) ? Object.assign(st, { uid: 0, gid: 0 }) : st;
   }) as never);
   try {
     return await f();
@@ -317,3 +368,10 @@ export async function asRoot<T>(f: () => Promise<T>): Promise<T> {
   }
 }
 
+// tailscaled's socket folder as the guard leaves it (tssocket.ts): root's (the tester's), 700, with
+// one entry for the service account, as ls -led prints it.
+export function socketDirOk(c: { sys: FakeSys; paths: { tailscaleSocketDir: string; service: string } }): void {
+  mkdirSync(c.paths.tailscaleSocketDir, { recursive: true, mode: 0o700 });
+  chmodSync(c.paths.tailscaleSocketDir, 0o700);
+  c.sys.responders.unshift((cmd, args) => (cmd === "/bin/ls" && args[1] === c.paths.tailscaleSocketDir ? { code: 0, stdout: `drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:${c.paths.service} allow search\n`, stderr: "" } : undefined));
+}

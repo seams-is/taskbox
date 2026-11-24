@@ -17,7 +17,7 @@ import { linkTarget } from "../src/layout.ts";
 import { Log } from "../src/log.ts";
 import { rollbackWatch, undo } from "../src/ops.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
-import { asRoot, CFG, fakeLaunchd, fakeTailscale, healthyBox, installDeps, PEM, quietBox, stageRelease } from "./helpers.ts";
+import { asRoot, CFG, fakeLaunchd, fakeTailscale, healthyBox, installDeps, PEM, quietBox, stageRelease, testBox } from "./helpers.ts";
 
 const sha256 = (b: string | Uint8Array) => createHash("sha256").update(b).digest("hex");
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
@@ -412,7 +412,7 @@ async function hopBox(o: { statement?: Partial<Statement>; flags?: number; verif
     return undefined;
   });
   const { d, said } = installDeps(sys, o.answer ?? "yes", root);
-  d.paths = paths(root, "app");
+  d.paths = paths(root, testBox());
   d.configDir = d.paths.app;
   d.bootstrap = undefined;
   mkdirSync(d.paths.state, { recursive: true });
@@ -517,7 +517,7 @@ describe("the hop to v3 (§5.7, 4 and 5)", () => {
 });
 
 describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
-  const opsOf = (h: Awaited<ReturnType<typeof hopBox>>) => ({ sys: h.sys, paths: h.d.paths, uid: 0, ciUid: 502, rootUid: process.getuid!(), say: () => {}, ask: async () => "no" });
+  const opsOf = (h: Awaited<ReturnType<typeof hopBox>>) => ({ sys: h.sys, paths: h.d.paths, uid: 0, serviceUid: 502, rootUid: process.getuid!(), say: () => {}, ask: async () => "no" });
 
   test("before its deadline it does nothing; past it, unproved, it takes the box back and removes itself", async () => {
     const h = await hopBox();
@@ -548,12 +548,12 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
     expect(outs.at(-1)).toBe(`system/${ROLLBACK_LABEL}`);
   });
 
-  // L6: the watcher's real entry passes ci's uid, so a later release's agents in ci's gui domain go.
-  test("run by launchd through the command, it knows ci's uid", async () => {
+  // L6: the watcher's real entry passes the service account's uid, so a later release's agents in its gui domain go.
+  test("run by launchd through the command, it knows the service account's uid", async () => {
     const sys = new FakeSys();
-    const p = paths(mkdtempSync(join(tmpdir(), "taskbox-w-")), "app");
-    const ops = await watcherOps({ sys: () => sys, uid: 0, ciUid: async () => 502, env: {}, tty: () => 0, user: () => "root", ask: async () => "no", say: () => {}, root: "/" }, p);
-    expect([ops.uid, ops.ciUid, ops.paths]).toEqual([0, 502, p]);
+    const p = paths(mkdtempSync(join(tmpdir(), "taskbox-w-")), testBox());
+    const ops = await watcherOps({ sys: () => sys, uid: 0, serviceUid: async () => 502, env: {}, tty: () => 0, user: () => "root", ask: async () => "no", say: () => {}, root: "/" }, p);
+    expect([ops.uid, ops.serviceUid, ops.paths]).toEqual([0, 502, p]);
   });
 
   test("a deadline v3's guard moves later is kept, up to 3 hours after it was placed (L1)", async () => {
@@ -585,7 +585,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
     expect(h.loaded.has(ROLLBACK_LABEL)).toBe(true);
     expect(log.at(-1)).toContain("It tries again in 1 minutes");
     // taskbox check's row says so: the owner's.
-    const ctx = { sys: h.sys, cfg: CFG, paths: h.d.paths, uid: 0, ciUid: undefined } as unknown as CheckContext;
+    const ctx = { sys: h.sys, cfg: CFG, paths: h.d.paths, uid: 0, serviceUid: undefined } as unknown as CheckContext;
     const row = await CHECK_EXTRA.find(([n]) => n === "Rollback watcher")![1](ctx);
     expect(row.status).toBe("FAIL");
     expect(row.detail).toContain(`${TAG} wasn't proved, and going back to the install before failed 1 time`);
@@ -652,7 +652,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
     expect(await rollbackWatch(opsOf(h2), (l) => log.push(l))).toBe(0);
     expect(linkTarget(h2.d.paths.opt)).not.toBe(h2.before);
     expect(log.at(-1)).toContain(`rollback watcher: ${TAG} can't be checked: process ${process.pid} has held the update lock since`);
-    const ctx = { sys: h2.sys, cfg: CFG, paths: h2.d.paths, uid: 0, ciUid: undefined } as unknown as CheckContext;
+    const ctx = { sys: h2.sys, cfg: CFG, paths: h2.d.paths, uid: 0, serviceUid: undefined } as unknown as CheckContext;
     const row = await CHECK_EXTRA.find(([n]) => n === "Rollback watcher")![1](ctx);
     expect(row.status).toBe("FAIL");
     expect(row.detail).toContain(`has held the update lock since`);
@@ -679,7 +679,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
       h.sys.clock += 60_000;
       expect(await rollbackWatch(opsOf(h), (l) => log.push(l))).toBe(1);
       expect(log).toHaveLength(1);
-      const ctx = { sys: h.sys, cfg: CFG, paths: h.d.paths, uid: 0, ciUid: undefined } as unknown as CheckContext;
+      const ctx = { sys: h.sys, cfg: CFG, paths: h.d.paths, uid: 0, serviceUid: undefined } as unknown as CheckContext;
       const row = await CHECK_EXTRA.find(([n]) => n === "Rollback watcher")![1](ctx);
       expect(row.status).toBe("FAIL");
       expect(row.detail).toContain("the rollback watcher's file can't be read");

@@ -19,7 +19,7 @@ function ctx(o: { uid?: number; away?: Record<string, unknown>; respond?: (cmd: 
   });
   const d = loopDeps(sys, tempRoot());
   mkdirSync(d.paths.projectState, { recursive: true });
-  return { sys, cfg: { ...CFG, ...(o.away ? { away: o.away } : {}) }, paths: d.paths, uid: o.uid ?? 501, ciUid: 501 } as never;
+  return { sys, cfg: { ...CFG, ...(o.away ? { away: o.away } : {}) }, paths: d.paths, uid: o.uid ?? 501, serviceUid: 501 } as never;
 }
 const gh = (f: () => Promise<{ offsetS: number | null }>) => ({ appCheck: f }) as unknown as GitHub;
 
@@ -103,8 +103,8 @@ describe("the restart plan row", () => {
   test("filevault-off needs FileVault off and ci logging in by itself", async () => {
     const box = (fv: string, auto: string | null) => (cmd: string, args: string[]) => (cmd === "/usr/bin/fdesetup" ? { code: 0, stdout: `${fv}\n` } : cmd === "/usr/bin/defaults" && args[2] === "autoLoginUser" ? (auto ? { code: 0, stdout: `${auto}\n` } : { code: 1, stdout: "" }) : undefined);
     const plan = { restartPlan: "filevault-off" };
-    expect((await restartPlanRow(ctx({ away: plan, respond: box("false", "ci") }))).status).toBe("OK");
-    expect(await restartPlanRow(ctx({ away: plan, respond: box("true", "ci") }))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/but FileVault is on/) });
+    expect((await restartPlanRow(ctx({ away: plan, respond: box("false", "taskbox") }))).status).toBe("OK");
+    expect(await restartPlanRow(ctx({ away: plan, respond: box("true", "taskbox") }))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/but FileVault is on/) });
     expect(await restartPlanRow(ctx({ away: plan, respond: box("false", null) }))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/Automatically log in as/) });
     expect((await restartPlanRow(ctx({ away: plan, respond: box("false", "pat") }))).status).toBe("FAIL");
   });

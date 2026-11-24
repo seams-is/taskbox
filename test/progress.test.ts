@@ -46,7 +46,7 @@ describe("what the owner reads", () => {
 
   test("a stopped loop shows where the download stopped, with the step", () => {
     const { file } = feed([[0, "pulling disk (3.1 GB compressed)..."], [1000, "40%"]]);
-    expect(pullLine(readPull(file), 1000, false)).toBe("Stopped at 1.2 of 3.1 GB (40%): the loop isn't running. Log out and log in as ci, and the download starts again.");
+    expect(pullLine(readPull(file), 1000, false)).toBe("Stopped at 1.2 of 3.1 GB (40%): the loop isn't running. Log out and log in as the service account, and the download starts again.");
   });
 
   test("three stops in a row say agents fix it; a stop for an update isn't counted", () => {

@@ -4,10 +4,11 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CI_USER, type Config, DEFAULT_TIMINGS, type Kind, loadConfig, loadRepoOf, paths, runnerDefaults, servedRepos } from "../src/config.ts";
+import { type Config, DEFAULT_TIMINGS, type Kind, loadConfig, loadRepoOf, paths, runnerDefaults, servedRepos } from "../src/config.ts";
 import type { JobRecord } from "../src/jobs.ts";
 import { currentSession, groupSetupWrong, LOAD_MAX_MS, LOAD_MIN_MS, loadFile, loadNow, loadOff, loadOn, noteSeen, parseFor, readLoad, seenFile } from "../src/load.ts";
-import { loadCommand } from "../src/loadcmd.ts";
+import { loadCommand, testRepoRow } from "../src/loadcmd.ts";
+import { serviceName, setServiceName } from "../src/names.ts";
 import { aheadOfReal, behindLoad, loadReport, loadReportLines } from "../src/loadreport.ts";
 import type { OpsDeps } from "../src/ops.ts";
 import { Log } from "../src/log.ts";
@@ -15,7 +16,7 @@ import { QueueReader } from "../src/queue.ts";
 import { decide, type KindView, LOAD_RANK, type SchedulerInput, type SlotState } from "../src/scheduler.ts";
 import type { WaitingItem } from "../src/source.ts";
 import { FakeSys, json } from "./fake.ts";
-import { CFG, PEM, quietBox, settingsText, tempRoot } from "./helpers.ts";
+import { CFG, PEM, settingsText, tempRoot, testBox, quietBox } from "./helpers.ts";
 import { LABELS, MERGE, rng, type SimJob, simulate } from "./sim.ts";
 
 const M = 60_000;
@@ -194,7 +195,7 @@ describe("the scheduler's roles", () => {
 
 describe("sessions", () => {
   const p = () => {
-    const ps = paths(tempRoot(), "app");
+    const ps = paths(tempRoot(), testBox());
     mkdirSync(ps.shared, { recursive: true });
     return ps;
   };
@@ -310,8 +311,8 @@ describe("sessions", () => {
 });
 
 // A box nobody has readied to leave, for the away checks load on runs first: no update settings,
-// the box sleeps, no remote user, only the owner unlocks the disk, Tailscale isn't running and ci's
-// screen doesn't lock.
+// the box sleeps, no agent account, only the owner unlocks the disk, Tailscale isn't running and the
+// service's screen doesn't lock.
 function unreadied(sys: FakeSys): void {
   quietBox(sys);
   sys.fallbacks.push((cmd, args) => {
@@ -319,28 +320,35 @@ function unreadied(sys: FakeSys): void {
     const yes = (stdout: string) => ({ code: 0, stdout, stderr: "" });
     if (cmd === "/usr/bin/defaults" && args[0] === "read") return no("The domain/default pair does not exist\n");
     if (cmd === "/usr/bin/pmset") return yes(args[1] === "ps" ? "Now drawing from 'AC Power'\n" : " sleep 1\n");
-    if (cmd === "/usr/bin/id" && args.join(" ") === "-u remote") return no("id: remote: no such user\n");
+    if (cmd === "/usr/bin/id" && args.join(" ") === "-u taskbox-agent") return no("id: taskbox-agent: no such user\n");
     if (cmd.endsWith("/tailscale")) return no("failed to connect to local tailscaled\n");
     if (cmd === "/usr/sbin/sysadminctl" && args.join(" ") === "-screenLock status") return no("screenLock is off\n", 0);
     if (cmd === "/bin/launchctl" && args[0] === "print") return no("Could not find service\n", 113);
     // Only the owner unlocks the disk.
     if (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin") return yes("GroupMembership: root\n");
-    if (cmd === "/usr/bin/dscl" && args[2] === "/Users/ci") return yes("GeneratedUID: 5C0F1A2B-0000-4000-8000-000000000502\n");
+    if (cmd === "/usr/bin/dscl" && args[2] === "/Users/taskbox") return yes("GeneratedUID: 5C0F1A2B-0000-4000-8000-000000000502\n");
     if (cmd === "/usr/sbin/diskutil") return yes("Cryptographic users for disk3s5 (1 found)\n+-- 7D1E2F30-0000-4000-8000-000000000501\n    Type: Local Open Directory User\n");
     return undefined;
   });
 }
 
-function cmd(o: { asCi?: boolean; answers?: string[]; cfg?: Config } = {}) {
+function rowCtx(sys: FakeSys, uid = 502) {
+  const p = paths(tempRoot(), testBox());
+  mkdirSync(join(p.key, ".."), { recursive: true });
+  writeFileSync(p.key, PEM);
+  return { sys, cfg: LOADCFG, paths: p, uid, serviceUid: 502 };
+}
+
+function cmd(o: { asService?: boolean; answers?: string[]; cfg?: Config } = {}) {
   const sys = new FakeSys();
   unreadied(sys);
   sys.clock = NOW;
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   mkdirSync(p.shared, { recursive: true });
   const said: string[] = [];
   const answers = [...(o.answers ?? [])];
   const asked: string[] = [];
-  const d: OpsDeps = { sys, paths: p, uid: o.asCi === false ? 501 : 502, ciUid: 502, say: (l) => said.push(l), ask: async (q) => (asked.push(q), answers.shift() ?? "no") };
+  const d: OpsDeps = { sys, paths: p, uid: o.asService === false ? 501 : 502, serviceUid: 502, say: (l) => said.push(l), ask: async (q) => (asked.push(q), answers.shift() ?? "no") };
   const run = (...args: string[]) => loadCommand(d, o.cfg ?? LOADCFG, args, args.includes("--json"));
   return { d, said, asked, p, sys, run };
 }
@@ -352,25 +360,33 @@ describe("taskbox load", () => {
     expect(c.said[0]).toContain("names no test repo");
     expect(existsSync(loadFile(c.p))).toBe(false);
   });
-  test("on and off are the service account's, at the box, named from CI_USER", async () => {
-    const c = cmd({ asCi: false });
-    expect(await c.run("on")).toBe(1);
-    expect(c.said).toEqual([`Type taskbox load on as ${CI_USER}, at the box.`]);
-    expect(await c.run("off")).toBe(1);
-    expect(c.said.at(-1)).toBe(`Type taskbox load off as ${CI_USER}, at the box.`);
-    // Whatever taskbox load says, to ci or anyone else, it names the account only as CI_USER, in
-    // the one phrase above.
-    const said: string[] = [];
-    for (const asCi of [true, false]) {
-      const any = cmd({ asCi, answers: ["yes"] });
-      for (const args of [[], ["on"], ["on", "--only"], ["status"], ["off"], ["report"], ["report", "--json"], ["workflow"], ["of"]]) await any.run(...args);
-      const { testRepoRow } = await import("../src/loadcmd.ts");
-      said.push(...any.said, (await testRepoRow({ sys: any.sys, cfg: LOADCFG, paths: any.p, uid: asCi ? 502 : 501, ciUid: 502 })).detail);
+  test("on and off are the service account's, at the box, named from the box's accounts", async () => {
+    // A service account not named ci, so a "ci" left over shows.
+    setServiceName("builder");
+    try {
+      const c = cmd({ asService: false });
+      expect(await c.run("on")).toBe(1);
+      expect(c.said).toEqual(["Type taskbox load on as builder, at the box."]);
+      expect(await c.run("off")).toBe(1);
+      expect(c.said.at(-1)).toBe("Type taskbox load off as builder, at the box.");
+      expect(await testRepoRow(rowCtx(new FakeSys(), 501))).toEqual({ status: "SKIP", detail: "run as builder to check" });
+      // Whatever taskbox load says, to the service or anyone else, it names the account only in
+      // "as builder".
+      const said: string[] = [];
+      for (const asService of [true, false]) {
+        const any = cmd({ asService, answers: ["yes"] });
+        for (const args of [[], ["on"], ["on", "--only"], ["status"], ["off"], ["report"], ["report", "--json"], ["workflow"], ["of"]]) await any.run(...args);
+        said.push(...any.said, (await testRepoRow({ sys: any.sys, cfg: LOADCFG, paths: any.p, uid: asService ? 502 : 501, serviceUid: 502 })).detail);
+      }
+      // Paths are the box's own (paths() names the service's home), so only the words are read.
+      const words = said.join("\n").replace(/\S*\/\S*/g, "");
+      expect(words).toContain("as builder");
+      expect(words.replaceAll(" as builder", "")).not.toMatch(/\bbuilder\b/);
+    } finally {
+      setServiceName(undefined);
     }
-    // Paths are the box's own (paths() names ci's home from CI_USER), so only the words are read.
-    const words = said.join("\n").replace(/\S*\/\S*/g, "");
-    expect(words).toContain(`as ${CI_USER}`);
-    expect(words.replaceAll(` as ${CI_USER}`, "")).not.toMatch(new RegExp(`\\b${CI_USER}\\b`));
+    // The account's name comes from names.ts alone, never typed by hand here.
+    expect(readFileSync(join(import.meta.dir, "../src/loadcmd.ts"), "utf8")).not.toMatch(/"ci"| as ci|run as ci/);
   });
   test("with one VM at a time, beside is refused and --only is offered", async () => {
     const c = cmd({ cfg: { ...LOADCFG, vmsAtOnce: 1 } });
@@ -451,7 +467,7 @@ const line = (repo: string, kind: Kind, q: number, t: number, m: number, extra: 
 
 describe("taskbox load report", () => {
   test("scores the real repo and the test repo apart, from measured numbers only", () => {
-    const ps = paths(tempRoot(), "app");
+    const ps = paths(tempRoot(), testBox());
     loadOn(ps, NOW, { only: false });
     loadOff(ps, NOW + 60 * M);
     const jobs = [line(CFG.jobsFrom, "linux", 1, 3, 4), line(TEST.name, "linux", 1, 3, 2), line(TEST.name, "linux", 1, 6, 2), line(TEST.name, "linux", 1, 70, 2)];
@@ -478,7 +494,7 @@ describe("taskbox load report", () => {
     expect(aheadOfReal([{ ...line(CFG.jobsFrom, "linux", 0, 3, 3), phases: undefined }], [])).toBeUndefined();
   });
   test("give-ways are scored on their own side", () => {
-    const ps = paths(tempRoot(), "app");
+    const ps = paths(tempRoot(), testBox());
     loadOn(ps, NOW, { only: false });
     const jobs = [line(CFG.jobsFrom, "linux", 1, 3, 30), line(TEST.name, "linux", 1, 3, 30)];
     const log = Array.from({ length: 6 }, (_, i) => ({ at: NOW + (10 + i) * M, role: "load" as const }));
@@ -495,7 +511,7 @@ describe("taskbox load report", () => {
     expect(behindLoad([{ ...line(CFG.jobsFrom, "linux", 0, 3, 3), phases: undefined }], load, load)).toBeUndefined();
   });
   test("no session, an unknown session, and without a source", async () => {
-    const ps = paths(tempRoot(), "app");
+    const ps = paths(tempRoot(), testBox());
     expect(loadReport(LOADCFG, [], readLoad(ps), [], NOW, true)).toContain("no load test session yet");
     loadOn(ps, NOW, { only: true });
     expect(loadReport(LOADCFG, [], readLoad(ps), [], NOW, true, 4)).toBe("no session 4");
@@ -505,7 +521,7 @@ describe("taskbox load report", () => {
     expect(loadReportLines(r).join("\n")).toContain("none: the real repo's jobs waited on GitHub");
     expect(loadReportLines(r).join("\n")).not.toContain("went ahead of");
     // Beside, with no real job: says so, rather than blaming the source.
-    const b = paths(tempRoot(), "app");
+    const b = paths(tempRoot(), testBox());
     loadOn(b, NOW, { only: false });
     const rb = loadReport(LOADCFG, [], readLoad(b), [], NOW + M, true);
     if (typeof rb === "string") throw new Error(rb);
@@ -514,11 +530,11 @@ describe("taskbox load report", () => {
   test("anyone may read it, from the copy every user may read; --json answers", async () => {
     const c = cmd();
     await c.run("on");
-    const other = cmd({ asCi: false });
+    const other = cmd({ asService: false });
     // The other user reads ci's shared copy: the same box's paths.
     // readJobs checks ci owns the folder: here, the test's own user is ci.
     const me = process.getuid!();
-    const d = { ...other.d, paths: c.p, ciUid: me, uid: me + 1 };
+    const d = { ...other.d, paths: c.p, serviceUid: me, uid: me + 1 };
     const said: string[] = [];
     d.say = (l) => said.push(l);
     writeFileSync(c.p.jobsFile, "");
@@ -589,14 +605,8 @@ describe("a test repo the box can't use", () => {
 });
 
 describe("taskbox check's test repo row", () => {
-  const ctx = (sys: FakeSys, uid = 502) => {
-    const p = paths(tempRoot(), "app");
-    mkdirSync(join(p.key, ".."), { recursive: true });
-    writeFileSync(p.key, PEM);
-    return { sys, cfg: LOADCFG, paths: p, uid, ciUid: 502 };
-  };
+  const ctx = rowCtx;
   test("OK when the test repo's group lists it alone; FAIL with the step when the group is missing or lists more", async () => {
-    const { testRepoRow } = await import("../src/loadcmd.ts");
     const { githubRoutes } = await import("./fake.ts");
     const sys = new FakeSys();
     githubRoutes(sys);
@@ -613,7 +623,7 @@ describe("taskbox check's test repo row", () => {
       };
       expect((await testRepoRow(ctx(s2))).status).toBe(status);
     }
-    expect(await testRepoRow(ctx(new FakeSys(), 501))).toEqual({ status: "SKIP", detail: `run as ${CI_USER} to check` });
+    expect(await testRepoRow(ctx(new FakeSys(), 501))).toEqual({ status: "SKIP", detail: `run as ${serviceName()} to check` });
   });
 });
 

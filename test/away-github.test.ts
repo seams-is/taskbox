@@ -141,7 +141,7 @@ describe("status reads it", () => {
 
   test("Stopped, ci away and Downloading keep their words", () => {
     expect(computeState({ now: NOW, stoppedAt: NOW, loop: { github: rec } }).word).toBe("Stopped");
-    expect(computeState({ now: NOW, ciAway: true, loop: { github: rec } }).word).toBe("Needs you");
+    expect(computeState({ now: NOW, serviceAway: true, loop: { github: rec } }).word).toBe("Needs you");
     expect(computeState({ now: NOW, pull: { state: "pulling", image: "x", startedAt: NOW } as never, loop: { github: rec } }).word).toBe("Downloading");
   });
 });

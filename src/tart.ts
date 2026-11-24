@@ -1,6 +1,7 @@
 // Every Tart command taskbox runs, in one place, and the Tart engine (src/vm.ts) built on them:
 // Softnet's flags, Tart's cache layout and the digest check stay in this file.
-// Each call is Tart 2.41.1's own command line, run as ci with the pinned binary.
+// Each call is Tart 2.41.1's own command line, run as the service with the pinned binary.
+import { serviceName } from "./names.ts";
 import { createHash } from "node:crypto";
 import { closeSync, constants, copyFileSync, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -129,15 +130,12 @@ export function softnetRules(net: NetPolicy): { block: string[]; allow: string[]
   return { block: [...net.block, ...(net.isolatedFromBox ? [SOFTNET_HOST] : [])], allow: net.boxDns ? SOFTNET_DNS_ALLOW : [] };
 }
 
-// Softnet starts as root, through its setuid bit, makes its network, then drops to ci. A Softnet still
+// Softnet starts as root, through its setuid bit, makes its network, then drops to the service. A Softnet still
 // root this long after it started never dropped. Younger ones are mid-start, such as another VM's
 // starting beside this one with two VMs at once (v2.4.2: that race halted taskbox-1).
 export const SOFTNET_DROP_GRACE_S = 20;
 // How many times the check waits out a Softnet still in its grace before it decides.
 export const SOFTNET_CHECK_TRIES = 3;
-// config.ts's CI_USER, the account the loop runs as. A value from config.ts would close an import
-// cycle back to vm.ts, so it is named again here, and a test holds the two the same.
-export const SOFTNET_USER = "ci";
 
 // ps's etime: [[dd-]hh:]mm:ss, as seconds. Anything else is undefined.
 export function etimeSeconds(t: string): number | undefined {
@@ -154,7 +152,7 @@ const TASKBOX_SOFTNET = /^\/opt\/taskbox(-[0-9a-f]{7,40}-[A-Za-z0-9]{6})?\/(soft
 // taskbox's own Softnet processes that run as root, by their effective or saved user ID (a saved
 // root ID could take root back), with how long each has run. Another Softnet isn't taskbox's, and
 // must never stop the box. ps's comm is the name the process was started under, which any account
-// can set, so the real user must be ci or root too: only they can reach taskbox's Softnet (its
+// can set, so the real user must be the service (the account the loop runs as) or root too: only they can reach taskbox's Softnet (its
 // folder). A real user of root counts, so a Softnet that took root back fully is still seen.
 // undefined when ps can't be read, or when no line of its output parses.
 export interface RootSoftnet {
@@ -162,7 +160,7 @@ export interface RootSoftnet {
   ageS: number | undefined;
   line: string;
 }
-export async function rootSoftnets(sys: Sys): Promise<RootSoftnet[] | undefined> {
+export async function rootSoftnets(sys: Sys, service: string): Promise<RootSoftnet[] | undefined> {
   const r = await sys.run("/bin/ps", ["-axo", "pid=,etime=,user=,ruser=,svuid=,comm="], { timeoutMs: 10_000 }).catch(() => ({ code: -1, stdout: "" }));
   if (r.code !== 0) return undefined;
   const out: RootSoftnet[] = [];
@@ -172,21 +170,21 @@ export async function rootSoftnets(sys: Sys): Promise<RootSoftnet[] | undefined>
     if (!m) continue;
     parsed++;
     if (!TASKBOX_SOFTNET.test(m[6]!)) continue;
-    if ((m[4] === SOFTNET_USER || m[4] === "root") && (m[3] === "root" || m[5] === "0")) out.push({ pid: Number(m[1]), ageS: etimeSeconds(m[2]!), line: `pid ${m[1]}, running ${m[2]}, user ${m[3]}, real user ${m[4]}, saved ID ${m[5]}` });
+    if ((m[4] === service || m[4] === "root") && (m[3] === "root" || m[5] === "0")) out.push({ pid: Number(m[1]), ageS: etimeSeconds(m[2]!), line: `pid ${m[1]}, running ${m[2]}, user ${m[3]}, real user ${m[4]}, saved ID ${m[5]}` });
   }
   return parsed ? out : undefined;
 }
 
-// Part C's one Softnet test: once the guest is up, no Softnet of ci's stays root. One past its grace
+// Part C's one Softnet test: once the guest is up, no Softnet of the service's stays root. One past its grace
 // halts the box. One still in its grace is waited out and read again, at most SOFTNET_CHECK_TRIES
 // times. A Softnet still young after that is a newer VM's, and that VM's own check reads it once it
 // is up. A ps that can't be read, or an age that won't parse, fails this VM, never the box.
 // At worst it waits about 72 s: two waits of up to 21 s, and three reads of up to 10 s each. It runs
 // after the start gate is released, with the guest sealed and idle.
 // What's wrong, for the log and the state, and whether it halts the box, or undefined when nothing is.
-export async function softnetRootProblem(sys: Sys): Promise<{ why: string; halt: boolean } | undefined> {
+export async function softnetRootProblem(sys: Sys, service: string): Promise<{ why: string; halt: boolean } | undefined> {
   for (let i = 0; i < SOFTNET_CHECK_TRIES; i++) {
-    const root = await rootSoftnets(sys);
+    const root = await rootSoftnets(sys, service);
     if (root === undefined) return { why: "taskbox couldn't tell whether Softnet dropped root: ps couldn't be read", halt: false };
     const stuck = root.filter((p) => p.ageS !== undefined && p.ageS >= SOFTNET_DROP_GRACE_S);
     if (stuck.length) return { why: `Softnet runs as root (${stuck.map((p) => p.line).join("; ")})`, halt: true };
@@ -198,7 +196,7 @@ export async function softnetRootProblem(sys: Sys): Promise<{ why: string; halt:
   }
   return undefined;
 }
-export const softnetAsRoot = async (sys: Sys): Promise<boolean> => (await softnetRootProblem(sys))?.halt === true;
+export const softnetAsRoot = async (sys: Sys, service: string): Promise<boolean> => (await softnetRootProblem(sys, service))?.halt === true;
 
 // The VmEngine on Tart and Softnet.
 export class TartEngine implements VmEngine {
@@ -226,7 +224,7 @@ export class TartEngine implements VmEngine {
   pull = (image: string, onLine: (l: string) => void) => this.t.pull(image, onLine);
   imageProblem = (image: string) => imageDigestProblem(this.paths.tartHome, image);
   async runtimeProblem(): Promise<{ why: string; halt: boolean } | undefined> {
-    return softnetRootProblem(this.sys);
+    return softnetRootProblem(this.sys, this.paths.service);
   }
   async usage(vm: string, probe: UsageProbe, timeoutMs: number): Promise<UsageSample | undefined> {
     try {
@@ -242,10 +240,10 @@ export class TartEngine implements VmEngine {
   }
 }
 
-// Softnet must be root's and setuid, so it can make its network as root and then drop to ci. Its
-// folder is root's, mode 700, with one ACL entry for ci (finish), so no other account can run it as
+// Softnet must be root's and setuid, so it can make its network as root and then drop to the service. Its
+// folder is root's, mode 700, with one ACL entry for the service (finish), so no other account can run it as
 // root. The ACL isn't read: only root can change a root-owned folder's, and finish clears it first.
-async function softnetRow(c: { paths: Paths; uid?: number; ciUid?: number }): Promise<{ status: "OK" | "FAIL"; detail: string }> {
+async function softnetRow(c: { paths: Paths; uid?: number; serviceUid?: number }): Promise<{ status: "OK" | "FAIL"; detail: string }> {
   let dir;
   try {
     dir = lstatSync(dirname(c.paths.softnet));
@@ -259,27 +257,27 @@ async function softnetRow(c: { paths: Paths; uid?: number; ciUid?: number }): Pr
   try {
     st = statSync(c.paths.softnet);
   } catch (e) {
-    // Another account's check can't enter the folder, which is the point. ci must.
+    // Another account's check can't enter the folder, which is the point. The service must.
     if ((e as NodeJS.ErrnoException).code !== "EACCES") throw e;
   }
   // A hard link keeps the file, so one made while Softnet was reachable is a setuid Softnet outside
-  // its folder. root and ci can see one; no other account can make one now.
+  // its folder. root and the service can see one; no other account can make one now.
   if (st && st.nlink !== 1) return { status: "FAIL", detail: "softnet has another hard link, which may be outside its folder" };
   if ((dir.mode & 0o077) !== 0) return { status: "FAIL", detail: "softnet's folder is open to other users" };
   if (dir.uid !== 0) return { status: "FAIL", detail: "softnet's folder is not root's" };
-  if (!st) return c.uid !== undefined && c.uid === c.ciUid ? { status: "FAIL", detail: "ci can't reach softnet in its folder" } : { status: "OK", detail: "in root's folder, ci only" };
+  if (!st) return c.uid !== undefined && c.uid === c.serviceUid ? { status: "FAIL", detail: `${c.paths.service} can't reach softnet in its folder` } : { status: "OK", detail: `in root's folder, ${c.paths.service} only` };
   if (st.uid !== 0) return { status: "FAIL", detail: "softnet is not owned by root" };
   if ((st.mode & 0o022) !== 0) return { status: "FAIL", detail: "softnet is writable by others" };
   if ((st.mode & 0o4000) === 0) return { status: "FAIL", detail: "softnet has no setuid bit" };
-  return { status: "OK", detail: "root-owned, in root's folder, ci only" };
+  return { status: "OK", detail: `root-owned, in root's folder, ${c.paths.service} only` };
 }
 
-// Closes Softnet's folder to every account but root and ci (the pattern of the job source App's key
+// Closes Softnet's folder to every account but root and the service (the pattern of the job source App's key
 // folder, actionskey.ts).
-async function closeFolder(folder: string, run: (cmd: string, args: string[]) => Promise<void>): Promise<void> {
+async function closeFolder(folder: string, service: string, run: (cmd: string, args: string[]) => Promise<void>): Promise<void> {
   await run("/bin/chmod", ["700", folder]);
   await run("/bin/chmod", ["-N", folder]);
-  await run("/bin/chmod", ["+a", `user:${SOFTNET_USER} allow list,search`, folder]);
+  await run("/bin/chmod", ["+a", `user:${service} allow list,search`, folder]);
 }
 
 // Where an install keeps Softnet: its own folder, or bin in an install from before it had one.
@@ -305,12 +303,12 @@ export const TART_KIT: EngineKit = {
     }
   },
   // After the install folder is root's and read-only: Softnet's folder is closed to every account but
-  // root and ci, and then Softnet gets its setuid bit.
-  async finish(dir, setuid, run) {
+  // root and the service, and then Softnet gets its setuid bit.
+  async finish(dir, service, setuid, run) {
     const softnet = softnetIn(dir);
     if (softnet.endsWith("bin/softnet")) return setuid(softnet);
     if (!lstatSync(dirname(softnet)).isDirectory()) throw new Error(`${dirname(softnet)} isn't a folder`);
-    await closeFolder(dirname(softnet), run);
+    await closeFolder(dirname(softnet), service, run);
     await setuid(softnet);
   },
   // `taskbox update` runs the installed release's code, so an update from v2.5.x lays the install out
@@ -319,13 +317,13 @@ export const TART_KIT: EngineKit = {
   // that stops part way is finished by the next. Softnet is copied, not renamed: any account could
   // hard link bin/softnet, and a link keeps the file. Clearing the old file's setuid bit clears it on
   // every link to it.
-  async settle(dir, run) {
+  async settle(dir, service, run) {
     const from = join(dir, "bin/softnet");
     if (!existsSync(from) || lstatSync(from).isSymbolicLink()) return false;
     const folder = join(dir, "softnet");
     const to = join(folder, "softnet");
     mkdirSync(folder, { recursive: true, mode: 0o700 });
-    await closeFolder(folder, run);
+    await closeFolder(folder, service, run);
     rmSync(to, { force: true });
     copyFileSync(from, to);
     await run("/bin/chmod", ["4755", to]);

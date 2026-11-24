@@ -1,0 +1,482 @@
+block return out quick on lo0 proto tcp from any to any port = 22 user = 471
+block return out quick on lo0 proto udp from any to any port = 22 user = 471
+block return out quick on lo0 proto tcp from any to any port = 88 user = 471
+block return out quick on lo0 proto udp from any to any port = 88 user = 471
+block return out quick on lo0 proto tcp from any to any port = 445 user = 471
+block return out quick on lo0 proto udp from any to any port = 445 user = 471
+block return out quick on lo0 proto tcp from any to any port = 548 user = 471
+block return out quick on lo0 proto udp from any to any port = 548 user = 471
+block return out quick on lo0 proto tcp from any to any port = 3283 user = 471
+block return out quick on lo0 proto udp from any to any port = 3283 user = 471
+block return out quick on lo0 proto tcp from any to any port = 5000 user = 471
+block return out quick on lo0 proto udp from any to any port = 5000 user = 471
+block return out quick on lo0 proto tcp from any to any port = 5900 user = 471
+block return out quick on lo0 proto udp from any to any port = 5900 user = 471
+block return out quick on lo0 proto tcp from any to any port = 7000 user = 471
+block return out quick on lo0 proto udp from any to any port = 7000 user = 471
+block return out quick inet proto tcp from any to 10.0.0.0/8 user = 471
+block return out quick inet proto udp from any to 10.0.0.0/8 user = 471
+block return out quick inet proto tcp from any to 172.16.0.0/12 user = 471
+block return out quick inet proto udp from any to 172.16.0.0/12 user = 471
+block return out quick inet proto tcp from any to 192.168.0.0/16 user = 471
+block return out quick inet proto udp from any to 192.168.0.0/16 user = 471
+block return out quick inet proto tcp from any to 100.64.0.0/10 user = 471
+block return out quick inet proto udp from any to 100.64.0.0/10 user = 471
+block return out quick inet proto tcp from any to 169.254.0.0/16 user = 471
+block return out quick inet proto udp from any to 169.254.0.0/16 user = 471
+block return out quick inet proto tcp from any to 224.0.0.0/4 user = 471
+block return out quick inet proto udp from any to 224.0.0.0/4 user = 471
+block return out quick inet proto tcp from any to 255.255.255.255 user = 471
+block return out quick inet proto udp from any to 255.255.255.255 user = 471
+block return out quick inet proto tcp from any to 203.0.113.0/24 user = 471
+block return out quick inet proto udp from any to 203.0.113.0/24 user = 471
+block drop in quick inet proto tcp from 10.0.0.0/8 to any user = 471
+block drop in quick inet proto udp from 10.0.0.0/8 to any user = 471
+block drop in quick inet proto tcp from 172.16.0.0/12 to any user = 471
+block drop in quick inet proto udp from 172.16.0.0/12 to any user = 471
+block drop in quick inet proto tcp from 192.168.0.0/16 to any user = 471
+block drop in quick inet proto udp from 192.168.0.0/16 to any user = 471
+block drop in quick inet proto tcp from 100.64.0.0/10 to any user = 471
+block drop in quick inet proto udp from 100.64.0.0/10 to any user = 471
+block drop in quick inet proto tcp from 169.254.0.0/16 to any user = 471
+block drop in quick inet proto udp from 169.254.0.0/16 to any user = 471
+block drop in quick inet proto tcp from 203.0.113.0/24 to any user = 471
+block drop in quick inet proto udp from 203.0.113.0/24 to any user = 471
+block return out quick inet6 proto tcp from any to fc00::/7 user = 471
+block return out quick inet6 proto udp from any to fc00::/7 user = 471
+block return out quick inet6 proto tcp from any to fe80::/10 user = 471
+block return out quick inet6 proto udp from any to fe80::/10 user = 471
+block return out quick inet6 proto tcp from any to ff00::/8 user = 471
+block return out quick inet6 proto udp from any to ff00::/8 user = 471
+block return out quick inet6 proto tcp from any to 2001:db8:1::/64 user = 471
+block return out quick inet6 proto udp from any to 2001:db8:1::/64 user = 471
+block drop in quick inet6 proto tcp from fc00::/7 to any user = 471
+block drop in quick inet6 proto udp from fc00::/7 to any user = 471
+block drop in quick inet6 proto tcp from fe80::/10 to any user = 471
+block drop in quick inet6 proto udp from fe80::/10 to any user = 471
+block drop in quick inet6 proto tcp from 2001:db8:1::/64 to any user = 471
+block drop in quick inet6 proto udp from 2001:db8:1::/64 to any user = 471
+pass in quick on bridge100 inet proto tcp from any to (bridge100) port = 53
+pass in quick on bridge100 inet proto udp from any to (bridge100) port = 53
+pass in quick on bridge100 inet proto udp from any to (bridge100) port = 67
+pass in quick on bridge100 inet6 proto tcp from any to (bridge100) port = 53
+pass in quick on bridge100 inet6 proto udp from any to (bridge100) port = 53
+block drop in quick on bridge100 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge100 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge100 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge100 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge100 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge100 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge100 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge100 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge100 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge100 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge100 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge100 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge100 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge100 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge100 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge100 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge100 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge100 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge101 inet proto tcp from any to (bridge101) port = 53
+pass in quick on bridge101 inet proto udp from any to (bridge101) port = 53
+pass in quick on bridge101 inet proto udp from any to (bridge101) port = 67
+pass in quick on bridge101 inet6 proto tcp from any to (bridge101) port = 53
+pass in quick on bridge101 inet6 proto udp from any to (bridge101) port = 53
+block drop in quick on bridge101 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge101 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge101 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge101 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge101 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge101 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge101 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge101 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge101 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge101 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge101 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge101 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge101 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge101 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge101 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge101 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge101 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge101 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge102 inet proto tcp from any to (bridge102) port = 53
+pass in quick on bridge102 inet proto udp from any to (bridge102) port = 53
+pass in quick on bridge102 inet proto udp from any to (bridge102) port = 67
+pass in quick on bridge102 inet6 proto tcp from any to (bridge102) port = 53
+pass in quick on bridge102 inet6 proto udp from any to (bridge102) port = 53
+block drop in quick on bridge102 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge102 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge102 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge102 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge102 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge102 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge102 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge102 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge102 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge102 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge102 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge102 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge102 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge102 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge102 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge102 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge102 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge102 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge103 inet proto tcp from any to (bridge103) port = 53
+pass in quick on bridge103 inet proto udp from any to (bridge103) port = 53
+pass in quick on bridge103 inet proto udp from any to (bridge103) port = 67
+pass in quick on bridge103 inet6 proto tcp from any to (bridge103) port = 53
+pass in quick on bridge103 inet6 proto udp from any to (bridge103) port = 53
+block drop in quick on bridge103 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge103 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge103 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge103 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge103 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge103 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge103 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge103 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge103 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge103 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge103 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge103 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge103 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge103 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge103 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge103 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge103 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge103 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge104 inet proto tcp from any to (bridge104) port = 53
+pass in quick on bridge104 inet proto udp from any to (bridge104) port = 53
+pass in quick on bridge104 inet proto udp from any to (bridge104) port = 67
+pass in quick on bridge104 inet6 proto tcp from any to (bridge104) port = 53
+pass in quick on bridge104 inet6 proto udp from any to (bridge104) port = 53
+block drop in quick on bridge104 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge104 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge104 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge104 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge104 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge104 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge104 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge104 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge104 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge104 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge104 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge104 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge104 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge104 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge104 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge104 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge104 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge104 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge105 inet proto tcp from any to (bridge105) port = 53
+pass in quick on bridge105 inet proto udp from any to (bridge105) port = 53
+pass in quick on bridge105 inet proto udp from any to (bridge105) port = 67
+pass in quick on bridge105 inet6 proto tcp from any to (bridge105) port = 53
+pass in quick on bridge105 inet6 proto udp from any to (bridge105) port = 53
+block drop in quick on bridge105 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge105 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge105 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge105 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge105 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge105 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge105 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge105 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge105 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge105 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge105 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge105 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge105 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge105 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge105 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge105 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge105 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge105 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge106 inet proto tcp from any to (bridge106) port = 53
+pass in quick on bridge106 inet proto udp from any to (bridge106) port = 53
+pass in quick on bridge106 inet proto udp from any to (bridge106) port = 67
+pass in quick on bridge106 inet6 proto tcp from any to (bridge106) port = 53
+pass in quick on bridge106 inet6 proto udp from any to (bridge106) port = 53
+block drop in quick on bridge106 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge106 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge106 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge106 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge106 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge106 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge106 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge106 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge106 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge106 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge106 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge106 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge106 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge106 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge106 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge106 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge106 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge106 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge107 inet proto tcp from any to (bridge107) port = 53
+pass in quick on bridge107 inet proto udp from any to (bridge107) port = 53
+pass in quick on bridge107 inet proto udp from any to (bridge107) port = 67
+pass in quick on bridge107 inet6 proto tcp from any to (bridge107) port = 53
+pass in quick on bridge107 inet6 proto udp from any to (bridge107) port = 53
+block drop in quick on bridge107 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge107 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge107 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge107 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge107 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge107 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge107 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge107 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge107 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge107 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge107 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge107 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge107 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge107 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge107 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge107 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge107 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge107 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge108 inet proto tcp from any to (bridge108) port = 53
+pass in quick on bridge108 inet proto udp from any to (bridge108) port = 53
+pass in quick on bridge108 inet proto udp from any to (bridge108) port = 67
+pass in quick on bridge108 inet6 proto tcp from any to (bridge108) port = 53
+pass in quick on bridge108 inet6 proto udp from any to (bridge108) port = 53
+block drop in quick on bridge108 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge108 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge108 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge108 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge108 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge108 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge108 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge108 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge108 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge108 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge108 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge108 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge108 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge108 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge108 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge108 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge108 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge108 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge109 inet proto tcp from any to (bridge109) port = 53
+pass in quick on bridge109 inet proto udp from any to (bridge109) port = 53
+pass in quick on bridge109 inet proto udp from any to (bridge109) port = 67
+pass in quick on bridge109 inet6 proto tcp from any to (bridge109) port = 53
+pass in quick on bridge109 inet6 proto udp from any to (bridge109) port = 53
+block drop in quick on bridge109 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge109 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge109 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge109 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge109 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge109 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge109 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge109 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge109 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge109 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge109 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge109 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge109 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge109 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge109 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge109 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge109 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge109 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge110 inet proto tcp from any to (bridge110) port = 53
+pass in quick on bridge110 inet proto udp from any to (bridge110) port = 53
+pass in quick on bridge110 inet proto udp from any to (bridge110) port = 67
+pass in quick on bridge110 inet6 proto tcp from any to (bridge110) port = 53
+pass in quick on bridge110 inet6 proto udp from any to (bridge110) port = 53
+block drop in quick on bridge110 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge110 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge110 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge110 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge110 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge110 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge110 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge110 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge110 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge110 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge110 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge110 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge110 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge110 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge110 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge110 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge110 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge110 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge111 inet proto tcp from any to (bridge111) port = 53
+pass in quick on bridge111 inet proto udp from any to (bridge111) port = 53
+pass in quick on bridge111 inet proto udp from any to (bridge111) port = 67
+pass in quick on bridge111 inet6 proto tcp from any to (bridge111) port = 53
+pass in quick on bridge111 inet6 proto udp from any to (bridge111) port = 53
+block drop in quick on bridge111 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge111 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge111 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge111 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge111 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge111 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge111 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge111 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge111 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge111 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge111 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge111 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge111 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge111 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge111 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge111 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge111 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge111 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge112 inet proto tcp from any to (bridge112) port = 53
+pass in quick on bridge112 inet proto udp from any to (bridge112) port = 53
+pass in quick on bridge112 inet proto udp from any to (bridge112) port = 67
+pass in quick on bridge112 inet6 proto tcp from any to (bridge112) port = 53
+pass in quick on bridge112 inet6 proto udp from any to (bridge112) port = 53
+block drop in quick on bridge112 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge112 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge112 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge112 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge112 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge112 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge112 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge112 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge112 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge112 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge112 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge112 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge112 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge112 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge112 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge112 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge112 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge112 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge113 inet proto tcp from any to (bridge113) port = 53
+pass in quick on bridge113 inet proto udp from any to (bridge113) port = 53
+pass in quick on bridge113 inet proto udp from any to (bridge113) port = 67
+pass in quick on bridge113 inet6 proto tcp from any to (bridge113) port = 53
+pass in quick on bridge113 inet6 proto udp from any to (bridge113) port = 53
+block drop in quick on bridge113 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge113 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge113 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge113 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge113 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge113 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge113 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge113 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge113 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge113 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge113 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge113 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge113 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge113 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge113 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge113 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge113 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge113 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge114 inet proto tcp from any to (bridge114) port = 53
+pass in quick on bridge114 inet proto udp from any to (bridge114) port = 53
+pass in quick on bridge114 inet proto udp from any to (bridge114) port = 67
+pass in quick on bridge114 inet6 proto tcp from any to (bridge114) port = 53
+pass in quick on bridge114 inet6 proto udp from any to (bridge114) port = 53
+block drop in quick on bridge114 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge114 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge114 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge114 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge114 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge114 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge114 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge114 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge114 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge114 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge114 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge114 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge114 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge114 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge114 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge114 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge114 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge114 inet6 proto udp from any to 2001:db8:1::/64
+pass in quick on bridge115 inet proto tcp from any to (bridge115) port = 53
+pass in quick on bridge115 inet proto udp from any to (bridge115) port = 53
+pass in quick on bridge115 inet proto udp from any to (bridge115) port = 67
+pass in quick on bridge115 inet6 proto tcp from any to (bridge115) port = 53
+pass in quick on bridge115 inet6 proto udp from any to (bridge115) port = 53
+block drop in quick on bridge115 inet proto tcp from any to 10.0.0.0/8
+block drop in quick on bridge115 inet proto udp from any to 10.0.0.0/8
+block drop in quick on bridge115 inet proto tcp from any to 172.16.0.0/12
+block drop in quick on bridge115 inet proto udp from any to 172.16.0.0/12
+block drop in quick on bridge115 inet proto tcp from any to 192.168.0.0/16
+block drop in quick on bridge115 inet proto udp from any to 192.168.0.0/16
+block drop in quick on bridge115 inet proto tcp from any to 100.64.0.0/10
+block drop in quick on bridge115 inet proto udp from any to 100.64.0.0/10
+block drop in quick on bridge115 inet proto tcp from any to 169.254.0.0/16
+block drop in quick on bridge115 inet proto udp from any to 169.254.0.0/16
+block drop in quick on bridge115 inet proto tcp from any to 203.0.113.0/24
+block drop in quick on bridge115 inet proto udp from any to 203.0.113.0/24
+block drop in quick on bridge115 inet6 proto tcp from any to fc00::/7
+block drop in quick on bridge115 inet6 proto udp from any to fc00::/7
+block drop in quick on bridge115 inet6 proto tcp from any to fe80::/10
+block drop in quick on bridge115 inet6 proto udp from any to fe80::/10
+block drop in quick on bridge115 inet6 proto tcp from any to 2001:db8:1::/64
+block drop in quick on bridge115 inet6 proto udp from any to 2001:db8:1::/64
+block return out quick inet proto tcp from any to 10.0.0.0/8 port = 139
+block return out quick inet proto udp from any to 10.0.0.0/8 port = 139
+block return out quick inet proto tcp from any to 10.0.0.0/8 port = 445
+block return out quick inet proto udp from any to 10.0.0.0/8 port = 445
+block return out quick inet proto tcp from any to 10.0.0.0/8 port = 548
+block return out quick inet proto udp from any to 10.0.0.0/8 port = 548
+block return out quick inet proto tcp from any to 10.0.0.0/8 port = 2049
+block return out quick inet proto udp from any to 10.0.0.0/8 port = 2049
+block return out quick inet proto tcp from any to 172.16.0.0/12 port = 139
+block return out quick inet proto udp from any to 172.16.0.0/12 port = 139
+block return out quick inet proto tcp from any to 172.16.0.0/12 port = 445
+block return out quick inet proto udp from any to 172.16.0.0/12 port = 445
+block return out quick inet proto tcp from any to 172.16.0.0/12 port = 548
+block return out quick inet proto udp from any to 172.16.0.0/12 port = 548
+block return out quick inet proto tcp from any to 172.16.0.0/12 port = 2049
+block return out quick inet proto udp from any to 172.16.0.0/12 port = 2049
+block return out quick inet proto tcp from any to 192.168.0.0/16 port = 139
+block return out quick inet proto udp from any to 192.168.0.0/16 port = 139
+block return out quick inet proto tcp from any to 192.168.0.0/16 port = 445
+block return out quick inet proto udp from any to 192.168.0.0/16 port = 445
+block return out quick inet proto tcp from any to 192.168.0.0/16 port = 548
+block return out quick inet proto udp from any to 192.168.0.0/16 port = 548
+block return out quick inet proto tcp from any to 192.168.0.0/16 port = 2049
+block return out quick inet proto udp from any to 192.168.0.0/16 port = 2049
+block return out quick inet proto tcp from any to 100.64.0.0/10 port = 139
+block return out quick inet proto udp from any to 100.64.0.0/10 port = 139
+block return out quick inet proto tcp from any to 100.64.0.0/10 port = 445
+block return out quick inet proto udp from any to 100.64.0.0/10 port = 445
+block return out quick inet proto tcp from any to 100.64.0.0/10 port = 548
+block return out quick inet proto udp from any to 100.64.0.0/10 port = 548
+block return out quick inet proto tcp from any to 100.64.0.0/10 port = 2049
+block return out quick inet proto udp from any to 100.64.0.0/10 port = 2049
+block return out quick inet proto tcp from any to 169.254.0.0/16 port = 139
+block return out quick inet proto udp from any to 169.254.0.0/16 port = 139
+block return out quick inet proto tcp from any to 169.254.0.0/16 port = 445
+block return out quick inet proto udp from any to 169.254.0.0/16 port = 445
+block return out quick inet proto tcp from any to 169.254.0.0/16 port = 548
+block return out quick inet proto udp from any to 169.254.0.0/16 port = 548
+block return out quick inet proto tcp from any to 169.254.0.0/16 port = 2049
+block return out quick inet proto udp from any to 169.254.0.0/16 port = 2049
+block return out quick inet6 proto tcp from any to fc00::/7 port = 139
+block return out quick inet6 proto udp from any to fc00::/7 port = 139
+block return out quick inet6 proto tcp from any to fc00::/7 port = 445
+block return out quick inet6 proto udp from any to fc00::/7 port = 445
+block return out quick inet6 proto tcp from any to fc00::/7 port = 548
+block return out quick inet6 proto udp from any to fc00::/7 port = 548
+block return out quick inet6 proto tcp from any to fc00::/7 port = 2049
+block return out quick inet6 proto udp from any to fc00::/7 port = 2049
+block return out quick inet6 proto tcp from any to fe80::/10 port = 139
+block return out quick inet6 proto udp from any to fe80::/10 port = 139
+block return out quick inet6 proto tcp from any to fe80::/10 port = 445
+block return out quick inet6 proto udp from any to fe80::/10 port = 445
+block return out quick inet6 proto tcp from any to fe80::/10 port = 548
+block return out quick inet6 proto udp from any to fe80::/10 port = 548
+block return out quick inet6 proto tcp from any to fe80::/10 port = 2049
+block return out quick inet6 proto udp from any to fe80::/10 port = 2049

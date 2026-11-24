@@ -24,7 +24,7 @@ function setup(o: { print?: string; ci?: boolean } = {}) {
   servicesObey(sys);
   const calls: string[][] = [];
   sys.responders.unshift((cmd, args) => {
-    if (cmd === "/usr/bin/id" && args.join(" ") === "-u ci") return o.ci === false ? { code: 1, stdout: "", stderr: "no such user" } : { code: 0, stdout: `${ME}\n`, stderr: "" };
+    if (cmd === "/usr/bin/id" && args.join(" ") === "-u taskbox") return o.ci === false ? { code: 1, stdout: "", stderr: "no such user" } : { code: 0, stdout: `${ME}\n`, stderr: "" };
     if (cmd === "/bin/launchctl") {
       calls.push(args);
       if (args[0] === "print") return { code: 0, stdout: o.print ?? RUNNING, stderr: "" };
@@ -230,7 +230,8 @@ describe("the guard's watch of the loop", () => {
       if (cmd === "/usr/sbin/sysctl" && args.join(" ") === "-n kern.boottime") return { code: 0, stdout: "{ sec = 1799990000, usec = 0 }\n", stderr: "" };
       return undefined;
     });
-    await guardWatch(sys, { label: "x" } as never, d.paths, () => ticks++ < 31).catch(() => undefined);
+    // The workspace pass has tests of its own (ws-guard-tick.test.ts); here it does nothing.
+    await guardWatch(sys, { label: "x" } as never, d.paths, () => ticks++ < 31, async () => undefined).catch(() => undefined);
     // The watch runs beside the tick, never awaited by it: its own sleeps wake first.
     await sys.sleep(GUARD_FULL_MS);
     expect(kicks().length).toBe(1);

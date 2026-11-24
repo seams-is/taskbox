@@ -21,7 +21,7 @@ function ctx(respond: (cmd: string, args: string[]) => string | undefined, cfg: 
   });
   const d = loopDeps(sys, tempRoot());
   mkdirSync(d.paths.projectState, { recursive: true });
-  return { sys, cfg, paths: d.paths, uid: 501, ciUid: 501 };
+  return { sys, cfg, paths: d.paths, uid: 501, serviceUid: 501 };
 }
 
 describe("settleBox", () => {

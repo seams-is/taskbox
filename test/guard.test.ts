@@ -8,7 +8,7 @@ import { type Config, loadConfig, paths } from "../src/config.ts";
 import { ANCHOR, anchorRules, expectedLoaded, GUARD_FRESH_MS, guardOnce, inTailnet, loadedMatches, PFCTL, readGuard, screenSharingPeers, tunAddresses, writeGuard } from "../src/guard.ts";
 import { oneJob } from "../src/loop.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, loopDeps, quietBox, quietLogins, servicesObey, tempRoot } from "./helpers.ts";
+import { CFG, loopDeps, quietBox, quietLogins, servicesObey, socketDirOk, tempRoot, testBox } from "./helpers.ts";
 
 const me = process.getuid!();
 const HEAD = "Active Internet connections (including servers)\nProto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n";
@@ -44,7 +44,7 @@ function pf(sys: FakeSys, o: { main?: string; load?: number; shown?: string; ena
 }
 
 // The box's taskbox.json names pat for Screen Sharing; from v2.1.1 there is no default user.
-function ctx(root: string, netstat: string, cfg: Config = { ...CFG, screenSharingUsers: ["pat"] }): CheckContext & { sys: FakeSys } {
+function ctx(root: string, netstat: string, cfg: Config = { ...CFG, accounts: { ...CFG.accounts, people: ["pat"] } }): CheckContext & { sys: FakeSys } {
   const sys = new FakeSys();
   sys.responders.push((cmd) => (cmd === "/usr/sbin/netstat" ? { code: 0, stdout: netstat, stderr: "" } : undefined));
   // Nobody is an admin unless a test says so: dseditgroup answers 67 for a user outside the group.
@@ -52,7 +52,7 @@ function ctx(root: string, netstat: string, cfg: Config = { ...CFG, screenSharin
   // No Remote Management settings file, as on a box where nobody touched them.
   sys.responders.push((cmd) => (cmd === "/usr/bin/plutil" ? { code: 1, stdout: "", stderr: "file does not exist" } : undefined));
   quietBox(sys);
-  return { sys, cfg, paths: paths(root, "app"), uid: 0, ciUid: undefined, rootUid: me };
+  return { sys, cfg, paths: paths(root, testBox()), uid: 0, serviceUid: undefined, rootUid: me };
 }
 
 function record(c: CheckContext, r: { ok?: boolean; at?: number; tun?: string; detail?: string } = {}) {
@@ -329,8 +329,8 @@ describe("Screen Sharing and the sharing row", () => {
     access(c.sys, "GroupMembership: pat\n");
     const r = await sharingOff(c);
     expect(r.status).toBe("FAIL");
-    expect(r.detail).toBe("Screen Sharing is on, but taskbox.json names nobody for it. Turn it off in System Settings, General, Sharing. To keep it, an agent adds a standard user to screenSharingUsers in a PR.");
-    expect(CFG.screenSharingUsers).toBeUndefined();
+    expect(r.detail).toBe("Screen Sharing is on, but taskbox.json names nobody for it. Turn it off in System Settings, General, Sharing. To keep it, an agent adds a standard user to accounts.people in a PR.");
+    expect(CFG.accounts.people).toEqual([]);
   });
 
   test("fails without the guard, with a stale or failed record, or one for another interface", async () => {
@@ -344,11 +344,18 @@ describe("Screen Sharing and the sharing row", () => {
     }
   });
 
+  test("macOS's default admins' group beside pat passes, and the row names it (the owner's choice)", async () => {
+    const c = ctx(tempRoot(), listen("*.5900"));
+    record(c);
+    access(c.sys, "GroupMembership: pat\nNestedGroups: ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050\n");
+    expect(await sharingOff(c)).toEqual({ status: "OK", detail: "only Screen Sharing, for pat and the admins (the Administrators group), over Tailscale" });
+  });
+
   test("fails when anyone but pat may use Screen Sharing", async () => {
     for (const [out, who] of [
       [null, "every user"],
       ["GroupMembership: pat admin\n", "admin and pat"],
-      ["GroupMembership: pat\nNestedGroups: ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050\n", "a group of users"],
+      ["GroupMembership: pat\nNestedGroups: 11111111-2222-3333-4444-555555555555\n", "pat and a group of users"],
       ["GroupMembership:\n", "nobody listed"],
     ] as const) {
       const c = ctx(tempRoot(), listen("*.5900"));
@@ -381,7 +388,7 @@ describe("Screen Sharing and the sharing row", () => {
   });
 
   test("the configured users are the list", async () => {
-    const c = ctx(tempRoot(), listen("*.5900"), { ...CFG, screenSharingUsers: ["pat", "render"] });
+    const c = ctx(tempRoot(), listen("*.5900"), { ...CFG, accounts: { ...CFG.accounts, people: ["pat", "render"] } });
     record(c);
     access(c.sys, "GroupMembership: render pat\n");
     expect(await screenSharingAccess(c)).toBeUndefined();
@@ -443,87 +450,105 @@ describe("the ways into Screen Sharing beyond pat's account", () => {
 
 describe("the remote user row", () => {
   test("waits for the user, then wants a standard user", async () => {
-    const { remoteUserRow } = await import("../src/checks.ts");
+    const { agentRow } = await import("../src/checks.ts");
     const c = ctx(tempRoot(), HEAD);
     c.sys.responders.unshift((cmd) => (cmd === "/usr/bin/id" ? { code: 1, stdout: "", stderr: "no such user" } : undefined));
-    expect((await remoteUserRow(c)).status).toBe("SKIP");
+    expect((await agentRow(c)).status).toBe("SKIP");
     const d = ctx(tempRoot(), HEAD);
     const me = process.getuid!();
     d.rootUid = me; // the tests run as one user, who stands in for root
-    d.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args.join(" ") === "-u remote" ? { code: 0, stdout: "503\n", stderr: "" } : undefined));
+    d.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args.join(" ") === "-u taskbox-agent" ? { code: 0, stdout: "503\n", stderr: "" } : undefined));
     let shell = "/bin/zsh";
-    let homeDir = "/Users/remote";
+    let homeDir = "/Users/taskbox-agent";
+    d.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args.includes("IsHidden") ? { code: 0, stdout: "dsAttrTypeNative:IsHidden: 1\n", stderr: "" } : undefined));
+    // Off the disk's unlock list.
+    d.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args.includes("GeneratedUID") ? { code: 0, stdout: "GeneratedUID: 00000000-0000-0000-0000-000000000503\n", stderr: "" } : cmd === "/usr/sbin/diskutil" ? { code: 0, stdout: "", stderr: "" } : undefined));
     d.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args.includes("UserShell") ? { code: 0, stdout: `UserShell: ${shell}\n`, stderr: "" } : undefined));
     d.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args.includes("NFSHomeDirectory") ? { code: 0, stdout: `NFSHomeDirectory: ${homeDir}\n`, stderr: "" } : undefined));
     // A full shell, then a home in /Users, then taskbox's home remote could write, then a locked home.
-    expect((await remoteUserRow(d)).detail).toContain("login shell isn't taskbox's");
+    expect((await agentRow(d)).detail).toContain("login shell isn't taskbox's");
     shell = "/opt/taskbox/bin/taskbox-shell";
-    expect((await remoteUserRow(d)).detail).toContain("home isn't taskbox's empty folder");
-    homeDir = d.paths.remoteHome;
-    const home = d.paths.remoteHome;
+    expect((await agentRow(d)).detail).toContain("home isn't taskbox's empty folder");
+    homeDir = d.paths.agentHome!;
+    const home = d.paths.agentHome!;
     mkdirSync(join(home, ".config"), { recursive: true });
     writeFileSync(join(home, ".config", "x"), "");
     chmodSync(join(home, ".config"), 0o777);
-    expect((await remoteUserRow(d)).detail).toContain(".config isn't root's alone");
+    expect((await agentRow(d)).detail).toContain(".config isn't root's alone");
     chmodSync(join(home, ".config"), 0o755);
-    expect(await remoteUserRow(d)).toEqual({ status: "OK", detail: "remote, a standard user with taskbox's shell and a read-only home" });
+    expect(await agentRow(d)).toEqual({ status: "OK", detail: "taskbox-agent, a hidden standard user with no password, taskbox's shell and a read-only home. Laptops pair with the name taskbox-agent" });
     // A folder only its owner may open, as macOS makes Music and Library: what's inside is out of reach.
     mkdirSync(join(home, "Music", "x"), { recursive: true });
     chmodSync(join(home, "Music"), 0o700);
     if (process.getuid!() !== 0) {
       chmodSync(join(home, "Music"), 0o000);
-      expect((await remoteUserRow(d)).status).toBe("OK");
+      expect((await agentRow(d)).status).toBe("OK");
       chmodSync(join(home, "Music"), 0o311);
-      expect((await remoteUserRow(d)).detail).toContain("can't be read to check it");
+      expect((await agentRow(d)).detail).toContain("can't be read to check it");
       chmodSync(join(home, "Music"), 0o700);
     }
     d.sys.responders.unshift((cmd) => (cmd === "/usr/sbin/dseditgroup" ? { code: 0, stdout: "", stderr: "" } : undefined));
-    expect((await remoteUserRow(d)).status).toBe("FAIL");
+    expect((await agentRow(d)).status).toBe("FAIL");
+  });
+});
+
+describe("the agent row's way in", () => {
+  // A made agent: hidden, no AuthenticationAuthority, off the disk's unlock list, taskbox's shell and home.
+  const agent = (o: { hidden?: string; authority?: boolean; unlocks?: boolean } = {}) => {
+    const d = ctx(tempRoot(), HEAD);
+    d.rootUid = process.getuid!();
+    mkdirSync(d.paths.agentHome!, { recursive: true });
+    const guid = "00000000-0000-0000-0000-000000000471";
+    d.sys.responders.unshift((cmd, args) => {
+      const out = (stdout: string) => ({ code: 0, stdout, stderr: "" });
+      if (cmd === "/usr/bin/id") return out("471\n");
+      if (cmd === "/usr/sbin/dseditgroup") return { code: 67, stdout: "", stderr: "" };
+      if (cmd === "/usr/sbin/diskutil") return out(o.unlocks ? `+-- ${guid}\n` : "");
+      if (cmd !== "/usr/bin/dscl") return undefined;
+      const key = args[3];
+      if (key === "IsHidden") return out(`dsAttrTypeNative:IsHidden: ${o.hidden ?? "1"}\n`);
+      // A key the account doesn't have reads "No such key", with exit 0 (dscl-output.test.ts).
+      if (key === "ShadowHashData") return out("No such key: ShadowHashData\n");
+      if (key === "AuthenticationAuthority") return o.authority ? out("AuthenticationAuthority: ;ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2>\n") : out("No such key: AuthenticationAuthority\n");
+      if (key === "GeneratedUID") return out(`GeneratedUID: ${guid}\n`);
+      if (key === "UserShell") return out("UserShell: /opt/taskbox/bin/taskbox-shell\n");
+      if (key === "NFSHomeDirectory") return out(`NFSHomeDirectory: ${d.paths.agentHome}\n`);
+      return undefined;
+    });
+    return d;
+  };
+  test("OK on a made agent", async () => {
+    const { agentRow } = await import("../src/checks.ts");
+    expect((await agentRow(agent())).status).toBe("OK");
+  });
+  test("FAIL when it shows on the login window, has a password, or can unlock the disk", async () => {
+    const { agentRow } = await import("../src/checks.ts");
+    expect((await agentRow(agent({ hidden: "0" }))).detail).toContain("shows on the login window. As your admin user, type taskbox update.");
+    expect((await agentRow(agent({ authority: true }))).detail).toContain("has a password. As your admin user, type taskbox update.");
+    expect((await agentRow(agent({ unlocks: true }))).detail).toContain("can unlock the disk");
+  });
+  test("missing: SKIP before the first install, FAIL after it", async () => {
+    const { agentRow } = await import("../src/checks.ts");
+    const c = ctx(tempRoot(), HEAD);
+    c.sys.responders.unshift((cmd) => (cmd === "/usr/bin/id" ? { code: 1, stdout: "", stderr: "no such user" } : undefined));
+    expect((await agentRow(c)).status).toBe("SKIP");
+    mkdirSync(dirname(c.paths.accountsRecord), { recursive: true });
+    writeFileSync(c.paths.accountsRecord, JSON.stringify({ made: {} }));
+    expect(await agentRow(c)).toEqual({ status: "FAIL", detail: "taskbox-agent isn't on this Mac, so agents and laptops can't reach the box. As your admin user, type taskbox update, and it makes taskbox-agent." });
   });
 });
 
 describe("remote's home", () => {
-  test("the install makes taskbox's own empty folder root's, and points remote's home at it", async () => {
-    const { placeRemote } = await import("../src/install.ts");
-    const root = tempRoot();
-    const sys = new FakeSys();
-    const p = paths(root, "app");
-    mkdirSync(join(p.remoteHome, ".."), { recursive: true });
-    let homeDir = "/Users/remote";
-    const created: string[][] = [];
-    sys.responders.unshift((cmd, args) => {
-      if (cmd === "/usr/bin/id") return { code: 0, stdout: "504\n", stderr: "" };
-      if (cmd === "/usr/sbin/dseditgroup") return { code: 67, stdout: "", stderr: "" };
-      if (cmd === "/usr/bin/dscl" && args[1] === "-read") return { code: 0, stdout: `NFSHomeDirectory: ${homeDir}\n`, stderr: "" };
-      if (cmd === "/usr/bin/dscl" && args[1] === "-create") {
-        created.push(args.slice(2));
-        if (args[3] === "NFSHomeDirectory") homeDir = args[4]!;
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      return undefined;
-    });
-    const me = process.getuid!();
-    const d = { sys, paths: p, say: () => {}, chown: () => {}, rootUid: me } as unknown as Parameters<typeof placeRemote>[0];
-    await placeRemote(d, "remote");
-    expect(created).toContainEqual(["/Users/remote", "UserShell", "/opt/taskbox/bin/taskbox-shell"]);
-    expect(created).toContainEqual(["/Users/remote", "NFSHomeDirectory", p.remoteHome]);
-    expect(statSync(p.remoteHome).mode & 0o777).toBe(0o755);
-    // A second install changes nothing, and /Users/remote is never touched.
-    created.length = 0;
-    await placeRemote(d, "remote");
-    expect(created.filter((c) => c[1] === "NFSHomeDirectory")).toEqual([]);
-    expect(sys.calls.some((c) => c.cmd === "/usr/sbin/chown" || (c.cmd === "/bin/chmod" && c.args.includes("-R")))).toBe(false);
-  });
   test("a link or someone else's folder in its place stops the install", async () => {
-    const { placeRemote } = await import("../src/install.ts");
+    const { placeAgent } = await import("../src/install.ts");
     const root = tempRoot();
     const sys = new FakeSys();
-    const p = paths(root, "app");
-    mkdirSync(join(p.remoteHome, ".."), { recursive: true });
-    symlinkSync("/tmp", p.remoteHome);
+    const p = paths(root, testBox());
+    mkdirSync(join(p.agentHome!, ".."), { recursive: true });
+    symlinkSync("/tmp", p.agentHome!);
     sys.responders.unshift((cmd) => (cmd === "/usr/bin/id" ? { code: 0, stdout: "504\n", stderr: "" } : cmd === "/usr/sbin/dseditgroup" ? { code: 67, stdout: "", stderr: "" } : cmd === "/usr/bin/dscl" ? { code: 0, stdout: "", stderr: "" } : undefined));
-    const d = { sys, paths: p, say: () => {}, chown: () => {}, rootUid: process.getuid!() } as unknown as Parameters<typeof placeRemote>[0];
-    await expect(placeRemote(d, "remote")).rejects.toThrow("isn't taskbox's");
+    const d = { sys, paths: p, say: () => {}, chown: () => {}, rootUid: process.getuid!() } as unknown as Parameters<typeof placeAgent>[0];
+    await expect(placeAgent(d, "taskbox-agent")).rejects.toThrow("isn't taskbox's");
   });
 });
 
@@ -569,11 +594,14 @@ describe("taskbox.json", () => {
     writeFileSync(join(dir, "taskbox.json"), JSON.stringify({ ...CFG, ...extra }));
     return dir;
   };
-  test("takes a remote user, Screen Sharing users and a utun name", () => {
-    expect(loadConfig(write({ remoteUser: "remote", screenSharingUsers: ["pat"], tailscaleTun: "utun99" })).remoteUser).toBe("remote");
+  test("takes accounts, the old keys when they agree, and a utun name", () => {
+    const accounts = { service: "taskbox", agent: "taskbox-agent", people: ["pat"] };
+    expect(loadConfig(write({ accounts, tailscaleTun: "utun99" })).accounts).toEqual(accounts);
+    expect(loadConfig(write({ accounts, remoteUser: "taskbox-agent", screenSharingUsers: ["pat"] })).accounts).toEqual(accounts);
   });
-  test("refuses ci as the remote user or a Screen Sharing user, and a name that isn't a utun", () => {
-    for (const bad of [{ remoteUser: "ci" }, { remoteUser: "" }, { screenSharingUsers: ["ci"] }, { screenSharingUsers: "pat" }, { tailscaleTun: "en0" }, { tailscaleTun: "utun" }]) {
+  test("refuses the service as the agent or a person, old keys that disagree, and a name that isn't a utun", () => {
+    const accounts = { service: "taskbox", agent: "taskbox-agent", people: ["pat"] };
+    for (const bad of [{ accounts: { ...accounts, agent: "taskbox" } }, { accounts: { ...accounts, people: ["TaskBox"] } }, { accounts: { ...accounts, agent: "" } }, { accounts, remoteUser: "other" }, { accounts, screenSharingUsers: [] }, { accounts: null }, { tailscaleTun: "en0" }, { tailscaleTun: "utun" }]) {
       expect(() => loadConfig(write(bad))).toThrow();
     }
   });
@@ -619,9 +647,10 @@ describe("the guard's watch", () => {
     });
     pf(sys);
     const root = tempRoot();
-    const p = paths(root, "app");
+    const p = paths(root, testBox());
     mkdirSync(dirname(p.guardState), { recursive: true });
-    await guardWatch(sys, CFG, p, () => ticks < 6);
+    // The workspace pass has tests of its own (ws-guard-tick.test.ts); here it does nothing.
+    await guardWatch(sys, CFG, p, () => ticks < 6, async () => undefined);
     expect(loads).toBe(2); // the first pass, then once when the rules went missing
     const rec = readGuard(p, sys.now(), me)!;
     expect(rec.at).toBe(sys.now());
@@ -727,6 +756,9 @@ describe("the Tailscale row", () => {
     mkdirSync(join(c.paths.app, "launchd"), { recursive: true });
     writeFileSync(join(c.paths.app, "launchd/local.taskbox.tailscaled.plist"), daemon);
     mkdirSync(dirname(c.paths.tailscaledPlist), { recursive: true });
+    // The socket's folder first: missing, it fails before tailscaled is asked anything.
+    expect((await tailscaleRow(c)).detail).toContain("taskbox-tailscale is missing, so other accounts on the box may reach tailscaled");
+    socketDirOk(c);
     expect((await tailscaleRow(c)).detail).toContain("tailscaled's LaunchDaemon isn't taskbox's");
     writeFileSync(c.paths.tailscaledPlist, daemon.replace(/\s*<key>TS_SSH_DISABLE_SFTP<\/key>\s*<string>true<\/string>/, ""));
     expect((await tailscaleRow(c)).detail).toContain("may allow file copying");
@@ -793,7 +825,7 @@ describe("the Tailscale row", () => {
     sys.responders.unshift((cmd) => (cmd.endsWith("/tailscale") ? { code: 0, stdout: JSON.stringify({ BackendState: "NeedsLogin" }), stderr: "" } : undefined));
     sys.onSpawn = (p) => queueMicrotask(() => p.exit(0));
     const said: string[] = [];
-    await tailscaleUp({ sys, paths: paths(tempRoot(), "app"), say: (l: string) => said.push(l) } as never, "taskbox-1");
+    await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1");
     expect(sys.spawned[0]!.args.slice(1)).toEqual(["up", "--ssh", "--accept-dns=false", "--accept-routes=false", "--exit-node=", "--advertise-routes=", "--advertise-exit-node=false", "--advertise-connector=false", "--advertise-tags=tag:taskbox", "--hostname=taskbox-1", "--timeout=15m"]);
   });
   // v2.2.1: the update restarts tailscaled, so the first status read may say Starting. A box already
@@ -809,7 +841,7 @@ describe("the Tailscale row", () => {
     });
     sys.responders.push((cmd, args) => (cmd.endsWith("/tailscale") && args.includes("set") ? { code: 0, stdout: "", stderr: "" } : undefined));
     const said: string[] = [];
-    await tailscaleUp({ sys, paths: paths(tempRoot(), "app"), say: (l: string) => said.push(l) } as never, "taskbox-1");
+    await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1");
     expect(sys.spawned).toEqual([]);
     expect(reads).toBe(3);
     expect(said.join("\n")).not.toContain("Sign the box in");
@@ -820,7 +852,7 @@ describe("the Tailscale row", () => {
     const start = sys.now();
     sys.responders.unshift((cmd) => (cmd.endsWith("/tailscale") ? { code: 0, stdout: JSON.stringify({ BackendState: "Starting" }), stderr: "" } : undefined));
     const said: string[] = [];
-    await tailscaleUp({ sys, paths: paths(tempRoot(), "app"), say: (l: string) => said.push(l) } as never, "taskbox-1");
+    await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1");
     expect(sys.spawned).toEqual([]);
     expect(sys.calls.some((c) => c.args.includes("set"))).toBe(false);
     expect(said).toEqual(["Tailscale is still starting, so its settings weren't checked. Type taskbox update again in a few minutes."]);
@@ -838,11 +870,12 @@ describe("the Tailscale row", () => {
           p.exit(0);
         });
       const said: string[] = [];
-      await tailscaleUp({ sys, paths: paths(tempRoot(), "app"), say: (l: string) => said.push(l) } as never, "taskbox-1");
+      await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1");
       expect(said.some((l) => l.startsWith("Approve the box"))).toBe(!!line);
       expect(said.some((l) => l.includes("/admin/machines"))).toBe(!!line);
       expect(said.some((l) => l.startsWith("Sign the box in"))).toBe(false);
       expect(said.at(-1)).toBe("The box is on the tailnet, with Tailscale SSH.");
+      expect(said.findIndex((l) => l.includes('"tag:taskbox": ["OWNER"]'))).toBeGreaterThanOrEqual(0);
     }
   });
   test("a failed sign-in mentions a link only when one was shown", async () => {
@@ -851,8 +884,8 @@ describe("the Tailscale row", () => {
     sys.responders.unshift((cmd) => (cmd.endsWith("/tailscale") ? { code: 0, stdout: JSON.stringify({ BackendState: "NeedsLogin" }), stderr: "" } : undefined));
     sys.onSpawn = (p) => queueMicrotask(() => p.exit(1));
     const said: string[] = [];
-    await tailscaleUp({ sys, paths: paths(tempRoot(), "app"), say: (l: string) => said.push(l) } as never, "taskbox-1");
-    expect(said.at(-1)).toBe("The box didn't sign in to Tailscale. Type taskbox update again.");
+    await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1");
+    expect(said.at(-1)).toBe(`The box didn't sign in to Tailscale. Check that "tagOwners" has "tag:taskbox", then type taskbox update again.`);
   });
   test("the sign-in line shows only with Tailscale's link", async () => {
     const { tailscaleUp } = await import("../src/install.ts");
@@ -865,10 +898,11 @@ describe("the Tailscale row", () => {
           p.exit(0);
         });
       const said: string[] = [];
-      await tailscaleUp({ sys, paths: paths(tempRoot(), "app"), say: (l: string) => said.push(l) } as never, "taskbox-1");
+      await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1");
       expect(said.some((l) => l.startsWith("Sign the box in"))).toBe(!!url);
       expect(said.some((l) => l.includes("abc123"))).toBe(!!url);
       expect(said.at(-1)).toBe("The box is on the tailnet, with Tailscale SSH.");
+      expect(said.findIndex((l) => l.includes('"tag:taskbox": ["OWNER"]'))).toBeGreaterThanOrEqual(0);
     }
   });
   // v2.1.1: an update sets what the Tailscale row checks, so a box that fails it is fixed by
@@ -877,7 +911,7 @@ describe("the Tailscale row", () => {
     const { tailscaleUp } = await import("../src/install.ts");
     const sys = new FakeSys();
     sys.responders.unshift((cmd) => (cmd.endsWith("/tailscale") ? { code: 0, stdout: JSON.stringify({ BackendState: "Running" }), stderr: "" } : undefined));
-    await tailscaleUp({ sys, paths: paths(tempRoot(), "app"), say: () => {} } as never, "taskbox-1");
+    await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: () => {} } as never, "taskbox-1");
     const set = sys.calls.find((c) => c.cmd.endsWith("/tailscale") && c.args.includes("set"));
     expect(set!.args.slice(set!.args.indexOf("set"))).toEqual(["set", "--ssh", "--accept-dns=false", "--accept-routes=false", "--exit-node=", "--advertise-routes=", "--advertise-exit-node=false", "--advertise-connector=false", "--webclient=false"]);
     expect(sys.spawned).toEqual([]);

@@ -21,3 +21,12 @@ Two fixtures are made, not captured, for src/logins.ts. Every name and address i
   owner's laptop, values replaced), with sessions from tailnet addresses added. Not captured on a box. A session with no terminal
   shows as tty `tty__`, as `login -f -h <address> <user> <command>` with no terminal records it in a
   Tart test Mac on macOS 27.2.
+Golden files, written by taskbox, not captured:
+
+- `ws-fence-rules.txt`: the workspaces' pf anchor as the guard loads it (src/workspace/fence.ts), for
+  one pool account and two public prefixes, with the static rules for bridge100 to bridge115.
+- `ws-fence-loaded.txt`: the same rules in the form taskbox expects `pfctl -a com.apple/240.taskbox-ws
+  -s rules` to print them, loaded with `-o none`. The Tart run on macOS 27.2 read back the pool
+  account's rules exactly so; `pfctl -n -v -o none` prints every line of this file, the bridges'
+  `(bridgeN)` addresses included (a test runs it). The kernel's read-back of the bridges' rules waits
+  for a Tart run.

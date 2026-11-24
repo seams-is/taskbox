@@ -4,6 +4,7 @@ import { afterEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setServiceName } from "../src/names.ts";
 import type { FakeSys } from "./fake.ts";
 
 process.env.TASKBOX_TEST = "1";
@@ -23,6 +24,9 @@ export function unknownCommands(): string[] {
 
 // A command no fake knows fails its test, even where the code caught the fake's throw.
 afterEach(() => {
+  // The service account's name is set once per process by the CLI (names.ts); a test that ran the
+  // CLI leaves it set, so each test starts from none.
+  setServiceName(undefined);
   const unknown = unknownCommands();
   for (const f of fakes) f.unknown = [];
   if (unknown.length) throw new Error(`commands no fake answered:\n${unknown.join("\n")}`);

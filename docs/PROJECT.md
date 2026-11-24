@@ -19,11 +19,11 @@ taskbox turns a spare Apple silicon Mac into CI for GitHub Actions. Each job run
 
 ## How it works
 
-- **The loop**, running as `ci`: reads what's waiting from a job source, picks the next job with a scheduler that has no side effects, starts a VM, and cleans up after the job.
+- **The loop**, running as the service account (`accounts.service`): reads what's waiting from a job source, picks the next job with a scheduler that has no side effects, starts a VM, and cleans up after the job.
 - **A VM per job**: macOS or Linux, from an image pinned by digest. It gets a one-job runner and sits behind Softnet's packet filter: it reaches the box for DNS only, and never the LAN or the tailnet.
 - **Small root parts**: install, update, undo, remove, and a guard that keeps the network rules in place.
 - **Checks**: `check` and `away` say what's wrong, and give one fix for each problem.
-- **Remote access**: Tailscale SSH only. Agents log in as `remote`, whose shell runs taskbox's read commands only.
+- **Remote access**: Tailscale SSH only. Agents log in as the agent account (`accounts.agent`), whose shell runs taskbox's read commands only.
 
 ## Roadmap
 

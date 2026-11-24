@@ -7,7 +7,7 @@ import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.
 import { appendJob, type JobRecord, type Phases, runnerResult, type Wait } from "./jobs.ts";
 import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, PRESTART, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
-import { AGENT_LABEL, awayOf, CI_USER, forKind, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf } from "./config.ts";
+import { AGENT_LABEL, awayOf, forKind, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf } from "./config.ts";
 import { guestOf } from "./guest.ts";
 import { installedCommit, peerTargets, PROOF_RETRY_MS, proofHolds, proofResult, proofScript, proofTargets, readProof, writeProof } from "./proof.ts";
 import { type KindChooser, type Occupant, QUEUE_POLL_MS, schedule, type Turn } from "./kinds.ts";
@@ -18,6 +18,7 @@ import { RunnerChain } from "./ghfail.ts";
 import { beatFor, RESTARTS_WINDOW_MS, staleBeat } from "./beat.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
 import { readLoop } from "./watch.ts";
+import { heldOf, holdReason, isHeld, type WorkspacesNow } from "./held.ts";
 import { readKick } from "./loopwatch.ts";
 import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
@@ -68,6 +69,9 @@ export interface LoopDeps {
   chain?: RunnerChain;
   // v2.5.0: what happens when a slot's beat goes stale. Absent: the process exits, and launchd restarts it.
   onStale?: () => void;
+  // The workspaces now, as the loop needs them (held.ts): on the box, root's state read by
+  // workspace/hold.ts. Absent: none, so no slot is held.
+  workspaces?: () => WorkspacesNow;
 }
 
 // A start or stop of a VM: from when its engine was asked, to when it was done. Open until then.
@@ -167,6 +171,7 @@ export class Slots {
   readonly drained = new Set<number>();
   drainedAt: number | undefined; // when the last slot found the drain done
   drainShown: number | undefined; // the drain's start, as the loop's state shows it
+  holdShown: string | undefined; // the hold's reason, as the loop's state shows it
   // v2.4.0, for the scheduler: when a VM of each kind last took a job soon after it was ready, when
   // each kind's last VM ended, and how many VMs of each kind gave way, since the loop started.
   readonly fastAt: Partial<Record<Kind, number>> = {};
@@ -546,8 +551,9 @@ export type JobOutcome = "done" | "ceiling" | "no-guest" | "update" | "held-back
 
 // How often the loop reads the guard and memory while it waits, and while a VM waits for a job.
 export const HOLD_CHECK_MS = 30_000;
-// A drain keeps a VM whose runner GitHub won't delete for this many asks, 30 s apart: long enough for
-// a job GitHub just gave it to start. After that the VM goes, whatever GitHub says.
+// A drain or a held slot keeps a VM whose runner GitHub won't delete for this many asks, 30 s
+// apart: long enough for a job GitHub gave it a moment ago to start. After that the VM goes,
+// whatever GitHub says.
 export const DRAIN_REFUSALS = 4;
 
 // Turns off the guest's SSH, gives its admin a password nobody keeps, then tries the guest from the
@@ -634,7 +640,21 @@ function othersMB(d: LoopDeps): number {
   return (d.box?.othersUp(d.slot) ?? []).reduce((n, o) => n + forKind(d.cfg, o.kind).vmMemoryMB, 0);
 }
 
-// Why the box starts no VM now, or undefined. The guard first, then memory.
+// How many of the box's slots are held for workspaces now, and whether this slot is one of them.
+const NONE: WorkspacesNow = { views: [] };
+export const heldNow = (d: Pick<LoopDeps, "workspaces" | "box" | "cfg">): number => heldOf(d.workspaces?.() ?? NONE, d.box?.count ?? slotCount(d.cfg));
+const slotHeld = (d: LoopDeps): boolean => isHeld(d.slot, d.box?.count ?? slotCount(d.cfg), heldNow(d));
+
+// The waits that end a VM waiting for a job, and let a running one finish. A drain (taskbox stop
+// --drain) goes first. Then a slot held for a workspace, which starts no VM.
+function drainOrHold(d: LoopDeps): { key: string; text: string } | undefined {
+  if (existsSync(d.paths.drain)) return { key: "drain", text: "taskbox stop --drain: running jobs finish, then the loop stops" };
+  // A held slot always has a reason: a Whole, or a state the loop can't trust.
+  if (slotHeld(d)) return { key: "workspace", text: holdReason(d.workspaces?.() ?? NONE)!.text };
+  return undefined;
+}
+
+// Why the box starts no VM now, or undefined. A drain or a hold first, then the guard, then memory.
 // up: this slot's VM is already up and waits for a job, so its own memory is in use already.
 export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; text: string } | undefined> {
   // Once per loop run, so files someone keeps leaving in the old folder can't fill the log.
@@ -642,8 +662,8 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
     endOldHold(d);
     if (d.box) d.box.oldHoldEnded = true;
   }
-  // A drain (taskbox stop --drain) goes first: no VM starts, and a VM waiting for a job ends.
-  if (existsSync(d.paths.drain)) return { key: "drain", text: "taskbox stop --drain: running jobs finish, then the loop stops" };
+  const hold = drainOrHold(d);
+  if (hold) return hold;
   if (readState(d).guardClosed === true && !d.cfg.vmnetPfProven && (await screenSharingOn(d.sys))) {
     return { key: "guard", text: "the guard's rules went missing when a VM started, so no VM starts while Screen Sharing is on" };
   }
@@ -682,6 +702,12 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
   if (!leave) return { ok: false, detail: "another VM's start held the gate too long", notRun: true };
   // A fresh beat now the gate is passed: the proof's own steps take their full time from here.
   if (d0.box) writeState(d0, { beat: beatFor("proving Linux", d0.sys.now()) });
+  // The checks before the gate took time: a drain or a hold may have begun since.
+  const why = drainOrHold(d0);
+  if (why) {
+    leave();
+    return { ok: false, detail: why.text, notRun: true };
+  }
   let startDone: ((now: number) => void) | undefined;
   let stopDone: ((now: number) => void) | undefined;
   try {
@@ -908,7 +934,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     if (sized.code !== 0) throw new Error("tart set failed on the VM's size");
     // Who else is logged in, for taskbox jobs. A list that can't be read is left out, never empty.
     const logins = await loginSessions(d.sys).catch(() => undefined);
-    beside = logins?.known ? logins.users.filter((u) => u !== CI_USER) : undefined;
+    beside = logins?.known ? logins.users.filter((u) => u !== d.cfg.accounts.service) : undefined;
     vmStartedAt = d.sys.now();
     startDone = d.box?.window(d.slot, "start", vmStartedAt);
     vmProc = t.start(vm, net);
@@ -1144,17 +1170,21 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
       // with it. A job that has started finishes.
       if (started === undefined) {
         const w = await whyWait(d, true);
+        // A hold that began while this VM waits shows at once, not when a slot next reaches its top.
+        if (d.box) showHold(d, d.box);
         keepForDrain = false;
-        if (w?.key !== "drain") drainRefusals = 0;
-        // A drain promises no job fails, so the runner goes from GitHub first, as a give-way's does.
-        // GitHub refuses to delete a runner it has just given a job: then the VM keeps waiting.
-        if (w?.key === "drain" && started === undefined) {
+        // A drain or a held slot promises no job fails, so the runner goes from GitHub first, as a
+        // give-way's does. GitHub refuses to delete a runner it gave a job a moment ago: then the VM
+        // keeps waiting.
+        const freeing = w?.key === "drain" || w?.key === "workspace";
+        if (!freeing) drainRefusals = 0;
+        if (freeing && started === undefined) {
           const freed = await d.gh
             .token("runners")
             .then((tk) => d.gh.deleteRunner(tk, jit.runnerId))
             .then(
               () => true,
-              (e: Error) => (d.log.write(`the VM kept waiting through the drain: GitHub didn't delete its runner (${e.message})`), false),
+              (e: Error) => (d.log.write(`the VM kept waiting through the ${w.key === "drain" ? "drain" : "hold for a workspace"}: GitHub didn't delete its runner (${e.message})`), false),
             );
           if (!freed) drainRefusals++;
           keepForDrain = !freed && drainRefusals < DRAIN_REFUSALS;
@@ -1376,7 +1406,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   await cleanLeftovers(d);
   // A fresh start: nothing from a run before a logout or a power cut is shown as current, and a
   // taskbox stop ends here (this runs at ci's login or taskbox start). A hold from before v2.2.0 ends.
-  writeLoopState(d.paths, { slot: "idle", slotAt: d.sys.now(), job: undefined, failing: undefined, waitingFor: undefined, kindPaused: undefined, kindChoice: undefined, slots: {}, slotCount: n, vmKind: undefined, vmSize: undefined, beside: undefined, github: undefined, imageBroken: undefined, drainingSince: undefined });
+  writeLoopState(d.paths, { slot: "idle", slotAt: d.sys.now(), job: undefined, failing: undefined, waitingFor: undefined, kindPaused: undefined, kindChoice: undefined, slots: {}, slotCount: n, vmKind: undefined, vmSize: undefined, beside: undefined, github: undefined, imageBroken: undefined, drainingSince: undefined, heldKind: undefined, heldFor: undefined });
   clearStopped(d.paths);
   // A drain survives the loop's own restarts (an update, a hand-over, a crash): it is the owner's, and
   // only taskbox start or the drain's end clears it. One from before this boot goes: the restart
@@ -1390,7 +1420,13 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   // again and the start cleans up. A timer reads the beats; it never writes one. From here, so the
   // start itself is covered.
   const selfWatch: SelfWatch = { live: new Set(), started: false, lastTick: null, halted: () => box.halt !== undefined };
-  const selfCheck = setInterval(() => checkSelf(d, selfWatch), SELF_CHECK_MS);
+  // The hold's line is written on this tick too, so it shows while every slot runs a job.
+  const selfCheck = setInterval(() => {
+    checkSelf(d, selfWatch);
+    try {
+      showHold(d, box);
+    } catch {}
+  }, SELF_CHECK_MS);
   selfCheck.unref?.();
   const updated = () => commitNow() !== startCommit || (d.relabel?.() ?? false);
   // Linux runs jobs only after its Softnet proof passed for this image and this install.
@@ -1449,7 +1485,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
     // The proof, once Linux's image and runner are in place, and again 6 hours after a failure.
     // With more than one slot, a pass that tried no other job VM is proved again once one is up, so
     // the box shows one job VM can't reach another. Linux jobs run meanwhile: the pass still holds.
-    proofDue: () => !existsSync(d.paths.drain) && c.held.has("linux") && servedKinds(d).includes("linux") && d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()),
+    proofDue: () => !existsSync(d.paths.drain) && heldNow({ ...d, box }) === 0 && c.held.has("linux") && servedKinds(d).includes("linux") && d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()),
     served: () => servedKinds(d).filter((k) => c.held.has(k) && (k !== "linux" || proven())),
     choose:
       d.chooseKind ??
@@ -1463,6 +1499,8 @@ export async function runLoop(d: LoopDeps): Promise<number> {
         history: () => box.history(kindsOf(d.cfg)),
         // v2.6.0: the load test's window, read each time a slot asks (load.ts).
         load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now()) : undefined),
+        // The slots held for workspaces, read each time a slot asks: the scheduler sees the rest.
+        held: () => heldNow({ ...d, box }),
         seen: (s) => noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.()),
       }),
   };
@@ -1512,6 +1550,16 @@ function showDrain(d: Pick<LoopDeps, "paths">, box: Slots): void {
   writeLoopState(d.paths, { drainingSince: now });
 }
 
+// Why the box is held now, in the loop's state for status, watch, away and check (state.ts), on a
+// change only: heldKind workspace is a Whole the owner approved; bad, stale and newer the state's.
+function showHold(d: Pick<LoopDeps, "paths" | "workspaces">, box: Slots): void {
+  const r = holdReason(d.workspaces?.() ?? NONE);
+  const key = r ? `${r.kind}:${r.text}` : undefined;
+  if (key === box.holdShown) return;
+  box.holdShown = key;
+  writeLoopState(d.paths, { heldKind: r?.kind, heldFor: r?.text });
+}
+
 // One slot: wait while the box says so, download and prove between VMs, then one VM at a time.
 async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
   const multi = c.box.count > 1;
@@ -1519,11 +1567,24 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
   // Each wait since the last VM, with its reason and length, for taskbox jobs.
   let waits: Wait[] = [];
   let waiting: { key: string; since: number } | undefined;
+  let heldEmptyShown: boolean | undefined;
   for (;;) {
     if (c.box.halt !== undefined) return c.box.halt;
     if (c.updated()) return RESTART;
     const w = await whyWait(d);
     showDrain(d, c.box);
+    showHold(d, c.box);
+    // A slot here holds no VM. Held and empty, from this pass's wait, for the guard's check that a
+    // waiting Whole may go active (heldSlotsEmpty, held.ts, build plan step 7). It is all step 7
+    // needs from the loop. A held slot starts no VM, so the mark stays true until the hold ends.
+    // Written on a change only.
+    // A deliberate guard: a slot reaches here only with no occupant, and the mark checks it anyway,
+    // since the guard lets a Whole go active on it. A slot that still holds one is never empty.
+    const heldEmpty = (w?.key === "workspace" || (w?.key === "drain" && slotHeld(d))) && !c.box.held.has(d.slot);
+    if (heldEmpty !== heldEmptyShown) {
+      heldEmptyShown = heldEmpty;
+      writeLoopState(d.paths, {}, { slot: d.slot, patch: { heldEmpty: heldEmpty || undefined } });
+    }
     // A slot here holds no VM, so a drain is done once every slot waits on it.
     if (w?.key === "drain") {
       c.box.drained.add(d.slot);
@@ -1543,7 +1604,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         if (waiting) waits.push({ why: waiting.key, minutes: Math.round((d.sys.now() - waiting.since) / 60_000) });
         waiting = { key: w.key, since: d.sys.now() };
         // One line for the box, not one per slot, while the wait is box-wide.
-        if (d.slot === 1 || w.key === "memory") d.log.write(`${multi ? `slot ${d.slot}: ` : ""}no new VM: ${w.text}`);
+        if (d.slot === 1 || w.key === "memory" || w.key === "workspace") d.log.write(`${multi ? `slot ${d.slot}: ` : ""}no new VM: ${w.text}`);
       }
       writeState(d, { slot: "waiting", waitingFor: w.text, slotAt: waiting.since });
       await d.sys.sleep(HOLD_CHECK_MS);
@@ -1551,7 +1612,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     }
     if (waiting) {
       waits.push({ why: waiting.key, minutes: Math.round((d.sys.now() - waiting.since) / 60_000) });
-      if (d.slot === 1 || waiting.key === "memory") d.log.write(`${multi ? `slot ${d.slot}: ` : ""}starting VMs again`);
+      if (d.slot === 1 || waiting.key === "memory" || waiting.key === "workspace") d.log.write(`${multi ? `slot ${d.slot}: ` : ""}starting VMs again`);
       writeState(d, { slot: "idle", waitingFor: undefined, slotAt: d.sys.now() });
       waiting = undefined;
     }
@@ -1565,7 +1626,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       c.refetch.add(k);
     }
     const due = kindsOf(d.cfg).filter((k) => !c.held.has(k) && (c.nextPull.get(k) ?? 0) <= d.sys.now());
-    let drainStopped = false;
+    let stoppedToWait = false;
     if (due.length && !c.pulling) {
       c.pulling = true;
       try {
@@ -1573,7 +1634,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const onDisk = (k: Kind) => (listed.has(forKind(d.cfg, k).image) ? 0 : 1);
         for (const k of due.sort((a, b) => onDisk(a) - onDisk(b))) {
           c.box.downloadGB = forKind(d.cfg, k).imageGB ?? 0;
-          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (existsSync(d.paths.drain) && "a drain began (taskbox stop --drain); it starts again after"))
+          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (existsSync(d.paths.drain) && "a drain began (taskbox stop --drain); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after"))
             .finally(() => (c.box.downloadGB = 0))
             .catch((e: Error) => {
               const why = `the ${KIND_WORD[k]} image: ${e.message}`;
@@ -1581,9 +1642,9 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
               c.pullWhy.set(k, why);
               return "failed" as const;
             });
-          // A drain stops a download, and the slot then waits on the drain at the top, like the others.
-          if (got === "stopped" && c.box.halt === undefined && !c.updated() && existsSync(d.paths.drain)) {
-            drainStopped = true;
+          // A drain or a hold stops a download, and the slot then waits on it at the top, like the others.
+          if (got === "stopped" && c.box.halt === undefined && !c.updated() && (existsSync(d.paths.drain) || slotHeld(d))) {
+            stoppedToWait = true;
             break;
           }
           if (got === "stopped") return c.box.halt ?? RESTART;
@@ -1611,7 +1672,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         c.pulling = false;
       }
     }
-    if (drainStopped) continue;
+    if (stoppedToWait) continue;
     // The Linux proof takes this slot, one proof at a time.
     if (c.proofDue() && !c.proving) {
       c.proving = true;
@@ -1674,7 +1735,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       c.box.workflowsChecking = true;
       c.box.workflowsAt = d.sys.now();
       try {
-        const ctx = { ...d.checks, uid: d.checks.ciUid ?? d.checks.uid };
+        const ctx = { ...d.checks, uid: d.checks.serviceUid ?? d.checks.uid };
         writeLoopState(d.paths, { workflows: { at: d.sys.now(), watchdog: await deployedRow(ctx, "watchdog"), canary: await deployedRow(ctx, "canary") } });
       } catch {
         // check says why when asked; the loop carries on.
@@ -1690,6 +1751,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     // With more than one slot, only when no slot is free, and only the highest waiting slot.
     const proofWants = () => {
       if (!c.proofDue() || c.proving) return false;
+      // A held slot's VM is whyWait's to end.
+      if (slotHeld(d)) return false;
       if (!multi) return true;
       if (c.box.held.size < c.box.count) return false;
       const idle = [...c.box.held.values()].filter((o) => !o.job).sort((a, b) => b.slot - a.slot);

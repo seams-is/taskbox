@@ -1,8 +1,9 @@
 // v2.1.0: the Linux VM kind. One slot serves both labels, a job at a time.
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { diskNeed } from "../src/checks.ts";
 import { type Config, DEFAULT_TURN_IDLE_MINUTES, forKind, kindsOf, loadConfig, paths, pathsForKind } from "../src/config.ts";
 import { DOCKER_BIP, DOCKER_NETS_SCRIPT, DOCKER_POOLS, GUESTS } from "../src/guest.ts";
@@ -14,8 +15,8 @@ import { activePull, readPull } from "../src/progress.ts";
 import { plainLogEntries } from "../src/ops.ts";
 import { computeState } from "../src/state.ts";
 import { readLoopState, screen } from "../src/watch.ts";
-import { FakeSys, githubRoutes, SECRETS } from "./fake.ts";
-import { asRoot, CFG, fakeLaunchd, fakeTailscale, healthyBox, installDeps, loopDeps, settingsDir, settingsText, stageRelease, tempRoot } from "./helpers.ts";
+import { FakeSys, githubRoutes, json, jwtOf, SECRETS } from "./fake.ts";
+import { CFG, loopDeps, PEM, settingsDir, settingsText, tempRoot, testBox, asRoot, fakeLaunchd, fakeTailscale, healthyBox, installDeps, stageRelease } from "./helpers.ts";
 
 const repo = join(import.meta.dir, "..");
 const LINUX_IMAGE = "ghcr.io/cirruslabs/ubuntu-runner-arm64@sha256:" + "1".repeat(64);
@@ -95,8 +96,8 @@ describe("the settings", () => {
     expect([k.kind, k.label, k.image, k.imageGB]).toEqual(["linux", "taskbox-linux", LINUX_IMAGE, 12]);
     expect(forKind(LCFG, "macos").label).toBe("taskbox-macos");
     expect(() => forKind(CFG, "linux")).toThrow();
-    const p = paths("/", "app");
-    expect(pathsForKind(p, "linux").pull).toBe("/Users/ci/.taskbox/app/pull-linux.json");
+    const p = paths("/", testBox());
+    expect(pathsForKind(p, "linux").pull).toBe("/Users/taskbox/.taskbox/app/pull-linux.json");
     expect(pathsForKind(p, "linux").runnerTarball).toBe("/opt/taskbox/runner/actions-runner-linux.tar.gz");
     expect(pathsForKind(p, "macos").pull).toBe(p.pull);
   });
@@ -533,7 +534,7 @@ describe("images", () => {
 describe("the screens", () => {
   test("watch shows the Linux download and the kind of the VM in the slot", () => {
     const root = tempRoot();
-    const p = paths(root, "app");
+    const p = paths(root, testBox());
     const pull = (ref: string, image: string, state: string) => JSON.stringify({ image, ref, state, percent: state === "ready" ? 100 : 40, totalGB: 11.3, startedAt: 1, updatedAt: 1, failures: 0 });
     writeFileSync(p.pull, pull(CFG.image, "macos-golden-gate-xcode 27.2", "ready"));
     writeFileSync(p.pullLinux, pull(LINUX_IMAGE, "ubuntu-runner-arm64 24.04", "downloading"));
@@ -685,7 +686,7 @@ describe("the install", () => {
     expect(said).toContain("  runnerLinux 2.338.2: matches its pin");
     expect(sys.requests.some((r) => r.url.endsWith("actions-runner-linux-arm64-2.338.2.tar.gz"))).toBe(true);
     expect(existsSync(join(d.paths.opt, "runner/actions-runner-linux.tar.gz"))).toBe(true);
-    expect(said.at(-1)).toBe("Installed. Now log in as ci.");
+    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
   });
 
   test("a Linux kind with no Linux runner pinned installs nothing", async () => {
@@ -701,7 +702,114 @@ describe("the install", () => {
     expect(said).toContain("  runner 2.338.2: matches its pin");
     expect(said.some((l) => l.includes("runnerLinux"))).toBe(false);
     expect(existsSync(join(d.paths.opt, "runner/actions-runner-linux.tar.gz"))).toBe(false);
-    expect(said.at(-1)).toBe("Installed. Now log in as ci.");
+    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
+  });
+
+  // P3: install.sh run again over a service with state keeps that state; the key goes in root's folder.
+  test("a reinstall over an existing service keeps its ~/.taskbox", async () => {
+    const { healthyBox, installDeps } = await import("./helpers.ts");
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys);
+    stageRelease(sys, CFG);
+    const { d, said } = installDeps(sys, "yes");
+    mkdirSync(d.paths.projectState, { recursive: true });
+    writeFileSync(join(d.paths.projectState, "jobs.jsonl"), "{}\n");
+    await install(d, { first: true }).catch(() => undefined);
+    expect(said).toContain("  runner 2.338.2: matches its pin");
+    expect(readFileSync(join(d.paths.projectState, "jobs.jsonl"), "utf8")).toBe("{}\n");
+    // The run stops before step 7 here, so the key stays in Downloads for the next run.
+    expect(existsSync(join(d.paths.actionsKeyDir, "runner.pem"))).toBe(false);
+    expect(existsSync(join(d.ownerHome, "Downloads/example-taskbox.2026-11-12.private-key.pem"))).toBe(true);
+  });
+
+  // The Tart run of #34, C.1b: an update from a release whose taskbox.json has the job source, with
+  // the key placed the old way at actions-key.pem, to a release that drops sources. The source is
+  // adopted from the INSTALLED settings, before the new release is used, and never lost.
+  describe("adopting the job source on an update", () => {
+    const SOURCE = { type: "github-actions" as const, appId: 4242, repos: ["example-org/app"] };
+    const SOURCE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey;
+    const me = process.getuid!();
+
+    async function update(withKey: boolean, box?: object, uninstalled = false) {
+      const { healthyBox, installDeps } = await import("./helpers.ts");
+      const sys = new FakeSys();
+      // The service is this test's own user, so the key's checks hold in a temp folder. The agent is
+      // healthyBox's, made by the install.
+      sys.responders.push((cmd, args) => (cmd === "/usr/bin/id" && !args.includes("taskbox-agent") ? { code: 0, stdout: `${me}\n`, stderr: "" } : undefined));
+      healthyBox(sys);
+      // The release's whole taskbox.json, read before the yes.
+      githubRoutes(sys, { settings: { ...CFG } });
+      // The job source App as GitHub answers for it: Actions read, installed on the jobs repo only.
+      sys.routes.unshift((method, url) => {
+        const p = new URL(url).pathname;
+        if (method === "GET" && p === "/app" && jwtOf(sys).iss === 4242) return json({ id: 4242, slug: "example-org-old-jobs", permissions: { actions: "read", metadata: "read" }, events: [] });
+        if (method === "GET" && p === "/app/installations") return json(uninstalled ? [] : [{ id: 9, repository_selection: "selected", account: { login: "example-org" } }]);
+        if (method === "POST" && p === "/app/installations/9/access_tokens") return json({ token: SECRETS.token });
+        if (method === "GET" && p === "/installation/repositories") return json({ repositories: [{ full_name: "example-org/app" }] });
+        if (method === "DELETE" && p === "/installation/token") return new Response(null, { status: 204 });
+        return undefined;
+      });
+      // The new release drops sources; its tree and its taskbox.json both have none.
+      stageRelease(sys, CFG);
+      const { d, said } = installDeps(sys, "yes");
+      d.rootUid = me;
+      // The installed settings hold the source, and the box has its first App's key and an install.
+      writeFileSync(join(d.configDir, "taskbox.json"), JSON.stringify({ ...CFG, sources: [SOURCE] }));
+      mkdirSync(d.paths.state, { recursive: true });
+      writeFileSync(d.paths.oldKey, PEM);
+      mkdirSync(join(d.paths.installed, ".."), { recursive: true });
+      writeFileSync(d.paths.installed, JSON.stringify({ commit: "56027d1c5671baa8eadd5aeaf1cdeb4d89254470", tag: "v2.0.0", pr: 17, title: "x", mergedAt: "x", installedAt: "x", files: {} }));
+      if (withKey) {
+        mkdirSync(d.paths.actionsKeyDir, { recursive: true, mode: 0o700 });
+        writeFileSync(join(d.paths.actionsKeyDir, "actions-key.pem"), SOURCE_KEY, { mode: 0o600 });
+      }
+      if (box) {
+        mkdirSync(dirname(d.paths.boxSettings), { recursive: true, mode: 0o755 });
+        writeFileSync(d.paths.boxSettings, JSON.stringify(box), { mode: 0o644 });
+      }
+      let asked = false;
+      const ask = d.ask;
+      d.ask = (q) => ((asked = true), ask(q));
+      const out = await install(d, { first: false }).then(() => "installed", (e: Error) => e.message);
+      return { d, said, out, asked };
+    }
+
+    test("the source is kept in box.json from the installed settings, with the key under its App's ID", async () => {
+      const { d, said } = await update(true);
+      expect(said).toContain("  It also keeps the job source App in this box's own settings, once its key passes.");
+      expect(said).toContain("  Kept the job source App example-org-old-jobs in this box's own settings.");
+      expect(JSON.parse(readFileSync(d.paths.boxSettings, "utf8")).sources).toEqual([{ ...SOURCE, app: "example-org-old-jobs" }]);
+      expect(readFileSync(join(d.paths.actionsKeyDir, "actions-4242.pem"), "utf8")).toBe(SOURCE_KEY);
+      // The new release, which drops sources, then reads the box's: the key step proves it again.
+      expect(said).toContain("  The job source App's key: in place, and proved with GitHub again.");
+    });
+
+    test("a source whose key fails its proof stops the update before anything changes", async () => {
+      const { d, out } = await update(true, undefined, true);
+      expect(out).toMatch(/^The job source App couldn't be kept in this box's own settings: that App isn't installed anywhere\. Nothing was installed\./);
+      expect(existsSync(d.paths.boxSettings)).toBe(false);
+      // The install in place is the one from before.
+      expect(JSON.parse(readFileSync(d.paths.installed, "utf8")).commit).toBe("56027d1c5671baa8eadd5aeaf1cdeb4d89254470");
+    });
+
+    // Tart run of #34: a box installed from a release with a source has no source key until taskbox
+    // connect github. Its next update said it keeps the source, took the yes, then stopped.
+    test("a release source whose key isn't on the box isn't adopted, and the update goes on", async () => {
+      const { d, said, out } = await update(false);
+      expect(said).not.toContain("  It also keeps the job source App in this box's own settings, once its key passes.");
+      // It goes past the adoption to the key step: this release drops sources, and the box had no key for one. (This fake stops later, at tailscale's download.)
+      expect(out).not.toMatch(/couldn't be kept/);
+      expect(said).toContain("  The job source App's key: none on this box. To add one, type taskbox connect github.");
+      expect(existsSync(d.paths.boxSettings)).toBe(false);
+    });
+
+    test("a box.json with a key only the release sets, such as accounts, stops before the yes with the one fixed line", async () => {
+      const { d, out, asked } = await update(true, { sources: [SOURCE], accounts: { service: "taskbox" } });
+      expect(out).toBe("This box's own settings can't be used with release v2.0.0: box.json sets accounts, which only the release's taskbox.json may set. Nothing was installed. To keep or replace the job source, type taskbox connect github, or taskbox disconnect github to go without one.");
+      expect(asked).toBe(false);
+      expect(JSON.parse(readFileSync(d.paths.installed, "utf8")).commit).toBe("56027d1c5671baa8eadd5aeaf1cdeb4d89254470");
+    });
   });
 
   void Stop;

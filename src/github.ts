@@ -78,6 +78,9 @@ export function repoMissing(e: unknown, step: "token" | "releases"): boolean {
 
 export type Scope = "contents" | "runners";
 
+// A runner in a runner group, as GitHub lists it.
+export type GroupRunner = { id: number; name: string; labels: string[] };
+
 export class GitHub {
   constructor(
     private sys: Sys,
@@ -171,6 +174,16 @@ export class GitHub {
     return parseHead(c);
   }
 
+  // The commit's taskbox.json, read before the owner's yes (v2.7.0), so the accounts it names are
+  // known before anything is made. One small file through the contents API; the tree itself is
+  // downloaded only after the yes.
+  async settingsAt(token: string, sha: string): Promise<Record<string, unknown>> {
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a commit");
+    const f = await this.json<{ type?: string; encoding?: string; content?: string; size?: number }>("GET", `/repos/${this.cfg.org}/${this.cfg.repo}/contents/taskbox.json?ref=${sha}`, token);
+    if (f.type !== "file" || f.encoding !== "base64" || typeof f.content !== "string" || (f.size ?? 0) > 1_000_000) throw new Error("the release's taskbox.json can't be read");
+    return JSON.parse(Buffer.from(f.content, "base64").toString("utf8"));
+  }
+
   // The newest published release, or the named one. undefined when there is none.
   async release(token: string, tag?: string): Promise<Release | undefined> {
     if (tag !== undefined) {
@@ -258,12 +271,21 @@ export class GitHub {
   }
 
   async changedFiles(token: string, from: string, to: string): Promise<number> {
-    const c = await this.json<{ files?: unknown[] }>(
+    return (await this.changes(token, from, to)).files;
+  }
+
+  // The files changed between two commits, by name. GitHub's compare lists at most 300: complete is
+  // false when it may have left some out.
+  async changes(token: string, from: string, to: string): Promise<{ names: string[]; files: number; complete: boolean }> {
+    const c = await this.json<{ files?: { filename?: unknown; previous_filename?: unknown }[] }>(
       "GET",
       `/repos/${this.cfg.org}/${this.repo}/compare/${from}...${to}`,
       token,
     );
-    return c.files?.length ?? 0;
+    const files = c.files ?? [];
+    // A renamed file counts under its old name too, so moving a trust file away is named.
+    const names = files.flatMap((f) => [f?.filename, f?.previous_filename].filter((n): n is string => typeof n === "string"));
+    return { names, files: files.length, complete: files.length < 300 };
   }
 
   async tarball(token: string, sha: string): Promise<Uint8Array> {
@@ -295,6 +317,19 @@ export class GitHub {
       throw new Error(`runner group ${group} must list ${repo} only`);
     }
     return g.id;
+  }
+
+  // Every runner in the box's group, with its labels.
+  // Up to five pages, so a runner past the first hundred is seen too.
+  async groupRunners(token: string, groupId: number): Promise<GroupRunner[]> {
+    const all: GroupRunner[] = [];
+    for (let page = 1; page <= 5; page++) {
+      const r = await this.json<{ total_count?: number; runners?: { id?: unknown; name?: unknown; labels?: { name?: unknown }[] }[] }>("GET", `/orgs/${this.cfg.org}/actions/runner-groups/${groupId}/runners?per_page=100&page=${page}`, token);
+      const got = (r.runners ?? []).filter((x) => Number.isInteger(x.id) && typeof x.name === "string").map((x) => ({ id: x.id as number, name: x.name as string, labels: (x.labels ?? []).map((l) => String(l.name)) }));
+      all.push(...got);
+      if (got.length < 100 || all.length >= (r.total_count ?? 0)) break;
+    }
+    return all;
   }
 
   // labels: the one kind's label the VM serves (v2.1.0), so GitHub sends it only that kind's jobs.

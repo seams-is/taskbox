@@ -1,7 +1,7 @@
 // v2.2.0: more than one VM at once. Slots, merge jobs first, the gate, and every screen.
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { statusAnswer } from "../src/answers.ts";
 import { diskNeed } from "../src/checks.ts";
 import { type Config, labelsFor, loadConfig, MACOS_MAX } from "../src/config.ts";
@@ -14,6 +14,11 @@ import { sharedPaths } from "../src/shared.ts";
 import { computeState } from "../src/state.ts";
 import { stop } from "../src/stopstart.ts";
 import { readLoopState, screen } from "../src/watch.ts";
+import { held, heldSlotsEmpty, type WorkspaceView } from "../src/held.ts";
+import { stateHold } from "../src/workspace/hold.ts";
+import { end, held as stateHeld, type WsState } from "../src/workspace/model.ts";
+import { stateText } from "../src/workspace/store.ts";
+import { approvedState, ctx } from "./ws-helpers.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, loopDeps, settingsDir, settingsText, tempRoot } from "./helpers.ts";
 
@@ -340,6 +345,253 @@ describe("the loop with 2 slots", () => {
     expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).drainingSince).toBeUndefined();
   });
 
+  // Slots held for workspaces (docs/workspaces-design.md 5.6). Both slots busy at first: one runs a
+  // macOS job, the other's Linux VM waits for one. hold is called once that is so.
+  function heldRun(d: ReturnType<typeof twoSlotDeps>["d"], sys: FakeSys, hold: () => void, after: (heldAt: number) => void) {
+    const image = new Map<string, string>();
+    const clones: { at: number; slot: number }[] = [];
+    sys.responders.unshift((cmd, args) => {
+      if (cmd.endsWith("/tart") && args[0] === "clone") image.set(args[2]!, args[1]!);
+      return undefined;
+    });
+    const runners = new Map<string, { exit(n: number): void; killed: boolean; opts: { onLine?: (l: string) => void }; at: number; took?: boolean }>();
+    sys.onSpawn = (p) => {
+      if (p.args[0] !== "exec" || !p.args.some((a) => a.includes("run.sh"))) return;
+      const vm = p.args.find((a) => a.startsWith("job-"))!;
+      runners.set(vm, Object.assign(p, { at: sys.now() }));
+    };
+    // Each runner's registration names its slot: the VMs each slot started, and when.
+    let jitsSeen = 0;
+    const r = { heldAt: undefined as number | undefined, clones, runners, image };
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      const jits = sys.requests.filter((q) => q.url.endsWith("generate-jitconfig"));
+      for (const j of jits.slice(jitsSeen)) clones.push({ at: sys.now(), slot: Number((j.body as { name: string }).name.split("-")[2]) });
+      jitsSeen = jits.length;
+      for (const [vm, p] of runners) if (image.get(vm) === CFG.image && !p.took && !p.killed && sys.now() - p.at > 120_000 && ![...runners.values()].some((x) => x.took)) (p.took = true), p.opts.onLine?.("Running job: check");
+      const live = [...runners.entries()].filter(([, p]) => !p.killed);
+      if (r.heldAt === undefined && live.length === 2) {
+        const st = JSON.parse(readFileSync(d.paths.loopState, "utf8"));
+        if (Object.values(st.slots).map((s) => (s as { slot: string }).slot).sort().join() !== "running a job,waiting for a job") return;
+        hold();
+        r.heldAt = sys.now();
+      }
+      if (r.heldAt !== undefined && sys.now() - r.heldAt > 10 * 60_000) for (const [vm, p] of runners) if (image.get(vm) === CFG.image && !p.killed && p.took) p.exit(0);
+      if (r.heldAt !== undefined) after(r.heldAt);
+    };
+    return r;
+  }
+  const loopNow = (d: ReturnType<typeof twoSlotDeps>["d"]) => JSON.parse(readFileSync(d.paths.loopState, "utf8"));
+  const update = (d: ReturnType<typeof twoSlotDeps>["d"]) => writeFileSync(d.paths.installed, JSON.stringify({ commit: "beef000", files: {} }));
+
+  test("a Whole holds every slot: the waiting VM ends, the running job finishes, nothing starts, and the held slots read empty only then", async () => {
+    const { sys, d } = twoSlotDeps();
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    let emptyAt: number | undefined;
+    let emptyEarly = false;
+    // Each runner delete, and whether the Linux VM's runner process was still up at it.
+    const deletes: { linuxUp: boolean }[] = [];
+    const del = d.gh.deleteRunner.bind(d.gh);
+    d.gh.deleteRunner = async (tk, id) => {
+      const lin = [...r.runners.entries()].find(([vm]) => r.image.get(vm) === LINUX_IMAGE)?.[1];
+      deletes.push({ linuxUp: !!lin && !lin.killed });
+      return del(tk, id);
+    };
+    const r = heldRun(
+      d,
+      sys,
+      () => (ws = [{ size: "whole", phase: "waiting", name: "nova-1", approvedAt: null, ok: "you approved it" }]),
+      () => {
+        const loop = loopNow(d);
+        const empty = heldSlotsEmpty(loop, held(ws, 2));
+        const jobRuns = Object.values(loop.slots).some((s) => (s as { slot: string }).slot === "running a job");
+        if (empty && jobRuns) emptyEarly = true;
+        if (empty && emptyAt === undefined) emptyAt = sys.now();
+        // Held and empty for a while: the Whole is done, and once each slot says it starts VMs again,
+        // an update ends the test.
+        if (emptyAt !== undefined && sys.now() - emptyAt > 5 * 60_000) ws = [{ size: "whole", phase: "done", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+        if (readFileSync(d.paths.log, "utf8").includes("slot 2: starting VMs again")) update(d);
+      },
+    );
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(r.heldAt).toBeDefined();
+    const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const mac = jobs.find((j) => j.vmKind === "macos" && j.result === "finished");
+    const lin = jobs.find((j) => j.vmKind === "linux");
+    // The macOS job finished, past the hold; the Linux VM waiting for a job ended at it.
+    expect([mac.result, mac.job, lin.result]).toEqual(["finished", "check", "no job"]);
+    expect(lin.endedAt).toBeLessThan(mac.endedAt);
+    expect(mac.endedAt - r.heldAt!).toBeGreaterThan(10 * 60_000);
+    // Nothing started in either slot while it was held.
+    const doneAt = emptyAt! + 5 * 60_000;
+    expect(jobs.filter((j) => j.startedAt > r.heldAt! && j.startedAt < doneAt)).toEqual([]);
+    expect(r.clones.filter((c) => c.at > r.heldAt! && c.at < doneAt)).toEqual([]);
+    // Each slot said it starts VMs again once the hold ended.
+    for (const n of [1, 2]) expect(readFileSync(d.paths.log, "utf8")).toContain(`slot ${n}: starting VMs again`);
+    // Both slots read held and empty, and never while the job still ran.
+    expect(emptyAt).toBeDefined();
+    expect(emptyEarly).toBe(false);
+    expect(readFileSync(d.paths.log, "utf8")).toContain("no new VM: CI paused for nova-1 (you approved it)");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("VM deleted while it waited for a job: CI paused for nova-1 (you approved it)");
+    // The waiting VM's runner went from GitHub before the VM was killed, so no job could land on it.
+    expect(deletes.some((x) => x.linuxUp)).toBe(true);
+  });
+
+  // Build plan step 7: the real held path, from root's state file on disk, as the box wires it (cli.ts).
+  test("an approved Whole in workspaces.json holds every slot: each ends empty, and heldEmpty is true for all of them", async () => {
+    const { sys, d } = twoSlotDeps();
+    mkdirSync(dirname(d.paths.workspaces), { recursive: true });
+    let state: WsState | undefined;
+    // The guard: the state with a fresh heartbeat on each pass, root's (here, the test's user), 644.
+    const guard = () => state && writeFileSync(d.paths.workspaces, stateText({ ...state, beat: sys.now() }), { mode: 0o644 });
+    d.workspaces = stateHold(d.paths.workspaces, process.getuid!(), () => sys.now());
+    let emptyAt: number | undefined;
+    let emptyEarly = false;
+    let shown: { kind?: string; line?: string } = {};
+    const r = heldRun(
+      d,
+      sys,
+      () => {
+        state = approvedState(ctx(sys.now()));
+        guard();
+      },
+      () => {
+        guard();
+        const loop = loopNow(d);
+        const h = stateHeld(state!, 2);
+        const empty = h > 0 && heldSlotsEmpty(loop, h);
+        if (empty && Object.values(loop.slots).some((s) => ["running a job", "waiting for a job", "starting a VM"].includes((s as { slot: string }).slot))) emptyEarly = true;
+        if (empty && emptyAt === undefined) {
+          emptyAt = sys.now();
+          shown = { kind: loop.heldKind, line: loop.heldFor };
+        }
+        // Held and empty for a while: the owner ends the Whole, and the slots start again.
+        if (emptyAt !== undefined && sys.now() - emptyAt > 5 * 60_000 && state!.workspaces[0]!.phase !== "done") {
+          const e = end(state!, { name: "nova-1" }, ctx(sys.now()));
+          if (e.ok) state = e.state;
+        }
+        const log = readFileSync(d.paths.log, "utf8");
+        if (log.includes("slot 1: starting VMs again") && log.includes("slot 2: starting VMs again")) update(d);
+      },
+    );
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(r.heldAt).toBeDefined();
+    // Every slot ended empty, and said so, never while a VM was still in one.
+    expect(emptyAt).toBeDefined();
+    expect(emptyEarly).toBe(false);
+    const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const ended = jobs.filter((j) => j.startedAt < r.heldAt!);
+    expect(ended.map((j) => j.endedAt <= emptyAt!)).toEqual(ended.map(() => true));
+    expect(r.clones.filter((c) => c.at > r.heldAt! && c.at < emptyAt! + 5 * 60_000)).toEqual([]);
+    // The loop's state said why, in the owner's words.
+    const at = new Date(state!.workspaces[0]!.approvedAt!).toTimeString().slice(0, 5);
+    expect(shown).toEqual({ kind: "workspace", line: `CI paused for nova-1 (you approved it at ${at})` });
+    expect(readFileSync(d.paths.log, "utf8")).toContain(`no new VM: CI paused for nova-1 (you approved it at ${at})`);
+    // Once it was done, the marks and the line went.
+    const after = loopNow(d);
+    expect([after.heldKind, after.heldFor, after.slots["1"].heldEmpty, after.slots["2"].heldEmpty]).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  test("a held slot's waiting VM keeps waiting while GitHub refuses to delete its runner, as in a drain", async () => {
+    const { sys, d } = twoSlotDeps();
+    let refusals = 2;
+    const deletes: { at: number; ok: boolean }[] = [];
+    d.gh.deleteRunner = async () => {
+      const ok = refusals-- <= 0;
+      deletes.push({ at: sys.now(), ok });
+      if (!ok) throw new Error("422 the runner is busy");
+    };
+    sys.onSpawn = () => {}; // no job comes
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    let heldAt: number | undefined;
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      if (heldAt === undefined) {
+        const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
+        if (Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) {
+          ws = [{ size: "whole", phase: "waiting", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+          heldAt = sys.now();
+        }
+      } else if (heldSlotsEmpty(loopNow(d), 2)) update(d);
+    };
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(heldAt).toBeDefined();
+    const log = readFileSync(d.paths.log, "utf8");
+    expect(log).toContain("the VM kept waiting through the hold for a workspace: GitHub didn't delete its runner (422 the runner is busy)");
+    // The one waiting VM: two asks refused, then one that freed it, then the cleanup's after it ended.
+    expect(deletes.map((x) => x.ok)).toEqual([false, false, true, true]);
+    expect(log.split("\n").filter((l) => l.includes("kept waiting through the hold")).length).toBe(2);
+    // It was kept through both refusals, and ended at the ask that freed it.
+    const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(jobs.map((j) => j.result)).toEqual(["no job"]);
+    expect(jobs[0].endedAt).toBeGreaterThan(deletes[1]!.at);
+    expect(jobs[0].endedAt).toBe(deletes[2]!.at);
+  });
+
+  test("a hold that begins while the one VM waits for a job shows in the loop's state at that check", async () => {
+    const { sys, d } = twoSlotDeps();
+    d.cfg = { ...MCFG, vmsAtOnce: 1 };
+    d.checks = { ...d.checks, cfg: d.cfg };
+    // GitHub refuses to delete the runner, so the VM keeps waiting and the slot never reaches its top.
+    const seen: (string | undefined)[] = [];
+    d.gh.deleteRunner = async () => {
+      seen.push(loopNow(d).heldFor);
+      throw new Error("422 the runner is busy");
+    };
+    sys.onSpawn = () => {}; // no job comes
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
+      if (!ws.length && Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) ws = [{ size: "whole", phase: "waiting", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+      if (seen.length) update(d);
+    };
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(seen[0]).toBe("CI paused for nova-1 (you approved it)");
+  });
+
+  test("a Whole never makes a held VM give way, even with a job the source sees waiting", async () => {
+    const { sys, d } = twoSlotDeps();
+    sys.onSpawn = () => {}; // no job comes to the box's VMs
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    // Two Linux jobs appear in the queue with the hold: one fits the waiting Linux VM, the other none.
+    const item = (key: string) => ({ key, labels: ["taskbox-linux"], queuedAt: sys.now(), origin: { trusted: false } });
+    let items: ReturnType<typeof item>[] = [];
+    d.source = { id: "test", read: async () => ({ known: true as const, at: sys.now(), items }) };
+    // The sharing check comes right after a waiting VM's whyWait, every 30 s. The hold begins just
+    // after one, so the queue's next read, every 15 s, comes before the next whyWait: a give-way,
+    // were the scheduler to ask for one, would come first.
+    let sharedAt = 0;
+    d.sharing = async () => ((sharedAt = sys.now()), { status: "OK" });
+    let heldAt: number | undefined;
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      if (heldAt === undefined) {
+        const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
+        if (sys.now() - sharedAt <= 5_000 && Object.values(st.slots ?? {}).filter((x) => (x as { slot: string }).slot === "waiting for a job").length === 2) {
+          ws = [{ size: "whole", phase: "active", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+          items = [item("a"), item("b")];
+          heldAt = sys.now();
+        }
+      } else if (heldSlotsEmpty(loopNow(d), 2)) update(d);
+    };
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(heldAt).toBeDefined();
+    const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    // Both waiting VMs ended for the hold, and neither counts as a give-way.
+    expect(jobs.map((j) => j.result)).toEqual(["no job", "no job"]);
+    const loop = loopNow(d);
+    expect([loop.gaveWay, loop.gaveWayLog]).toEqual([undefined, undefined]);
+  });
+
   // kern.boottime, as the box answers it: this boot began an hour before the test's clock.
   const bootAt = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/usr/sbin/sysctl" && args[1] === "kern.boottime" ? { code: 0, stdout: `{ sec = ${Math.floor((sys.now() - 3600_000) / 1000)}, usec = 0 } Thu Nov 19 10:00:00 2026\n`, stderr: "" } : undefined));
 
@@ -436,6 +688,34 @@ describe("the loop with 2 slots", () => {
     expect(readFileSync(d.paths.log, "utf8")).toContain("because a drain began (taskbox stop --drain)");
   });
 
+  test("a Whole stops a download under way, says why, and starts no VM while it holds", async () => {
+    const { sys, d } = twoSlotDeps();
+    // Only the macOS image is on disk, so a slot downloads Linux's.
+    sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? { code: 0, stderr: "", stdout: JSON.stringify([{ Name: CFG.image, Source: "OCI" }]) } : undefined));
+    const clones: number[] = [];
+    sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "clone" ? (clones.push(sys.now()), undefined) : undefined));
+    let pulling = false;
+    sys.onSpawn = (p) => {
+      if (p.args[0] === "pull") pulling = true;
+    };
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    let heldAt: number | undefined;
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      if (pulling && heldAt === undefined) {
+        ws = [{ size: "whole", phase: "waiting", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+        heldAt = sys.now();
+      }
+      if (heldAt !== undefined && readFileSync(d.paths.log, "utf8").includes("stopped pulling") && heldSlotsEmpty(loopNow(d), 2)) update(d);
+    };
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(heldAt).toBeDefined();
+    expect(clones.filter((t) => t > heldAt!)).toEqual([]);
+    expect(readFileSync(d.paths.log, "utf8")).toContain("because a workspace holds the box; it starts again after");
+  });
+
   test("a VM waiting for a job keeps waiting while GitHub refuses to delete its runner, then goes", async () => {
     const { sys, d } = twoSlotDeps();
     let refusals = 2;
@@ -510,7 +790,7 @@ describe("the loop with 2 slots", () => {
     let runs = 0;
     sys.responders.unshift((cmd, args) => {
       // The engine's runtime check: the second VM's Softnet stays root, long past its start.
-      if (cmd === "/bin/ps" && args[0] === "-axo" && args[1] === "pid=,etime=,user=,ruser=,svuid=,comm=") return ++runs >= 2 ? { code: 0, stdout: "1 9-00:00:00 root root 0 /sbin/launchd\n77 03:00 root ci 0 /opt/taskbox/bin/softnet\n", stderr: "" } : { code: 0, stdout: "1 9-00:00:00 root root 0 /sbin/launchd\n", stderr: "" };
+      if (cmd === "/bin/ps" && args[0] === "-axo" && args[1] === "pid=,etime=,user=,ruser=,svuid=,comm=") return ++runs >= 2 ? { code: 0, stdout: "1 9-00:00:00 root root 0 /sbin/launchd\n77 03:00 root taskbox 0 /opt/taskbox/bin/softnet\n", stderr: "" } : { code: 0, stdout: "1 9-00:00:00 root root 0 /sbin/launchd\n", stderr: "" };
       return undefined;
     });
     expect(await runLoop(d)).toBe(0);

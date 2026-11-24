@@ -1,6 +1,7 @@
 // The image download, as the owner sees it. The loop records Tart's own percent in a file; check
 // and `taskbox watch` read it. The box's line is fast, so a download that stops starts again
 // from the beginning: no speed, stall or resume reading.
+import { serviceName } from "./names.ts";
 import { renameSync, writeFileSync } from "node:fs";
 import { readStateJson } from "./config.ts";
 
@@ -42,7 +43,7 @@ export function parseTartLine(raw: string): TartLine {
 
 const num = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 
-// ci writes this file and root reads it during update, so every field is checked before use, and
+// The service writes this file and root reads it during update, so every field is checked before use, and
 // every string shown is text with no control characters.
 export function readPull(file: string): PullState | undefined {
   const p = readStateJson<Record<string, unknown>>(file);
@@ -137,7 +138,7 @@ const gb = (n: number) => n.toFixed(1);
 // The one line for the download. check and status print it once; watch redraws it. loopRunning is
 // false when the loop is known to be stopped, so an old "downloading" file isn't shown as live.
 export function pullLine(s: PullState | undefined, _now: number, loopRunning?: boolean, stoppedAt?: number): string {
-  if (!s) return "No download yet. It starts when ci logs in.";
+  if (!s) return `No download yet. It starts when ${serviceName()} logs in.`;
   if (s.state === "ready") return `Image ready: ${s.image}.`;
   const pct = s.percent ?? 0;
   const done = s.totalGB !== undefined ? `${gb((s.totalGB * pct) / 100)} of ${gb(s.totalGB)} GB (${pct}%)` : `${pct}%`;
@@ -146,7 +147,7 @@ export function pullLine(s: PullState | undefined, _now: number, loopRunning?: b
     return `The download of ${s.image} stopped at ${done}: ${s.error ?? "no message"}. It starts again within a minute.${tell}`;
   }
   if (loopRunning === false && stoppedAt !== undefined) return `Stopped at ${done}: you stopped the box. Type taskbox start and the download starts again.`;
-  if (loopRunning === false) return `Stopped at ${done}: the loop isn't running. Log out and log in as ci, and the download starts again.`;
+  if (loopRunning === false) return `Stopped at ${done}: the loop isn't running. Log out and log in as ${serviceName()}, and the download starts again.`;
   if (s.totalGB === undefined) return `Downloading ${s.image}: starting.`;
   return `Downloading ${s.image}: ${done}.`;
 }

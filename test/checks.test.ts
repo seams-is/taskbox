@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type CheckContext, ciUnlocksDisk, consoleUsers, diskNeed, loginSessions, otherLogins, CHECK_EXTRA, PUBLIC_FIX, publicIPv4, sessionOwners, sharingOff, tcpListeners } from "../src/checks.ts";
+import { type CheckContext, serviceUnlocksDisk, consoleUsers, diskNeed, loginSessions, otherLogins, CHECK_EXTRA, PUBLIC_FIX, publicIPv4, runnerGroupRow, sessionOwners, sharingOff, tcpListeners } from "../src/checks.ts";
 import { loadConfig, paths } from "../src/config.ts";
-import { FakeSys, NETSTAT_CLEAN } from "./fake.ts";
-import { CFG, quietBox, tempRoot } from "./helpers.ts";
+import { FakeSys, githubRoutes, json, NETSTAT_CLEAN } from "./fake.ts";
+import { CFG, PEM, tempRoot, testBox, quietBox } from "./helpers.ts";
 
 const HEAD = "Active Internet connections (including servers)\nProto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n";
 
@@ -16,7 +16,7 @@ function box(netstat: string | null, probe: "refused" | "timeout" | "open" = "re
   sys.responders.push((cmd) =>
     cmd === "/usr/sbin/netstat" ? (netstat === null ? { code: 1, stdout: "", stderr: "no" } : { code: 0, stdout: netstat, stderr: "" }) : undefined,
   );
-  return { sys, cfg: CFG, paths: paths("/nonexistent", "app"), uid: 0, ciUid: undefined };
+  return { sys, cfg: CFG, paths: paths("/nonexistent", testBox()), uid: 0, serviceUid: undefined };
 }
 
 describe("sharing services off", () => {
@@ -51,14 +51,14 @@ describe("sharing services off", () => {
     expect((await sharingOff(box(null))).detail).toContain("(no)");
     // An empty table for root or ci fails too: only they decide this row.
     expect((await sharingOff(box(""))).status).toBe("FAIL");
-    expect((await sharingOff({ ...box(""), uid: 502, ciUid: 502 })).status).toBe("FAIL");
+    expect((await sharingOff({ ...box(""), uid: 502, serviceUid: 502 })).status).toBe("FAIL");
   });
 
   test("anyone else whose netstat sees no sockets, as over Tailscale SSH, gets a SKIP", async () => {
-    expect(await sharingOff({ ...box(""), uid: 504, ciUid: 502 })).toEqual({ status: "SKIP", detail: "run as ci to check" });
+    expect(await sharingOff({ ...box(""), uid: 504, serviceUid: 502 })).toEqual({ status: "SKIP", detail: "run as taskbox to check" });
     // A failed or garbled netstat still fails for them.
-    expect((await sharingOff({ ...box(null), uid: 504, ciUid: 502 })).status).toBe("FAIL");
-    expect((await sharingOff({ ...box("garbage"), uid: 504, ciUid: 502 })).status).toBe("FAIL");
+    expect((await sharingOff({ ...box(null), uid: 504, serviceUid: 502 })).status).toBe("FAIL");
+    expect((await sharingOff({ ...box("garbage"), uid: 504, serviceUid: 502 })).status).toBe("FAIL");
   });
 
   test("127.0.0.1 must still refuse each port", async () => {
@@ -88,23 +88,23 @@ describe("restart password", () => {
   };
   const ID = "8BA59B42-6A28-42C2-98F0-77A9E83EB03B";
   test("ci can unlock: one password", async () => {
-    const r = await ciUnlocksDisk(ctx(ID, ["AAAAAAAA-0000-0000-0000-000000000000", ID]));
+    const r = await serviceUnlocksDisk(ctx(ID, ["AAAAAAAA-0000-0000-0000-000000000000", ID]));
     expect(r.status).toBe("OK");
     expect(r.detail).toContain("once");
   });
   test("ci can't unlock: FAIL with the fix", async () => {
-    const r = await ciUnlocksDisk(ctx(ID, ["AAAAAAAA-0000-0000-0000-000000000000"]));
+    const r = await serviceUnlocksDisk(ctx(ID, ["AAAAAAAA-0000-0000-0000-000000000000"]));
     expect(r.status).toBe("FAIL");
     expect(r.detail).toContain("type taskbox unlock");
   });
   test("FileVault off: never OK, and points at the FileVault line", async () => {
-    const r = await ciUnlocksDisk(ctx(ID, [ID], false));
+    const r = await serviceUnlocksDisk(ctx(ID, [ID], false));
     expect(r.status).toBe("SKIP");
     expect(r.detail).toContain("FileVault line");
   });
   test("can't read either: FAIL with the fix, never OK", async () => {
-    expect((await ciUnlocksDisk(ctx(null, [ID]))).status).toBe("FAIL");
-    expect((await ciUnlocksDisk(ctx(ID, null))).status).toBe("FAIL");
+    expect((await serviceUnlocksDisk(ctx(null, [ID]))).status).toBe("FAIL");
+    expect((await serviceUnlocksDisk(ctx(ID, null))).status).toBe("FAIL");
   });
 });
 
@@ -124,10 +124,10 @@ describe("a second user on the box", () => {
 
   test("the floor counts the image download until the image is held", () => {
     const root = tempRoot();
-    const p = paths(root, "app");
+    const p = paths(root, testBox());
     mkdirSync(dirname(p.pull), { recursive: true });
     const cfg = { ...CFG, minFreeDiskGB: 60, imageGB: 77, imageName: "img 1" };
-    const c = { sys: new FakeSys(), cfg, paths: p, uid: 502, ciUid: 502 } as CheckContext;
+    const c = { sys: new FakeSys(), cfg, paths: p, uid: 502, serviceUid: 502 } as CheckContext;
     expect(diskNeed(c)).toEqual({ needGB: 137, imageGB: 77 });
     // A download that stops starts again, so what it has so far never counts.
     writeFileSync(p.pull, JSON.stringify({ image: "img 1", ref: CFG.image, state: "downloading", percent: 50 }));
@@ -224,7 +224,7 @@ describe("the box's public address", () => {
     const row = CHECK_EXTRA.find(([n]) => n === "Public address")!;
     const sys = new FakeSys();
     quietBox(sys);
-    const ctx = { sys, uid: 501, ciUid: 501 } as unknown as CheckContext;
+    const ctx = { sys, uid: 501, serviceUid: 501 } as unknown as CheckContext;
     // What each source said: the address for ci and root, only that it answered for anyone else.
     const both = (await row[1](ctx)) as { status: string; detail: string };
     expect(both.status).toBe("OK");
@@ -234,6 +234,38 @@ describe("the box's public address", () => {
     sys.publicIP = null;
     expect(await row[1](ctx)).toEqual({ status: "FAIL", detail: `${PUBLIC_FIX} (cloudflare-trace and ipify didn't answer)` });
     expect(PUBLIC_FIX).not.toContain("sudo");
+  });
+});
+
+// The Runner group row: only the box's own runners, with its labels (connect-github design, section 10).
+describe("the runner group row", () => {
+  function group(runners: { name: string; labels: string[] }[]) {
+    const root = tempRoot();
+    const p = paths(root, testBox());
+    mkdirSync(dirname(p.key), { recursive: true });
+    writeFileSync(p.key, PEM);
+    const sys = new FakeSys();
+    githubRoutes(sys);
+    sys.routes.unshift((method, url) =>
+      method === "GET" && new URL(url).pathname === "/orgs/example-org/actions/runner-groups/7/runners"
+        ? json({ total_count: runners.length, runners: runners.map((r, i) => ({ id: i + 1, name: r.name, labels: r.labels.map((name) => ({ name })) })) })
+        : undefined,
+    );
+    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, serviceUid: 0, rootUid: 0 };
+    return runnerGroupRow(c);
+  }
+
+  test("the box's own runners with its labels: OK", async () => {
+    expect(await group([{ name: "taskbox-1-1-abc", labels: ["taskbox-macos"] }])).toEqual({ status: "OK", detail: "only this box's runners, with its labels" });
+  });
+
+  test("a runner the box didn't make, or one with a label the settings don't name: FAIL, each named", async () => {
+    expect(await group([{ name: "someone-elses-runner", labels: ["taskbox-macos"] }])).toEqual({ status: "FAIL", detail: "The runner someone-elses-runner in the box's runner group wasn't made by this box" });
+    const r = await group([
+      { name: "taskbox-1-2-def", labels: ["taskbox-macos", "ubuntu-latest"] },
+      { name: "other", labels: [] },
+    ]);
+    expect(r).toEqual({ status: "FAIL", detail: "The runner taskbox-1-2-def has the label ubuntu-latest, which this box's settings don't name. The runner other in the box's runner group wasn't made by this box" });
   });
 });
 

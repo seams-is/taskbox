@@ -9,7 +9,7 @@ import { sharedPaths } from "../src/shared.ts";
 import { screen } from "../src/watch.ts";
 import { engineFor } from "../src/vm.ts";
 import { FakeSys, SECRETS } from "./fake.ts";
-import { CFG, loopDeps, PASS, PEM, tempRoot } from "./helpers.ts";
+import { loopDeps, PEM, tempRoot, testBox, CFG, PASS } from "./helpers.ts";
 
 // A guest that answers at once, and a runner that takes one job then exits.
 function happyGuest(sys: FakeSys, opts: { hang?: boolean } = {}) {
@@ -190,7 +190,7 @@ describe("one job", () => {
   test("a Softnet running as root ends the job before the runner starts", async () => {
     const sys = new FakeSys();
     happyGuest(sys);
-    sys.responders.push((cmd) => (cmd === "/bin/ps" ? { code: 0, stderr: "", stdout: "101 05:00 ci ci 501 tart\n102 05:00 ci ci 501 /opt/taskbox/bin/softnet-x\n103 05:00 root ci 0 /opt/taskbox/bin/softnet\n" } : undefined));
+    sys.responders.push((cmd) => (cmd === "/bin/ps" ? { code: 0, stderr: "", stdout: "101 05:00 taskbox taskbox 501 tart\n102 05:00 taskbox taskbox 501 /opt/taskbox/bin/softnet-x\n103 05:00 root taskbox 0 /opt/taskbox/bin/softnet\n" } : undefined));
     const d = loopDeps(sys, tempRoot());
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("softnet-root");
     expect(sys.spawned.length).toBe(1); // the VM only, no runner
@@ -325,7 +325,7 @@ describe("the pull's ceiling", () => {
       if (p.args[0] === "pull") queueMicrotask(() => p.opts.onLine?.("pulling disk (69.3 GB compressed)..."));
     };
     const root = tempRoot();
-    const res = await pullImage(sys, engineFor("tart", sys, paths(root, "app")), "img", "img", join(root, "pull.json"));
+    const res = await pullImage(sys, engineFor("tart", sys, paths(root, testBox())), "img", "img", join(root, "pull.json"));
     expect(res.ok).toBe(false);
     expect(res.error).toContain("ran for 6 hours");
     expect(sys.spawned[0]!.killed).toBe(true);
@@ -403,7 +403,7 @@ describe("the loop", () => {
 // pat's login session as the process list shows it. ps "fail" stands for a list that can't be read.
 function sessions(sys: FakeSys, pat: () => "in" | "out" | "fail") {
   sys.responders.push((cmd) => {
-    if (cmd === "/usr/bin/dscl") return { code: 0, stderr: "", stdout: "ci 501\npat 502\nowner 503\n" };
+    if (cmd === "/usr/bin/dscl") return { code: 0, stderr: "", stdout: "taskbox 501\npat 502\nowner 503\n" };
     if (cmd !== "/bin/ps") return undefined;
     const now = pat();
     if (now === "fail") return { code: 1, stderr: "", stdout: "" };
@@ -504,7 +504,7 @@ describe("hold and share are gone (v2.2.0)", () => {
 
   test("a requests folder that is a link is left alone, and nothing it points to goes", () => {
     const d = loopDeps(new FakeSys(), tempRoot());
-    const elsewhere = join(d.paths.ciHome, "elsewhere");
+    const elsewhere = join(d.paths.serviceHome, "elsewhere");
     mkdirSync(elsewhere, { recursive: true });
     writeFileSync(join(elsewhere, "keep"), "x");
     mkdirSync(dirname(d.paths.requests), { recursive: true });
@@ -566,7 +566,7 @@ describe("an update during a pull", () => {
     const sys = new FakeSys();
     let n = 0;
     const root = tempRoot();
-    const res = await pullImage(sys, engineFor("tart", sys, paths(root, "app")), "img", "img", join(root, "pull.json"), () => ++n > 3);
+    const res = await pullImage(sys, engineFor("tart", sys, paths(root, testBox())), "img", "img", join(root, "pull.json"), () => ++n > 3);
     expect(res).toEqual({ ok: false, updated: true, error: "stopped for an update" });
     expect(sys.spawned[0]!.killed).toBe(true);
     const s = JSON.parse(readFileSync(join(root, "pull.json"), "utf8"));
@@ -592,7 +592,7 @@ describe("taskbox hold and share typed after the update", () => {
     for (const cmd of [["hold", "--for", "1h", "--reason", "x"], ["share"]]) {
       const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "src/cli.ts"), ...cmd], { env: { PATH: "/usr/bin:/bin", HOME: tempRoot() } });
       expect(r.exitCode).toBe(1);
-      expect(r.stdout.toString()).toBe(`taskbox ${cmd[0]} is gone from v2.2.0: jobs share the box with every user, all the time. To stop jobs, ci types taskbox stop.\n`);
+      expect(r.stdout.toString()).toBe(`taskbox ${cmd[0]} is gone from v2.2.0: jobs share the box with every user, all the time. To stop jobs, the service account types taskbox stop.\n`);
     }
   });
 });

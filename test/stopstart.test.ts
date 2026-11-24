@@ -4,7 +4,7 @@ import { paths } from "../src/config.ts";
 import { ALREADY, drain, start, STOP_WAIT_MS, stop, type StopDeps } from "../src/stopstart.ts";
 import { screen } from "../src/watch.ts";
 import { FakeSys } from "./fake.ts";
-import { tempRoot } from "./helpers.ts";
+import { tempRoot, testBox } from "./helpers.ts";
 
 // A fake launchd: print says running or not; bootout stops it; bootstrap starts it.
 function box(running: boolean, opts: { bootoutFails?: boolean; slot?: string; answer?: string } = {}) {
@@ -20,7 +20,7 @@ function box(running: boolean, opts: { bootoutFails?: boolean; slot?: string; an
     if (args[0] === "bootstrap") return (up = true), { code: 0, stdout: "", stderr: "" };
     return undefined;
   });
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   if (opts.slot) writeFileSync(p.loopState, JSON.stringify({ slot: opts.slot, job: "integration" }));
   const said: string[] = [];
   const d: StopDeps = { sys, paths: p, uid: 502, say: (l) => said.push(l), ask: async () => opts.answer ?? "no" };
@@ -32,7 +32,7 @@ describe("taskbox stop", () => {
     const b = box(true);
     expect(await stop(b.d)).toBe(0);
     expect(b.up()).toBe(false);
-    expect(b.said.at(-1)).toBe("Stopped. No jobs or downloads run until you type taskbox start or log in as ci again. A download carries on from where it stopped.");
+    expect(b.said.at(-1)).toBe("Stopped. No jobs or downloads run until you type taskbox start or log in as taskbox again. A download carries on from where it stopped.");
     expect(existsSync(b.d.paths.stopped)).toBe(true);
   });
 
@@ -87,13 +87,13 @@ describe("taskbox stop", () => {
       }
       return undefined;
     });
-    const p = { ...paths(tempRoot(), "app"), loopLabels: ["local.taskbox.loop", "example.old.loop"] };
+    const p = { ...paths(tempRoot(), testBox()), loopLabels: ["local.taskbox.loop", "example.old.loop"] };
     const said: string[] = [];
     const logged: string[] = [];
     const d: StopDeps = { sys, paths: p, uid: 502, say: (x) => said.push(x), ask: async () => "yes", log: (x) => logged.push(x) };
     return { d, said, logged, sys, booted, labels };
   }
-  const STOPPED = "Stopped. No jobs or downloads run until you type taskbox start or log in as ci again. A download carries on from where it stopped.";
+  const STOPPED = "Stopped. No jobs or downloads run until you type taskbox start or log in as taskbox again. A download carries on from where it stopped.";
 
   test("a loop that takes a few seconds to exit after launchctl is stopped, and the stop is kept", async () => {
     const b = launchd({ "local.taskbox.loop": "running" });
@@ -183,7 +183,7 @@ describe("taskbox stop", () => {
     const t0 = b.sys.now();
     expect(await stop(b.d)).toBe(1);
     expect(b.said).toContain("Waiting for the loop to end.");
-    expect(b.said.at(-1)).toBe(`Could not stop the loop (launchd still has it ${STOP_WAIT_MS / 1000} s after it was taken out). Log out ci: that stops it too.`);
+    expect(b.said.at(-1)).toBe(`Could not stop the loop (launchd still has it ${STOP_WAIT_MS / 1000} s after it was taken out). Log out taskbox: that stops it too.`);
     expect(b.sys.now() - t0).toBeGreaterThanOrEqual(STOP_WAIT_MS);
     expect(cleaned).toBe(0);
     expect(existsSync(b.d.paths.stopped)).toBe(false);
@@ -247,7 +247,7 @@ describe("taskbox start", () => {
 
 describe("what watch shows when stopped", () => {
   test("the loop and the download both say stopped, with the step", () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     writeFileSync(p.pull, JSON.stringify({ image: "macos-golden-gate-xcode 27.2", state: "downloading", totalGB: 77, percent: 40, maxPercent: 40, resumeFrom: 0, samples: [], startedAt: 0, updatedAt: 0, lastProgressAt: 0, lastActivityAt: 0, lastGapMs: 0, retries: 0, failures: 0 }));
     const lines = screen({ pullFile: p.pull, loopFile: p.loopState, now: 1000, loopRunning: false, stoppedAt: Date.parse("2026-11-12T14:05:00Z") }).join("\n");
     expect(lines).toContain("Stopped at 30.8 of 77.0 GB (40%): you stopped the box. Type taskbox start");

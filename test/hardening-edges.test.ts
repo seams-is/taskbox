@@ -13,7 +13,7 @@ import { runLoop, writeLoopState } from "../src/loop.ts";
 import { TART_KIT } from "../src/tart.ts";
 import { readLoop } from "../src/watch.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, loopDeps, tempRoot } from "./helpers.ts";
+import { CFG, loopDeps, tempRoot, testBox } from "./helpers.ts";
 
 describe("an update from the last release", () => {
   // `taskbox update` runs the installed release's code (install.ts), so the v2.5.x updater lays the
@@ -24,7 +24,7 @@ describe("an update from the last release", () => {
     mkdirSync(join(dir, "bin"), { recursive: true });
     writeFileSync(join(dir, "bin/softnet"), "softnet");
     chmodSync(join(dir, "bin/softnet"), 0o4755);
-    const p = { ...paths(dir, "app"), softnet: join(dir, "softnet/softnet") };
+    const p = { ...paths(dir, testBox()), softnet: join(dir, "softnet/softnet") };
     const softnetRow = TART_KIT.checks[0]![1];
     // An error here is "the check errored" in every pre-start check, so no VM starts on the box.
     await expect(softnetRow({ paths: p })).resolves.toBeDefined();
@@ -40,27 +40,27 @@ describe("an update from the last release", () => {
     Bun.spawnSync(["/bin/chmod", "4755", join(dir, "bin/softnet")]);
     writeFileSync(join(dir, "installed.json"), JSON.stringify({ commit: "c0ffee0", files: hashTree(dir) }));
   }
-  // chmod for real, except the ACL calls, which name a ci this Mac may not have: those are recorded only.
+  // chmod for real, except the ACL calls, which name a service account this Mac may not have: those are recorded only.
   const recorder = (calls: string[], failOn?: string) => async (cmd: string, args: string[]) => {
     calls.push(`${cmd} ${args.join(" ")}`);
     if (args[0] === failOn) throw new Error("chmod failed");
     if (cmd === "/bin/chmod" && args[0] !== "-N" && args[0] !== "+a") expect(Bun.spawnSync([cmd, ...args]).exitCode).toBe(0);
   };
 
-  test("settle moves Softnet to its folder, closed to all but ci, with the record, once", async () => {
+  test("settle moves Softnet to its folder, closed to all but the service, with the record, once", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inst-"));
     oldLayout(dir);
     const calls: string[] = [];
-    expect(await TART_KIT.settle(dir, recorder(calls))).toBe(true);
+    expect(await TART_KIT.settle(dir, "taskbox", recorder(calls))).toBe(true);
     const folder = join(dir, "softnet");
     const from = join(dir, "bin/softnet");
     const to = join(folder, "softnet");
-    expect(calls).toEqual([`/bin/chmod 700 ${folder}`, `/bin/chmod -N ${folder}`, `/bin/chmod +a user:ci allow list,search ${folder}`, `/bin/chmod 4755 ${to}`, `/bin/chmod u-s ${from}`]);
+    expect(calls).toEqual([`/bin/chmod 700 ${folder}`, `/bin/chmod -N ${folder}`, `/bin/chmod +a user:taskbox allow list,search ${folder}`, `/bin/chmod 4755 ${to}`, `/bin/chmod u-s ${from}`]);
     expect(existsSync(from)).toBe(false);
     expect(statSync(to).mode & 0o7777).toBe(0o4755);
     // The record matches the tree again, so "Installed files match" holds.
     expect(JSON.parse(readFileSync(join(dir, "installed.json"), "utf8")).files).toEqual(hashTree(dir));
-    expect(await TART_KIT.settle(dir, recorder(calls))).toBe(false);
+    expect(await TART_KIT.settle(dir, "taskbox", recorder(calls))).toBe(false);
     expect(calls).toHaveLength(5);
   });
 
@@ -69,7 +69,7 @@ describe("an update from the last release", () => {
     oldLayout(dir);
     const link = join(mkdtempSync(join(tmpdir(), "taskbox-other-")), "softnet");
     linkSync(join(dir, "bin/softnet"), link);
-    expect(await TART_KIT.settle(dir, recorder([]))).toBe(true);
+    expect(await TART_KIT.settle(dir, "taskbox", recorder([]))).toBe(true);
     expect(statSync(link).mode & 0o4000).toBe(0);
     // A new file, so the link isn't Softnet's, and the Softnet row would see a second link if it were.
     expect(statSync(join(dir, "softnet/softnet")).ino).not.toBe(statSync(link).ino);
@@ -79,10 +79,10 @@ describe("an update from the last release", () => {
   test("a settle that stops after the copy is finished by the next, which clears the old file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inst-"));
     oldLayout(dir);
-    await expect(TART_KIT.settle(dir, recorder([], "u-s"))).rejects.toThrow("chmod failed");
+    await expect(TART_KIT.settle(dir, "taskbox", recorder([], "u-s"))).rejects.toThrow("chmod failed");
     expect(existsSync(join(dir, "softnet/softnet"))).toBe(true);
     expect(statSync(join(dir, "bin/softnet")).mode & 0o4000).not.toBe(0);
-    expect(await TART_KIT.settle(dir, recorder([]))).toBe(true);
+    expect(await TART_KIT.settle(dir, "taskbox", recorder([]))).toBe(true);
     expect(existsSync(join(dir, "bin/softnet"))).toBe(false);
     expect(statSync(join(dir, "softnet/softnet")).mode & 0o7777).toBe(0o4755);
     expect(JSON.parse(readFileSync(join(dir, "installed.json"), "utf8")).files).toEqual(hashTree(dir));
@@ -91,9 +91,9 @@ describe("an update from the last release", () => {
   test("a settle that stops part way is finished by the next", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inst-"));
     oldLayout(dir);
-    await expect(TART_KIT.settle(dir, recorder([], "+a"))).rejects.toThrow("chmod failed");
+    await expect(TART_KIT.settle(dir, "taskbox", recorder([], "+a"))).rejects.toThrow("chmod failed");
     expect(existsSync(join(dir, "bin/softnet"))).toBe(true);
-    expect(await TART_KIT.settle(dir, recorder([]))).toBe(true);
+    expect(await TART_KIT.settle(dir, "taskbox", recorder([]))).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, "installed.json"), "utf8")).files).toEqual(hashTree(dir));
   });
 
@@ -102,7 +102,7 @@ describe("an update from the last release", () => {
     mkdirSync(join(dir, "softnet"));
     writeFileSync(join(dir, "softnet/softnet"), "softnet");
     const calls: string[] = [];
-    expect(await TART_KIT.settle(dir, recorder(calls))).toBe(false);
+    expect(await TART_KIT.settle(dir, "taskbox", recorder(calls))).toBe(false);
     expect(calls).toEqual([]);
   });
 
@@ -111,11 +111,11 @@ describe("an update from the last release", () => {
     const sys = new FakeSys();
     const me = process.getuid!();
     sys.responders.push((cmd, args) => {
-      if (cmd === "/usr/bin/id" && args.join(" ") === "-u ci") return { code: 0, stdout: `${me}\n`, stderr: "" };
+      if (cmd === "/usr/bin/id" && args.join(" ") === "-u taskbox") return { code: 0, stdout: `${me}\n`, stderr: "" };
       if (cmd === "/bin/chmod") return { code: 0, stdout: "", stderr: "" };
       return undefined;
     });
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     rmSync(p.opt, { recursive: true, force: true });
     const inst = join(p.opt, "../taskbox-c0ffee0c0ffe-AAAAAA");
     mkdirSync(inst);

@@ -4,8 +4,15 @@
 // other program, no su, no dotfile, no PATH. So a program that reaches remote over Tailscale SSH
 // can't plant anything that catches a password, and admin work never goes through remote. It runs
 // taskbox by its full path, with a fixed environment.
+//
+// Workspaces (docs/workspaces-design.md, section 3) add the agent's commands: queue, wait,
+// progress, release, deny, signed and workspaces. Each line for one of them is checked in full here,
+// with workspace/agent.ts's parser, before taskbox runs, and again by taskbox. None of them gives
+// anyone more of the box: signed carries the owner's signed steps as base64url, so the word filter
+// below stays as strict as it is.
+import { AGENT_COMMANDS, isAgentCommand, parseAgent } from "./workspace/agent.ts";
 
-export const SHELL_COMMANDS = ["status", "watch", "jobs", "timings", "load", "log", "logins", "check", "hello", "away", "watchdog", "canary"];
+export const SHELL_COMMANDS = ["status", "watch", "jobs", "timings", "load", "log", "logins", "check", "hello", "away", "watchdog", "canary", ...AGENT_COMMANDS];
 const TASKBOX = "/opt/taskbox/bin/taskbox";
 
 // One line, as words: plain words, and "double" or 'single' quoted ones. Anything a shell would read
@@ -30,6 +37,10 @@ export function commandFor(line: string): { args: string[] } | { no: string } {
   const args = w[0] === "taskbox" ? w.slice(1) : w;
   if (!args.length) return { args: ["status"] };
   if (!SHELL_COMMANDS.includes(args[0]!)) return { no: `Here you can type: ${SHELL_COMMANDS.join(", ")}. Admin work is done at the box, as your admin user.` };
+  if (isAgentCommand(args[0])) {
+    const c = parseAgent(args);
+    if ("no" in c) return { no: c.no };
+  }
   return { args };
 }
 

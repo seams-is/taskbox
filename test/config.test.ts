@@ -17,7 +17,7 @@ function load(over: Record<string, unknown>, linux?: Record<string, unknown>, wa
   const c = base();
   const merged = { ...c, ...over, ...(linux ? { linux: { ...c.linux, ...linux } } : {}) };
   writeFileSync(join(dir, "taskbox.json"), JSON.stringify(merged));
-  return () => loadConfig(dir, warn);
+  return () => loadConfig(dir, undefined, 0, warn);
 }
 
 describe("the settings", () => {

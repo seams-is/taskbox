@@ -67,7 +67,7 @@ export type GetJson = (path: string) => Promise<unknown>;
 export async function sourceReader(c: CheckContext): Promise<GetJson | string> {
   const appId = sourceAppId(c.cfg);
   if (!appId) return "the box has no job source App";
-  const pem = readActionsKey(c.paths.actionsKeyDir, c.paths.actionsKey, c.ciUid, c.rootUid ?? 0);
+  const pem = readActionsKey(c.paths.actionsKeyDir, c.paths.actionsKey, c.serviceUid, c.rootUid ?? 0);
   if (!pem) return "the job source App's key couldn't be read";
   const [owner, repo] = c.cfg.jobsFrom.split("/");
   const call = (method: string, path: string, auth: string, body?: unknown) =>
@@ -120,7 +120,7 @@ export async function deployedRow(c: CheckContext, which: "watchdog" | "canary",
   const file = which === "watchdog" ? WATCHDOG_FILE : CANARY_FILE;
   const settings = which === "watchdog" ? watchdogSettings(c.cfg) : canarySettings(c.cfg);
   const fix = `From away: type ${make}, put what it prints in ${file} of ${c.cfg.jobsFrom}, and commit it yourself, so GitHub's emails reach you (templates/README.md). Then run it once from its Actions tab (Run workflow)`;
-  const mayRead = c.uid === 0 || c.uid === c.ciUid;
+  const mayRead = c.uid === 0 || c.uid === c.serviceUid;
   // remote reads the loop's hourly record, with the jobs repo's name left out: remote isn't told
   // which repo the box serves. Without a job source App there is nothing to read, as for ci.
   if (!get && !mayRead) {

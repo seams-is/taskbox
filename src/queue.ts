@@ -3,9 +3,10 @@
 // its key could then mint tokens for its source. This App's key can read Actions runs and
 // jobs there, and nothing else.
 // Only labels, statuses and times are used: no job name, branch or log is read or shown.
+import { serviceName } from "./names.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { appJwt } from "./github.ts";
-import { type Config, loadRepoOf, sourceAppId } from "./config.ts";
+import { type Config, loadRepoOf, sourceAppId, sourceOf } from "./config.ts";
 import type { WaitingItem } from "./source.ts";
 import type { Log } from "./log.ts";
 import type { Sys } from "./sys.ts";
@@ -41,10 +42,10 @@ export function queueWhy(e: unknown): string {
 }
 
 // Why the second App's key can't be used, or undefined. It sits in root's own folder, outside every
-// install and outside ci's home, so ci can read it but can't replace it or plant a link in its place.
+// install and outside the service's home, so the service can read it but can't replace it or plant a link in its place.
 // The folder: a real folder, root's, not writable by group or others. The file: a plain file, not a
-// link, ci's, mode 600 exactly, one name.
-export function actionsKeyProblem(dir: string, file: string, ciUid: number | undefined, rootUid = 0): string | undefined {
+// link, the service's, mode 600 exactly, one name.
+export function actionsKeyProblem(dir: string, file: string, serviceUid: number | undefined, rootUid = 0): string | undefined {
   let d;
   try {
     d = lstatSync(dir);
@@ -53,7 +54,7 @@ export function actionsKeyProblem(dir: string, file: string, ciUid: number | und
   }
   if (d.isSymbolicLink() || !d.isDirectory()) return `${dir} isn't a folder`;
   if (d.uid !== rootUid) return `${dir} isn't root's`;
-  // Mode 700: only root, and ci through its ACL entry, reach the key's name.
+  // Mode 700: only root, and the service through its ACL entry, reach the key's name.
   if ((d.mode & 0o077) !== 0) return `${dir} is open to other users`;
   let f;
   try {
@@ -62,7 +63,7 @@ export function actionsKeyProblem(dir: string, file: string, ciUid: number | und
     return "the second App's key isn't on the box";
   }
   if (f.isSymbolicLink() || !f.isFile()) return "the second App's key isn't a plain file";
-  if (ciUid === undefined || f.uid !== ciUid) return "the second App's key isn't ci's";
+  if (serviceUid === undefined || f.uid !== serviceUid) return `the second App's key isn't ${serviceName()}'s`;
   if ((f.mode & 0o7777) !== 0o600) return "the second App's key isn't mode 600";
   if (f.nlink !== 1) return "the second App's key has more than one name";
   if (f.size === 0 || f.size > 20_000) return "the second App's key is the wrong size";
@@ -70,8 +71,8 @@ export function actionsKeyProblem(dir: string, file: string, ciUid: number | und
 }
 
 // The key itself, read without following a link, after the checks above.
-export function readActionsKey(dir: string, file: string, ciUid: number | undefined, rootUid = 0): string | undefined {
-  if (actionsKeyProblem(dir, file, ciUid, rootUid)) return undefined;
+export function readActionsKey(dir: string, file: string, serviceUid: number | undefined, rootUid = 0): string | undefined {
+  if (actionsKeyProblem(dir, file, serviceUid, rootUid)) return undefined;
   let fd: number;
   try {
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -80,7 +81,7 @@ export function readActionsKey(dir: string, file: string, ciUid: number | undefi
   }
   try {
     const st = fstatSync(fd);
-    if (!st.isFile() || st.uid !== ciUid || (st.mode & 0o7777) !== 0o600 || st.size > 20_000) return undefined;
+    if (!st.isFile() || st.uid !== serviceUid || (st.mode & 0o7777) !== 0o600 || st.size > 20_000) return undefined;
     return readFileSync(fd, "utf8");
   } finally {
     closeSync(fd);
@@ -277,12 +278,12 @@ export class QueueReader {
 
 // The reader for this box, or why there is none. cfg.actionsAppId and the key both come from the
 // owner: until the second App exists, the box takes turns.
-export function queueReaderFor(sys: Sys, cfg: Config, keyDir: string, keyPath: string, ciUid: number | undefined, log: Log, rootUid = 0): QueueReader | string {
+export function queueReaderFor(sys: Sys, cfg: Config, keyDir: string, keyPath: string, serviceUid: number | undefined, log: Log, rootUid = 0): QueueReader | string {
   const appId = sourceAppId(cfg);
   if (!appId) return (cfg.base ?? cfg).sources?.[0]?.type === "none" ? "the job source is none" : "there is no job source App yet";
-  const why = actionsKeyProblem(keyDir, keyPath, ciUid, rootUid);
+  const why = actionsKeyProblem(keyDir, keyPath, serviceUid, rootUid);
   if (why) return why;
-  const pem = readActionsKey(keyDir, keyPath, ciUid, rootUid);
+  const pem = readActionsKey(keyDir, keyPath, serviceUid, rootUid);
   if (!pem) return "the second App's key couldn't be read";
   log.secret(pem);
   const events = [...new Set(((cfg.base ?? cfg).classes ?? []).flatMap((r) => r.when.event ?? []))].slice(0, 4);
@@ -292,12 +293,15 @@ export function queueReaderFor(sys: Sys, cfg: Config, keyDir: string, keyPath: s
 // taskbox check's row for the second App's key (v2.1.0). SKIP while there is no second App: the box
 // takes turns. FAIL when there is one and its key is missing or isn't held as the loop needs it.
 export const SECOND_KEY_ROW = "Job source App key";
-export async function secondKeyRow(c: { cfg: Config; paths: { actionsKeyDir: string; actionsKey: string }; uid: number; ciUid: number | undefined; rootUid?: number }): Promise<{ status: "OK" | "FAIL" | "SKIP"; detail: string }> {
+export async function secondKeyRow(c: { cfg: Config; paths: { actionsKeyDir: string; actionsKey: string }; uid: number; serviceUid: number | undefined; rootUid?: number }): Promise<{ status: "OK" | "FAIL" | "SKIP"; detail: string }> {
   const appId = sourceAppId(c.cfg);
-  if (!appId) return { status: "SKIP", detail: "no job source App, so the box follows the jobs its VMs take. README, Connect a job source" };
-  // Only root and ci reach the key's folder.
-  if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.ciUid) return { status: "SKIP", detail: "run as ci to check" };
-  const why = actionsKeyProblem(c.paths.actionsKeyDir, c.paths.actionsKey, c.ciUid, c.rootUid ?? 0);
-  if (why) return { status: "FAIL", detail: `${why}, so the box follows the jobs its VMs take. Put the job source App's key in Downloads, then as your admin user type taskbox update` };
-  return { status: "OK", detail: `in root's folder, ci's, mode 600, for App ${appId}` };
+  if (!appId) return { status: "SKIP", detail: "no job source App, so the box follows the jobs its VMs take. To connect one, as your admin user type taskbox connect github" };
+  // Only root and the service reach the key's folder.
+  if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${serviceName()} to check` };
+  const why = actionsKeyProblem(c.paths.actionsKeyDir, c.paths.actionsKey, c.serviceUid, c.rootUid ?? 0);
+  if (why) return { status: "FAIL", detail: `${why}, so the box follows the jobs its VMs take. As your admin user, type taskbox connect github` };
+  const src = sourceOf(c.cfg);
+  const name = src.type === "github-actions" && src.app ? `${src.app} (App ${appId})` : `App ${appId}`;
+  const from = c.cfg.boxKeys?.includes("sources") ? "this box's settings" : "the release's taskbox.json, until the next update keeps it on the box";
+  return { status: "OK", detail: `in root's folder, ${serviceName()}'s, mode 600, for ${name}, from ${from}` };
 }

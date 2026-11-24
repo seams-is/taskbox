@@ -160,6 +160,9 @@ export interface ScheduleDeps {
   load?: () => { on: boolean; only: boolean } | undefined;
   // v2.6.0: what the source last listed, for taskbox load on --only and the report.
   seen?: (s: Snapshot) => void;
+  // How many slots are held for workspaces now (held.ts). decide() sees the others only.
+  // Absent: none.
+  held?: () => number;
 }
 
 export function schedule(d: ScheduleDeps): KindChooser {
@@ -170,6 +173,10 @@ export function schedule(d: ScheduleDeps): KindChooser {
   // Each slot's last VM is news once: the loop asks again with the same one while the slot is free.
   const seen = new Map<number, unknown>();
   let kinds: Kind[] = [];
+  // The slots the scheduler may start VMs in: the box's, less those held for workspaces. Each kind's
+  // cap stays the box's: a job that finishes in a held slot still counts, so macOS never passes
+  // Apple's 2, and it never keeps a slot that isn't held from starting a VM.
+  const usable = () => Math.max(0, d.slots - (d.held?.() ?? 0));
   const view = (): KindView[] => kindsOf(d.cfg).map((k) => ({ kind: k, labels: labelsFor(d.cfg, k), defaults: runnerDefaults(k), cap: k === "macos" ? Math.min(MACOS_MAX, d.slots) : d.slots, open: kinds.includes(k) }));
   const states = (skip?: number): SlotState[] =>
     d.occupants()
@@ -179,11 +186,13 @@ export function schedule(d: ScheduleDeps): KindChooser {
   // and sleeping (product review, finding 3).
   const input = (snapshot: Snapshot, skip?: number, free: number[] = []): SchedulerInput => {
     const load = d.load?.();
-    return { now: d.ev.now(), slots: d.slots, kinds: view(), slotStates: states(skip), free, snapshot, classes, timings, history: d.history(), ...(load?.on ? { load } : {}) };
+    return { now: d.ev.now(), slots: usable(), kinds: view(), slotStates: states(skip), free, snapshot, classes, timings, history: d.history(), ...(load?.on ? { load } : {}) };
   };
   const turnIdleMs = (d.cfg.turnIdleMinutes ?? DEFAULT_TURN_IDLE_MINUTES) * 60_000;
   const mode = (s: Snapshot) => d.ev.mode?.(s.known ? "source" : d.slots === 1 ? `turns: ${s.why}` : `follow: ${s.why}`);
   const giveWayFor = (me: number) => async (): Promise<boolean> => {
+    // A held slot's waiting VM is the loop's to end (whyWait), never a give-way.
+    if (me > usable()) return false;
     const snap = await d.source.read(d.ev.now());
     mode(snap);
     // One slot, and the source went unreadable while this VM waits: give way after a turn, as turns do

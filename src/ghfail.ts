@@ -161,7 +161,7 @@ export function githubState(r: GitHubRecord | undefined, now: number): { word: "
 export function githubLine(kind: GitHubKind, status: number | null, offsetS: number | null): { detail: string; next: string } {
   switch (kind) {
     case "key":
-      return { detail: "GitHub refuses the App's key (401)", next: "At the box: make a new key for the App and install it, as the README's key step says." };
+      return { detail: "GitHub refuses the App's key (401)", next: "At the box: make a new key for the App on GitHub, then type taskbox update." };
     case "clock": {
       const off = offsetS ?? 0;
       const m = Math.max(1, Math.round(Math.abs(off) / 60));

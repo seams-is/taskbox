@@ -2,15 +2,15 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { existsSync, lstatSync, mkdirSync, rmSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join, basename } from "node:path";
+import { assetUrl, type Versions, paths, AGENT_LABEL, GUARD_LABEL, loadConfig, loadVersions, TAILSCALED_LABEL } from "../src/config.ts";
+import { describe as describeHead, install, type InstallDeps, refuseOddEntries, Stop } from "../src/install.ts";
 import { hashTree } from "../src/checks.ts";
-import { AGENT_LABEL, assetUrl, GUARD_LABEL, loadConfig, loadVersions, paths, TAILSCALED_LABEL, type Versions } from "../src/config.ts";
-import { describe as describeHead, install, placeKey, refuseOddEntries, Stop } from "../src/install.ts";
 import { Log } from "../src/log.ts";
 import { linkTarget } from "../src/layout.ts";
 import { undo } from "../src/ops.ts";
 import { FakeSys, githubRoutes, MAIN_SHA, NETSTAT_CLEAN } from "./fake.ts";
-import { asRoot, CFG, fakeLaunchd, fakeTailscale, healthyBox, installDeps, PEM, quietBox, stageRelease } from "./helpers.ts";
+import { CFG, PEM, testBox, asRoot, fakeLaunchd, fakeTailscale, healthyBox, installDeps, quietBox, stageRelease } from "./helpers.ts";
 
 const repo = new URL("..", import.meta.url).pathname;
 
@@ -43,7 +43,7 @@ describe("install", () => {
       githubRoutes(sys, { releases, followStatus });
       const { d } = installDeps(sys, "yes");
       mkdirSync(d.paths.state, { recursive: true });
-      writeFileSync(d.paths.key, PEM);
+      writeFileSync(d.paths.oldKey, PEM);
       mkdirSync(dirname(d.paths.installed), { recursive: true });
       writeFileSync(d.paths.installed, JSON.stringify({ commit: "56027d1c5671baa8eadd5aeaf1cdeb4d89254470", tag: "v2.0.2", pr: 17, title: "x", mergedAt: "x", installedAt: "x", files: {} }));
       const out = await install(d, { first: false, tag }).then(() => "installed", (e: Error) => e.message);
@@ -93,7 +93,7 @@ describe("install", () => {
     githubRoutes(sys, { compareStatus: "diverged" });
     const { d } = installDeps(sys, "yes");
     mkdirSync(d.paths.state, { recursive: true });
-    writeFileSync(d.paths.key, PEM);
+    writeFileSync(d.paths.oldKey, PEM);
     await expect(install(d, { first: false, tag: "v2.0.0" })).rejects.toThrow("Release v2.0.0 isn't a commit on taskbox main");
     await expect(install(d, { first: false, tag: "v2.9.9" })).rejects.toThrow("There is no release v2.9.9 of taskbox");
     await Bun.sleep(0);
@@ -114,7 +114,7 @@ describe("install", () => {
     githubRoutes(sys);
     const { d } = installDeps(sys, "yes");
     mkdirSync(d.paths.state, { recursive: true });
-    writeFileSync(d.paths.key, PEM);
+    writeFileSync(d.paths.oldKey, PEM);
     await expect(install(d, { first: false, tag: "v2.0.0" })).rejects.toThrow("Release v2.0.0 isn't a commit on taskbox main");
     await Bun.sleep(0);
     expect(tarballFetched(sys)).toBe(false);
@@ -127,7 +127,7 @@ describe("install", () => {
     githubRoutes(sys);
     const { d } = installDeps(sys, "yes");
     mkdirSync(d.paths.state, { recursive: true });
-    writeFileSync(d.paths.key, PEM);
+    writeFileSync(d.paths.oldKey, PEM);
     const e = await install(d, { first: false, tag: "v2.0.0" }).catch((x: Error) => x);
     expect((e as Error).message).toContain("answered 502");
     expect((e as Error).message).not.toContain("isn't a commit on taskbox main");
@@ -178,7 +178,7 @@ describe("install", () => {
     // An empty pin, as before the tailscale release existed.
     stageRelease(sys, CFG, (v) => (v.tailscale = { version: "1.104.5", url: "", sha256: "", files: { tailscale: "", tailscaled: "" } }));
     const { d, root } = installDeps(sys, "yes");
-    await expect(install(d, { first: true })).rejects.toThrow("tailscaled has no download pinned yet, so nothing was installed");
+    await expect(install(d, { first: true })).rejects.toThrow("tailscaled has no download pinned yet, so nothing else was installed");
     expect(sys.requests.some((r) => new URL(r.url).hostname === "github.com")).toBe(false);
     expect(existsSync(join(root, "opt/taskbox"))).toBe(false);
   });
@@ -205,7 +205,7 @@ describe("an install run to the end", () => {
     const { d, said, root } = installDeps(sys, "yes");
     const log = launchdLog(sys, d.paths.opt);
     await asRoot(() => install(d, { first: true }));
-    expect(said.at(-1)).toBe("Installed. Now log in as ci.");
+    expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
     // The install folder, behind /opt/taskbox, with Softnet's setuid bit and the command on PATH.
     const folder = basename(linkTarget(d.paths.opt)!);
     expect(folder).toMatch(/^taskbox-abc1234def56-/);
@@ -218,7 +218,7 @@ describe("an install run to the end", () => {
     }
     expect(log.filter((l) => l.startsWith("bootstrap"))).toEqual([`bootstrap ${GUARD_LABEL} on ${folder}`, `bootstrap ${TAILSCALED_LABEL} on ${folder}`]);
     expect([...loaded].sort()).toEqual([GUARD_LABEL, TAILSCALED_LABEL].sort());
-    // Signed in to the tailnet once, and the App key moved to ci.
+    // Signed in to the tailnet once, and the App key moved to the service.
     expect(sys.spawned.filter((p) => p.cmd.endsWith("/tailscale") && p.args.includes("up"))).toHaveLength(1);
     expect(readFileSync(d.paths.key, "utf8")).toBe(PEM);
     expect(statSync(d.paths.key).mode & 0o777).toBe(0o600);
@@ -256,7 +256,7 @@ describe("an install run to the end", () => {
     stageRelease(sys, { ...CFG, previousLabelPrefix: OLD });
     const { d, said } = installDeps(sys, "yes", root);
     // The installed settings name the earlier prefix, as the box's own taskbox.json does.
-    d.paths = paths(root, "app", OLD);
+    d.paths = paths(root, testBox(OLD));
     d.configDir = d.paths.app;
     d.bootstrap = undefined;
     d.ask = async () => (said.push("(asked)"), "yes");
@@ -367,7 +367,7 @@ describe("an install run to the end", () => {
       return undefined;
     });
     const said: string[] = [];
-    const code = await undo({ sys, paths: paths(root, "app"), uid: 0, ciUid: process.getuid!(), rootUid: process.getuid!(), say: (l) => said.push(l), ask: async () => "yes" });
+    const code = await undo({ sys, paths: paths(root, testBox()), uid: 0, serviceUid: process.getuid!(), rootUid: process.getuid!(), say: (l) => said.push(l), ask: async () => "yes" });
     expect([code, said.at(-2)]).toEqual([0, "Did: Back to #2 feat: install the box. The loop moves to it once the current job or download ends."]);
     // The kept install has the new names, so nothing moves back: the guard restarts on the old code.
     expect(seen).toEqual([`kickstart system/${GUARD_LABEL} on ${before}`]);
@@ -391,8 +391,8 @@ describe("an install run to the end", () => {
       return undefined;
     });
     const said: string[] = [];
-    const p = paths(root, "app", OLD);
-    expect(await undo({ sys, paths: p, uid: 0, ciUid: process.getuid!(), rootUid: process.getuid!(), say: (l) => said.push(l), ask: async () => "yes" })).toBe(0);
+    const p = paths(root, testBox(OLD));
+    expect(await undo({ sys, paths: p, uid: 0, serviceUid: process.getuid!(), rootUid: process.getuid!(), say: (l) => said.push(l), ask: async () => "yes" })).toBe(0);
     expect(seen).toEqual([`bootout ${GUARD_LABEL} on ${before}`, `bootstrap ${OLD}.guard on ${before}`, `bootout ${TAILSCALED_LABEL} on ${before}`, `bootstrap ${OLD}.tailscaled on ${before}`]);
     expect(said.at(-2)).toContain("The guard and tailscaled run under their old names again.");
   });
@@ -420,41 +420,17 @@ describe("a taskbox release asset", () => {
 });
 
 describe("the App key", () => {
-  test("moves to ci with mode 600 and leaves Downloads", () => {
-    const { d } = installDeps(new FakeSys(), "yes");
-    mkdirSync(d.paths.ciHome, { recursive: true });
-    const dl = join(d.ownerHome, "Downloads/example-taskbox.2026-11-12.private-key.pem");
-    placeKey(d, 501, PEM, dl);
-    expect(readFileSync(d.paths.key, "utf8")).toBe(PEM);
-    expect(statSync(d.paths.key).mode & 0o777).toBe(0o600);
-    expect(existsSync(dl)).toBe(false);
-  });
-
-  test("replaces a symlink where ci's folder should be, and never writes through it", () => {
-    const { d, root } = installDeps(new FakeSys(), "yes");
-    mkdirSync(d.paths.ciHome, { recursive: true });
-    const target = join(root, "Library/LaunchDaemons");
-    mkdirSync(target, { recursive: true });
-    symlinkSync(target, d.paths.state);
-    const owned: string[] = [];
-    d.chown = (p) => owned.push(p);
-    const dl = join(d.ownerHome, "Downloads/example-taskbox.2026-11-12.private-key.pem");
-    placeKey(d, 501, PEM, dl);
-    expect(readdirSync(target)).toEqual([]);
-    expect(lstatSync(d.paths.state).isDirectory()).toBe(true);
-    expect(owned).toEqual([d.paths.state]);
-  });
-
-  test("an update stops when ci's key folder is a symlink, before GitHub is asked", async () => {
+  test("an update stops when the service's key folder is a symlink, before GitHub is asked", async () => {
     const sys = new FakeSys();
     healthyBox(sys);
     githubRoutes(sys);
     const { d, root } = installDeps(sys, "yes");
-    mkdirSync(d.paths.ciHome, { recursive: true });
+    mkdirSync(d.paths.serviceHome, { recursive: true });
     const elsewhere = join(root, "elsewhere");
     mkdirSync(elsewhere);
     writeFileSync(join(elsewhere, "app-key.pem"), PEM);
     symlinkSync(elsewhere, d.paths.state);
+    rmSync(join(d.ownerHome, "Downloads/example-taskbox.2026-11-12.private-key.pem"));
     await expect(install(d, { first: false })).rejects.toThrow(/symlink/);
     expect(sys.requests).toEqual([]);
   });
@@ -477,32 +453,123 @@ describe("finding the key", () => {
     rmSync(join(dl, "example-taskbox.2026-11-12.private-key.pem"));
     writeFileSync(join(dl, "example-taskbox-app.2026-11-12.private-key.pem"), PEM);
     await expect(install(d, { first: true })).rejects.toThrow(/Nothing was installed/);
-    expect(sys.requests.some((r) => r.url.includes("/installation"))).toBe(true);
+    expect(sys.requests.some((r) => r.url.endsWith("/app"))).toBe(true);
+    // A first install places the key at step 7, so a no leaves it in Downloads, service or not.
+    expect(readdirSync(dl)).toEqual(["example-taskbox-app.2026-11-12.private-key.pem"]);
+    writeFileSync(join(dl, "one.2026-11-12.private-key.pem"), PEM);
     writeFileSync(join(dl, "other.2026-11-12.private-key.pem"), PEM);
-    await expect(install(d, { first: true })).rejects.toThrow(/More than one App key/);
+    await expect(install(d, { first: true })).rejects.toThrow(/more than one new key in Downloads/);
   });
 });
 
-describe("the ci user", () => {
-  test("a missing ci stops before anything is downloaded, with the System Settings steps", async () => {
+describe("the service account", () => {
+  test("a missing service is said before the yes, and nothing is made on a no", async () => {
     const sys = new FakeSys();
     healthyBox(sys);
     githubRoutes(sys);
     sys.responders.unshift((cmd) => (cmd === "/usr/bin/id" ? { code: 1, stdout: "", stderr: "no such user" } : undefined));
-    const { d } = installDeps(sys, "yes");
-    await expect(install(d, { first: true })).rejects.toThrow(/Add User.*Standard.*CI/);
-    expect(sys.requests).toEqual([]);
+    const { d, said } = installDeps(sys, "no");
+    const ran: string[][] = [];
+    d.tty = (a) => (ran.push(a), 0);
+    await expect(install(d, { first: true })).rejects.toThrow(/You typed "no"/);
+    expect(said).toContain("  It also makes the account taskbox, which runs jobs. You type its password, then your admin name and password, then its password again, so it can unlock the disk.");
+    // A first install says the tagOwners entry before the yes, since the sign-in needs it saved.
+    expect(said).toContain('    "tag:taskbox": ["OWNER"]');
+    expect(ran).toEqual([]);
+    expect(sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl" && c.args[0] === "-addUser")).toBe(false);
   });
 
-  test("a ci with no secure token stops before anything is downloaded", async () => {
+  test("an admin as the service stops before anything is downloaded", async () => {
     const sys = new FakeSys();
     healthyBox(sys);
     githubRoutes(sys);
-    sys.responders.unshift((cmd, args) =>
-      cmd === "/usr/bin/id" ? { code: 0, stdout: "502\n", stderr: "" } : cmd === "/usr/sbin/sysadminctl" && args[0] === "-secureTokenStatus" ? { code: 0, stdout: "", stderr: "Secure token is DISABLED for user CI" } : undefined,
-    );
+    sys.responders.unshift((cmd) => (cmd === "/usr/sbin/dseditgroup" ? { code: 0, stdout: "", stderr: "" } : undefined));
     const { d } = installDeps(sys, "yes");
-    await expect(install(d, { first: true })).rejects.toThrow(/cannot unlock the disk/);
+    await expect(install(d, { first: true })).rejects.toThrow(/taskbox is an administrator/);
+    expect(sys.requests).toEqual([]);
+  });
+
+  test("another service's state on the box stops it before anything is downloaded", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys);
+    const { d } = installDeps(sys, "yes");
+    mkdirSync(join(d.paths.serviceHome, "..", "old-service", ".taskbox", "app"), { recursive: true });
+    mkdirSync(join(d.paths.accountsRecord, ".."), { recursive: true });
+    writeFileSync(d.paths.accountsRecord, JSON.stringify({ service: "old-service", made: {} }));
+    await expect(install(d, { first: true })).rejects.toThrow(/old-service's taskbox state is on this box/);
+    expect(sys.requests).toEqual([]);
+  });
+
+  test("the release's taskbox.json is read before the yes: another service there stops it, with nothing downloaded", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys, { settings: { accounts: { service: "other-service", agent: "taskbox-agent", people: [] } } });
+    const { d, said } = installDeps(sys, "yes");
+    await expect(install(d, { first: true })).rejects.toThrow(/names other-service as the service account, but this box's is taskbox/);
+    expect(said.some((l) => l.startsWith("If they match"))).toBe(false);
+    expect(tarballFetched(sys)).toBe(false);
+  });
+
+  test("the release's people, not the first settings', are what the summary says", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys, { settings: { accounts: { service: "taskbox", agent: "taskbox-agent", people: ["pat"] } } });
+    sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/com.apple.access_screensharing" ? { code: 0, stdout: "No such key: GroupMembership\nNestedGroups: ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050\n", stderr: "" } : cmd === "/usr/sbin/dseditgroup" && args[0] === "-o" && args[1] === "checkmember" ? { code: 67, stdout: "", stderr: "" } : undefined));
+    // pat is an account on this Mac.
+    sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args[1] === "pat" ? { code: 0, stdout: "503\n", stderr: "" } : undefined));
+    const { d, said } = installDeps(sys, "no");
+    await expect(install(d, { first: true })).rejects.toThrow(/You typed "no"/);
+    expect(said).toContain("  It also lets pat use Screen Sharing.");
+    expect(said.some((l) => l.includes("by default the admins: taskbox leaves it"))).toBe(true);
+  });
+
+  test("an update that takes Tailscale SSH from a person names it before the yes, with the owner's step", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys, { settings: { accounts: { service: "taskbox", agent: "taskbox-agent", people: ["pat"] } } });
+    sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/com.apple.access_screensharing" ? { code: 0, stdout: "No such key: GroupMembership\nNestedGroups: ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050\n", stderr: "" } : cmd === "/usr/sbin/dseditgroup" && args[0] === "-o" && args[1] === "checkmember" ? { code: 67, stdout: "", stderr: "" } : undefined));
+    const { d, said } = installDeps(sys, "no");
+    // The installed settings gave pat SSH; the release's don't. (The installed release runs the
+    // update, so a box on v2.6.x moving to v2.7.0 is told by the README's step instead.)
+    writeFileSync(join(d.configDir, "taskbox.json"), JSON.stringify({ ...CFG, accounts: { service: "taskbox", agent: "taskbox-agent", people: ["pat"], ssh: ["pat"] } }));
+    mkdirSync(d.paths.state, { recursive: true });
+    writeFileSync(d.paths.oldKey, PEM);
+    mkdirSync(dirname(d.paths.installed), { recursive: true });
+    writeFileSync(d.paths.installed, JSON.stringify({ commit: "56027d1c5671baa8eadd5aeaf1cdeb4d89254470", tag: "v1.9.0", pr: 17, title: "x", mergedAt: "x", installedAt: "x", files: {} }));
+    const err = await install(d, { first: false }).then(() => "", (e: Error) => e.message);
+    expect(err).toContain('You typed "no"');
+    expect(said).toContain("  pat loses Tailscale SSH to the box. Screen Sharing stays.");
+    expect(said.some((l) => l.includes('replace taskbox\'s entries'))).toBe(true);
+  });
+
+  test("an accounts key this release doesn't know is named before the yes, so a typo shows", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys, { settings: { accounts: { service: "taskbox", agent: "taskbox-agent", peopel: ["pat"] } } });
+    const { d, said } = installDeps(sys, "no");
+    await expect(install(d, { first: true })).rejects.toThrow(/You typed "no"/);
+    expect(said).toContain("  This taskbox passes over keys it doesn't know in the release's taskbox.json: accounts.peopel. If one is a typo, don't type yes: an agent fixes it in a PR.");
+  });
+
+  test("an App key in the service's home counts as its state, so it isn't asked about as someone's own account", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys);
+    const { d, said } = installDeps(sys, "no");
+    mkdirSync(d.paths.state, { recursive: true });
+    writeFileSync(d.paths.oldKey, PEM);
+    await expect(install(d, { first: true })).rejects.toThrow(/You typed "no"/);
+    expect(said.some((l) => l.includes("It uses your account taskbox to run jobs"))).toBe(false);
+  });
+
+  test("a box from before v2.7.0, with no record: its state says which service is in use", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys);
+    const { d } = installDeps(sys, "yes");
+    mkdirSync(join(d.paths.serviceHome, "..", "old-service", ".taskbox", "app"), { recursive: true });
+    await expect(install(d, { first: true })).rejects.toThrow(/put "service": "old-service" in accounts/);
     expect(sys.requests).toEqual([]);
   });
 });

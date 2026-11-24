@@ -14,6 +14,56 @@ describe("remote's shell", () => {
       expect("no" in commandFor(line)).toBe(true);
     }
   });
+  test("takes the agent's workspace commands, each checked in full", () => {
+    for (const line of [
+      'taskbox queue --as nova --why "Render the launch video"',
+      "queue --as nova --why 'Render the launch video' --json",
+      "wait nova-1",
+      "taskbox wait nova-1 --json",
+      'progress nova-1 "Frame 1200 of 4000" --step 1200/4000 --can-pause',
+      'progress nova-1 "Building shaders" --busy',
+      'progress nova-1 --saved "Saved after frame 1800"',
+      "release nova-1",
+      'deny nova-2 --as laptop --reason "after 6pm"',
+      "signed eyJhY3Rpb24iOiJhcHByb3ZlIn0 U1NIU0lHAAAAAQ_-",
+      "workspaces",
+      "taskbox workspaces --json",
+    ]) {
+      const c = commandFor(line);
+      expect({ line, ok: "args" in c }).toEqual({ line, ok: true });
+    }
+    expect(commandFor('queue --as nova --why "Render it"')).toEqual({ args: ["queue", "--as", "nova", "--why", "Render it"] });
+  });
+  test("refuses a workspace command with bad words, a missing part, or anything the word filter refuses", () => {
+    for (const line of [
+      "queue",
+      "queue --as nova",
+      'queue --as nova --why "a" --size huge',
+      'queue --as ../x --why "a"',
+      "wait",
+      "wait nova",
+      "wait nova-1 nova-2",
+      "wait nova-1; id",
+      'progress nova-1 "x" --can-pause --busy',
+      'progress nova-1 "x" --step 9/4',
+      "progress nova-1",
+      'progress nova-1 --saved "x" --busy',
+      "release",
+      "release nova-1 --now",
+      "deny nova-2",
+      "deny nova-2 --as owner",
+      "deny nova-2 --as taskbox",
+      'deny nova-2 --as owner --reason "$(id)"',
+      "signed a+b c",
+      "signed eyJ4IjoxfQ",
+      "signed eyJ4IjoxfQ== c2ln",
+      "workspaces nova-1",
+      'progress nova-1 "Frame 1 \\ 2"',
+      "queue --as nova --why `id`",
+    ]) {
+      expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
+    }
+  });
   test("words: quotes keep spaces; an unclosed quote is refused", () => {
     expect(words(`a "b c" 'd e' f`)).toEqual(["a", "b c", "d e", "f"]);
     expect(words(`a "b`)).toBeUndefined();

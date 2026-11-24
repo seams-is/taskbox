@@ -1,4 +1,5 @@
 // A fake machine and a fake GitHub. Every command and URL is recorded.
+import { createPublicKey, createVerify } from "node:crypto";
 import type { Proc, ProbeResult, RunOptions, RunResult, SpawnOptions, Sys } from "../src/sys.ts";
 import { fakes } from "./setup.ts";
 
@@ -226,16 +227,37 @@ export const SECRETS = {
   jit: "eyJKSVQiOiJ0aGlzIGlzIGEgZmFrZSBydW5uZXIgY29uZmlnIn0=",
 };
 
+// The App ID a request's JWT names (its iss), and whether it is signed by this key.
+export function jwtOf(sys: FakeSys): { iss?: number; signedBy(pem: string): boolean } {
+  const t = sys.requests.at(-1)?.auth.replace(/^Bearer /, "") ?? "";
+  const [h, p, sig] = t.split(".");
+  let iss: number | undefined;
+  try {
+    iss = Number(JSON.parse(Buffer.from(p ?? "", "base64url").toString()).iss) || undefined;
+  } catch {}
+  return {
+    iss,
+    signedBy: (pem) => {
+      try {
+        return createVerify("RSA-SHA256").update(`${h}.${p}`).verify(createPublicKey(pem), Buffer.from(sig ?? "", "base64url"));
+      } catch {
+        return false;
+      }
+    },
+  };
+}
 // The head of the branch main in the fake GitHub. A compare to it is the on-main check.
 export const MAIN_SHA = "eeee1234def5678abc1234def5678abc1234def5";
 
-export function githubRoutes(sys: FakeSys, opts: { compareStatus?: string; followStatus?: string; head?: Record<string, unknown>; groupRepo?: string; releases?: { tag_name: string; name: string; draft: boolean; prerelease: boolean }[] } = {}): void {
+export function githubRoutes(sys: FakeSys, opts: { settings?: Record<string, unknown>; compareStatus?: string; followStatus?: string; head?: Record<string, unknown>; groupRepo?: string; releases?: { tag_name: string; name: string; draft: boolean; prerelease: boolean }[] } = {}): void {
   sys.routes.push((method, url) => {
     const u = new URL(url);
     if (u.hostname !== "api.github.com") return undefined;
     const p = u.pathname;
     if (method === "GET" && p === "/orgs/example-org/installation") return json({ id: 42 });
     if (method === "POST" && p === "/app/installations/42/access_tokens") return json({ token: SECRETS.token });
+    // The runner App, 1234, takes any key signed for it; a JWT for another App's ID gets 401.
+    if (method === "GET" && p === "/app") return jwtOf(sys).iss === 1234 ? json({ id: 1234, slug: "example-taskbox" }) : json({ message: "A JSON web token could not be decoded" }, 401);
     // One published release, v2.0.0, unless a test says otherwise.
     if (method === "GET" && p === "/repos/example-org/taskbox/releases") return json(opts.releases ?? [{ tag_name: "v2.0.0", name: "taskbox 2", draft: false, prerelease: false }]);
     if (method === "GET" && p.startsWith("/repos/example-org/taskbox/releases/tags/")) {
@@ -256,6 +278,11 @@ export function githubRoutes(sys: FakeSys, opts: { compareStatus?: string; follo
           },
         },
       );
+    }
+    // The release's taskbox.json, read before the yes: the test settings' accounts unless a test says otherwise.
+    if (method === "GET" && p === "/repos/example-org/taskbox/contents/taskbox.json") {
+      const body = JSON.stringify(opts.settings ?? { accounts: { service: "taskbox", agent: "taskbox-agent", people: [] } });
+      return json({ type: "file", encoding: "base64", size: body.length, content: Buffer.from(body).toString("base64") });
     }
     if (method === "GET" && p.startsWith("/repos/example-org/taskbox/compare/")) {
       const st = (p.endsWith(`...${MAIN_SHA}`) ? undefined : opts.followStatus) ?? opts.compareStatus ?? "ahead";

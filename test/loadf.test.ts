@@ -4,11 +4,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { jobsAnswer } from "../src/answers.ts";
-import { CI_USER, type Config, paths } from "../src/config.ts";
+import { type Config, paths } from "../src/config.ts";
 import { testRepoRow } from "../src/loadcmd.ts";
+import { serviceName } from "../src/names.ts";
 import { spread } from "../src/timings.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, PEM, tempRoot } from "./helpers.ts";
+import { CFG, PEM, tempRoot, testBox } from "./helpers.ts";
 import { asJobLines, MERGE, replayFromJobs, rng, type SimJob, simulate } from "./sim.ts";
 
 const M = 60_000;
@@ -28,7 +29,7 @@ describe("S3: the test repo row as root", () => {
   // The key's path is in the service account's home, which that account controls. Root never opens
   // it, so a link or a FIFO left there can neither redirect nor hang root's taskbox check.
   test("root skips the row and never opens the App key's path", async () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(join(p.key, ".."), { recursive: true });
     const elsewhere = join(tempRoot(), "other.pem");
     writeFileSync(elsewhere, PEM);
@@ -39,8 +40,8 @@ describe("S3: the test repo row as root", () => {
       calls++;
       throw new Error("no network in this test");
     };
-    const r = await testRepoRow({ sys, cfg: LOADCFG, paths: p, uid: 0, ciUid: 502 } as never);
-    expect(r).toEqual({ status: "SKIP", detail: `run as ${CI_USER} to check` });
+    const r = await testRepoRow({ sys, cfg: LOADCFG, paths: p, uid: 0, serviceUid: 502 } as never);
+    expect(r).toEqual({ status: "SKIP", detail: `run as ${serviceName()} to check` });
     expect(calls).toBe(0);
   });
 });

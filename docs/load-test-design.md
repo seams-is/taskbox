@@ -90,8 +90,10 @@ The trial passes when one dispatch of `merge` with K = 2 gives two `merge_group`
 
 The README's Load test section holds them, one at a time with a pass each: setting up the test repo, running a load test, and removing the test repo. Their order follows the App check:
 - the App must be on `jobsFrom`, may be on the test repo when `taskbox.json` names one, and must be on no other repo;
-- so setting up changes `taskbox.json` and updates the box first, and adds the test repo to the App last;
-- removing takes the test repo off the App first, then out of `taskbox.json`.
+- so setting up adds the test repo to the box's own settings first, with `taskbox connect github --load <org/repo> <runner group>`, and adds it to the App last;
+- removing takes the test repo off the App first, then out of the box's settings with `taskbox connect github --load off`, which refuses while the App is still on it.
+
+`taskbox connect github` and the update's adoption keep the test repo whenever they rewrite the box's source.
 
 `taskbox check` has a `Test repo` row, which proves the test repo's runner group exists, is limited to selected private repos, and lists the test repo alone. The `merge` pattern adds the trial above.
 

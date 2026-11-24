@@ -1,21 +1,24 @@
 // The guard: Screen Sharing over Tailscale only. macOS can't bind Screen
 // Sharing to one interface, so pf drops port 5900 on every interface but tailscaled's. A root
 // LaunchDaemon runs `taskbox guard` every minute: it keeps pf on and the anchor loaded, then writes
-// what it found to a root-owned file that ci's loop and taskbox check read. ci can't read pf itself.
+// what it found to a root-owned file that the service's loop and taskbox check read. The service can't read pf itself.
 // VMs never reach the box's 5900: Softnet blocks them from the box except for DNS (loop.ts).
 import { existsSync, lstatSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type Config, DEFAULT_TUN, type Installed, LAUNCHCTL_MS, type Paths, previousLabels, readJson, readStateJson, TAILSCALED_LABEL } from "./config.ts";
+import { type Config, DEFAULT_TUN, GUARD_LABEL, type Installed, LAUNCHCTL_MS, type Paths, previousLabels, readJson, readStateJson, TAILSCALED_LABEL } from "./config.ts";
 import type { Sys } from "./sys.ts";
 import { linkTarget } from "./layout.ts";
 import { newLoopWatch, vmStarting, watchLoop } from "./loopwatch.ts";
 import { Log } from "./log.ts";
 import { FAST_GROWTH, LoginsKeeper } from "./logins.ts";
 import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
+import { SCREEN_SHARING_ANCHOR } from "./workspace/fence.ts";
+import { fencePass, newWsMemory, type WsDeps, workspacePass } from "./workspace/pass.ts";
+import { keepSocket, newSocketMemory } from "./tssocket.ts";
 
 export const PFCTL = "/sbin/pfctl";
 // A child of the com.apple anchor, which macOS's own /etc/pf.conf evaluates, so no system file changes.
-export const ANCHOR = "com.apple/250.taskbox";
+export const ANCHOR = SCREEN_SHARING_ANCHOR;
 // Tailscale's address ranges: 100.64.0.0/10 and fd7a:115c:a1e0::/48.
 export const TAILSCALE_V4 = "100.64.0.0/10";
 export const TAILSCALE_V6 = "fd7a:115c:a1e0::/48";
@@ -209,12 +212,28 @@ export async function rulesInPlace(sys: Sys, tun: string): Promise<boolean> {
 // Rules found gone on a read get a full pass at once, which puts them back and records the time.
 // v2.5.0: each full pass also reads the loop's beats from outside it and restarts a frozen loop
 // (loopwatch.ts). A failure there never stops the guard's own work.
-export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () => boolean = () => true): Promise<void> {
+// The workspace pass (workspace/pass.ts) runs beside the tick as watch() does: started on each tick
+// when the last one has finished, and never awaited, so a slow or failing pass never holds up pf.
+export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () => boolean = () => true, ws?: () => Promise<unknown>): Promise<void> {
   const lw = newLoopWatch();
   // Each restart of the loop, in root's own log under /var/log (1 MB, then rotated), beside the
   // record the next loop logs in its own.
   const log = new Log(p.guardLog, undefined, 1_000_000);
   const settle = settler(sys, p, log);
+  const wsPass = ws ?? workspaceRunner({ sys, cfg, p }, log);
+  let wsRunning: Promise<unknown> | undefined;
+  const workspaces = () => {
+    if (wsRunning) return;
+    try {
+      wsRunning = Promise.resolve(wsPass())
+        .catch(() => undefined)
+        .finally(() => (wsRunning = undefined));
+    } catch {
+      wsRunning = undefined;
+    }
+  };
+  // First, before the rules: after a restart, the pool's processes stop before anything else.
+  workspaces();
   // Never awaited by the tick, so the pf check every 2 s never waits on launchctl; one at a time.
   let watching: Promise<unknown> | undefined;
   // tailscaled's log and the records of Tailscale SSH logins (logins.ts): every minute, and sooner
@@ -268,6 +287,7 @@ export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () 
       fullAt = sys.now();
     } else last = { ...last, at: sys.now() };
     writeGuard(p, last);
+    workspaces();
     if (sys.now() - watchAt >= GUARD_FULL_MS) {
       watch();
       watchAt = sys.now();
@@ -317,6 +337,46 @@ export function tailscaledWatch(sys: Sys, p: Paths, log: Pick<Log, "write">): ()
   };
 }
 
+// The workspace pass with its memory, each finding written to root's log once, when it changes.
+// tailscaled's socket folder is put back first (tssocket.ts): a failure there never stops the pass.
+export function workspaceRunner(d: WsDeps, log: Pick<Log, "write">): () => Promise<void> {
+  const mem = newWsMemory();
+  const sock = newSocketMemory();
+  let said = "";
+  return async () => {
+    const why = await keepSocket(d.sys, d.p, sock, d.rootUid ?? 0).catch((e: Error) => String(e.message ?? e).slice(0, 120));
+    const r = await workspacePass(d, mem);
+    if (why) r.problems.unshift(`tailscaled's socket: ${why}`);
+    for (const l of r.did) log.write(`workspaces: ${l}`);
+    const now = r.problems.join("; ");
+    if (now !== said) log.write(now ? `workspaces: ${now}` : "workspaces: nothing is wrong now");
+    said = now;
+  };
+}
+
+// No lease: only a guard under the current label, which launchd gives it as XPC_SERVICE_NAME, runs
+// the workspace pass. A guard under an earlier prefix's label (config.ts previousLabels), or one
+// started by hand, would be a second writer of the workspaces state, so it runs the fence alone,
+// which writes nothing, and keeps Screen Sharing's pf rules as any guard does. A pid file would be no better: a
+// pool account could fork until it held a dead guard's pid.
+export function labelProblem(xpcServiceName: string | undefined): string | undefined {
+  if (xpcServiceName === GUARD_LABEL) return undefined;
+  const was = xpcServiceName ? xpcServiceName.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 60) : "";
+  return `the guard writes workspaces only as ${GUARD_LABEL}, and this one ${was ? `runs as ${was}` : "wasn't started by launchd"}, so it keeps Screen Sharing's rules only: two guards would be two writers`;
+}
+
+// The workspace pass this guard runs: the real one under the current label, else the fence alone,
+// which writes nothing (workspace/pass.ts fencePass).
+export function workspacesFor(xpcServiceName: string | undefined, real: () => Promise<unknown>, fence: () => Promise<unknown> = async () => undefined): () => Promise<unknown> {
+  return labelProblem(xpcServiceName) === undefined ? real : fence;
+}
+
+// The fence alone, with its memory, for a guard under the wrong label.
+export function fenceRunner(d: WsDeps): () => Promise<void> {
+  const mem = newWsMemory();
+  return async () => void (await fencePass(d, mem));
+}
+
 // v2.5.1: an update run by an older release's code lays the install out the old way (vm.ts settle).
 // This guard runs the new code as root, so each pass settles it, until it has, once no VM is starting.
 // Only the install the guard started with: an undo puts back an older one, which keeps its layout.
@@ -340,7 +400,7 @@ export function settler(sys: Sys, p: Paths, log: Log): () => Promise<void> {
     if (!dir || own === undefined || commit() !== own) return void (settled = true);
     if (await vmStarting(sys, p)) return;
     try {
-      if (await kitFor(DEFAULT_ENGINE).settle(dir, run)) log.write("moved Softnet to its own folder, which only root and ci can enter");
+      if (await kitFor(DEFAULT_ENGINE).settle(dir, p.service, run)) log.write(`moved Softnet to its own folder, which only root and ${p.service} can enter`);
       settled = true;
     } catch (e) {
       log.write(`Softnet wasn't moved to its own folder yet: ${(e as Error).message}`);

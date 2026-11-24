@@ -70,11 +70,12 @@ export interface EngineKit {
   place(c: PlaceContext): Promise<void>; // puts its tools in the new install
   inert(sys: Sys, prev: string): Promise<void>; // makes a kept install's tools unusable
   // After the new install folder is root's and read-only, such as Softnet's setuid bit. Undo runs the
-  // same on the kept install, so it is usable again.
-  finish(dir: string, setuid: (path: string) => Promise<void>, run: (cmd: string, args: string[]) => Promise<void>): Promise<void>;
+  // same on the kept install, so it is usable again. service: the one account besides root that may
+  // enter Softnet's folder (accounts.service).
+  finish(dir: string, service: string, setuid: (path: string) => Promise<void>, run: (cmd: string, args: string[]) => Promise<void>): Promise<void>;
   // An install an older release's updater laid out, brought to this layout by the guard (root, on
   // this release's code). true when it changed something.
-  settle(dir: string, run: (cmd: string, args: string[]) => Promise<void>): Promise<boolean>;
+  settle(dir: string, service: string, run: (cmd: string, args: string[]) => Promise<void>): Promise<boolean>;
   checks: [string, EngineCheck][];
   open(sys: Sys, paths: Paths): VmEngine;
 }

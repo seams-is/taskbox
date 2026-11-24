@@ -8,12 +8,18 @@ import { ANCHOR, PFCTL } from "./guard.ts";
 import { BOOTOUT_WAIT_S, dropReloadJob, keepInert, labelsBack, RELOAD_JOB, reloadPlistPath, setSetuid } from "./install.ts";
 export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
-import { allOk, type Check, type CheckContext, CHECK_EXTRA, ciUnlocksDisk, loginSessions, otherLogins, PRESTART, runChecks, treeProblem } from "./checks.ts";
-import { AGENT_LABEL, CI_USER, GUARD_LABEL, LAUNCHCTL_MS, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
+import { allOk, type Check, type CheckContext, CHECK_EXTRA, serviceUnlocksDisk, loginSessions, otherLogins, PRESTART, runChecks, treeProblem } from "./checks.ts";
+import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
 import { checkAnswer, logAnswer, statusAnswer } from "./answers.ts";
 import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } from "./loop.ts";
 import { kitFor } from "./vm.ts";
 import { removeRequests } from "./requests.ts";
+import { halfMade, readRecord, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
+import { readBoxFile } from "./boxsettings.ts";
+import { POOL_GROUP } from "./access.ts";
+import { fingerprint } from "./approver.ts";
+import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "./pin.ts";
+import { adminState } from "./elevate.ts";
 import { activePull, clean as noControl, pullLine, readPull } from "./progress.ts";
 import { type Config, forKind, KIND_WORD, kindsOf, loadRepoOf, MACOS_MAX, sourceOf } from "./config.ts";
 import { LAST_CLASS } from "./classes.ts";
@@ -34,15 +40,15 @@ export interface OpsDeps {
   sys: Sys;
   paths: Paths;
   uid: number;
-  ciUid?: number;
+  serviceUid?: number;
   say(line: string): void;
   ask(prompt: string): Promise<string>;
   rootUid?: number; // who must own /opt and the installs: root; tests use their own user
 }
 
-const asCi = (d: OpsDeps) => d.uid === d.ciUid;
+const asService = (d: OpsDeps) => d.uid === d.serviceUid;
 
-// The state now. As anyone but ci, the loop can't be asked, so the state comes from the files only.
+// The state now. As anyone but the service account, the loop can't be asked, so the state comes from the files only.
 export async function stateNow(d: OpsDeps): Promise<State> {
   try {
     return await stateFrom(d);
@@ -105,34 +111,35 @@ export function slotsLine(cfg: Config): string {
   return `${n} VMs at once, macOS at most ${Math.min(MACOS_MAX, n)} (Apple's licence). Before each start: memory for one more VM, and ${cfg.minFreeDiskGB} GB free disk for it and for each VM running, so ${cfg.minFreeDiskGB * n} GB with ${n}${merge.length ? `. Merge jobs first: ${merge.join(", ")}` : ""}`;
 }
 
-export const COMMANDS = "Commands: status, watch, jobs, timings, load, logins, stop, start, check, away, watchdog, canary, clean, log, and as your admin user: update, undo, remove, unlock.";
+export const COMMANDS = "Commands: status, watch, jobs, timings, load, logins, stop, start, check, away, watchdog, canary, clean, log, policy, workspaces, and as your admin user: update, undo, remove, unlock, connect, disconnect, approver, clear.";
 
-// Who typed the command, for the list of commands they can run. Without it the list is ci's.
+// Who typed the command, for the list of commands they can run. Without it the list is the service account's.
 export interface Reader {
   remote: boolean; // the remote user, through its own shell
   admin: boolean;
 }
 
-// Only the commands this user can run: ci runs the loop's own commands, remote only its shell's,
+// Only the commands this user can run: the service runs the loop's own commands, the agent only its shell's,
 // anyone else reads the box, and an admin user also updates it.
 export function commandsFor(d: OpsDeps, who?: Reader): string {
-  if (!who || asCi(d)) return COMMANDS;
+  if (!who || asService(d)) return COMMANDS;
   if (who.remote) return `Commands: ${SHELL_COMMANDS.join(", ")}.`;
-  const reads = "status, watch, jobs, timings, load report, log, logins, check";
-  return who.admin ? `Commands: ${reads}, and update, undo, remove, unlock.` : `Commands: ${reads}.`;
+  const reads = "status, watch, jobs, timings, load report, log, logins, check, workspaces";
+  return who.admin ? `Commands: ${reads}, and update, undo, remove, unlock, connect, disconnect, clear.` : `Commands: ${reads}.`;
 }
 
 async function stateFrom(d: OpsDeps): Promise<State> {
-  // As anyone but ci, whether ci has a login session at all. Not known counts as there.
-  const sessions = asCi(d) ? undefined : await loginSessions(d.sys).catch(() => undefined);
+  // As anyone but the service account, whether it has a login session at all. Not known counts as there.
+  const sessions = asService(d) ? undefined : await loginSessions(d.sys).catch(() => undefined);
   return computeState({
-    ciAway: sessions?.known === true && !sessions.users.includes(CI_USER),
+    service: d.paths.service,
+    serviceAway: sessions?.known === true && !sessions.users.includes(d.paths.service),
     now: d.sys.now(),
-    loopRunning: asCi(d) ? await loopRunning(d.sys, d.uid, d.paths.loopLabels) : undefined,
+    loopRunning: asService(d) ? await loopRunning(d.sys, d.uid, d.paths.loopLabels) : undefined,
     stoppedAt: readStopped(d.paths)?.at,
     pull: activePull(readPull(d.paths.pull), readPull(d.paths.pullLinux)),
     loop: readLoopState(d.paths.loopState),
-    others: await otherLogins(d.sys, CI_USER, typist()),
+    others: await otherLogins(d.sys, d.paths.service, typist()),
     unfinished: updateUnfinished(d.paths),
   });
 }
@@ -149,7 +156,7 @@ function installedLine(p: Paths): string {
 export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise<number> {
   const s = await stateNow(d);
   const loop = readLoopState(d.paths.loopState);
-  const running = asCi(d) ? await loopRunning(d.sys, d.uid, d.paths.loopLabels) : undefined;
+  const running = asService(d) ? await loopRunning(d.sys, d.uid, d.paths.loopLabels) : undefined;
   d.say(`${d.paths.project}: ${headline(s)}`);
   d.say(`  Installed: ${installedLine(d.paths)}`);
   d.say(`  Download:  ${pullLine(readPull(d.paths.pull), d.sys.now(), running, readStopped(d.paths)?.at)}`);
@@ -158,7 +165,7 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   const choosing = choiceLine(loop, existsSync(d.paths.runnerTarballLinux) ? 2 : 1);
   if (choosing) d.say(`  Choosing:  ${choosing}`);
   // v2.6.0: the load test's session, while one is on.
-  const lf = readLoad(d.paths, !asCi(d));
+  const lf = readLoad(d.paths, !asService(d));
   const ls = currentSession(lf, d.sys.now());
   const lastLoad = lf.sessions.at(-1);
   const blind = ls ? loadBlind(lf, d.sys.now()) : undefined;
@@ -184,7 +191,7 @@ export async function statusJson(d: OpsDeps, me: string): Promise<number> {
   const loop = readStateJson<Record<string, unknown>>(d.paths.loopState) ?? {};
   const installed = existsSync(d.paths.installed) ? readJson<Installed>(d.paths.installed) : undefined;
   const str = (v: unknown) => (typeof v === "string" ? v : undefined);
-  const others = (await otherLogins(d.sys, CI_USER, me).catch(() => [])).length;
+  const others = (await otherLogins(d.sys, d.paths.service, me).catch(() => [])).length;
   const view = readLoopState(d.paths.loopState);
   const jobs = runningJobs(view).map((j) => ({ name: j.job, kind: j.vmKind, since: j.slotAt }));
   const slots = { total: view.slotCount ?? 1, busy: view.slots ? Object.values(view.slots).filter((v) => ["starting a VM", "waiting for a job", "running a job", "proving Linux"].includes(v.slot ?? "")).length : 0 };
@@ -196,11 +203,11 @@ export async function statusJson(d: OpsDeps, me: string): Promise<number> {
 export async function check(c: CheckContext, d: OpsDeps, versions: Versions, json = false): Promise<number> {
   const checks: Check[] = await runChecks([...PRESTART, ...CHECK_EXTRA, [SECOND_KEY_ROW, secondKeyRow], ...(loadRepoOf(c.cfg) ? [[TEST_REPO_ROW, testRepoRow] as [string, typeof testRepoRow]] : [])], c);
   if (json) {
-    d.say(JSON.stringify(checkAnswer(checks, asCi(d) || d.uid === 0)));
+    d.say(JSON.stringify(checkAnswer(checks, asService(d) || d.uid === 0)));
     return checks.some((k) => k.status === "FAIL") ? 1 : 0;
   }
   for (const k of checks) d.say(`${k.status.padEnd(4)} ${k.name}${k.detail ? `: ${k.detail}` : ""}`);
-  if (!asCi(d)) d.say("(Some checks need ci: run taskbox check as ci for all of them.)");
+  if (!asService(d)) d.say(`(Some checks need ${d.paths.service}: run taskbox check as ${d.paths.service} for all of them.)`);
   d.say("");
   d.say(`Installed:  ${installedLine(d.paths)}`);
   // Each kind of VM the box serves: its job label, image and size (v2.1.0).
@@ -211,7 +218,7 @@ export async function check(c: CheckContext, d: OpsDeps, versions: Versions, jso
   }
   d.say(`Slots:      ${slotsLine(c.cfg)}`);
   d.say(`Job source: ${sourceLine(c.cfg)}`);
-  d.say(`Timings:    ${timingsLine(c.cfg, readJobs(d.paths, c.ciUid) ?? [])}`);
+  d.say(`Timings:    ${timingsLine(c.cfg, readJobs(d.paths, c.serviceUid) ?? [])}`);
   if (kindsOf(c.cfg).length > 1) d.say(`Linux proof: ${linuxProofLine(readLoopState(d.paths.loopState).linuxProof)}`);
   const choosing = choiceLine(readLoopState(d.paths.loopState), kindsOf(c.cfg).length);
   if (choosing) d.say(`Choosing:   ${choosing}${loopChoiceFix(readLoopState(d.paths.loopState).kindChoice)}`);
@@ -232,8 +239,8 @@ export async function check(c: CheckContext, d: OpsDeps, versions: Versions, jso
 // Leftover VMs and images that aren't the pin. The loop does this too after
 // each new image; this is for freeing space now.
 export async function cleanBox(d: OpsDeps, loop: LoopDeps): Promise<number> {
-  if (!asCi(d)) {
-    d.say("Run taskbox clean as ci: the images and VMs are ci's.");
+  if (!asService(d)) {
+    d.say(`Run taskbox clean as ${d.paths.service}: the images and VMs are ${d.paths.service}'s.`);
     return 1;
   }
   const df = async () => Number((await d.sys.run("/bin/df", ["-Pk", "/System/Volumes/Data"])).stdout.trim().split("\n").pop()?.split(/\s+/)[3]) * 1024;
@@ -410,6 +417,9 @@ export async function restartServices(d: OpsDeps, now: string, was: string, chow
   };
   await restart(await loadedLabel(d, GUARD_LABEL, old?.guard), "the guard");
   const label = await loadedLabel(d, TAILSCALED_LABEL, old?.tailscaled);
+  // Loaded again from the kept install's plist, such as one whose --socket is still the old name, so
+  // the kept code reaches tailscaled where it looks.
+  let movedSocket = false;
   const want = readText(join(now, "app/launchd", `${TAILSCALED_LABEL}.plist`));
   if (label === TAILSCALED_LABEL && want !== undefined && want !== readText(d.paths.tailscaledPlist)) {
     if (want.includes(basename(d.paths.tailscaledLog))) {
@@ -430,12 +440,16 @@ export async function restartServices(d: OpsDeps, now: string, was: string, chow
       chown(job, 0, 0);
       const r = await d.sys.run("/bin/launchctl", ["bootstrap", "system", job], { timeoutMs: LAUNCHCTL_MS });
       if (r.code !== 0) missed.push("tailscaled");
-      else said.push("tailscaled loads again from this install's plist within a minute, by a launchd job of its own, so a session over Tailscale drops for a few seconds.");
+      else {
+        movedSocket = true;
+        said.push("tailscaled loads again from this install's plist within a minute, by a launchd job of its own, so a session over Tailscale drops for a few seconds.");
+      }
     } catch {
       missed.push("tailscaled");
     }
   } else if (fileHash(join(now, "bin/tailscaled")) !== fileHash(join(was, "bin/tailscaled"))) await restart(label, "tailscaled");
   if (missed.length) said.push(`${missed.join(" and ")} didn't restart, so it runs the newer code until the Mac restarts.`);
+  if (movedSocket && lstatExists(d.paths.poolRecord)) said.push(`The older install puts tailscaled's socket back at its old path, ${OLD_TAILSCALE_SOCKET}, where other accounts on the box, the workspace account included, can reach it. Type taskbox update to move it back.`);
   return said.length ? said.join(" ") : undefined;
 }
 
@@ -527,6 +541,9 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   const prev = readJson<Installed>(join(before, "installed.json"));
   const current = linkTarget(d.paths.opt)!; // undoProblem checked it
   d.say(`This goes back to #${prev.pr} ${noControl(prev.title)} (${prev.commit.slice(0, 7)}), from ${installedLine(d.paths)}.`);
+  // A release from before box.json reads the job source from its own taskbox.json only.
+  const boxSource = readBoxFile(d.paths.boxSettings, d.rootUid ?? 0).settings?.sources;
+  if (boxSource && !existsSync(join(before, "app/src/boxsettings.ts"))) d.say("  That release doesn't read this box's own settings, so its job source is the one in its own taskbox.json. The box's own comes back with the next update.");
   if (!o.yes && (await d.ask("Type yes to go back: ")).trim().toLowerCase() !== "yes") {
     for (const l of footer(await stateNow(d), "Nothing changed.", NOTHING)) d.say(l);
     return 1;
@@ -537,7 +554,7 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
       const r = await d.sys.run(cmd, args);
       if (r.code !== 0) throw new Error(`${cmd.split("/").pop()} failed on ${before}: ${r.stderr.trim().slice(0, 80)}`);
     };
-    await kitFor(undefined).finish(before, (path) => setSetuid(d.sys, path, d.rootUid === undefined || d.rootUid === 0), run);
+    await kitFor(undefined).finish(before, d.paths.service, (path) => setSetuid(d.sys, path, d.rootUid === undefined || d.rootUid === 0), run);
     const opened = await d.sys.run("/bin/chmod", ["755", before]);
     if (opened.code !== 0) throw new Error(`chmod failed on ${before}: ${opened.stderr.trim().slice(0, 80)}`);
   } catch (e) {
@@ -560,7 +577,7 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   let did = `Back to #${prev.pr} ${noControl(prev.title)}. The loop moves to it once the current job or download ends.`;
   // v2.6.1 (docs/v3-design.md §5.7, 6): daemons of a later release, which this install doesn't know,
   // are booted out and their plists removed, so they don't run against an install that can't answer them.
-  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.ciUid).catch(() => [] as string[]);
+  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid).catch(() => [] as string[]);
   if (gone.length) did += ` Stopped ${gone.join(", ")}, which this install doesn't run.`;
   // Back across the label move: the kept code knows only the old labels (install.ts, labelsBack).
   const back = d.paths.previousLabelPrefix ? await labelsBack({ ...d, sys: d.sys }, d.paths.previousLabelPrefix).catch((e: Error) => `The services' names weren't put back: ${noControl(e.message).slice(0, 80)}. Type taskbox update.`) : undefined;
@@ -596,10 +613,10 @@ function lstatExists(p: string): boolean {
   }
 }
 
-// Runs a command as ci, from root. Returns why it failed, or undefined.
-async function runAsCi(sys: Sys, ciUid: number | undefined, cmd: string[]): Promise<string | undefined> {
-  if (ciUid === undefined) return "there is no ci user";
-  const r = await sys.run("/usr/bin/sudo", ["-n", "-u", `#${ciUid}`, "--", ...cmd]);
+// Runs a command as the service account, from root. Returns why it failed, or undefined.
+async function runAsService(sys: Sys, serviceUid: number | undefined, cmd: string[]): Promise<string | undefined> {
+  if (serviceUid === undefined) return "there is no service account";
+  const r = await sys.run("/usr/bin/sudo", ["-n", "-u", `#${serviceUid}`, "--", ...cmd]);
   return r.code === 0 ? undefined : noControl(r.stderr).trim().slice(0, 80) || `exit ${r.code}`;
 }
 
@@ -630,7 +647,7 @@ async function removeTailscale(d: OpsDeps, done: string[], missed: string[]): Pr
   const oldLabel = p.previousLabelPrefix ? previousLabels(p.previousLabelPrefix).tailscaled : undefined;
   const labels = [TAILSCALED_LABEL, ...(oldLabel ? [oldLabel] : [])];
   const plists = [p.tailscaledPlist, ...(oldLabel ? [join(dirname(p.tailscaledPlist), `${oldLabel}.plist`)] : [])];
-  if (!plists.some(lstatExists) && !lstatExists(p.tailscaleState) && !lstatExists(p.tailscaleSocket)) return { stuck: false };
+  if (!plists.some(lstatExists) && !lstatExists(p.tailscaleState) && !lstatExists(p.tailscaleSocketDir) && !lstatExists(p.oldTailscaleSocket)) return { stuck: false };
   const isLoaded = async (label: string) => (await d.sys.run("/bin/launchctl", ["print", `system/${label}`], { timeoutMs: 5_000 }).catch(() => ({ code: -1 }))).code === 0;
   const loaded = async () => (await Promise.all(labels.map(isLoaded))).some(Boolean);
   const ts = (args: string[], timeoutMs: number) => d.sys.run(p.tailscale, [`--socket=${p.tailscaleSocket}`, ...args], { timeoutMs }).catch(() => ({ code: -1, stdout: "", stderr: "" }));
@@ -673,7 +690,8 @@ async function removeTailscale(d: OpsDeps, done: string[], missed: string[]): Pr
     [p.tailscaledPlist, "Tailscale's LaunchDaemon"],
     ...(oldLabel ? ([[plists[1]!, "Tailscale's LaunchDaemon under its old name"]] as const) : []),
     [p.tailscaleState, "Tailscale's state"],
-    [p.tailscaleSocket, "Tailscale's socket"],
+    [p.tailscaleSocketDir, "Tailscale's socket"],
+    [p.oldTailscaleSocket, "Tailscale's socket under its old name"],
   ] as const) {
     try {
       if (lstatExists(path)) {
@@ -690,24 +708,28 @@ async function removeTailscale(d: OpsDeps, done: string[], missed: string[]): Pr
 // How long remove waits for tailscaled to exit, in 1 s tries.
 export const TAILSCALED_STOP_TRIES = 20;
 
-export async function remove(d: OpsDeps, o: { ciUid?: number; overSsh?: boolean }): Promise<number> {
+export async function remove(d: OpsDeps, o: { serviceUid?: number; overSsh?: boolean; people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {
   // Removing taskbox's Tailscale ends a session that came in over it, and remove with it, half done
   // and with no way back in (v2.2.2 review).
   if (o.overSsh) {
     for (const l of ["taskbox remove runs at the box only: it takes the box off your tailnet, which would end this session halfway.", "", "Now: unchanged.", "Did: Nothing changed.", "Next: At the box, log in as your admin user and type taskbox remove."]) d.say(l);
     return 1;
   }
-  d.say("This removes taskbox from this box: the loop, the guard that keeps Screen Sharing to Tailscale, taskbox's Tailscale, /opt/taskbox and its kept copy, the App key, and each project's state. Jobs stop running here. The box leaves your tailnet, so Tailscale SSH and Screen Sharing over Tailscale stop: run this at the box. A Tailscale app of your own is untouched. Turn Screen Sharing off first.");
+  d.say(`This removes taskbox from this box: the loop, the guard that keeps Screen Sharing to Tailscale, taskbox's Tailscale, /opt/taskbox and its kept copy, the App key, and each project's state. Jobs stop running here. The box leaves your tailnet, so Tailscale SSH and Screen Sharing over Tailscale stop: run this at the box. A Tailscale app of your own is untouched. Turn Screen Sharing off first, and log ${d.paths.service} out, so remove can offer to delete the accounts taskbox made.`);
   if ((await d.ask("Type yes to remove it: ")).trim().toLowerCase() !== "yes") {
     for (const l of ["", "Now: unchanged.", "Did: Nothing changed.", "Next: Nothing to do."]) d.say(l);
     return 1;
   }
   const done: string[] = [];
   const missed: string[] = [];
+  // An App taskbox connect made and didn't finish, read before its record goes: GitHub keeps it, so
+  // the owner hears where it is.
+  const pending = readStateJson<{ slug?: unknown }>(join(dirname(d.paths.boxSettings), "connect-pending.json"));
+  const unfinished = typeof pending?.slug === "string" && /^[a-z0-9-]{1,64}$/.test(pending.slug) ? ` taskbox connect github made the App ${pending.slug} and didn't finish: delete it on GitHub, org Settings, Developer settings, GitHub Apps, ${pending.slug}, Advanced.` : "";
   // An earlier install's names too, on a box whose loop hasn't moved to the new one yet.
   const old = d.paths.previousLabelPrefix ? previousLabels(d.paths.previousLabelPrefix) : undefined;
-  if (o.ciUid !== undefined) {
-    for (const label of d.paths.loopLabels) await d.sys.run("/bin/launchctl", ["bootout", `gui/${o.ciUid}/${label}`], { timeoutMs: LAUNCHCTL_MS });
+  if (o.serviceUid !== undefined) {
+    for (const label of d.paths.loopLabels) await d.sys.run("/bin/launchctl", ["bootout", `gui/${o.serviceUid}/${label}`], { timeoutMs: LAUNCHCTL_MS });
     done.push("stopped the loop");
   }
   // Each runner is a JIT runner the loop deletes after its job. With the loop stopped, any left is
@@ -720,11 +742,11 @@ export async function remove(d: OpsDeps, o: { ciUid?: number; overSsh?: boolean 
   const flushed = await d.sys.run(PFCTL, ["-a", ANCHOR, "-F", "rules"]);
   if (flushed.code === 0) done.push("removed the guard's pf rules");
   else missed.push("the guard's pf rules");
-  const tart = join(d.paths.ciHome, ".tart");
+  const tart = join(d.paths.serviceHome, ".tart");
   if (existsSync(tart)) {
     const kb = Number((await d.sys.run("/usr/bin/du", ["-sk", tart])).stdout.trim().split(/\s+/)[0]) || 0;
     if ((await d.ask(`Also delete the downloaded images, about ${(kb / 1024 / 1024).toFixed(0)} GB? Type yes to delete them: `)).trim().toLowerCase() === "yes") {
-      const r = await runAsCi(d.sys, o.ciUid, ["/bin/rm", "-rf", "--", tart]);
+      const r = await runAsService(d.sys, o.serviceUid, ["/bin/rm", "-rf", "--", tart]);
       if (r) missed.push(`the images (${r})`);
       else done.push(`deleted the images, about ${(kb / 1024 / 1024).toFixed(0)} GB`);
     } else done.push("kept the images");
@@ -774,8 +796,13 @@ export async function remove(d: OpsDeps, o: { ciUid?: number; overSsh?: boolean 
     [reloadToken(d.paths), "undo's token to load tailscaled again"],
     // A box installed again after a remove is a new box to a controller, so its ID goes too.
     [d.paths.installId, "the install ID"],
-    // The second App's key and root's folder for it (v2.1.0). The App itself stays on GitHub.
-    [d.paths.actionsKeyDir, "the second App's key"],
+    // The approver key the box trusted: a box installed again pins its key again, at its screen.
+    [d.paths.approverPin, "the pinned approver key"],
+    // Both Apps' keys and root's folder for them. The Apps themselves stay on GitHub.
+    [d.paths.actionsKeyDir, "the Apps' keys"],
+    // The box's own settings, and an App connect made and didn't finish.
+    [d.paths.boxSettings, "the box's own settings"],
+    [join(dirname(d.paths.boxSettings), "connect-pending.json"), "the job source App connect hadn't finished"],
   ] as const) {
     try {
       if (lstatExists(path)) {
@@ -786,11 +813,11 @@ export async function remove(d: OpsDeps, o: { ciUid?: number; overSsh?: boolean 
       missed.push(`${what} (${noControl((e as Error).message).slice(0, 80)})`);
     }
   }
-  // The job history: ci empties its own folder as ci, since ci can't remove it from root's parent.
+  // The job history: the service empties its own folder as itself, since it can't remove it from root's parent.
   // Then root removes the empty folder, if it's still a folder and not a link, and the requests
   // folder, which rmSync removes without following a link. Then the parent root made.
   if (lstatExists(d.paths.shared)) {
-    const r = await runAsCi(d.sys, o.ciUid, ["/usr/bin/find", d.paths.shared, "-mindepth", "1", "-delete"]);
+    const r = await runAsService(d.sys, o.serviceUid, ["/usr/bin/find", d.paths.shared, "-mindepth", "1", "-delete"]);
     try {
       if (r) throw new Error(r);
       const st = lstatSync(d.paths.shared);
@@ -811,16 +838,19 @@ export async function remove(d: OpsDeps, o: { ciUid?: number; overSsh?: boolean 
   } catch (e) {
     missed.push(`the requests folder (${noControl((e as Error).message).slice(0, 80)})`);
   }
-  try {
-    if (lstatExists(dirname(d.paths.shared))) rmdirSync(dirname(d.paths.shared));
-  } catch (e) {
-    missed.push(`${dirname(d.paths.shared)} (${noControl((e as Error).message).slice(0, 80)})`);
-  }
-  // ci's own folder is deleted as ci, so a link ci swaps in mid-delete can only reach ci's files.
+  // The service's own folder is deleted as the service, so a link it swaps in mid-delete can only reach its own files.
   if (lstatExists(d.paths.state)) {
-    const r = await runAsCi(d.sys, o.ciUid, ["/bin/rm", "-rf", "--", d.paths.state]);
+    const r = await runAsService(d.sys, o.serviceUid, ["/bin/rm", "-rf", "--", d.paths.state]);
     if (r) missed.push(`the App key and the projects' state (${r})`);
     else done.push("removed the App key and the projects' state");
+  }
+  // The accounts taskbox made, last: after the loop is booted out and the service's state is gone.
+  const accounts = await removeAccounts(d, o, done, missed);
+  // Root's folder for taskbox's shared state, once nothing taskbox keeps is left in it.
+  try {
+    if (lstatExists(dirname(d.paths.shared)) && !accounts.kept) rmdirSync(dirname(d.paths.shared));
+  } catch (e) {
+    missed.push(`${dirname(d.paths.shared)} (${noControl((e as Error).message).slice(0, 80)})`);
   }
   d.say("");
   d.say(`Now: removed${missed.length ? ", except what's listed below" : ""}. taskbox isn't installed.`);
@@ -828,29 +858,229 @@ export async function remove(d: OpsDeps, o: { ciUid?: number; overSsh?: boolean 
   if (missed.length) d.say(`Not removed: ${missed.join("; ")}.`);
   // GitHub won't delete an App's only key, so the cut-off is uninstalling the App.
   if (ts.stuck) d.say("taskbox's Tailscale didn't stop, so the taskbox command was kept to finish the job: restart the Mac, then type taskbox remove again.");
-  d.say("Next: Turn Screen Sharing off in System Settings, General, Sharing, since nothing keeps it to Tailscale now. In System Settings, Users & Groups, delete the ci user. Then, if no other box uses the App, uninstall it on GitHub: org Settings, Third-party Access, GitHub Apps, the box's App, Configure, Uninstall.");
+  const byHand = accounts.byHand.length ? ` In System Settings, Users & Groups, delete ${accounts.byHand.join(" and ")} if you no longer need ${accounts.byHand.length === 1 ? "it" : "them"}.` : "";
+  // A record kept for an account still there: once that account is gone, the folder is the owner's to delete.
+  const state = dirname(d.paths.shared);
+  const folder = !accounts.kept ? "" : accounts.keptNames.length ? ` Once you delete ${accounts.keptNames.join(" and ")}, delete the folder ${state} too, in Finder (Go, Go to Folder), with your admin password.` : ` Once Screen Sharing's list is as you want it, delete the folder ${state}, in Finder (Go, Go to Folder), with your admin password.`;
+  d.say(`Next: Turn Screen Sharing off in System Settings, General, Sharing, since nothing keeps it to Tailscale now.${byHand}${folder} Then, if no other box uses the App, uninstall it on GitHub: org Settings, Third-party Access, GitHub Apps, the box's App, Configure, Uninstall. GitHub also keeps the job source App, if the box had one, until you delete it: org Settings, Developer settings, GitHub Apps.${unfinished}`);
   return missed.length ? 1 : 0;
 }
 
-// taskbox unlock: lets ci unlock the disk after a restart, so the FileVault screen takes one password.
+// The accounts step of remove. An account taskbox made (accounts.json, with a matching ID) is offered
+// for deletion, one question each. One it didn't make is never deleted: the agent's shell is set back
+// so no Tailscale SSH login reaches a taskbox that is gone, and the owner is told what is left.
+async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void }, done: string[], missed: string[]): Promise<{ kept: boolean; keptNames: string[]; byHand: string[] }> {
+  const rec = readRecord(d.paths.accountsRecord);
+  // Screen Sharing's list: only those taskbox added come off it. Anyone else stays.
+  const ss = await undoScreenSharing(d.sys, rec);
+  if (ss.removed.length) done.push(`took ${ss.removed.join(" and ")} off Screen Sharing's list`);
+  for (const n of ss.failed) missed.push(`${n} on Screen Sharing's list`);
+  // With the settings unreadable, taskbox can't tell who is a person, so it deletes no account.
+  const { delete: offer, left } = o.people ? await removable(d.sys, rec, o.people) : { delete: [], left: Object.keys(rec.made).map((n) => `${n} (taskbox.json can't be read, so no account is deleted)`) };
+  const byHand: string[] = [];
+  const logged = await loginSessions(d.sys).catch(() => ({ users: [] as string[], known: false }));
+  for (const { name, role } of offer) {
+    // A logged-in account can't be deleted cleanly: its session holds its home.
+    if (!logged.known || logged.users.includes(name)) {
+      missed.push(`the account ${name} (${logged.known ? "it is logged in" : "taskbox can't tell whether it is logged in"}: log it out, then delete it in System Settings, Users & Groups)`);
+      continue;
+    }
+    const what = role === "service" ? "the account that ran jobs" : "the account agents reached over Tailscale SSH";
+    if ((await d.ask(`Delete ${name}, ${what}, and its home folder? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
+      done.push(`kept the account ${name}`);
+      continue;
+    }
+    const r = await d.sys.run("/usr/sbin/sysadminctl", ["-deleteUser", name], { timeoutMs: 120_000 });
+    if (r.code === 0) {
+      delete rec.made[name];
+      done.push(`deleted the account ${name}`);
+    } else missed.push(`the account ${name} (sysadminctl exit ${r.code})`);
+  }
+  for (const l of left) missed.push(`the account ${l}, left as it is`);
+  // The workspace account and its group, from their own record.
+  const pool = await removePool(d, o, logged, done, missed);
+  // The agent account taskbox placed but didn't make, as boxes from before v2.7.0 have. Its shell is
+  // set back only while it is a standard account with taskbox's shell, and nobody's person account.
+  const agent = d.paths.agent;
+  let agentGone = agent === undefined || (await d.sys.run("/usr/bin/id", ["-u", agent], { timeoutMs: 5_000 })).code !== 0;
+  if (agent !== undefined && !agentGone && !rec.made[agent]) {
+    const shell = /UserShell:\s*(\S+)/.exec((await d.sys.run("/usr/bin/dscl", [".", "-read", `/Users/${agent}`, "UserShell"], { timeoutMs: 5_000 })).stdout)?.[1];
+    const person = (o.people ?? []).some((p) => p.toLowerCase() === agent.toLowerCase());
+    if (shell === REMOTE_SHELL && !person && (await adminState(d.sys, agent)) === "standard") {
+      const r = await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${agent}`, "UserShell", "/usr/bin/false"], { timeoutMs: 10_000 });
+      if (r.code === 0) {
+        // Its home goes back to /Users/<agent>, where macOS made it, since taskbox's folder goes below.
+        const h = await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${agent}`, "NFSHomeDirectory", `/Users/${agent}`], { timeoutMs: 10_000 });
+        done.push(`set ${agent}'s shell back to none${h.code === 0 ? `, and its home back to /Users/${agent}` : ""}`);
+        if (h.code !== 0) missed.push(`${agent}'s home, still taskbox's folder`);
+        agentGone = h.code === 0;
+      } else missed.push(`${agent}'s shell, still taskbox's`);
+    } else if (shell === REMOTE_SHELL) missed.push(`${agent}'s shell, still taskbox's: it isn't a standard account taskbox placed`);
+    byHand.push(agent);
+  }
+  // Its empty home, once no account taskbox placed still points at it.
+  if (agentGone && d.paths.agentHome && lstatExists(d.paths.agentHome)) {
+    try {
+      rmSync(d.paths.agentHome, { recursive: true, force: true });
+      done.push("removed the agent's empty home");
+    } catch (e) {
+      missed.push(`the agent's home (${noControl((e as Error).message).slice(0, 80)})`);
+    }
+  }
+  // The service, when taskbox didn't make it: its account stays, the owner's to delete.
+  if (!rec.made[d.paths.service] && !offer.some((x) => x.name === d.paths.service)) byHand.unshift(d.paths.service);
+  // The record stays while any account it names is still there, so a later remove still finds it.
+  const kept = Object.keys(rec.made).length > 0 || pool.kept.length > 0 || ss.failed.length > 0;
+  try {
+    if (kept) writeRecord({ chown: o.chown ?? (() => {}), rootUid: 0 }, d.paths.accountsRecord, { made: rec.made, ...(ss.failed.length ? { screenSharing: { added: ss.failed } } : {}) });
+    else if (lstatExists(d.paths.accountsRecord)) rmSync(d.paths.accountsRecord, { force: true });
+  } catch (e) {
+    missed.push(`the accounts record (${noControl((e as Error).message).slice(0, 80)})`);
+  }
+  return { kept, keptNames: [...Object.keys(rec.made), ...pool.kept], byHand };
+}
+
+// remove's part for the workspace account (pool.json, pin.ts). Offered only when the record names
+// it: with its ID and GeneratedUID still the ones taskbox made, a standard user, nobody's person
+// account and logged out; or a record macOS has that never got its ID, from an install that stopped
+// half way. Its processes stop first, then it goes, then its lines in cron.deny and at.deny, then
+// its group. The record stays while either is left. What was kept, by name.
+async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void }, logged: { users: string[]; known: boolean }, done: string[], missed: string[]): Promise<{ kept: string[] }> {
+  const w = { chown: o.chown ?? (() => {}), rootUid: d.rootUid ?? 0 };
+  const read = readPoolRecord(d.paths.poolRecord, w.rootUid);
+  if (read === "bad") {
+    missed.push(`${d.paths.poolRecord}, which isn't root's plain file, so no workspace account is deleted`);
+    return { kept: [d.paths.poolRecord] };
+  }
+  const rec: PoolRecord = { made: { ...read.made }, groups: { ...read.groups } };
+  // With the settings unreadable, taskbox can't tell who is a person, so it deletes no account.
+  if (!o.people) {
+    for (const name of Object.keys(rec.made)) missed.push(`the account ${name} (taskbox.json can't be read, so no account is deleted)`);
+    return { kept: [...Object.keys(rec.made), ...Object.keys(rec.groups).map((g) => `the group ${g}`)] };
+  }
+  for (const [name, m] of Object.entries(rec.made)) {
+    const uid = await uidOf(d.sys, name);
+    const person = (o.people ?? []).some((p) => p.toLowerCase() === name.toLowerCase());
+    if (uid === undefined) {
+      if (!(await halfMade(d.sys, name))) {
+        delete rec.made[name];
+        continue;
+      }
+      if (person || (await d.ask(`Delete ${name}, a workspace account taskbox started to make and didn't finish? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
+        done.push(`kept the account ${name}`);
+        continue;
+      }
+      const r = await d.sys.run("/usr/bin/dscl", [".", "-delete", `/Users/${name}`], { timeoutMs: 10_000 });
+      if (r.code === 0) {
+        delete rec.made[name];
+        done.push(`deleted the half-made account ${name}`);
+      } else missed.push(`the half-made account ${name} (dscl exit ${r.code})`);
+      continue;
+    }
+    if (!(await stillMade(d.sys, name, { role: "pool", ...m }))) {
+      missed.push(`the account ${name} (its ID isn't the one taskbox made), left as it is`);
+      continue;
+    }
+    if (person || (await adminState(d.sys, name)) !== "standard") {
+      missed.push(`the account ${name} (${person ? "a person's account" : "not a standard user"}), left as it is`);
+      continue;
+    }
+    if (!logged.known || logged.users.includes(name)) {
+      missed.push(`the account ${name} (${logged.known ? "it is logged in" : "taskbox can't tell whether it is logged in"}: log it out, then delete it in System Settings, Users & Groups)`);
+      continue;
+    }
+    if ((await d.ask(`Delete ${name}, the account workspaces ran in, and its home folder, with the files agents saved there? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
+      done.push(`kept the account ${name}`);
+      continue;
+    }
+    // Its processes first: an account with a process left can't be deleted cleanly.
+    if (!(await stopProcesses(d.sys, uid))) {
+      missed.push(`the account ${name} (its processes didn't stop: restart the Mac, then type taskbox remove again)`);
+      continue;
+    }
+    const r = await d.sys.run("/usr/sbin/sysadminctl", ["-deleteUser", name], { timeoutMs: 120_000 });
+    if (r.code !== 0 || (await uidOf(d.sys, name)) !== undefined) {
+      missed.push(`the account ${name} (sysadminctl exit ${r.code})`);
+      continue;
+    }
+    delete rec.made[name];
+    done.push(`deleted the account ${name}`);
+    for (const f of [d.paths.cronDeny, d.paths.atDeny]) {
+      const why = undenyIn(w, f, name);
+      if (why) missed.push(`${name}'s line in ${f} (${why})`);
+    }
+  }
+  // The group, once no account taskbox made is left to be in it.
+  if (rec.groups[POOL_GROUP] && Object.keys(rec.made).length === 0) {
+    const why = await removeGroup(d.sys, rec, POOL_GROUP);
+    if (why) missed.push(`the group ${why}, left as it is`);
+    else {
+      delete rec.groups[POOL_GROUP];
+      done.push(`deleted the group ${POOL_GROUP}`);
+    }
+  }
+  const kept = [...Object.keys(rec.made), ...Object.keys(rec.groups).map((g) => `the group ${g}`)];
+  try {
+    if (kept.length) writePoolRecord(w, d.paths.poolRecord, rec);
+    else if (lstatExists(d.paths.poolRecord)) rmSync(d.paths.poolRecord, { force: true });
+  } catch (e) {
+    missed.push(`the workspace account's record (${noControl((e as Error).message).slice(0, 80)})`);
+  }
+  return { kept };
+}
+
+// taskbox approver --reset (docs/workspaces-design.md, section 5.3): clears the approver key the box
+// trusts, for a lost laptop, at the box only, after a typed yes. Workspaces stay off until the next
+// taskbox update pins the key taskbox.json names, after its own yes.
+export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {
+  if (o.overSsh) {
+    for (const l of ["taskbox approver --reset runs at the box only: the key it clears is the one that proves you approved a workspace.", "", "Now: unchanged.", "Did: Nothing changed.", "Next: At the box, log in as your admin user and type taskbox approver --reset."]) d.say(l);
+    return 1;
+  }
+  const pin = readPin(d.paths.approverPin, d.rootUid ?? 0);
+  if (pin.state === "none" || pin.state === "cleared") {
+    for (const l of footer(await stateNow(d), "No approver key is pinned on this box. Nothing changed.", NOTHING)) d.say(l);
+    return 0;
+  }
+  d.say(pin.state === "pinned" ? `This box trusts the approver key ${fingerprint(pin.key)}.` : "This box's pinned approver key isn't root's plain file.");
+  d.say("Clearing it turns workspaces off, and this box never takes that key again. The next taskbox update shows the key taskbox.json names, with its fingerprint, and pins it after your yes. Clear it when the laptop that holds the key is lost.");
+  if ((await d.ask("Type yes to clear it: ")).trim().toLowerCase() !== "yes") {
+    for (const l of footer(await stateNow(d), "Nothing changed.", NOTHING)) d.say(l);
+    return 1;
+  }
+  // The file stays, with no key: its generation and the cleared fingerprint keep every old statement
+  // and the cleared key out. A file that couldn't be read gets a generation past any count it held.
+  const next = pin.state === "pinned" ? { key: null, gen: pin.gen, cleared: [...pin.cleared.filter((c) => c !== fingerprint(pin.key)), fingerprint(pin.key)] } : { key: null, gen: Math.floor(d.sys.now() / 1000), cleared: [] };
+  try {
+    writePin({ chown: o.chown ?? (() => {}), rootUid: d.rootUid ?? 0 }, d.paths.approverPin, next);
+  } catch (e) {
+    for (const l of footer(await stateNow(d), `The key wasn't cleared (${noControl((e as Error).message).slice(0, 80)}).`, "Nothing to do: agents fix it.")) d.say(l);
+    return 1;
+  }
+  for (const l of footer(await stateNow(d), "Cleared the approver key. Workspaces are off.", "Make a new key on your laptop, put it in taskbox.json in a PR, then type taskbox update at the box, and check its fingerprint.")) d.say(l);
+  return 0;
+}
+
+// taskbox unlock: lets the service account unlock the disk after a restart, so the FileVault screen takes one password.
 // fdesetup asks for the passwords itself, at the terminal.
 export async function unlock(d: OpsDeps, c: CheckContext, tty: (argv: string[]) => number): Promise<number> {
-  const now = await ciUnlocksDisk(c);
+  const now = await serviceUnlocksDisk(c);
   if (now.status !== "FAIL") {
-    d.say(now.status === "OK" ? "ci can already unlock the disk." : "FileVault is off, so a restart asks for no password.");
+    d.say(now.status === "OK" ? `${d.paths.service} can already unlock the disk.` : "FileVault is off, so a restart asks for no password.");
     for (const l of footer(await stateNow(d), "Nothing changed.")) d.say(l);
     return 0;
   }
-  d.say(UNLOCK_ASKS);
-  const code = tty(["/usr/bin/fdesetup", "add", "-usertoadd", CI_USER]);
-  const after = await ciUnlocksDisk(c);
+  d.say(unlockAsks(d.paths.service));
+  const code = tty(["/usr/bin/fdesetup", "add", "-usertoadd", d.paths.service]);
+  const after = await serviceUnlocksDisk(c);
   const done = after.status === "OK";
-  const did = done ? "ci can now unlock the disk. After the next restart, type ci's password once at the FileVault screen." : `ci still can't unlock the disk (fdesetup ended with ${code}).`;
+  const s = d.paths.service;
+  const did = done ? `${s} can now unlock the disk. After the next restart, type ${s}'s password once at the FileVault screen.` : `${s} still can't unlock the disk (fdesetup ended with ${code}).`;
   for (const l of footer(await stateNow(d), did, done ? NOTHING : "Type taskbox unlock again.")) d.say(l);
   return done ? 0 : 1;
 }
 
-export const UNLOCK_ASKS = "macOS asks for an admin's name and password, then for ci's password.";
+export const unlockAsks = (service: string) => `macOS asks for an admin's name and password, then for ${service}'s password.`;
 
 // The kept install's own guard and loop plists, where the files in place differ from them (v2.6.1).
 // Returns a line when the guard couldn't be loaded again, else undefined.

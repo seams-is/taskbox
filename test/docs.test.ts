@@ -14,10 +14,10 @@ function files(dir: string): string[] {
 }
 
 describe("the docs", () => {
-  test("README's remote line names exactly the commands remote's shell runs, in order", () => {
-    const line = readme.split("\n").find((l) => l.startsWith("- `remote` is for reading the box."))!;
+  test("README's agent line names exactly the commands the agent's shell runs, in order", () => {
+    const line = readme.split("\n").find((l) => l.startsWith("- The agent account is for reading the box."))!;
     const named = [...line.split("and nothing else")[0]!.matchAll(/`([a-z]+)`/g)].map((m) => m[1]);
-    expect(named.slice(1)).toEqual(SHELL_COMMANDS);
+    expect(named).toEqual(SHELL_COMMANDS);
   });
 
   test("README, docs and .github name no org's issues and no team", () => {
@@ -49,9 +49,11 @@ describe("the docs", () => {
   });
 
   test("README and the key messages name GitHub's key steps one way, as GitHub's docs do", () => {
-    for (const f of ["README.md", "src/install.ts", "src/actionskey.ts"]) {
+    // connect github (connect-github design) says the key steps now; actionskey.ts says none, but
+    // never the old way either.
+    for (const f of ["README.md", "src/install.ts", "src/connectflow.ts", "src/actionskey.ts"]) {
       const text = readFileSync(join(repo, f), "utf8");
-      expect(text).toContain("Key pairs");
+      if (f !== "src/actionskey.ts") expect(text).toContain("Key pairs");
       expect(text).not.toMatch(/Generate a private key|under Private keys/);
     }
   });

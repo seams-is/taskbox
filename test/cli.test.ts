@@ -1,9 +1,10 @@
 // taskbox's commands by who types them, through main itself: the root gate, the copies a reader
 // reads, and the owner's words. Each row runs main on the fake box with a recording terminal and
 // a recording question, so no real command runs and no question goes unseen.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { errorAnswer } from "../src/answers.ts";
 import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
@@ -11,7 +12,7 @@ import { ROOT_COMMANDS, SUDO, TASKBOX } from "../src/elevate.ts";
 import { CANT_REACH } from "../src/install.ts";
 import { AGENTS_THEN_UPDATE } from "../src/state.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
-import { fakeLaunchd, healthyBox, PEM, quietBox, tempRoot } from "./helpers.ts";
+import { fakeLaunchd, healthyBox, PEM, quietBox, tempRoot, testBox } from "./helpers.ts";
 
 const CI = 502;
 type Caller = { uid: number; user: string; env: Record<string, string> };
@@ -26,7 +27,7 @@ const CALLERS = {
 // A box with v2.0.0 installed under a temp root, its settings the example's.
 function box(settings = readFileSync(join(import.meta.dir, "../taskbox.example.json"), "utf8")) {
   const root = tempRoot();
-  const p = paths(root, "app");
+  const p = paths(root, testBox());
   mkdirSync(p.app, { recursive: true });
   writeFileSync(join(p.app, "taskbox.json"), settings);
   writeFileSync(p.installed, JSON.stringify({ commit: "c0ffee0c0ffee0c0ffee0c0ffee0c0ffee0c0ff", tag: "v2.0.0", pr: 2, title: "feat: install the box", mergedAt: "2026-11-12T10:00:00Z", files: {} }));
@@ -45,30 +46,34 @@ async function run(argv: string[], who: Caller, o: { root?: string; sys?: FakeSy
   const deps: CliDeps = {
     sys: () => sys,
     uid: who.uid,
-    ciUid: async () => CI,
+    serviceUid: async () => CI,
     env: who.env,
     tty: (a) => (ttys.push(a), 0),
     user: () => who.user,
     ask: async (q) => (asked.push(q), ""),
     say: (l) => said.push(l),
     root: o.root ?? box().root,
+    // The test's user can't give a file to root; what is given to whom isn't what these tests read.
+    chown: () => {},
   };
   const code = await main(argv, deps);
   return { code, said, ttys, asked, sys };
 }
 
 describe("the root commands", () => {
+  // Each as it is typed: connect and disconnect name what they connect (connect-github design).
+  const typed = (cmd: string) => (cmd === "connect" || cmd === "disconnect" ? [cmd, "github"] : cmd === "approver" ? [cmd, "--reset"] : cmd === "clear" ? [cmd, "builder"] : [cmd]);
   test("an admin's command runs again through sudo, which asks for the admin's password", async () => {
     for (const cmd of ROOT_COMMANDS) {
-      const r = await run([cmd], CALLERS.admin);
-      expect([r.code, r.said, r.ttys, r.asked]).toEqual([0, [`taskbox ${cmd} needs your admin password.`], [[SUDO, "-p", "Password for %u: ", "--", TASKBOX, cmd]], []]);
+      const r = await run(typed(cmd), CALLERS.admin);
+      expect([r.code, r.said, r.ttys, r.asked]).toEqual([0, [`taskbox ${cmd} needs your admin password.`], [[SUDO, "-p", "Password for %u: ", "--", TASKBOX, ...typed(cmd)]], []]);
     }
   });
 
   test("a standard user and ci are told to switch to the admin user, and nothing runs", async () => {
     for (const who of [CALLERS["a standard user"], CALLERS.ci]) {
       for (const cmd of ROOT_COMMANDS) {
-        const r = await run([cmd], who);
+        const r = await run(typed(cmd), who);
         expect([r.code, r.said, r.ttys, r.asked]).toEqual([1, [`Switch to your admin user and type taskbox ${cmd}.`], [], []]);
       }
     }
@@ -76,7 +81,7 @@ describe("the root commands", () => {
 
   test("root with no admin behind it is told to log in as the admin user", async () => {
     for (const cmd of ROOT_COMMANDS) {
-      const r = await run([cmd], CALLERS["root with no SUDO_USER"]);
+      const r = await run(typed(cmd), CALLERS["root with no SUDO_USER"]);
       expect([r.code, r.said, r.ttys, r.asked]).toEqual([1, [`Log in as your admin user, then type taskbox ${cmd}.`], [], []]);
     }
   });
@@ -144,11 +149,22 @@ describe("an update that stops before it changes anything", () => {
   async function update(o: { settings?: string; gh?: (sys: FakeSys) => void } = {}) {
     const { root, p } = box(o.settings);
     mkdirSync(p.state, { recursive: true });
-    writeFileSync(p.key, PEM);
+    writeFileSync(p.oldKey, PEM);
     const sys = new FakeSys();
     healthyBox(sys);
     (o.gh ?? githubRoutes)(sys);
-    return run(["update"], CALLERS["root via sudo"], { root, sys });
+    // The update moves the key from before into root's key folder first (connect-github design), and
+    // the test's user can't make a folder root's, so that one folder reads as root's.
+    const real = fs.lstatSync;
+    const spy = spyOn(fs, "lstatSync").mockImplementation(((path: string, o?: never) => {
+      const st = real(path, o);
+      return String(path) === p.actionsKeyDir ? Object.assign(st, { uid: 0, gid: 0 }) : st;
+    }) as never);
+    try {
+      return await run(["update"], CALLERS["root via sudo"], { root, sys });
+    } finally {
+      spy.mockRestore();
+    }
   }
 
   // To do: GitHub's client turns a network failure into its own error (ghfail.ts), which cantReach
@@ -208,6 +224,7 @@ describe("taskbox update with a trial's tag", () => {
     expect([admin.code, admin.ttys]).toEqual([0, [[SUDO, "-p", "Password for %u: ", "--", TASKBOX, "update", "v3.0.0-rc.1"]]]);
     const { root, p } = box();
     mkdirSync(p.state, { recursive: true });
+    mkdirSync(dirname(p.key), { recursive: true });
     writeFileSync(p.key, PEM);
     const sys = new FakeSys();
     healthyBox(sys);

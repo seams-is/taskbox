@@ -72,7 +72,7 @@ describe("the settings", () => {
 describe("taskbox away's check of the copy in the repo", () => {
   const ctx = (uid = 501) => {
     const d = loopDeps(new FakeSys(), tempRoot());
-    return { sys: d.sys, cfg: TWO, paths: d.paths, uid, ciUid: 501 } as never;
+    return { sys: d.sys, cfg: TWO, paths: d.paths, uid, serviceUid: 501 } as never;
   };
   const fp = fingerprint(watchdogSettings(TWO));
   const repoWith = (o: { path?: string; state?: string; title?: string; at?: number; runs?: boolean }) => async (path: string) =>

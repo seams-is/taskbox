@@ -104,6 +104,6 @@ describe("a pass that still holds", () => {
     writeLoopState(d.paths, { linuxProof: "passed: x" });
     const { AWAY_ONLY } = await import("../src/away.ts");
     const proof = AWAY_ONLY.find(([n]) => n === "Linux proof")![1];
-    for (const uid of [501, 502]) expect((await proof({ sys, cfg: LCFG, paths: d.paths, uid, ciUid: 501 } as never)).status).toBe("OK");
+    for (const uid of [501, 502]) expect((await proof({ sys, cfg: LCFG, paths: d.paths, uid, serviceUid: 501 } as never)).status).toBe("OK");
   });
 });

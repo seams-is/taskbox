@@ -1,5 +1,6 @@
 // `taskbox watch`: one screen that stays open and shows what the box is doing, redrawn every two
 // seconds. It only reads files the loop writes, so it never slows or changes the box.
+import { serviceName } from "./names.ts";
 import { type Beat, readBeat } from "./beat.ts";
 import { type GitHubRecord, readGitHubRecord } from "./ghfail.ts";
 import { readStateJson } from "./config.ts";
@@ -10,6 +11,11 @@ import { stoppedLine } from "./stopstart.ts";
 
 export interface LoopView {
   drainingSince?: number; // taskbox stop --drain: when it began, or 0 when it can't be read
+  // Why the box is held now (loop.ts showHold): workspace for a Whole the owner approved, which is
+  // expected; bad or stale for a workspaces state the loop can't trust; newer, which holds nothing,
+  // for taskbox update. heldFor is the line.
+  heldKind?: string;
+  heldFor?: string;
   slot?: string;
   slotAt?: number;
   job?: string;
@@ -170,7 +176,7 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   if (o.logins) lines.push(`Logins:    ${o.logins}`);
   if (o.loopRunning !== undefined) {
     const stopped = o.loopRunning === false && o.stoppedAt !== undefined;
-    lines.push(`Loop:      ${o.loopRunning ? "running" : stopped ? stoppedLine(o.stoppedAt!) : "not running. Type taskbox start, or log out and log in as ci."}`);
+    lines.push(`Loop:      ${o.loopRunning ? "running" : stopped ? stoppedLine(o.stoppedAt!) : `not running. Type taskbox start, or log out and log in as ${serviceName()}.`}`);
   }
   const shown = slotsShown(loop);
   // v2.4.0: under each VM line, the scheduler's reason for it.

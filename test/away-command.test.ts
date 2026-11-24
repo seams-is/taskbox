@@ -34,7 +34,7 @@ function box(respond: Respond = () => undefined, uid = 501) {
   });
   const d = loopDeps(sys, tempRoot());
   mkdirSync(d.paths.projectState, { recursive: true });
-  const c = { sys, cfg: CFG, paths: d.paths, uid, ciUid: 501 } as unknown as CheckContext;
+  const c = { sys, cfg: CFG, paths: d.paths, uid, serviceUid: 501 } as unknown as CheckContext;
   return { sys, d, c };
 }
 const row = async (name: string, c: CheckContext) => (await AWAY_ONLY.find(([n]) => n === name)![1](c));
@@ -132,7 +132,7 @@ describe("the verdict and --json", () => {
   test("taskbox away prints every row, the verdict and the three lines", async () => {
     const { c, d, sys } = box();
     const said: string[] = [];
-    const code = await away(c, { sys, paths: d.paths, uid: 501, ciUid: 501, say: (l) => said.push(l), ask: async () => "" });
+    const code = await away(c, { sys, paths: d.paths, uid: 501, serviceUid: 501, say: (l) => said.push(l), ask: async () => "" });
     expect(code).toBe(1);
     for (const [n] of AWAY_ONLY) expect(said.some((l) => l.includes(` ${n}`))).toBe(true);
     expect(said).toContain("");
@@ -143,7 +143,7 @@ describe("the verdict and --json", () => {
   test("--json is one line, and as remote has no details", async () => {
     const { c, d, sys } = box(undefined, 502);
     const said: string[] = [];
-    await away(c, { sys, paths: d.paths, uid: 502, ciUid: 501, say: (l) => said.push(l), ask: async () => "" }, true);
+    await away(c, { sys, paths: d.paths, uid: 502, serviceUid: 501, say: (l) => said.push(l), ask: async () => "" }, true);
     expect(said).toHaveLength(1);
     const v = JSON.parse(said[0]!);
     expect(v).toMatchObject({ answers: AWAY_ANSWERS, kind: "away" });

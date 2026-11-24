@@ -21,7 +21,7 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { staleBeat } from "./beat.ts";
-import { AGENT_LABEL, CI_USER, type Paths, readStateJson } from "./config.ts";
+import { AGENT_LABEL, type Paths, readStateJson } from "./config.ts";
 import type { Sys } from "./sys.ts";
 import { loopFrom } from "./watch.ts";
 
@@ -97,7 +97,7 @@ export async function watchLoop(sys: Sys, p: Paths, w: LoopWatch): Promise<strin
     return undefined;
   }
   if (w.kickedAt !== null && now - w.kickedAt < LOOP_KICK_GAP_MS) return undefined;
-  const ci = await uidOf(sys, CI_USER);
+  const ci = await uidOf(sys, p.service);
   if (ci === undefined) return undefined;
   const loop = loopFrom(readOwnedJson(p.loopState, ci));
   if (loop.endingAt !== undefined) return undefined;
@@ -123,8 +123,8 @@ export async function watchLoop(sys: Sys, p: Paths, w: LoopWatch): Promise<strin
 // v2.5.1 finds Softnet in bin only, so the guard moves it while no VM is starting (guard.ts).
 const STARTING = ["waiting for the start gate", "starting a VM", "proving Linux"];
 export async function vmStarting(sys: Sys, p: Paths): Promise<boolean> {
-  const ci = await uidOf(sys, CI_USER);
-  const slots = ci === undefined ? {} : (loopFrom(readOwnedJson(p.loopState, ci)).slots ?? {});
+  const service = await uidOf(sys, p.service);
+  const slots = service === undefined ? {} : (loopFrom(readOwnedJson(p.loopState, service)).slots ?? {});
   return Object.values(slots).some((s) => s.beat !== undefined && STARTING.includes(s.beat.phase) && s.beat.until >= sys.now());
 }
 

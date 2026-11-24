@@ -7,7 +7,7 @@ import { jobLines, type JobRecord, validJob } from "../src/jobs.ts";
 import { oneJob } from "../src/loop.ts";
 import { labelUsage, labelUsageLines, LINUX_USAGE, MACOS_USAGE, parseLinuxUsage, parseMacUsage, plausible, summarise, usageLine, type UsageSample } from "../src/usage.ts";
 import { FakeSys } from "./fake.ts";
-import { loopDeps, tempRoot } from "./helpers.ts";
+import { loopDeps, tempRoot , testBox } from "./helpers.ts";
 
 // vm_stat as current macOS prints it.
 const MAC_OUT = `total 8589934592
@@ -88,7 +88,7 @@ describe("the job line", () => {
     const { writeFileSync } = await import("node:fs");
     const { paths } = await import("../src/config.ts");
     const { tempRoot } = await import("./helpers.ts");
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(p.shared, { recursive: true });
     const line = { v: 1, startedAt: 1, endedAt: 2, repo: "example-org/app", result: "passed", vmDeleted: true, guard: "ok" };
     writeFileSync(p.jobsFile, [JSON.stringify({ ...line, usage: { samples: 1, memPeakMB: 9e9 } }), JSON.stringify({ ...line, labels: ["a b"] }), JSON.stringify(line)].join("\n") + "\n");

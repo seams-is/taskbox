@@ -9,11 +9,12 @@ import type { CheckContext } from "./checks.ts";
 import { canaryLabels, fingerprint, TEMPLATES } from "./watchdog.ts";
 import { GitHub } from "./github.ts";
 import { Log } from "./log.ts";
-import { CI_USER, type Config, type Kind, kindsOf, labelsFor, loadRepoOf, readStateJson } from "./config.ts";
+import { type Config, type Kind, kindsOf, labelsFor, loadRepoOf, readStateJson } from "./config.ts";
 import { readJobs } from "./jobs.ts";
 import { currentSession, FRESH_MS, LOAD_MAX_MS, LOAD_MIN_MS, loadBlind, loadOff, loadOn, parseFor, readLoad } from "./load.ts";
 import { loadReport, loadReportLines } from "./loadreport.ts";
 import type { OpsDeps } from "./ops.ts";
+import { serviceName } from "./names.ts";
 
 const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
 
@@ -57,7 +58,7 @@ export const TEST_REPO_ROW = "Test repo";
 export async function testRepoRow(c: CheckContext): Promise<{ status: "OK" | "FAIL" | "SKIP"; detail: string }> {
   const repo = loadRepoOf(c.cfg);
   if (!repo) return { status: "SKIP", detail: "no test repo, so no load test" };
-  if (c.uid !== c.ciUid) return { status: "SKIP", detail: `run as ${CI_USER} to check` };
+  if (c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${serviceName()} to check` };
   try {
     const log = new Log();
     const pem = readFileSync(c.paths.key, "utf8");
@@ -71,12 +72,12 @@ export async function testRepoRow(c: CheckContext): Promise<{ status: "OK" | "FA
 }
 
 export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json: boolean): Promise<number> {
-  const asCi = d.uid === d.ciUid;
+  const asService = d.uid === d.serviceUid;
   // The subcommand: the first word that is neither an option nor an option's value.
   const sub = rest.find((a, i) => !a.startsWith("--") && !["--for", "--session"].includes(rest[i - 1] ?? "")) ?? "status";
   const repo = loadRepoOf(cfg);
   // The service account reads its own files; anyone else, the copies in the folder every user may read.
-  const shared = !asCi;
+  const shared = !asService;
   const now = d.sys.now();
   if (!repo) {
     d.say("taskbox.json names no test repo, so there is no load test. README, Load test, has the steps.");
@@ -91,8 +92,8 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
     return 0;
   }
   if (sub === "on" || sub === "off") {
-    if (!asCi) {
-      d.say(`Type taskbox load ${sub} as ${CI_USER}, at the box.`);
+    if (!asService) {
+      d.say(`Type taskbox load ${sub} as ${serviceName()}, at the box.`);
       return 1;
     }
     if (sub === "off") {
@@ -143,7 +144,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
       }
     }
     // v2.5.0's checklist first, as taskbox away runs it.
-    const checklist = await checklistNotMet({ sys: d.sys, cfg, paths: d.paths, uid: d.uid, ciUid: d.ciUid });
+    const checklist = await checklistNotMet({ sys: d.sys, cfg, paths: d.paths, uid: d.uid, serviceUid: d.serviceUid });
     const s = loadOn(d.paths, now, { ...(forMs !== undefined ? { forMs } : {}), only, checklist });
     if (typeof s === "string") {
       d.say(`A load test session is on already: ${s}.`);
@@ -157,7 +158,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
     return 0;
   }
   if (sub === "report") {
-    const jobs = readJobs(d.paths, d.ciUid);
+    const jobs = readJobs(d.paths, d.serviceUid);
     if (jobs === undefined) {
       d.say(json ? JSON.stringify({ answers: 3, kind: "error", error: "jobs-unreadable" }) : `${d.paths.jobsFile} isn't taskbox's, so the report can't be read. Nothing to do: agents fix it.`);
       return 1;

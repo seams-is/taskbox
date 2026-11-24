@@ -59,7 +59,7 @@ describe("the UPS line", () => {
       return out;
     });
     const d = loopDeps(sys, tempRoot());
-    const c = { sys, cfg: { ...CFG, away: { restartPlan: "accept" } }, paths: d.paths, uid: 501, ciUid: 501 } as unknown as CheckContext;
+    const c = { sys, cfg: { ...CFG, away: { restartPlan: "accept" } }, paths: d.paths, uid: 501, serviceUid: 501 } as unknown as CheckContext;
     expect((await upsCheck(c)).status).toBe("WARN");
     expect(seen).toEqual([UPS_LIMIT_MS]);
     expect(UPS_LIMIT_MS).toBeLessThanOrEqual(10_000);

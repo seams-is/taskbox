@@ -163,7 +163,7 @@ export function logAnswer(lines: { at: number; text: string }[]) {
 
 export const STATUSES = ["OK", "FAIL", "SKIP"] as const;
 
-// For anyone but ci and root, a check's detail is left out: the screen's own text can name the
+// For anyone but the service and root, a check's detail is left out: the screen's own text can name the
 // box's users. The names and results are taskbox's own.
 export function checkAnswer(checks: Check[], details: boolean) {
   return { answers: ANSWERS, kind: "check", checks: checks.map((c) => ({ name: text(c.name, 60), status: oneOf(c.status, STATUSES), ...(details ? { detail: text(c.detail) } : {}) })) };

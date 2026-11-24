@@ -9,7 +9,7 @@ import { appendJob, type JobRecord, jobLines, jobsScreen, readJobs, runnerResult
 const jobsOnly = (all: JobRecord[] | undefined) => all ?? [];
 import { jobRecordResult, oneJob } from "../src/loop.ts";
 import { FakeSys } from "./fake.ts";
-import { loopDeps, tempRoot } from "./helpers.ts";
+import { loopDeps, tempRoot, testBox } from "./helpers.ts";
 
 const me = process.getuid!();
 const T0 = Date.UTC(2026, 10, 15, 20, 41);
@@ -26,7 +26,7 @@ const rec = (o: Partial<JobRecord> = {}): JobRecord => ({
   ...o,
 });
 const shared = () => {
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   mkdirSync(p.shared, { recursive: true });
   return p;
 };
@@ -67,7 +67,7 @@ describe("the record", () => {
     expect(raw).not.toContain("\u001b");
     expect(jobsOnly(readJobs(p, me))[0]!.job).not.toContain("\n");
   });
-  test("isn't shown when it or its folder isn't ci's alone, or is a link", () => {
+  test("isn't shown when it or its folder isn't the service account's alone, or is a link", () => {
     const a = shared();
     appendJob(a, rec());
     expect(readJobs(a, me + 1)).toBeUndefined();
@@ -187,7 +187,7 @@ describe("the extra facts, and hold lines from before v2.2.0", () => {
 
 describe("the install's folder for it", () => {
   test("makes it ci's and readable by every user, and stops on someone else's or a link", () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(dirname(dirname(p.shared)), { recursive: true });
     const chowned: string[] = [];
     placeShared(p, me, (path) => void chowned.push(path));
@@ -206,7 +206,7 @@ describe("the install's folder for it", () => {
     symlinkSync(keep, p.requests);
     removeRequests(p.requests);
     expect([existsSync(p.requests), existsSync(keep)]).toEqual([false, true]);
-    const q = paths(tempRoot(), "app");
+    const q = paths(tempRoot(), testBox());
     mkdirSync(dirname(dirname(q.shared)), { recursive: true });
     symlinkSync("/tmp", dirname(q.shared));
     expect(() => placeShared(q, me, () => {})).toThrow("isn't taskbox's");

@@ -12,14 +12,14 @@ import { jsonLogEntries } from "../src/ops.ts";
 import { commandFor } from "../src/shell.ts";
 import { computeState } from "../src/state.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, quietBox } from "./helpers.ts";
+import { CFG, testBox, quietBox } from "./helpers.ts";
 
 const me = process.getuid!();
 const INSTALLED: Installed = { commit: "0123456789abcdef0123456789abcdef01234567", pr: 10, title: "feat: taskbox 2", mergedAt: "2026-11-17T00:00:00Z", tag: "v2.0.0", installedAt: "x", files: {} };
 
 function stateDir() {
   const r = mkdtempSync(join(tmpdir(), "taskbox-answers-"));
-  const p = paths(r, "app");
+  const p = paths(r, testBox());
   mkdirSync(join(r, "opt/taskbox-state"), { recursive: true });
   return p;
 }
@@ -150,11 +150,11 @@ describe("taskbox check as anyone but ci", () => {
     const sys = new FakeSys();
     quietBox(sys);
     sys.responders.push((cmd, args) => {
-      if (cmd === "/usr/bin/dscl" && args[1] === "-list") return { code: 0, stdout: "admin 501\nci 502\npat 503\nremote 504\n", stderr: "" };
+      if (cmd === "/usr/bin/dscl" && args[1] === "-list") return { code: 0, stdout: "admin 501\ntaskbox 502\npat 503\ntaskbox-agent 504\n", stderr: "" };
       if (cmd === "/usr/bin/dscl" && args[1] === "-read") return { code: 0, stdout: "GroupMembership: root admin\n", stderr: "" };
       return undefined;
     });
-    const r = await otherUsers({ sys, cfg: CFG, paths: stateDir(), uid: 504, ciUid: 502 } as unknown as CheckContext);
+    const r = await otherUsers({ sys, cfg: CFG, paths: stateDir(), uid: 504, serviceUid: 502 } as unknown as CheckContext);
     expect(r).toEqual({ status: "OK", detail: "3 users: 1 admin, 2 standard, 0 logged in" });
   });
 });

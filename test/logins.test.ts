@@ -35,7 +35,10 @@ import { type OpsDeps, RELOAD_JOB, reloadPlist, reloadPlistPath, reloadScript, r
 import { commandFor } from "../src/shell.ts";
 import { screen } from "../src/watch.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, quietLogins, servicesObey, tempRoot } from "./helpers.ts";
+import { CFG as BASE, quietBox, quietLogins, servicesObey, tempRoot, testBox } from "./helpers.ts";
+
+// The fixtures' box: its service account is ci and its agent account remote (v2.7.0's accounts).
+const CFG = { ...BASE, accounts: { service: "ci", agent: "remote", people: ["pat"] } };
 
 const repo = join(import.meta.dir, "..");
 const LOG = readFileSync(join(import.meta.dir, "fixtures/tailscaled-ssh.log"), "utf8");
@@ -59,13 +62,14 @@ function lastJson(rows: { user: string; tty: string; from: string; at: number; s
 
 // A box for the guard's passes: a log, login records, and who Tailscale says has each address.
 function box(o: { log?: string; last?: string } = {}) {
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   mkdirSync(dirname(p.tailscaledLog), { recursive: true });
   mkdirSync(dirname(p.loginsSeen), { recursive: true });
   if (o.log !== undefined) writeFileSync(p.tailscaledLog, o.log, { mode: 0o640 });
   const sys = new FakeSys();
-    quietLogins(sys);
-    servicesObey(sys);
+  // launchctl answers as taskbox's services do: the guard restarts tailscaled after it moves a log.
+  quietLogins(sys);
+  servicesObey(sys);
   sys.clock = NOW;
   const whois: Record<string, { LoginName?: string; Name: string; Tags?: string[] }> = {
     "100.101.102.103": { LoginName: "pat@example.com", Name: "laptop.example.ts.net." },
@@ -364,7 +368,7 @@ describe("the guard keeps tailscaled loaded", () => {
     const sys = new FakeSys();
     quietLogins(sys);
     servicesObey(sys);
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(dirname(p.tailscaledPlist), { recursive: true });
     writeFileSync(p.tailscaledPlist, "<plist/>");
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: loaded() ? 0 : 113, stdout: "", stderr: "" } : cmd === "/bin/launchctl" && args[0] === "bootstrap" ? { code: bootstrapCode, stdout: "", stderr: "" } : undefined));
@@ -438,7 +442,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
   });
 
   test("both plists send tailscaled's output to the log taskbox reads, never to /dev/null", () => {
-    const want = paths("/", "app").tailscaledLog;
+    const want = paths("/", testBox()).tailscaledLog;
     expect(want).toBe("/private/var/log/taskbox-tailscaled.log");
     for (const f of readdirSync(join(repo, "launchd")).filter((n) => n.endsWith(".tailscaled.plist"))) {
       const text = readFileSync(join(repo, "launchd", f), "utf8");
@@ -449,7 +453,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
   });
 
   test("the log is made 640 and group admin, and a link in its place is moved aside", () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(dirname(p.tailscaledLog), { recursive: true });
     const elsewhere = join(dirname(p.tailscaledLog), "elsewhere");
     writeFileSync(elsewhere, "x", { mode: 0o644 });
@@ -477,7 +481,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     quietLogins(sys);
     servicesObey(sys);
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 0, stdout: "state = running\n", stderr: "" } : undefined));
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     const now = join(dirname(p.opt), "taskbox-now");
     const was = join(dirname(p.opt), "taskbox-was");
     for (const dir of [now, was]) mkdirSync(join(dir, "app/launchd"), { recursive: true });
@@ -539,7 +543,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     const sys = new FakeSys();
     quietLogins(sys);
     servicesObey(sys);
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(dirname(p.tailscaledPlist), { recursive: true });
     writeFileSync(reloadPlistPath(p), "<plist/>");
     expect(await dropReloadJob(sys, p)).toBe(true);
@@ -559,12 +563,12 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     quietLogins(sys);
     servicesObey(sys);
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 113, stdout: "", stderr: "" } : undefined));
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     for (const f of [p.tailscaledLog, p.loginsSeen, p.tailscaleSocket, p.tailscaledPlist]) mkdirSync(dirname(f), { recursive: true });
     const files = [p.tailscaledLog, `${p.tailscaledLog}.0`, `${p.tailscaledLog}.0.new`, `${p.tailscaledLog}.old`, p.loginsRecord, `${p.loginsRecord}.new`, p.loginsSeen, `${p.loginsSeen}.new`, reloadToken(p), reloadPlistPath(p)];
     for (const f of files) writeFileSync(f, "x");
     const answers = ["yes", "no"];
-    await remove({ sys, paths: p, uid: 0, say: () => {}, ask: async () => answers.shift() ?? "no" }, { ciUid: 502 });
+    await remove({ sys, paths: p, uid: 0, say: () => {}, ask: async () => answers.shift() ?? "no" }, { serviceUid: 502 });
     for (const f of files) expect({ f, there: existsSync(f) }).toEqual({ f, there: false });
   });
 });
@@ -587,10 +591,10 @@ describe("the lines elsewhere", () => {
     quietLogins(sys);
     servicesObey(sys);
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 113, stdout: "", stderr: "" } : undefined));
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     const said: string[] = [];
     const line = "Tailscale SSH to a person's account, 1 login in the last hour, the latest 14:03. taskbox logins lists them.";
-    await status({ sys, paths: p, uid: 502, ciUid: 502, say: (l) => said.push(l), ask: async () => "no" }, undefined, line);
+    await status({ sys, paths: p, uid: 502, serviceUid: 502, say: (l) => said.push(l), ask: async () => "no" }, undefined, line);
     expect(said).toContain(`  Logins:    ${line}`);
     expect(screen({ pullFile: p.pull, loopFile: p.loopState, now: NOW, logins: line })).toContain(`Logins:    ${line}`);
     expect(screen({ pullFile: p.pull, loopFile: p.loopState, now: NOW }).some((l) => l.startsWith("Logins:"))).toBe(false);
@@ -607,7 +611,7 @@ describe("the lines elsewhere", () => {
   test("away's row reads the counts only a root-owned record holds", async () => {
     const b = box({ log: LOG, last: LAST });
     await b.keeper.pass(NOW);
-    const c = { sys: b.sys, cfg: CFG, paths: b.p, uid: me, ciUid: 502 } as CheckContext;
+    const c = { sys: b.sys, cfg: CFG, paths: b.p, uid: me, serviceUid: 502 } as CheckContext;
     // A test's own file isn't root's, so it reads as no record.
     expect((await loginsRow(c)).status).toBe("SKIP");
   });

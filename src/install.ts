@@ -6,8 +6,6 @@ import {
   chmodSync,
   closeSync,
   constants,
-  fchmodSync,
-  fchownSync,
   fstatSync,
   fsyncSync,
   openSync,
@@ -30,17 +28,27 @@ import { DOWNLOAD_LIMIT_MS } from "./ghfail.ts";
 import { readInstallId } from "./answers.ts";
 import { removeRequests } from "./requests.ts";
 import { allOk, type Check, type CheckContext, hashTree, INSTALL_PREFLIGHT, macos, runChecks } from "./checks.ts";
-import { KeyStop, placeActionsKey } from "./actionskey.ts";
+import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./actionskey.ts";
 import { type EngineName, kitFor } from "./vm.ts";
-import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, CI_USER, type Config, DEFAULT_REMOTE_USER, GUARD_LABEL, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson, type Versions } from "./config.ts";
+import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
 import { compareTags, GitHub, type Head, mergeDate, RELEASE_TAG, repoMissing } from "./github.ts";
 import { gitTreeSha, gunzippedSize, hopTag, HopStop, placeRollbackWatch, publicRelease, parseStatement, removeRollbackWatch, ROLLBACK_AFTER_MS, SAFE_UNTAR, SIGNERS_IN_TREE, statementProblem, TARBALL_LIMIT, tarListProblem, UNPACKED_LIMIT, verifySignature } from "./hop.ts";
 import { clean } from "./progress.ts";
 import { commandLinkProblem, linkTarget, placeCommandLink, prune, relink, swapIn, withUpdateLock } from "./layout.ts";
+import { POOL_GROUP, POOL_USER, poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
+import { BOX_FIX, readBoxFile } from "./boxsettings.ts";
+import { adoptSource, type ConnectDeps } from "./connectflow.ts";
+import { type AccountDeps, agentSteps, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAgent, placePool, planPool, planScreenSharing, planService, readRecord, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
 import { adminState } from "./elevate.ts";
+import { readActionsKey } from "./queue.ts";
 import { placeTailscaledLog } from "./logins.ts";
+import { asNobody, keyChangeVerifier, verifyFolder } from "./workspace/approval.ts";
+import { approverLine, approverPlan, fingerprint, type Pin as KeyPin, type KeyChange, ROTATE_ASK, rotateConfirmed, type Verifier } from "./approver.ts";
+import { type PoolRecord, readPin, readPoolRecord, writePin } from "./pin.ts";
 import type { Log } from "./log.ts";
 import type { Sys } from "./sys.ts";
+import { sshChangeLines, sshPeopleOf } from "./policy.ts";
+import { keepSocket, newSocketMemory } from "./tssocket.ts";
 
 export interface InstallDeps {
   sys: Sys;
@@ -55,7 +63,20 @@ export interface InstallDeps {
   configDir: string; // taskbox.json to start from: the bootstrap's or the installed one
   bootstrap?: string; // first install only: the downloaded folder
   rootUid?: number; // who must own /usr/local: root; tests use their own user
+  // Runs a command on the terminal, for the passwords macOS asks for itself (sysadminctl, fdesetup).
+  tty(argv: string[]): number;
+  // Checks the old approver key's signature on a new one (approver.ts). Tests may give their own; the
+  // update gives approval.ts keyChangeVerifier: ssh-keygen -Y verify as nobody, in root's verifyTmp.
+  verify?: Verifier;
 }
+
+// The update's check of a new approver key: the old key's signature, by ssh-keygen -Y verify as
+// nobody, in root's folder for checking signatures, made only when a key change comes. Anything that
+// throws, the folder included, is a refusal (approverPlan).
+export const updateVerifier =
+  (d: Pick<InstallDeps, "sys" | "paths" | "chown" | "rootUid">): Verifier =>
+  (o) =>
+    keyChangeVerifier({ run: asNobody(d.sys), tmp: verifyFolder(d.paths.verifyTmp, { chown: d.chown, rootUid: d.rootUid }) })(o);
 
 // An update that can't reach GitHub at all: the network, DNS or GitHub itself is down. One plain
 // line for the owner instead of the raw error, since the owner can fix the box's network.
@@ -76,6 +97,29 @@ export class Stop extends Error {
   constructor(message: string, readonly owner = false) {
     super(message);
   }
+}
+
+// The files that decide which approver key the box trusts. An update that changes any of them says
+// so on its own line before the yes.
+export const TRUST_FILES = ["src/approver.ts", "src/pin.ts", "src/workspace/approval.ts"];
+
+export function trustFilesLine(changes: { names: string[]; files?: number; complete: boolean } | undefined): string[] {
+  if (!changes) return [];
+  const hit = TRUST_FILES.filter((f) => changes.names.includes(f));
+  if (hit.length) return [`Trust files: it changes ${hit.join(", ")}, which decide${hit.length === 1 ? "s" : ""} which approver key the box trusts. Read that change in its PR before you type yes.`];
+  return changes.complete ? [] : [`Trust files: GitHub lists only the first ${changes.files ?? changes.names.length} changed files, so it may change ${TRUST_FILES.join(", ")} too. Read its PR before you type yes.`];
+}
+
+// A first install on a box an earlier install left its workspace files on (a new install ID, with
+// no remove between): what it keeps, each on its own line before the yes.
+export function earlierWorkspaces(pin: KeyPin, pool: PoolRecord | "bad"): string[] {
+  const out: string[] = [];
+  if (pin.state === "pinned") out.push(`Approver key: an earlier install on this box pinned ${fingerprint(pin.key)}, and this install keeps it. If that isn't your key, type no, then taskbox approver --reset once taskbox is installed.`);
+  else if (pin.state === "cleared") out.push("Approver key: an earlier install on this box cleared its key, and the keys it cleared stay refused.");
+  else if (pin.state === "bad") out.push("Approver key: an earlier install left a pinned key taskbox can't read, so no new key is taken until taskbox approver --reset.");
+  if (pool === "bad") out.push("The workspace account's record from an earlier install can't be read, so taskbox leaves that account alone.");
+  else for (const name of Object.keys(pool.made)) out.push(`The workspace account ${name}, from an earlier install, stays, and keeps its files.`);
+  return out;
 }
 
 export function describe(head: Head, changed: number | "all"): string[] {
@@ -118,50 +162,30 @@ async function fetchPinned(d: InstallDeps, name: string, pin: Pin, dir: string, 
   return file;
 }
 
-function findDownloadedKey(d: InstallDeps): string {
-  const dl = join(d.ownerHome, "Downloads");
-  // GitHub names the file after the App and the date, such as example-taskbox.2026-11-12.private-key.pem.
-  // Any one such file is taken, so a change in how GitHub names it doesn't stop the install.
-  const keys = readdirSync(dl).filter((f) => /\.private-key\.pem$/.test(f));
-  if (keys.length !== 1) {
-    throw new Stop(
-      keys.length === 0
-        ? 'No App key in Downloads. Open the first README link, open the Credentials tab, then Key pairs, and click "New key", then run this again.'
-        : "More than one App key in Downloads. Delete them all, make one new key (Credentials, Key pairs, New key), then run this again.",
-      true,
-    );
-  }
-  return join(dl, keys[0]!);
-}
-
-async function uidOf(d: InstallDeps, user: string): Promise<number | undefined> {
-  const r = await d.sys.run("/usr/bin/id", ["-u", user]);
-  return r.code === 0 ? Number(r.stdout.trim()) : undefined;
-}
-
-// The owner makes ci in System Settings before the install. sysadminctl can't do it safely: with
-// "-" for the password it makes the user with no secure token, so ci can't unlock the disk, and the
-// only way round that puts the password on a command line. System Settings asks for the password
-// twice and gives the user a secure token from the admin.
-export const MAKE_CI = `In System Settings, Users & Groups, click Add User. Choose Standard, Full name CI, account name ${CI_USER}, type its password twice and keep it. Then run this again.`;
+const uidOf = (d: Pick<InstallDeps, "sys">, user: string) => accountUid(d.sys, user);
 
 // Tailscale's ways for the box to take or offer routes, which taskbox keeps off (v2.1.1).
 export const TAILSCALE_OFF = ["--accept-routes=false", "--exit-node=", "--advertise-routes=", "--advertise-exit-node=false", "--advertise-connector=false"];
 
-export async function ensureCiUser(d: InstallDeps): Promise<number> {
-  const uid = await uidOf(d, CI_USER);
-  if (uid === undefined) throw new Stop(`There is no ${CI_USER} user yet. Nothing was installed. ${MAKE_CI}`, true);
-  const token = await d.sys.run("/usr/sbin/sysadminctl", ["-secureTokenStatus", CI_USER]);
-  if (!/ENABLED/.test(token.stdout + token.stderr)) {
-    throw new Stop(
-      `${CI_USER} cannot unlock the disk. Nothing was installed. In System Settings, Users & Groups, delete ${CI_USER} and its home folder, then click Add User. Choose Standard, Full name CI, account name ${CI_USER}, type its password twice and keep it. Then run this again.`,
-      true,
-    );
+// The service account (v2.7.0): taskbox makes it when it isn't there, after the owner's yes, and
+// gives it the disk unlock. An account that is there is checked and used. accounts.ts does each step.
+// A service's taskbox state: the project's folder, or the App key from before v2.8.0, in its ~/.taskbox.
+export const hasState = (d: Pick<InstallDeps, "paths">, home: string) => existsSync(join(home, ".taskbox", d.paths.project)) || existsSync(join(home, ".taskbox", "app-key.pem"));
+const stateOf = (d: InstallDeps) => (service: string) => hasState(d, join(dirname(d.paths.serviceHome), service));
+// Every account whose home holds this project's taskbox state: before v2.7.0's record, the service in use.
+const stateIn = (d: InstallDeps) => () => {
+  const users = dirname(d.paths.serviceHome);
+  try {
+    return readdirSync(users).filter((n) => !n.startsWith(".") && hasState(d, join(users, n)));
+  } catch {
+    return [];
   }
-  const admin = await d.sys.run("/usr/sbin/dseditgroup", ["-o", "checkmember", "-m", CI_USER, "admin"]);
-  if (admin.code === 0) throw new Stop(`${CI_USER} is an administrator. Make it a Standard user, then run this again.`, true);
-  return uid;
-}
+};
+// A first install has no taskbox command yet, so its lines say to run install.sh again.
+type AgentDeps = Pick<InstallDeps, "sys" | "paths" | "say" | "ask" | "tty" | "chown" | "rootUid" | "bootstrap">;
+const accountDeps = (d: AgentDeps): AccountDeps => ({ sys: d.sys, say: d.say, ask: d.ask, tty: d.tty, chown: d.chown, rootUid: d.rootUid ?? 0, again: d.bootstrap ? "Run sh ~/Downloads/taskbox-main/install.sh again" : "Type taskbox update again" });
+// Where an agent's empty home goes: /private/var/taskbox-<agent>, beside the install's own root.
+const agentHomeFor = (d: Pick<InstallDeps, "paths">, user: string) => join(dirname(dirname(d.paths.opt)), "private/var", `taskbox-${user}`);
 
 function plist(template: string): string {
   if (/SENTRY/.test(template)) throw new Stop("the LaunchAgent sets a Sentry variable");
@@ -187,7 +211,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     cfg: loadConfigLoose(d.configDir),
     paths: d.paths,
     uid: 0,
-    ciUid: undefined,
+    serviceUid: undefined,
   };
   // A Mac too old is refused with its settings untouched. Otherwise the box's own settings are made
   // true first, so the preflight confirms them rather than refusing one taskbox could set.
@@ -197,21 +221,32 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   printChecks(d, pre);
   if (!allOk(pre)) throw new Stop("A preflight check failed. Nothing was installed.", true);
 
-  // The ci user, which the owner made in System Settings, checked before anything is downloaded.
-  const ciUid = await ensureCiUser(d);
+  // The service account, checked before anything is downloaded. Made only after the yes.
+  const plan = await planService(accountDeps(d), d.paths.service, readRecord(d.paths.accountsRecord), stateOf(d), stateIn(d));
+  if (typeof plan === "string") throw new Stop(plan, true);
   // taskbox goes on every user's PATH through /usr/local/bin, so that folder must be root's alone.
   const linkWhy = commandLinkProblem(d.paths, d.rootUid ?? 0, false);
   if (linkWhy) throw new Stop(`${linkWhy}, so taskbox can't put its command there. Nothing was installed. Nothing to do: agents fix it.`);
 
-  // 3. The key and a contents token.
-  const keyPath = opts.first ? findDownloadedKey(d) : d.paths.key;
-  const pem = readKey(d, keyPath, !opts.first);
+  // 3. The key and a contents token. A key in Downloads is proved first, so a revoked key in place
+  // never stops the update that brings its replacement (P3).
+  const again = opts.first ? "sh ~/Downloads/taskbox-main/install.sh" : "taskbox update";
+  const installedCfg = opts.first ? loadConfig(d.configDir) : loadConfig(d.configDir, d.paths.boxSettings, d.rootUid ?? 0);
+  const took = await takeDownloadedKey(d, installedCfg, join(d.ownerHome, "Downloads"), { again, source: !opts.first, skip: !opts.first });
+  if ("stop" in took) throw new Stop(took.stop, true);
+  if ("none" in took && opts.first) throw new Stop(took.none ? `${took.none}, then run this again.` : 'No App key in Downloads. Open the first README link, open the Credentials tab, then Key pairs, and click "New key", then run this again.', true);
+  if ("none" in took && took.none) d.say("Downloads can't be read, so the keys in place are used.");
+  if ("skipped" in took && took.skipped) d.say(took.skipped);
+  const fresh = "pem" in took ? took : undefined;
+  // The key in place: runner.pem, or the one in the service's home before v2.8.0, read as before.
+  const placed = fresh?.app === "runner" ? undefined : readKey(d, d.paths.key, d.paths.key === d.paths.oldKey);
+  const pem = fresh?.app === "runner" ? fresh.pem : placed!;
   d.log.secret(pem);
   const own = loadConfig(d.configDir);
   const gh = new GitHub(d.sys, own, pem, d.log);
   const installed = existsSync(d.paths.installed) ? readJson<Installed>(d.paths.installed) : undefined;
   // v2.6.1: a v3 release is public and signed, and comes by its own path (hop.ts).
-  if (!opts.first && opts.tag !== undefined && hopTag(opts.tag)) return hop(d, { own, installed, tag: opts.tag, ciUid });
+  if (!opts.first && opts.tag !== undefined && hopTag(opts.tag)) return hop(d, { own, installed, tag: opts.tag });
   // From v2.6.1 v2 releases come from releaseRepo. Until a repo has that name, GitHub
   // has no such repo: one plain line, and nothing changes.
   const missing = (step: "token" | "releases") => (e: unknown) => {
@@ -219,6 +254,24 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     throw e;
   };
   const token = await gh.token("contents").catch(missing("token"));
+  // What goes in root's key folder: a key from Downloads, and the runner key from before v2.8.0, which
+  // stays in the service's home too, for taskbox undo. Each key is the service's. An update places
+  // them now, before the yes. A first install, or a run that makes the service, places them at step 7,
+  // so a no or a stop before it leaves the download for the next run of install.sh (P3).
+  const early = !opts.first && !plan.make;
+  const oldRunnerKey = fresh?.app !== "runner" && d.paths.key === d.paths.oldKey;
+  const after = early ? "Nothing was installed." : `${fresh ? "The key stays in Downloads. " : ""}Type ${again} again.`;
+  const placeKeys = async (serviceUid: number) => {
+    const why = oldRunnerKey ? await placeKeyAt(d, pem, runnerKeyPath(d.paths), serviceUid) : undefined;
+    if (why) throw new Stop(`${why}. ${after}`, true);
+    if (fresh) {
+      const line = await placeDownloadedKey(d, fresh, installedCfg, serviceUid).catch((e: unknown) => {
+        throw e instanceof KeyStop ? new Stop(`${e.message} ${after}`, true) : e;
+      });
+      d.say(`  ${line}`);
+    }
+  };
+  if (early) await placeKeys(plan.uid);
 
   // 4. What would be installed, and the owner's yes.
   // The newest release, or the one named. Its tag is read once, here, as a commit: everything after
@@ -240,43 +293,410 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if (installed && !(await gh.follows(token, installed.commit, head.sha))) {
     throw new Stop(`Release ${rel.tag} doesn't come after the installed commit on main, so nothing was installed. Nothing to do: agents fix it.`);
   }
-  const changed = installed ? await gh.changedFiles(token, installed.commit, head.sha) : "all";
+  const changes = installed ? await gh.changes(token, installed.commit, head.sha) : undefined;
+  const changed = changes ? changes.files : "all";
+  // The release's own accounts (v2.7.0), read before the yes, so what is made or changed is said first.
+  const relSettings = (await gh.settingsAt(token, head.sha)) as Record<string, unknown>;
+  const rawSettings = relSettings as { accounts?: unknown; approverKey?: unknown; approverKeyChange?: unknown };
+  const rawAccounts = rawSettings.accounts;
+  const relAccounts = await (async () => {
+    try {
+      return validateAccounts(rawAccounts);
+    } catch (e) {
+      throw new Stop(`Release ${rel.tag}'s taskbox.json names no accounts taskbox can use (${(e as Error).message.replace(/^taskbox\.json: /, "")}). Nothing was installed. Nothing to do: agents fix it.`);
+    }
+  })();
+  // The service can't change while its state is on the box. A new agent or new people are placed.
+  if (relAccounts.service !== d.paths.service) {
+    throw new Stop(`Release ${rel.tag}'s taskbox.json names ${relAccounts.service} as the service account, but this box's is ${d.paths.service}, and its state would be left behind. Nothing was installed. To keep ${d.paths.service}, an agent puts it back in accounts.service in a PR. To change it, type taskbox remove first.`, true);
+  }
+  // The agent is an account taskbox made, and only that: any other is refused here, with nothing changed.
+  const agentPlan = relAccounts.agent !== undefined ? await planAgent(d.sys, relAccounts.agent, readRecord(d.paths.accountsRecord), REMOTE_SHELL) : {};
+  if ("stop" in agentPlan) throw new Stop(agentPlan.stop, agentPlan.owner);
+  // Workspaces: the release's approver key, against the key the box has pinned (approver.ts). A new
+  // key after the first needs the old key's signed statement, so a PR can't swap it quietly.
+  const wsWhy = workspacesProblem({ approverKey: rawSettings.approverKey, approverKeyChange: rawSettings.approverKeyChange, accounts: relAccounts }); // shape, not trust
+  if (wsWhy) throw new Stop(`Release ${rel.tag}'s taskbox.json can't turn workspaces on (${wsWhy.replace(/^taskbox\.json: /, "")}). Nothing was installed. Nothing to do: agents fix it.`);
+  const relKey = rawSettings.approverKey as string | undefined; // not trust: approverPlan decides, against the pin
+  const relChange = rawSettings.approverKeyChange as KeyChange | undefined;
+  const pinNow = readPin(d.paths.approverPin, d.rootUid ?? 0);
+  const approver = await approverPlan(pinNow, relKey, relChange, readInstallId(d.paths.installId, d.rootUid ?? 0), d.verify ?? updateVerifier(d));
+  if ("refuse" in approver) throw new Stop(approver.refuse, true);
+  // The pool account, while the box trusts the release's key, or pins it at this yes. One taskbox
+  // didn't make is left alone.
+  const trusted = "key" in approver ? approver.key : undefined;
+  const pool = poolOf(trusted).length ? await planPool(d.sys, readPoolRecord(d.paths.poolRecord, d.rootUid ?? 0), POOL_USER, POOL_GROUP) : undefined;
+  // Screen Sharing's list of users, from accounts.people: planned now, changed after the yes.
+  const list = await planScreenSharing(d.sys, relAccounts.people, readRecord(d.paths.accountsRecord));
   d.say("This installs:");
   for (const line of describe(head, changed)) d.say(line);
   // The update that moves the services' names: said before the yes, so a same-release update with no
   // changed files doesn't look like a mistake.
   const moving = d.paths.previousLabelPrefix && existsSync(join(dirname(d.paths.guardPlist), `${previousLabels(d.paths.previousLabelPrefix).guard}.plist`));
   if (moving) d.say("  It also moves taskbox's services to their new names. The loop follows by itself once no job runs.");
+  if (plan.make) d.say(`  It also makes the account ${d.paths.service}, which runs jobs. You type its password, then your admin name and password, then its password again, so it can unlock the disk.`);
+  else if (plan.ask) d.say(`  ${plan.ask}`);
+  if (agentPlan.line) d.say(`  ${agentPlan.line}`);
+  // Any change to the approver key, on its own line, with its fingerprint.
+  const keyLine = approverLine(approver);
+  if (keyLine) d.say(`  ${keyLine}`);
+  for (const l of trustFilesLine(changes)) d.say(`  ${l}`);
+  if (opts.first) for (const l of earlierWorkspaces(pinNow, readPoolRecord(d.paths.poolRecord, d.rootUid ?? 0))) d.say(`  ${l}`);
+  if (pool && "leave" in pool) d.say(`  ${pool.leave}`);
+  else if (pool?.make) d.say(`  It also makes ${POOL_USER}, the account a workspace runs in: hidden, standard, with no password, in a group of its own, and denied cron and at. Its shell opens nothing until a later release.`);
+  // Passed over, so a box reads a newer release's block, but never without a word: a typo shows here.
+  const unknown = unknownAccountKeys(rawAccounts).map((k) => k.replace(/[^\x20-\x7e]/g, "").slice(0, 40));
+  if (unknown.length) d.say(`  This taskbox passes over keys it doesn't know in the release's taskbox.json: ${unknown.map((k) => `accounts.${k}`).join(", ")}. If one is a typo, don't type yes: an agent fixes it in a PR.`);
+  // Section 4a: a release's job source with its key on the box is kept in the box's own settings.
+  const boxNow = readBoxFile(d.paths.boxSettings, d.rootUid ?? 0).settings;
+  // Only with the source's key on the box: without it the box has no usable source to keep, and the
+  // update goes on, its key line saying to type taskbox connect github (Tart run of #34, after P3).
+  const relSource = sourceOf(loadConfig(d.configDir));
+  const adopting = !opts.first && !(boxNow && "sources" in boxNow) && relSource.type === "github-actions" && !plan.make && readActionsKey(d.paths.actionsKeyDir, sourceKeyPath(d.paths, relSource.appId), plan.uid, d.rootUid ?? 0) !== undefined;
+  if (adopting) d.say("  It also keeps the job source App in this box's own settings, once its key passes.");
+  // The box's own settings must work with this release: said before the yes, so nothing is asked for
+  // that can't happen (Tart run of #34, D). A source this box is adopting is kept as it is now.
+  const relCfg = (() => {
+    try {
+      return loadConfigFrom(relSettings, d.paths.boxSettings, d.rootUid ?? 0);
+    } catch {
+      return undefined;
+    }
+  })();
+  if (relCfg?.boxProblem) {
+    throw new Stop(`This box's own settings can't be used with release ${rel.tag}: ${relCfg.boxProblem}. Nothing was installed. ${BOX_FIX}`, true);
+  }
+  // Tailscale refuses the box's tag until the policy names its owner, so the owner saves it first.
+  if (opts.first) {
+    d.say(`  Before you type yes: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
+    d.say(`    "${TAILNET_TAG}": ["OWNER"]`);
+  }
+  // Who may log in by Tailscale SSH: the console holds the rules, so a change is the owner's step.
+  if (!opts.first) {
+    let before: string[] | undefined;
+    try {
+      before = sshPeopleOf(JSON.parse(readFileSync(join(d.configDir, "taskbox.json"), "utf8")));
+    } catch {}
+    if (before === undefined) d.say("  taskbox couldn't read who has Tailscale SSH now. After the update, compare what taskbox policy prints with Tailscale's admin console.");
+    else for (const l of sshChangeLines(before, relAccounts.ssh ?? [])) d.say(`  ${l}`);
+  }
+  if (typeof list === "string") d.say(`  ${list}, so it leaves the list as it is. taskbox check says what's on it.`);
+  else for (const l of screenSharingLines(list)) d.say(`  ${l}`);
+  // A new key asks its own question, apart from the yes: the owner reads the fingerprint to type it.
+  if (approver.change === "rotate" && !rotateConfirmed(approver.fingerprint, await d.ask(ROTATE_ASK))) throw new Stop(`That isn't the end of ${approver.fingerprint}, so the box keeps ${approver.from}. Nothing was installed.`, true);
   const answer = (await d.ask(`Type yes to install ${clean(rel.tag).slice(0, 20)}: `)).trim().toLowerCase();
   if (answer !== "yes") throw new Stop(`You typed "${answer.replace(/[^\x20-\x7e]/g, "").slice(0, 40)}". Stopped. Nothing was installed.`);
 
-  return placeRelease(d, {
-    first: opts.first,
-    ciUid,
-    key: { pem, path: keyPath },
-    installed,
-    head,
-    unpack: async (work) => {
-      // 5. The commit's files, then each pinned tool checked against the commit's pins.
-      writeFileSync(join(work, "src.tar.gz"), await gh.tarball(token, head.sha));
-      mkdirSync(join(work, "src"));
-      await mustRun(d, "/usr/bin/tar", ["-xzf", join(work, "src.tar.gz"), "-C", join(work, "src"), "--strip-components", "1"]);
-      return join(work, "src");
-    },
-    tailscale: (config, ts) => {
-      const pin: Pin = { version: ts.version, url: assetUrl(config, ts.asset), sha256: ts.sha256 };
-      // url is the old address, kept for installs from before the asset ID, and it names one copy's own
-      // repo. In a copy whose org or repo differs it is that other copy's, so it is left alone.
-      if (!Number.isInteger(ts.asset) || ts.asset <= 0) throw new Stop("tailscaled has no download pinned yet, so nothing was installed. Nothing to do: agents fix it.");
-      if (tailscaleUrlProblem(ts.url, config, ts.asset)) throw new Stop("tailscaled's two pins name different files, so nothing was installed. Nothing to do: agents fix it.");
-      return { pin, get: () => gh.asset(token, pin.url) };
-    },
-  });
+  const work = mkdtempSync(join(d.workRoot, "taskbox-"));
+  chmodSync(work, 0o700);
+  try {
+    // 5. The commit's files, then each pinned tool checked against the commit's pins.
+    writeFileSync(join(work, "src.tar.gz"), await gh.tarball(token, head.sha));
+    mkdirSync(join(work, "src"));
+    await mustRun(d, "/usr/bin/tar", ["-xzf", join(work, "src.tar.gz"), "-C", join(work, "src"), "--strip-components", "1"]);
+    const src = join(work, "src");
+    refuseOddEntries(src);
+    // The commit's own settings must be complete: loadConfig throws otherwise. From v2.6.1 a key it
+    // doesn't know inside away or timings is passed over with a line.
+    let config = loadConfig(src, d.paths.boxSettings, d.rootUid ?? 0, (l) => d.say(`  ${l}`));
+    // The box's own settings must work with this release (connect-github design):
+    // a box file set aside here would leave the box without its source after the update.
+    if (config.boxProblem) throw new Stop(`This box's own settings can't be used with this release: ${config.boxProblem}. Nothing was installed. ${BOX_FIX}`, true);
+    // The tree must name the accounts read before the yes: it is the same commit.
+    if (JSON.stringify(config.accounts) !== JSON.stringify(relAccounts)) throw new Stop("The release's tree names other accounts than its taskbox.json did before the yes. Nothing was installed. Nothing to do: agents fix it.");
+    if (config.approverKey !== relKey /* shape, not trust: the same commit */ || JSON.stringify(config.approverKeyChange) !== JSON.stringify(relChange)) throw new Stop("The release's tree names another approver key than its taskbox.json did before the yes. Nothing was installed. Nothing to do: agents fix it.");
+    const made = plan.make ? await makeService(accountDeps(d), d.paths.service, d.paths.accountsRecord) : plan.uid;
+    if (typeof made === "string") throw new Stop(made, true);
+    const serviceUid = made;
+    const unlockWhy = await ensureUnlock(accountDeps(d), d.paths.service);
+    if (unlockWhy) throw new Stop(`${unlockWhy} Nothing else was installed.`, true);
+    // The service whose state this box keeps, so a later install refuses to leave it behind.
+    const rec = readRecord(d.paths.accountsRecord);
+    if (rec.service !== d.paths.service) writeRecord(d, d.paths.accountsRecord, { ...rec, service: d.paths.service });
+    // Section 4a: the source is adopted from the INSTALLED settings, which hold it today, before the
+    // new release, which may drop it, is used (Tart run of #34, C.1b). A failure stops the update
+    // before anything changes, so the box never loses its source.
+    if (adopting) {
+      const installedCfg = loadConfig(d.configDir, d.paths.boxSettings, d.rootUid ?? 0);
+      const kept = await adoptSource({ ...d, cfg: installedCfg, serviceUid, admin: { name: d.owner, uid: -1, home: d.ownerHome }, listen: () => ({ kill() {} }), open() {} } as ConnectDeps);
+      if (!("slug" in kept)) throw new Stop(`The job source App couldn't be kept in this box's own settings: ${kept.why}. Nothing was installed. Type taskbox connect github, or taskbox disconnect github to go without a source, then taskbox update again.`, true);
+      d.say(`  Kept the job source App ${kept.slug} in this box's own settings.`);
+      config = loadConfig(src, d.paths.boxSettings, d.rootUid ?? 0);
+    }
+    // The agent, before anything is installed, so a step that doesn't take leaves the old release
+    // current and running. The tree's accounts are relAccounts, proved above.
+    if (relAccounts.agent !== undefined) await placeAgent(d, relAccounts.agent, agentHomeFor(d, relAccounts.agent));
+    // The pool account, then the approver key, both before anything is installed.
+    if (pool && !("leave" in pool)) {
+      const placed = await placePool(accountDeps(d), d.paths, POOL_USER, POOL_GROUP, GATE_SHELL);
+      if (typeof placed === "string") throw new Stop(placed, true);
+      if (pool.make) d.say(`  Made the account ${POOL_USER}, for workspaces. It has no password, and its shell opens nothing yet.`);
+    }
+    if (approver.change === "first" || approver.change === "rotate") writePin(d, d.paths.approverPin, { key: approver.key, gen: approver.gen, cleared: approver.cleared });
+    const versions = loadVersions(src);
+    const files: Record<string, string> = {};
+    // tailscaled comes with remote access: an install without it would keep Screen Sharing to a
+    // Tailscale that isn't there. It is an asset of a release of taskbox's own repo, the one in the
+    // commit's taskbox.json, which the App's token reads.
+    const hex = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
+    const ts = versions.tailscale;
+    if (!ts || !Number.isInteger(ts.asset) || ts.asset <= 0 || !hex(ts.sha256) || !hex(ts.files?.tailscale) || !hex(ts.files?.tailscaled)) {
+      throw new Stop("tailscaled has no download pinned yet, so nothing else was installed. Nothing to do: agents fix it.");
+    }
+    const tsPin: Pin = { version: ts.version, url: assetUrl(config, ts.asset), sha256: ts.sha256 };
+    // url is the old address, kept for installs from before the asset ID, and it names one copy's own
+    // repo. In a copy whose org or repo differs it is that other copy's, so it is left alone.
+    if (tailscaleUrlProblem(ts.url, config, ts.asset)) throw new Stop("tailscaled's two pins name different files, so nothing else was installed. Nothing to do: agents fix it.");
+    // The Linux runner comes with the Linux kind (v2.1.0). A commit with no Linux kind needs none.
+    if (config.linux && !versions.runnerLinux) throw new Stop("taskbox.json has a Linux kind but versions.json pins no Linux runner, so nothing else was installed. Nothing to do: agents fix it.");
+    // The second App's key (v2.1.0), proved with GitHub and placed in root's own folder before
+    // anything else changes. A key that fails its proof stops the install with nothing placed.
+    const keyStep = await placeActionsKey(d, config, serviceUid, 20, opts.first).catch((e: unknown) => {
+      throw e instanceof KeyStop ? new Stop(`${e.message} Nothing else was installed.`, true) : e;
+    });
+    // Placed now, whatever happens to the rest of the install, so the line says so.
+    d.say(`  The job source App's key: ${keyStep.skipped}.`);
+    // The VM engine's own tools (vm.ts), then the runners and tailscaled.
+    const kit = kitFor(config.engine);
+    for (const name of ["bun", ...kit.pins, "runner", ...(config.linux ? (["runnerLinux"] as const) : []), "tailscale"] as const) {
+      const pin = name === "tailscale" ? tsPin : versions[name]!;
+      d.say(`  Downloading ${name} ${pin.version}...`);
+      files[name] = await fetchPinned(d, name, pin, work, name === "tailscale" ? () => gh.asset(token, pin.url) : undefined);
+      d.say(`  ${name} ${pin.version}: matches its pin`);
+    }
+
+
+    // 8. A new install folder beside the old one, then /opt/taskbox's link swapped to it.
+    mkdirSync(dirname(d.paths.opt), { recursive: true });
+    // taskbox jobs' folder first: root's parent, then the service's own folder per project, readable by every
+    // user. It stops the install while nothing has changed.
+    const kept = placeShared(d.paths, serviceUid, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
+    if (kept) d.say(`The old requests folder, ${d.paths.requests}, couldn't be removed: another user keeps something in it. Nothing reads it, and taskbox never walks into what they left.`);
+    // The box's install ID, made once and kept across updates, for a controller's pairing.
+    placeInstallId(d.paths, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
+    // The workspace spool, while the box has its pool account: the agent's, where agent commands
+    // leave requests for the guard.
+    if (pool && !("leave" in pool) && relAccounts.agent !== undefined) {
+      const agentUid = await uidOf(d, relAccounts.agent);
+      if (agentUid === undefined) throw new Stop(`${relAccounts.agent} isn't there, so the workspace spool can't be made. Type taskbox update again.`, true);
+      placeSpool(d, agentUid);
+      placeProgress(d, agentUid);
+    }
+    const next = mkdtempSync(`${dirname(d.paths.opt)}/taskbox-${head.sha.slice(0, 12)}-`);
+    mkdirSync(join(next, "bin"), { recursive: true });
+    mkdirSync(join(next, "runner"), { recursive: true });
+    cpSync(src, join(next, "app"), { recursive: true });
+    await mustRun(d, "/usr/bin/ditto", ["-x", "-k", files.bun!, join(work, "bun")]);
+    cpSync(join(work, "bun/bun-darwin-aarch64/bun"), join(next, "bin/bun"));
+    await kit.place({ files, work, next, run: (cmd, args) => mustRun(d, cmd, args), setuid: (path) => setSetuid(d.sys, path) });
+    cpSync(files.runner!, join(next, "runner/actions-runner.tar.gz"));
+    if (files.runnerLinux) cpSync(files.runnerLinux, join(next, "runner/actions-runner-linux.tar.gz"));
+    mkdirSync(join(work, "tailscale"));
+    await mustRun(d, "/usr/bin/tar", ["-xzf", files.tailscale!, "-C", join(work, "tailscale")]);
+    for (const b of ["tailscale", "tailscaled"]) {
+      const from = join(work, "tailscale", b);
+      if (!existsSync(from) || lstatSync(from).isSymbolicLink() || !lstatSync(from).isFile()) throw new Stop(`the tailscale download has no ${b}. Nothing else was installed. Nothing to do: agents fix it.`);
+      if (sha256(new Uint8Array(readFileSync(from))) !== versions.tailscale!.files![b as "tailscale" | "tailscaled"]) throw new Stop(`${b} doesn't match its pin. Nothing else was installed. Nothing to do: agents fix it.`);
+      cpSync(from, join(next, "bin", b));
+    }
+    symlinkSync("../app/src/cli.ts", join(next, "bin/taskbox"));
+    symlinkSync("../app/src/shell.ts", join(next, "bin/taskbox-shell"));
+    // The pool account's login shell (GATE_SHELL).
+    symlinkSync("../app/src/gate.ts", join(next, "bin/taskbox-gate"));
+    d.chown(next, 0, 0, true);
+    await mustRun(d, "/bin/chmod", ["-R", "go-w", next]);
+    chmodSync(next, 0o755); // mkdtemp makes it 700, and the service runs the loop from it
+    chmodSync(join(next, "bin/bun"), 0o755);
+    chmodSync(join(next, "bin/tailscale"), 0o755);
+    chmodSync(join(next, "bin/tailscaled"), 0o755);
+    chmodSync(join(next, "app/src/cli.ts"), 0o755);
+    chmodSync(join(next, "app/src/shell.ts"), 0o755);
+    chmodSync(join(next, "app/src/gate.ts"), 0o755);
+    await kit.finish(next, d.paths.service, (path) => setSetuid(d.sys, path), (cmd, args) => mustRun(d, cmd, args));
+    const record: Installed = {
+      commit: head.sha,
+      pr: head.pr,
+      title: head.title,
+      mergedAt: head.mergedAt,
+      tag: head.tag,
+      installedAt: new Date(d.sys.now()).toISOString(),
+      files: hashTree(next),
+      format: 2,
+    };
+    writeFileSync(join(next, "installed.json"), JSON.stringify(record, null, 2), { mode: 0o644 });
+    d.chown(join(next, "installed.json"), 0, 0);
+    // One rename swaps it in. The install it replaces is kept for taskbox undo, behind
+    // /opt/taskbox.prev; one is kept. After the swap, so a failure here never leaves the box
+    // without taskbox. A kept install that can't be made inert isn't kept.
+    let old: string | undefined;
+    try {
+      old = swapIn(d.paths, next);
+    } catch (e) {
+      rmSync(next, { recursive: true, force: true });
+      throw new Stop(`${(e as Error).message}. Nothing else was installed.`);
+    }
+    // The same commit installed again (as the update that moves the services' names is): the install
+    // kept for undo stays the one before, so undo can still go back to the release before.
+    if (old && !keepsKept(installed?.commit, head.sha, linkTarget(d.paths.prev))) {
+      try {
+        relink(d.paths.prev, basename(old));
+        d.chown(d.paths.prev, 0, 0);
+        await keepInert(d.sys, old);
+      } catch (e) {
+        rmSync(d.paths.prev, { force: true });
+        d.say(`The install before wasn't kept, so undo has nothing to go back to: ${(e as Error).message}`);
+      }
+    }
+    prune(d.paths);
+
+    rmSync(d.paths.pathsD, { force: true }); // the command link below does its job
+    placeCommandLink(d.paths, (path, uid, gid) => d.chown(path, uid, gid));
+    const cfg = loadConfig(d.paths.app, d.paths.boxSettings, d.rootUid ?? 0);
+    if (typeof list !== "string" && (list.make || list.add.length || list.drop.length)) {
+      const failed = await applyScreenSharing(accountDeps(d), list, d.paths.accountsRecord);
+      d.say(failed.length ? `  Screen Sharing's list: ${failed.join("; ")}. taskbox check says what's on it.` : "  Screen Sharing's list: changed as above.");
+    }
+    // tailscaled's log, before any tailscaled plist that names it is written: root's, group admin,
+    // mode 640, so only admins read the tailnet users it names (logins.ts).
+    try {
+      placeTailscaledLog(d.paths, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
+    } catch (e) {
+      d.say(`  tailscaled's log couldn't be made first (${clean((e as Error).message).slice(0, 80)}), so launchd makes it, and the guard puts its mode right within a minute.`);
+    }
+    // Services under an earlier label prefix go first, so two guards or two tailscaleds never run.
+    if (cfg.previousLabelPrefix && existsSync(join(dirname(d.paths.guardPlist), `${previousLabels(cfg.previousLabelPrefix).guard}.plist`))) {
+      await retirePrevious(d, cfg.previousLabelPrefix);
+      d.say("  Moved the guard and tailscaled to their new names. The loop follows by itself once no job runs.");
+    }
+    const agent = plist(readFileSync(join(d.paths.app, "launchd", `${AGENT_LABEL}.plist`), "utf8"));
+    writeFileSync(d.paths.agentPlist, agent, { mode: 0o644 });
+    d.chown(d.paths.agentPlist, 0, 0);
+    // The guard: Screen Sharing over Tailscale only (guard.ts). Loaded again, so it runs the new code
+    // at once; its first pass writes the record taskbox check reads.
+    const guard = plist(readFileSync(join(d.paths.app, "launchd", `${GUARD_LABEL}.plist`), "utf8"));
+    mkdirSync(dirname(d.paths.guardPlist), { recursive: true });
+    writeFileSync(d.paths.guardPlist, guard, { mode: 0o644 });
+    d.chown(d.paths.guardPlist, 0, 0);
+    await d.sys.run("/bin/launchctl", ["bootout", `system/${GUARD_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
+    // launchd can refuse a bootstrap straight after a bootout while it finishes the old one.
+    let boot = { code: -1, stdout: "", stderr: "" };
+    for (let i = 0; i < 5 && boot.code !== 0; i++) {
+      if (i) await d.sys.sleep(2000);
+      boot = await d.sys.run("/bin/launchctl", ["bootstrap", "system", d.paths.guardPlist], { timeoutMs: LAUNCHCTL_MS });
+    }
+    if (boot.code !== 0) d.say(`The guard didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Keep Screen Sharing off, and type taskbox update again.`);
+
+    // tailscaled, loaded again so it runs the new binary. Its state stays in root's folder. A reload
+    // LaunchDaemon an undo left (ops.ts, reloadPlist) goes first, so it can't load tailscaled again
+    // from under this install.
+    if (await dropReloadJob(d.sys, d.paths)) d.say("  Removed a LaunchDaemon an undo left to load tailscaled again.");
+    // Its socket goes in root's folder that only root and the service account may enter (tssocket.ts),
+    // made before it starts; the guard keeps it so from then on.
+    mkdirSync(d.paths.tailscaleState, { recursive: true, mode: 0o700 });
+    const sockWhy = await keepSocket(d.sys, d.paths, newSocketMemory(), d.rootUid ?? 0).catch((e: Error) => e.message);
+    if (sockWhy) d.say(`  tailscaled's socket folder: ${sockWhy}. The guard puts it right on its next pass, and taskbox check says so.`);
+    await loadDaemon(d, TAILSCALED_LABEL, d.paths.tailscaledPlist, "tailscaled");
+    await tailscaleUp(d, cfg.runnerNamePrefix);
+
+    // 7. The service's home, then, unless the update placed them, the keys in root's folder.
+    if (opts.first) await makeServiceHome(d);
+    if (!early) await placeKeys(serviceUid);
+
+    if (opts.first && d.bootstrap) {
+      rmSync(d.bootstrap, { recursive: true, force: true });
+      rmSync(d.bootstrap + ".zip", { force: true });
+    }
+    if (cfg.accounts.agent !== undefined) d.say(`  Agents and laptops reach the box as ${cfg.accounts.agent}: taskbox pair on a laptop asks for that name.`);
+    d.say(opts.first ? `Installed. Now log in as ${d.paths.service}. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+// The box's own settings, made true on every install and update; the check rows keep reading them.
+// A step that fails doesn't stop the install: the preflight or check row after it names what is
+// still wrong. A step that doesn't apply isn't run and isn't named.
+export const SETTLE_MS = 30_000;
+export async function settleBox(d: InstallDeps, cfg: Config): Promise<void> {
+  const run = async (cmd: string, args: string[]) => (await d.sys.run(cmd, args, { timeoutMs: SETTLE_MS })).code === 0;
+  const fw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
+  const pm = await d.sys.run("/usr/bin/pmset", ["-g"], { timeoutMs: SETTLE_MS });
+  const plan = awayOf(cfg).restartPlan;
+  const steps: [string, () => Promise<boolean | undefined>][] = [
+    ["firewall on", () => run(fw, ["--setglobalstate", "on"])],
+    ["stealth mode on", () => run(fw, ["--setstealthmode", "on"])],
+    ["never sleeps, display off after 10 min", () => run("/usr/bin/pmset", ["-a", "sleep", "0", "displaysleep", "10"])],
+    // Desktops only: a laptop's pmset has no autorestart.
+    ["starts after a power cut", async () => (/^\s*autorestart\s/m.test(pm.stdout) ? run("/usr/bin/pmset", ["-a", "autorestart", "1"]) : undefined)],
+    // systemsetup exits 0 even when it refuses ("You need administrator access...", ran in a Tart
+    // test Mac), so the step counts only when it reads back on.
+    ["automatic time", async () => (await run("/usr/sbin/systemsetup", ["-setusingnetworktime", "on"])) && /^Network Time: On$/m.test((await d.sys.run("/usr/sbin/systemsetup", ["-getusingnetworktime"], { timeoutMs: SETTLE_MS })).stdout)],
+    // With kvm or filevault-off a restart for an update comes back by itself, so it is left alone.
+    ["macOS updates off", async () => (plan === "kvm" || plan === "filevault-off" ? undefined : run("/usr/bin/defaults", ["write", "/Library/Preferences/com.apple.SoftwareUpdate", "AutomaticallyInstallMacOSUpdates", "-bool", "false"]))],
+    [`AirPlay Receiver off for ${d.owner}`, () => airplayOff(d, d.owner, d.ownerHome)],
+    [`AirPlay Receiver off for ${d.paths.service}`, () => airplayOff(d, d.paths.service, d.paths.serviceHome)],
+  ];
+  const ok: string[] = [];
+  const bad: string[] = [];
+  for (const [what, step] of steps) {
+    const r = await step();
+    if (r !== undefined) (r ? ok : bad).push(what);
+  }
+  d.say(`  Box settings: ${ok.join(", ") || "none set"}.`);
+  if (bad.length) d.say(couldntSet(bad));
+}
+
+const couldntSet = (what: string[]) => `  taskbox couldn't set: ${what.join(", ")}. The checks below say what is still wrong.`;
+
+// AirPlay Receiver listens on 5000 and 7000. Its key is the user's own, so the write runs as that
+// user with that user's HOME, and root does no file operation in their home. A user with a session
+// gets it through launchctl asuser, so it reaches their running ControlCenter. undefined: the user
+// has no home folder yet, so there is nothing to write.
+export async function airplayOff(d: InstallDeps, user: string, home: string): Promise<boolean | undefined> {
+  const uid = await uidOf(d, user);
+  if (uid === undefined || !existsSync(home)) return undefined;
+  const write = ["/usr/bin/sudo", "-H", "-u", user, "/usr/bin/defaults", "-currentHost", "write", "com.apple.controlcenter", "AirplayRecieverEnabled", "-bool", "false"]; // Apple's spelling
+  const session = (await d.sys.run("/bin/launchctl", ["print", `gui/${uid}`], { timeoutMs: LAUNCHCTL_MS })).code === 0;
+  const [cmd, ...args] = session ? ["/bin/launchctl", "asuser", String(uid), ...write] : write;
+  return (await d.sys.run(cmd!, args, { timeoutMs: SETTLE_MS })).code === 0;
+}
+
+// First install only: the service's home, and AirPlay Receiver off before the service's first login,
+// which would start ControlCenter with it on. The keys go in root's folder, never this home.
+export async function makeServiceHome(d: InstallDeps): Promise<void> {
+  if (existsSync(d.paths.serviceHome)) return;
+  await mustRun(d, "/usr/sbin/createhomedir", ["-c", "-u", d.paths.service]);
+  if (!(await airplayOff(d, d.paths.service, d.paths.serviceHome))) d.say(couldntSet([`AirPlay Receiver off for ${d.paths.service}`]));
+}
+
+// undo's one-shot LaunchDaemon that loads tailscaled again (ops.ts, reloadPlist), and the step that
+// boots out and deletes one left behind, for remove and the install.
+export const RELOAD_JOB = "local.taskbox.tailscaled-reload";
+export function reloadPlistPath(p: Pick<Paths, "tailscaledPlist">): string {
+  return join(dirname(p.tailscaledPlist), `${RELOAD_JOB}.plist`);
+}
+export async function dropReloadJob(sys: Sys, p: Pick<Paths, "tailscaledPlist">): Promise<boolean> {
+  const job = reloadPlistPath(p);
+  if (!lstatExistsI(job)) return false;
+  await sys.run("/bin/launchctl", ["bootout", `system/${RELOAD_JOB}`], { timeoutMs: LAUNCHCTL_MS });
+  rmSync(job, { force: true });
+  return true;
+}
+
+// launchctl bootout returns at once, but a job stays listed while its process exits: about 3 s for
+// tailscaled (ran in a Tart test Mac). Waits up to maxS for the service to go; true once it has.
+export const BOOTOUT_WAIT_S = 20;
+export async function gone(sys: InstallDeps["sys"], target: string, maxS = BOOTOUT_WAIT_S): Promise<boolean> {
+  for (let i = 0; ; i++) {
+    if ((await sys.run("/bin/launchctl", ["print", target], { timeoutMs: LAUNCHCTL_MS })).code !== 0) return true;
+    if (i >= maxS) return false;
+    await sys.sleep(1000);
+  }
 }
 
 // v2.6.1: the hop to a v3 release (docs/v3-design.md §5.7, 4 and 5; hop.ts says the order and why).
 // Nothing of the v3 tree is read as settings or run before the swap.
-async function hop(d: InstallDeps, o: { own: Config; installed: Installed | undefined; tag: string; ciUid: number }): Promise<void> {
+async function hop(d: InstallDeps, o: { own: Config; installed: Installed | undefined; tag: string }): Promise<void> {
   const repo = o.own.publicRepo;
   if (!repo) throw new Stop(`taskbox.json names no publicRepo, so ${o.tag} can't be read. Nothing was installed. Nothing to do: agents fix it.`);
   const stop = (e: unknown): never => {
@@ -348,7 +768,7 @@ async function hop(d: InstallDeps, o: { own: Config; installed: Installed | unde
       d.chown(next, 0, 0, true);
       await mustRun(d, "/bin/chmod", ["-R", "go-w", next]);
       chmodSync(next, 0o755);
-      await kitFor(undefined).finish(next, (path) => setSetuid(d.sys, path), (cmd, args) => mustRun(d, cmd, args));
+      await kitFor(undefined).finish(next, d.paths.service, (path) => setSetuid(d.sys, path), (cmd, args) => mustRun(d, cmd, args));
       const record: Installed = {
         commit: st.commit,
         pr: st.pr,
@@ -410,271 +830,6 @@ function freeBytes(path: string): number | undefined {
   }
 }
 
-// Where a v2 release's files come from.
-interface ReleaseSource {
-  first: boolean;
-  ciUid: number;
-  installed: Installed | undefined;
-  head: Head;
-  unpack(work: string): Promise<string>; // the release's files, in a folder under work
-  // tailscaled's pin and how to download it, from the release's own repo.
-  tailscale(config: Config, ts: NonNullable<Versions["tailscale"]>): { pin: Pin; get: () => Promise<Uint8Array> };
-  key?: { pem: string; path: string }; // a first install's downloaded App key, moved to ci at the end
-}
-
-// Steps 5 to 8, after the owner's yes: the files, the pinned tools, the new install folder and the swap.
-async function placeRelease(d: InstallDeps, r: ReleaseSource): Promise<void> {
-  const { first, ciUid, installed, head } = r;
-  const opts = { first };
-  const work = mkdtempSync(join(d.workRoot, "taskbox-"));
-  chmodSync(work, 0o700);
-  try {
-    const src = await r.unpack(work);
-    refuseOddEntries(src);
-    // The commit's own settings must be complete: loadConfig throws otherwise. From v2.6.1 a key it
-    // doesn't know inside away or timings is passed over with a line.
-    const config = loadConfig(src, (l) => d.say(`  ${l}`));
-    const versions = loadVersions(src);
-    const files: Record<string, string> = {};
-    // tailscaled comes with remote access: an install without it would keep Screen Sharing to a
-    // Tailscale that isn't there. It is an asset of a release of taskbox's own repo, the one in the
-    // commit's taskbox.json, which the App's token reads.
-    const hex = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
-    const ts = versions.tailscale;
-    if (!ts || !hex(ts.sha256) || !hex(ts.files?.tailscale) || !hex(ts.files?.tailscaled)) {
-      throw new Stop("tailscaled has no download pinned yet, so nothing was installed. Nothing to do: agents fix it.");
-    }
-    const { pin: tsPin, get: tsGet } = r.tailscale(config, ts);
-    // The Linux runner comes with the Linux kind (v2.1.0). A commit with no Linux kind needs none.
-    if (config.linux && !versions.runnerLinux) throw new Stop("taskbox.json has a Linux kind but versions.json pins no Linux runner, so nothing was installed. Nothing to do: agents fix it.");
-    // The second App's key (v2.1.0), proved with GitHub and placed in root's own folder before
-    // anything else changes. A key that fails its proof stops the install with nothing placed.
-    const keyStep = await placeActionsKey(d, config, ciUid, 20, opts.first).catch((e: unknown) => {
-      throw e instanceof KeyStop ? new Stop(`${e.message} Nothing was installed.`, true) : e;
-    });
-    // Placed now, whatever happens to the rest of the install, so the line says so.
-    d.say("placed" in keyStep ? `  The second App's key: proved with GitHub and ${keyStep.placed === "new" ? "placed" : "replaced"}, and kept even if a later step stops. ${keyStep.removed ? `${keyStep.from} was removed from Downloads.` : `Delete ${keyStep.from} from Downloads.`}` : `  The second App's key: ${keyStep.skipped}.`);
-    // The VM engine's own tools (vm.ts), then the runners and tailscaled.
-    const kit = kitFor(config.engine);
-    for (const name of ["bun", ...kit.pins, "runner", ...(config.linux ? (["runnerLinux"] as const) : []), "tailscale"] as const) {
-      const pin = name === "tailscale" ? tsPin : versions[name]!;
-      d.say(`  Downloading ${name} ${pin.version}...`);
-      files[name] = await fetchPinned(d, name, pin, work, name === "tailscale" ? tsGet : undefined);
-      d.say(`  ${name} ${pin.version}: matches its pin`);
-    }
-
-
-    // 8. A new install folder beside the old one, then /opt/taskbox's link swapped to it.
-    mkdirSync(dirname(d.paths.opt), { recursive: true });
-    // taskbox jobs' folder first: root's parent, then ci's own folder per project, readable by every
-    // user. It stops the install while nothing has changed.
-    const kept = placeShared(d.paths, ciUid, (path, uid, gid) => d.chown(path, uid, gid));
-    if (kept) d.say(`The old requests folder, ${d.paths.requests}, couldn't be removed: another user keeps something in it. Nothing reads it, and taskbox never walks into what they left.`);
-    // The box's install ID, made once and kept across updates, for a controller's pairing.
-    placeInstallId(d.paths, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
-    const next = mkdtempSync(`${dirname(d.paths.opt)}/taskbox-${head.sha.slice(0, 12)}-`);
-    mkdirSync(join(next, "bin"), { recursive: true });
-    mkdirSync(join(next, "runner"), { recursive: true });
-    cpSync(src, join(next, "app"), { recursive: true });
-    await mustRun(d, "/usr/bin/ditto", ["-x", "-k", files.bun!, join(work, "bun")]);
-    cpSync(join(work, "bun/bun-darwin-aarch64/bun"), join(next, "bin/bun"));
-    await kit.place({ files, work, next, run: (cmd, args) => mustRun(d, cmd, args), setuid: (path) => setSetuid(d.sys, path) });
-    cpSync(files.runner!, join(next, "runner/actions-runner.tar.gz"));
-    if (files.runnerLinux) cpSync(files.runnerLinux, join(next, "runner/actions-runner-linux.tar.gz"));
-    mkdirSync(join(work, "tailscale"));
-    await mustRun(d, "/usr/bin/tar", ["-xzf", files.tailscale!, "-C", join(work, "tailscale")]);
-    for (const b of ["tailscale", "tailscaled"]) {
-      const from = join(work, "tailscale", b);
-      if (!existsSync(from) || lstatSync(from).isSymbolicLink() || !lstatSync(from).isFile()) throw new Stop(`the tailscale download has no ${b}. Nothing was installed. Nothing to do: agents fix it.`);
-      if (sha256(new Uint8Array(readFileSync(from))) !== versions.tailscale!.files![b as "tailscale" | "tailscaled"]) throw new Stop(`${b} doesn't match its pin. Nothing was installed. Nothing to do: agents fix it.`);
-      cpSync(from, join(next, "bin", b));
-    }
-    symlinkSync("../app/src/cli.ts", join(next, "bin/taskbox"));
-    symlinkSync("../app/src/shell.ts", join(next, "bin/taskbox-shell"));
-    d.chown(next, 0, 0, true);
-    await mustRun(d, "/bin/chmod", ["-R", "go-w", next]);
-    chmodSync(next, 0o755); // mkdtemp makes it 700, and ci runs the loop from it
-    chmodSync(join(next, "bin/bun"), 0o755);
-    chmodSync(join(next, "bin/tailscale"), 0o755);
-    chmodSync(join(next, "bin/tailscaled"), 0o755);
-    chmodSync(join(next, "app/src/cli.ts"), 0o755);
-    chmodSync(join(next, "app/src/shell.ts"), 0o755);
-    await kit.finish(next, (path) => setSetuid(d.sys, path), (cmd, args) => mustRun(d, cmd, args));
-    const record: Installed = {
-      commit: head.sha,
-      pr: head.pr,
-      title: head.title,
-      mergedAt: head.mergedAt,
-      tag: head.tag,
-      installedAt: new Date(d.sys.now()).toISOString(),
-      files: hashTree(next),
-      format: 2,
-    };
-    writeFileSync(join(next, "installed.json"), JSON.stringify(record, null, 2), { mode: 0o644 });
-    d.chown(join(next, "installed.json"), 0, 0);
-    // One rename swaps it in. The install it replaces is kept for taskbox undo, behind
-    // /opt/taskbox.prev; one is kept. After the swap, so a failure here never leaves the box
-    // without taskbox. A kept install that can't be made inert isn't kept.
-    let old: string | undefined;
-    try {
-      old = swapIn(d.paths, next);
-    } catch (e) {
-      rmSync(next, { recursive: true, force: true });
-      throw new Stop(`${(e as Error).message}. Nothing was installed.`);
-    }
-    // The same commit installed again (as the update that moves the services' names is): the install
-    // kept for undo stays the one before, so undo can still go back to the release before.
-    if (old && !keepsKept(installed?.commit, head.sha, linkTarget(d.paths.prev))) {
-      try {
-        relink(d.paths.prev, basename(old));
-        d.chown(d.paths.prev, 0, 0);
-        await keepInert(d.sys, old);
-      } catch (e) {
-        rmSync(d.paths.prev, { force: true });
-        d.say(`The install before wasn't kept, so undo has nothing to go back to: ${(e as Error).message}`);
-      }
-    }
-    prune(d.paths);
-
-    rmSync(d.paths.pathsD, { force: true }); // the command link below does its job
-    placeCommandLink(d.paths, (path, uid, gid) => d.chown(path, uid, gid));
-    const cfg = loadConfig(d.paths.app);
-    await placeRemote(d, cfg.remoteUser ?? DEFAULT_REMOTE_USER);
-    // tailscaled's log, before any tailscaled plist that names it is written: root's, group admin,
-    // mode 640, so only admins read the tailnet users it names (logins.ts).
-    try {
-      placeTailscaledLog(d.paths, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
-    } catch (e) {
-      d.say(`  tailscaled's log couldn't be made first (${clean((e as Error).message).slice(0, 80)}), so launchd makes it, and the guard puts its mode right within a minute.`);
-    }
-    // Services under an earlier label prefix go first, so two guards or two tailscaleds never run.
-    if (cfg.previousLabelPrefix && existsSync(join(dirname(d.paths.guardPlist), `${previousLabels(cfg.previousLabelPrefix).guard}.plist`))) {
-      await retirePrevious(d, cfg.previousLabelPrefix);
-      d.say("  Moved the guard and tailscaled to their new names. The loop follows by itself once no job runs.");
-    }
-    const agent = plist(readFileSync(join(d.paths.app, "launchd", `${AGENT_LABEL}.plist`), "utf8"));
-    writeFileSync(d.paths.agentPlist, agent, { mode: 0o644 });
-    d.chown(d.paths.agentPlist, 0, 0);
-    // The guard: Screen Sharing over Tailscale only (guard.ts). Loaded again, so it runs the new code
-    // at once; its first pass writes the record taskbox check reads.
-    const guard = plist(readFileSync(join(d.paths.app, "launchd", `${GUARD_LABEL}.plist`), "utf8"));
-    mkdirSync(dirname(d.paths.guardPlist), { recursive: true });
-    writeFileSync(d.paths.guardPlist, guard, { mode: 0o644 });
-    d.chown(d.paths.guardPlist, 0, 0);
-    await d.sys.run("/bin/launchctl", ["bootout", `system/${GUARD_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
-    // launchd can refuse a bootstrap straight after a bootout while it finishes the old one.
-    let boot = { code: -1, stdout: "", stderr: "" };
-    for (let i = 0; i < 5 && boot.code !== 0; i++) {
-      if (i) await d.sys.sleep(2000);
-      boot = await d.sys.run("/bin/launchctl", ["bootstrap", "system", d.paths.guardPlist], { timeoutMs: LAUNCHCTL_MS });
-    }
-    if (boot.code !== 0) d.say(`The guard didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Keep Screen Sharing off, and type taskbox update again.`);
-
-    // tailscaled, loaded again so it runs the new binary. Its state stays in root's folder. A reload
-    // LaunchDaemon an undo left (ops.ts, reloadPlist) goes first, so it can't load tailscaled again
-    // from under this install.
-    if (await dropReloadJob(d.sys, d.paths)) d.say("  Removed a LaunchDaemon an undo left to load tailscaled again.");
-    mkdirSync(d.paths.tailscaleState, { recursive: true, mode: 0o700 });
-    await loadDaemon(d, TAILSCALED_LABEL, d.paths.tailscaledPlist, "tailscaled");
-    await tailscaleUp(d, cfg.runnerNamePrefix);
-
-    // 7. The App key, moved to ci and out of Downloads. It comes after the files, so a failed
-    // install can be run again with the same key. First install only: on an update root never
-    // touches ci's home, where ci could swap a folder for a symlink.
-    if (opts.first && r.key) await placeCi(d, ciUid, r.key.pem, r.key.path);
-
-    if (opts.first && d.bootstrap) {
-      rmSync(d.bootstrap, { recursive: true, force: true });
-      rmSync(d.bootstrap + ".zip", { force: true });
-    }
-    d.say(opts.first ? `Installed. Now log in as ${CI_USER}.` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
-  } finally {
-    rmSync(work, { recursive: true, force: true });
-  }
-}
-
-// The box's own settings, made true on every install and update; the check rows keep reading them.
-// A step that fails doesn't stop the install: the preflight or check row after it names what is
-// still wrong. A step that doesn't apply isn't run and isn't named.
-export const SETTLE_MS = 30_000;
-export async function settleBox(d: InstallDeps, cfg: Config): Promise<void> {
-  const run = async (cmd: string, args: string[]) => (await d.sys.run(cmd, args, { timeoutMs: SETTLE_MS })).code === 0;
-  const fw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
-  const pm = await d.sys.run("/usr/bin/pmset", ["-g"], { timeoutMs: SETTLE_MS });
-  const plan = awayOf(cfg).restartPlan;
-  const steps: [string, () => Promise<boolean | undefined>][] = [
-    ["firewall on", () => run(fw, ["--setglobalstate", "on"])],
-    ["stealth mode on", () => run(fw, ["--setstealthmode", "on"])],
-    ["never sleeps, display off after 10 min", () => run("/usr/bin/pmset", ["-a", "sleep", "0", "displaysleep", "10"])],
-    // Desktops only: a laptop's pmset has no autorestart.
-    ["starts after a power cut", async () => (/^\s*autorestart\s/m.test(pm.stdout) ? run("/usr/bin/pmset", ["-a", "autorestart", "1"]) : undefined)],
-    // systemsetup exits 0 even when it refuses ("You need administrator access...", ran in a Tart
-    // test Mac), so the step counts only when it reads back on.
-    ["automatic time", async () => (await run("/usr/sbin/systemsetup", ["-setusingnetworktime", "on"])) && /^Network Time: On$/m.test((await d.sys.run("/usr/sbin/systemsetup", ["-getusingnetworktime"], { timeoutMs: SETTLE_MS })).stdout)],
-    // With kvm or filevault-off a restart for an update comes back by itself, so it is left alone.
-    ["macOS updates off", async () => (plan === "kvm" || plan === "filevault-off" ? undefined : run("/usr/bin/defaults", ["write", "/Library/Preferences/com.apple.SoftwareUpdate", "AutomaticallyInstallMacOSUpdates", "-bool", "false"]))],
-    [`AirPlay Receiver off for ${d.owner}`, () => airplayOff(d, d.owner, d.ownerHome)],
-    [`AirPlay Receiver off for ${CI_USER}`, () => airplayOff(d, CI_USER, d.paths.ciHome)],
-  ];
-  const ok: string[] = [];
-  const bad: string[] = [];
-  for (const [what, step] of steps) {
-    const r = await step();
-    if (r !== undefined) (r ? ok : bad).push(what);
-  }
-  d.say(`  Box settings: ${ok.join(", ") || "none set"}.`);
-  if (bad.length) d.say(couldntSet(bad));
-}
-
-const couldntSet = (what: string[]) => `  taskbox couldn't set: ${what.join(", ")}. The checks below say what is still wrong.`;
-
-// AirPlay Receiver listens on 5000 and 7000. Its key is the user's own, so the write runs as that
-// user with that user's HOME, and root does no file operation in their home. A user with a session
-// gets it through launchctl asuser, so it reaches their running ControlCenter. undefined: the user
-// has no home folder yet, so there is nothing to write.
-export async function airplayOff(d: InstallDeps, user: string, home: string): Promise<boolean | undefined> {
-  const uid = await uidOf(d, user);
-  if (uid === undefined || !existsSync(home)) return undefined;
-  const write = ["/usr/bin/sudo", "-H", "-u", user, "/usr/bin/defaults", "-currentHost", "write", "com.apple.controlcenter", "AirplayRecieverEnabled", "-bool", "false"]; // Apple's spelling
-  const session = (await d.sys.run("/bin/launchctl", ["print", `gui/${uid}`], { timeoutMs: LAUNCHCTL_MS })).code === 0;
-  const [cmd, ...args] = session ? ["/bin/launchctl", "asuser", String(uid), ...write] : write;
-  return (await d.sys.run(cmd!, args, { timeoutMs: SETTLE_MS })).code === 0;
-}
-
-// First install only: ci's home, the App key moved into it, and AirPlay Receiver off before ci's
-// first login, which would start ControlCenter with it on.
-export async function placeCi(d: InstallDeps, ciUid: number, pem: string, keyPath: string): Promise<void> {
-  const made = !existsSync(d.paths.ciHome);
-  if (made) await mustRun(d, "/usr/sbin/createhomedir", ["-c", "-u", CI_USER]);
-  placeKey(d, ciUid, pem, keyPath);
-  if (made && !(await airplayOff(d, CI_USER, d.paths.ciHome))) d.say(couldntSet([`AirPlay Receiver off for ${CI_USER}`]));
-}
-
-// undo's one-shot LaunchDaemon that loads tailscaled again (ops.ts, reloadPlist), and the step that
-// boots out and deletes one left behind, for remove and the install.
-export const RELOAD_JOB = "local.taskbox.tailscaled-reload";
-export function reloadPlistPath(p: Pick<Paths, "tailscaledPlist">): string {
-  return join(dirname(p.tailscaledPlist), `${RELOAD_JOB}.plist`);
-}
-export async function dropReloadJob(sys: Sys, p: Pick<Paths, "tailscaledPlist">): Promise<boolean> {
-  const job = reloadPlistPath(p);
-  if (!lstatExistsI(job)) return false;
-  await sys.run("/bin/launchctl", ["bootout", `system/${RELOAD_JOB}`], { timeoutMs: LAUNCHCTL_MS });
-  rmSync(job, { force: true });
-  return true;
-}
-
-// launchctl bootout returns at once, but a job stays listed while its process exits: about 3 s for
-// tailscaled (ran in a Tart test Mac). Waits up to maxS for the service to go; true once it has.
-export const BOOTOUT_WAIT_S = 20;
-export async function gone(sys: InstallDeps["sys"], target: string, maxS = BOOTOUT_WAIT_S): Promise<boolean> {
-  for (let i = 0; ; i++) {
-    if ((await sys.run("/bin/launchctl", ["print", target], { timeoutMs: LAUNCHCTL_MS })).code !== 0) return true;
-    if (i >= maxS) return false;
-    await sys.sleep(1000);
-  }
-}
-
 // Whether versions.json's old tailscale address contradicts the asset ID: only when it names this
 // copy's own repo (org and repo in taskbox.json) and another asset.
 export function tailscaleUrlProblem(url: string | undefined, cfg: Pick<Config, "org" | "repo">, asset: number): boolean {
@@ -695,7 +850,7 @@ export function keepsKept(installedCommit: string | undefined, newCommit: string
 // tailscaled run as root: they are booted out here, before the new ones load. If either is still
 // loaded after that, two tailscaleds would fight over one socket, so nothing new is loaded: any old
 // daemon that did stop is loaded again from its file, every old file is kept, and the update stops.
-// Once both are gone, their files go. The loop runs in ci's login session, maybe with a job: only its
+// Once both are gone, their files go. The loop runs in the service's login session, maybe with a job: only its
 // file is removed here, so the next login loads the new one. A loop that is running sees the new
 // LaunchAgent in place and restarts as for an update, once no job runs; then it moves to the new name
 // (loop.ts, relabelDue and handOver).
@@ -739,7 +894,7 @@ export async function retirePrevious(d: Pick<InstallDeps, "sys" | "paths" | "say
 // labels, so its services go back under them. The new guard and tailscaled are booted out, then the
 // old ones loaded from the kept install's own plists, one at a time, so two never run at once. The
 // loop's file goes back too; the running loop runs the kept code at once and takes its old name at
-// ci's next login. Does nothing when the kept install has the new labels' files. Returns what it did.
+// the service's next login. Does nothing when the kept install has the new labels' files. Returns what it did.
 export async function labelsBack(d: Pick<InstallDeps, "sys" | "paths" | "say">, prefix: string): Promise<string | undefined> {
   const old = previousLabels(prefix);
   const kept = join(d.paths.app, "launchd");
@@ -772,23 +927,30 @@ export async function labelsBack(d: Pick<InstallDeps, "sys" | "paths" | "say">, 
   rmSync(d.paths.agentPlist, { force: true });
   return failed.length
     ? `The services went back to their old names, but ${failed.join(" and ")} didn't start. Keep Screen Sharing off and type taskbox update.`
-    : "The guard and tailscaled run under their old names again. Log out ci and log in again, so the loop does too.";
+    : `The guard and tailscaled run under their old names again. Log out ${d.paths.service} and log in again, so the loop does too.`;
 }
 
-// The remote user gets taskbox's shell and a home that is root's, empty and read-only: nothing
-// remote runs or owns can be changed by whoever reaches it over Tailscale SSH.
-// The home is a folder taskbox makes, never /Users/remote: macOS keeps folders such as Library/Mail
+// The agent account gets taskbox's shell and a home that is root's, empty and read-only: nothing
+// it runs or owns can be changed by whoever reaches it over Tailscale SSH.
+// The home is a folder taskbox makes, never /Users/<agent>: macOS keeps folders such as Library/Mail
 // there that even root can't change ownership of, once the user has logged in (found at the v2.0.0
-// install). /Users/remote is left as it is. A remote user that isn't made yet, or is an admin, is left
-// alone, and taskbox check says so.
-export async function placeRemote(d: InstallDeps, user: string): Promise<void> {
-  if ((await uidOf(d, user)) === undefined) return;
-  if ((await adminState(d.sys, user)) !== "standard") {
-    d.say(`${user} isn't a standard user, so taskbox left it alone. taskbox check says what to do.`);
-    return;
+// install). /Users/<agent> is left as it is. An agent that isn't there is made (v2.7.0). planAgent
+// has refused any other account before the yes, so this one is taskbox's and a standard user.
+// Every install puts it back as it should be (agentSteps). Each failure stops the install.
+export async function placeAgent(d: AgentDeps, user: string, target: string = agentHomeFor(d, user)): Promise<void> {
+  const deps = accountDeps(d);
+  const uid = await uidOf(d, user);
+  if (uid === undefined) {
+    const made = await makeAgent(deps, user, REMOTE_SHELL, target, d.paths.accountsRecord);
+    if (typeof made === "string") throw new Stop(made, true);
+    d.say(`  Made the account ${user}, for agents and laptops over Tailscale SSH. It has no password.`);
+  } else if (readRecord(d.paths.accountsRecord).made[user]?.role !== "agent") {
+    // The one agent from before v2.7.0 (planAgent): taskbox's own from now on, said before the yes.
+    const rec = readRecord(d.paths.accountsRecord);
+    const guid = await guidOf(d.sys, user);
+    rec.made[user] = { role: "agent", uid, ...(guid ? { guid } : {}) };
+    writeRecord(d, d.paths.accountsRecord, rec);
   }
-  await mustRun(d, "/usr/bin/dscl", [".", "-create", `/Users/${user}`, "UserShell", REMOTE_SHELL]);
-  const target = d.paths.remoteHome;
   const root = d.rootUid ?? 0;
   if (!lstatExistsI(target)) {
     mkdirSync(target, { mode: 0o755 });
@@ -796,15 +958,35 @@ export async function placeRemote(d: InstallDeps, user: string): Promise<void> {
     chmodSync(target, 0o755);
   }
   const st = lstatSync(target);
-  if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== root || (st.mode & 0o022) !== 0) throw new Stop(`${target} is there and isn't taskbox's. Nothing to do: agents fix it.`);
-  const home = /NFSHomeDirectory:\s*(\S+)/.exec((await d.sys.run("/usr/bin/dscl", [".", "-read", `/Users/${user}`, "NFSHomeDirectory"])).stdout)?.[1];
-  if (home === target) return;
-  if (home !== `/Users/${user}`) {
-    d.say(`${user}'s home isn't /Users/${user}, so taskbox didn't move it. Nothing to do: agents fix it.`);
-    return;
-  }
-  await mustRun(d, "/usr/bin/dscl", [".", "-create", `/Users/${user}`, "NFSHomeDirectory", target]);
+  if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== root || (st.mode & 0o022) !== 0) throw new Stop(`${target} is there and isn't taskbox's. Nothing else was installed. Nothing to do: agents fix it.`);
+  if (uid === undefined) return;
+  const why = await agentSteps(deps, user, REMOTE_SHELL, target);
+  if (why) throw new Stop(why, true);
 }
+// The guard runs this at its start, as root, so each release's own code puts the agent back after
+// the swap. The update to v2.7.0 is run by v2.6.x's code, which has no agent steps, so without this
+// the agent would keep its password until a second update. It never makes the account: only an
+// install does that, after the owner's yes. Why it couldn't, or nothing; taskbox check's row says so too.
+export async function keepAgent(d: Pick<InstallDeps, "sys" | "paths" | "chown" | "rootUid">, user: string | undefined): Promise<string | undefined> {
+  try {
+    if (user === undefined || (await uidOf(d, user)) === undefined) return undefined;
+    const plan = await planAgent(d.sys, user, readRecord(d.paths.accountsRecord), REMOTE_SHELL);
+    if ("stop" in plan) return plan.stop;
+    await placeAgent({ ...d, say: () => {}, ask: async () => "", tty: () => 1 }, user);
+    return undefined;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
+// The guard's start: keepAgent, with any refusal written to the guard's own log. The guard's
+// LaunchDaemon sends its stdout and stderr to /dev/null, so a line on stderr alone is never seen.
+export async function guardAgent(d: Pick<InstallDeps, "sys" | "paths" | "chown" | "rootUid">, user: string | undefined, log: Log): Promise<void> {
+  const why = await keepAgent(d, user);
+  // The guard installs nothing, so the install's own closing words are left out.
+  if (why) log.write(`the agent wasn't put back: ${why.replace(/ Nothing was installed\./g, "")}`);
+}
+
 const lstatExistsI = (path: string): boolean => {
   try {
     lstatSync(path);
@@ -856,6 +1038,10 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
     if (set.code !== 0) d.say(`Tailscale's settings didn't change (${printable(set.stderr).slice(0, 120)}). Type taskbox update again.`);
     return;
   }
+  // Tailscale refuses the tag until the policy names its owner (tailscale.com/kb/1068), so that
+  // entry goes in first. The rest of the policy comes after the sign-in: taskbox policy prints it.
+  d.say(`Before the box signs in: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
+  d.say(`  "${TAILNET_TAG}": ["OWNER"]`);
   // A line for the owner only when Tailscale gives a link: a box that signs in without one needs nothing.
   let asked = false;
   let approve = false;
@@ -878,7 +1064,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
   });
   const code = await p.exited;
   if (code === 0) d.say("The box is on the tailnet, with Tailscale SSH.");
-  else d.say(`The box didn't sign in to Tailscale. Type taskbox update again${asked ? ", and open the link it prints" : approve ? ", once the box is approved" : ""}.`);
+  else d.say(`The box didn't sign in to Tailscale. Check that "tagOwners" has "${TAILNET_TAG}", then type taskbox update again${asked ? ", and open the link it prints" : approve ? ", once the box is approved" : ""}.`);
 }
 
 // Writes a LaunchDaemon's plist from the install and loads it again, so it runs the new code.
@@ -897,16 +1083,17 @@ async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what
 }
 
 // /opt/taskbox-state and its project folder. A link or someone else's folder in either place stops
-// the install, so nobody but ci writes what taskbox jobs shows.
+// the install, so nobody but the service writes what taskbox jobs shows.
 // Returns how many names stayed in the old requests folder, so the install can say it stayed.
-export function placeShared(p: Paths, ciUid: number, chown: (path: string, uid: number, gid: number) => void): number {
-  for (const [dir, uid, mode] of [[dirname(p.shared), 0, 0o755], [p.shared, ciUid, 0o755]] as const) {
+// rootUid: root, whose folder the parent is; tests use their own user, as for box.json beside it.
+export function placeShared(p: Paths, serviceUid: number, chown: (path: string, uid: number, gid: number) => void, rootUid = 0): number {
+  for (const [dir, uid, mode] of [[dirname(p.shared), rootUid, 0o755], [p.shared, serviceUid, 0o755]] as const) {
     let st;
     try {
       st = lstatSync(dir);
     } catch {
       mkdirSync(dir, { mode: 0o700 });
-      chown(dir, uid, uid === 0 ? 0 : 20);
+      chown(dir, uid, uid === rootUid ? 0 : 20);
       // Bun 1.4.4's chmodSync drops the sticky bit (read: 0o1733 set, 0o733 read back); chmod keeps it.
       const r = Bun.spawnSync(["/bin/chmod", mode.toString(8), dir], { env: {} });
       if (r.exitCode !== 0 || (lstatSync(dir).mode & 0o7777) !== mode) throw new Stop(`${dir} couldn't be given its mode. Nothing was installed. Nothing to do: agents fix it.`);
@@ -920,6 +1107,36 @@ export function placeShared(p: Paths, ciUid: number, chown: (path: string, uid: 
   // says so; the install removes the folder, never walking into what a user left (requests.ts).
   const r = removeRequests(p.requests);
   return r.removed ? 0 : Math.max(1, r.left);
+}
+
+// The workspace spool, /opt/taskbox-state/workspace-spool: the agent account's, mode 700, in root's
+// folder, so the agent can't swap the spool itself. Agent commands write each request there; the
+// guard only reads and unlinks in it (workspace/pass.ts). One that is there and isn't a real folder
+// of the agent's stops the install. Its mode is put back to 700 each time: the folder itself is in
+// root's, so the path can't be swapped under the change.
+export function placeSpool(d: Pick<InstallDeps, "paths" | "chown">, agentUid: number): void {
+  placeAgentFolder(d, d.paths.workspaceSpool, agentUid);
+}
+
+// The agent's progress folder, /opt/taskbox-state/workspace-progress: the agent account's, mode 700,
+// in root's folder, by the spool's rules. taskbox progress keeps the agent's last words there, out
+// of root's state; the agent's own commands read them, root never writes them, and they carry no authority.
+export function placeProgress(d: Pick<InstallDeps, "paths" | "chown">, agentUid: number): void {
+  placeAgentFolder(d, d.paths.workspaceProgress, agentUid);
+}
+
+function placeAgentFolder(d: Pick<InstallDeps, "chown">, dir: string, agentUid: number): void {
+  let st;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    mkdirSync(dir, { mode: 0o700 });
+    d.chown(dir, agentUid, 20);
+    chmodSync(dir, 0o700);
+    return;
+  }
+  if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== agentUid) throw new Stop(`${dir} is there and isn't taskbox's. Nothing was installed. Nothing to do: agents fix it.`);
+  if ((st.mode & 0o7777) !== 0o700) chmodSync(dir, 0o700);
 }
 
 // The install ID: 32 hex characters from a cryptographic random source, made once, root's
@@ -978,11 +1195,11 @@ export async function keepInert(sys: Sys, prev: string, engine?: EngineName): Pr
   if (r.code !== 0) throw new Stop(`chmod failed on ${prev}: ${r.stderr.trim().slice(0, 200)}`);
 }
 
-// Reads the key without following a symlink. On an update the key is in ci's folder, which ci
+// Reads the key without following a symlink. On an update the key is in the service's folder, which the service
 // controls, so the folder must not be a symlink either.
 function readKey(d: InstallDeps, keyPath: string, inCiHome: boolean): string {
   if (inCiHome) {
-    refuseLink(d.paths.ciHome);
+    refuseLink(d.paths.serviceHome);
     refuseLink(d.paths.state);
   }
   const fd = openSync(keyPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -994,27 +1211,8 @@ function readKey(d: InstallDeps, keyPath: string, inCiHome: boolean): string {
   }
 }
 
-// First install only. Root makes ci's key folder fresh, then the key with O_EXCL and O_NOFOLLOW,
-// and changes owners with lchown, so nothing here follows a link ci could plant.
-export function placeKey(d: InstallDeps, ciUid: number, pem: string, keyPath: string): void {
-  refuseLink(d.paths.ciHome);
-  rmSync(d.paths.state, { recursive: true, force: true }); // removes a link itself, never its target
-  mkdirSync(d.paths.state, { mode: 0o700 });
-  refuseLink(d.paths.state);
-  const fd = openSync(d.paths.key, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try {
-    writeFileSync(fd, pem);
-    fchmodSync(fd, 0o600);
-    fchownSync(fd, ciUid, 20);
-  } finally {
-    closeSync(fd);
-  }
-  d.chown(d.paths.state, ciUid, 20);
-  rmSync(keyPath);
-}
-
 // The commit's files may hold only regular files and folders: no symlinks, which would let a
-// merged link point root at a file ci can write.
+// merged link point root at a file the service can write.
 export function refuseOddEntries(dir: string): void {
   for (const name of readdirSync(dir)) {
     const st = lstatSync(join(dir, name));
@@ -1029,7 +1227,7 @@ function refuseLink(path: string): void {
 }
 
 // bun 1.3.13's chmodSync dropped the setuid bit on macOS (0o4755 gave 755; 1.4.4 keeps it), so the bit is set
-// with /bin/chmod and read back. Softnet needs it to make its network as root and then drop to ci.
+// with /bin/chmod and read back. Softnet needs it to make its network as root and then drop to the service.
 export async function setSetuid(sys: Sys, path: string, expectRoot = true): Promise<void> {
   const r = await sys.run("/bin/chmod", ["4755", path]);
   if (r.code !== 0) throw new Stop(`chmod failed on ${path}: ${r.stderr.trim().slice(0, 200)}`);

@@ -11,16 +11,16 @@ import { screen } from "../src/watch.ts";
 import { paths } from "../src/config.ts";
 import { argsProblem, elevation, isAdmin, ROOT_COMMANDS, SUDO, TASKBOX } from "../src/elevate.ts";
 import { commandLinkProblem, INSTALL_NAME, linkTarget, placeCommandLink, prune, relink, swapIn, updateUnfinished } from "../src/layout.ts";
-import { type OpsDeps, UNLOCK_ASKS, unlock } from "../src/ops.ts";
+import { type OpsDeps, unlockAsks, unlock } from "../src/ops.ts";
 import { FakeSys, NETSTAT_CLEAN } from "./fake.ts";
-import { CFG, quietBox } from "./helpers.ts";
+import { CFG, testBox, quietBox } from "./helpers.ts";
 
 const repo = new URL("..", import.meta.url).pathname;
 const me = process.getuid!();
 
 function root(): { r: string; p: ReturnType<typeof paths>; opt: string } {
   const r = mkdtempSync(join(tmpdir(), "taskbox-plain-"));
-  const p = paths(r, "app");
+  const p = paths(r, testBox());
   mkdirSync(join(r, "opt"));
   mkdirSync(join(r, "usr")); // always there on macOS
   return { r, p, opt: join(r, "opt") };
@@ -40,7 +40,7 @@ describe("a root command typed by someone who isn't root", () => {
     expect(e.argv).toEqual([SUDO, "-p", "Password for %u: ", "--", TASKBOX, "update", "4e101cf"]);
     // Both are whole paths, so nothing is looked up on PATH; taskbox is the installed command.
     expect(SUDO).toStartWith("/");
-    expect(TASKBOX).toBe(join(paths("/", "app").bin, "taskbox"));
+    expect(TASKBOX).toBe(join(paths("/", testBox()).bin, "taskbox"));
   });
 
   test("anyone else gets one line, and nothing runs", () => {
@@ -197,10 +197,10 @@ describe("taskbox unlock", () => {
       return undefined;
     });
     const r = mkdtempSync(join(tmpdir(), "taskbox-unlock-"));
-    const p = paths(r, "app");
+    const p = paths(r, testBox());
     const said: string[] = [];
-    const d: OpsDeps = { sys, paths: p, uid: 0, ciUid: 502, say: (l) => said.push(l), ask: async () => "no" };
-    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, ciUid: 502 };
+    const d: OpsDeps = { sys, paths: p, uid: 0, serviceUid: 502, say: (l) => said.push(l), ask: async () => "no" };
+    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, serviceUid: 502 };
     const ran: string[][] = [];
     return { d, c, said, ran, state };
   }
@@ -209,21 +209,21 @@ describe("taskbox unlock", () => {
     const { d, c, said, ran, state } = setup(false);
     const code = await unlock(d, c, (argv) => (ran.push(argv), (state.unlocks = true), 0));
     expect(code).toBe(0);
-    expect(ran).toEqual([["/usr/bin/fdesetup", "add", "-usertoadd", "ci"]]);
-    expect(said[0]).toBe(UNLOCK_ASKS);
-    expect(said.join("\n")).toContain("Did: ci can now unlock the disk.");
+    expect(ran).toEqual([["/usr/bin/fdesetup", "add", "-usertoadd", "taskbox"]]);
+    expect(said[0]).toBe(unlockAsks("taskbox"));
+    expect(said.join("\n")).toContain("Did: taskbox can now unlock the disk.");
   });
 
   test("fdesetup that didn't add ci says so, and asks for nothing else", async () => {
     const { d, c, said } = setup(false);
     expect(await unlock(d, c, () => 1)).toBe(1);
-    expect(said.join("\n")).toContain("Did: ci still can't unlock the disk (fdesetup ended with 1).");
+    expect(said.join("\n")).toContain("Did: taskbox still can't unlock the disk (fdesetup ended with 1).");
     expect(said.at(-1)).toBe("Next: Type taskbox unlock again.");
   });
 
   test("ci already unlocks, or FileVault is off: nothing runs", async () => {
     for (const [unlocks, fv, line] of [
-      [true, true, "ci can already unlock the disk."],
+      [true, true, "taskbox can already unlock the disk."],
       [false, false, "FileVault is off, so a restart asks for no password."],
     ] as const) {
       const { d, c, said, ran } = setup(unlocks, fv);
@@ -239,11 +239,12 @@ describe("no sudo in what the owner reads", () => {
     expect(readFileSync(join(repo, "README.md"), "utf8")).not.toMatch(/sudo/i);
     const sh = readFileSync(join(repo, "install.sh"), "utf8");
     for (const line of sh.split("\n").filter((l) => /^\s*echo /.test(l))) expect(line).not.toMatch(/sudo/i);
-    for (const f of readdirSync(join(repo, "src"))) {
+    // Every file under src, in its subfolders too.
+    for (const f of readdirSync(join(repo, "src"), { recursive: true, encoding: "utf8" }).filter((f) => lstatSync(join(repo, "src", f)).isFile())) {
       const lines = readFileSync(join(repo, "src", f), "utf8").split("\n");
       for (const [i, line] of lines.entries()) {
         if (/^\s*\/\//.test(line)) continue; // a comment
-        const left = line.replace(/\/usr\/bin\/sudo/g, "").replace(/\bSUDO(_USER)?\b/g, "");
+        const left = line.replace(/\/usr\/bin\/sudo/g, "").replace(/\bSUDO(_USER|_UID)?\b/g, "");
         if (/sudo/i.test(left)) throw new Error(`src/${f}:${i + 1} says sudo: ${line.trim()}`);
       }
     }
@@ -271,7 +272,7 @@ describe("the check rows for the install", () => {
     setup(p, opt);
     const sys = new FakeSys();
     quietBox(sys);
-    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, ciUid: 502 };
+    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, serviceUid: 502 };
     const all = await runChecks(PRESTART, c);
     return Object.fromEntries(all.filter((k) => ["Installed files match", "taskbox command"].includes(k.name)).map((k) => [k.name, `${k.status} ${k.detail}`]));
   }
@@ -344,7 +345,7 @@ describe("the Other users row", () => {
     const sys = new FakeSys();
     quietBox(sys);
     sys.responders.push((cmd, args) => {
-      if (cmd === "/usr/bin/dscl" && args[1] === "-list") return { code: 0, stdout: "admin 501\nci 502\npat 503\n_www 70\n", stderr: "" };
+      if (cmd === "/usr/bin/dscl" && args[1] === "-list") return { code: 0, stdout: "admin 501\ntaskbox 502\npat 503\n_www 70\n", stderr: "" };
       if (cmd === "/usr/bin/dscl" && args[1] === "-read") return { code: 0, stdout: "GroupMembership: root admin\n", stderr: "" };
       return undefined;
     });
@@ -361,7 +362,7 @@ describe("the command link on a box already on the links", () => {
     relink(p.opt, "taskbox-aaaa0000aaaa-AAAAAA");
     mkdirSync(join(p.commandLink, "..", ".."), { recursive: true });
     mkdirSync(join(p.commandLink, ".."));
-    const c = { sys: new FakeSys(), cfg: CFG, paths: p, uid: me, ciUid: me, rootUid: me } as unknown as CheckContext;
+    const c = { sys: new FakeSys(), cfg: CFG, paths: p, uid: me, serviceUid: me, rootUid: me } as unknown as CheckContext;
     const row = (await runChecks(PRESTART.filter(([n]) => n === "taskbox command"), c))[0]!;
     expect(row.status).toBe("FAIL");
     expect(row.detail).toEndWith("is missing. Switch to your admin user and type /opt/taskbox/bin/taskbox update.");

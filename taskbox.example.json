@@ -1,5 +1,5 @@
 {
-  "$comment": "One box's settings, with made-up values. Copy it to taskbox.json in your private copy of taskbox and change each value: README, A new owner, says what each is, and every setting left out has a default. away.restartPlan is your choice: accept is the one the README recommends.",
+  "$comment": "One box's settings, with made-up values. Copy it to taskbox.json in your private copy of taskbox and change each value: README, A new owner, says what each is, and every setting left out has a default. away.restartPlan is your choice: accept is the one the README recommends. accounts names the box's accounts by role: the install makes service and agent, and people, your own standard accounts for Screen Sharing, may be empty. ssh, which may be left out, names the people who may also log in by Tailscale SSH.",
   "org": "example-org",
   "repo": "taskbox",
   "project": "app",
@@ -30,5 +30,6 @@
   },
   "away": {
     "restartPlan": "accept"
-  }
+  },
+  "accounts": { "service": "taskbox", "agent": "taskbox-agent", "people": [] }
 }

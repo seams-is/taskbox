@@ -8,11 +8,11 @@ import { Log } from "../src/log.ts";
 import { mirrorPull, PullRecorder } from "../src/progress.ts";
 import { LOG_COPY_BYTES, mirrorJson, mirrorLogLine, scrub, sharedPaths, sharedProblem } from "../src/shared.ts";
 import { FakeSys } from "./fake.ts";
-import { loopDeps, PEM, tempRoot } from "./helpers.ts";
+import { loopDeps, PEM, tempRoot, testBox } from "./helpers.ts";
 
 const me = process.getuid!();
 const box = () => {
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   mkdirSync(p.shared, { recursive: true });
   return p;
 };
@@ -20,7 +20,7 @@ const box = () => {
 describe("a copy", () => {
   test("names ci's folder instead of spelling it, and drops control characters", () => {
     const p = box();
-    expect(scrub({ line: `tart: ${p.ciHome}/.tart/tmp/x failed\u001b[2J`, n: 3, a: [`${p.ciHome}/k`] }, p.ciHome)).toEqual({ line: "tart: ci's folder/.tart/tmp/x failed[2J", n: 3, a: ["ci's folder/k"] });
+    expect(scrub({ line: `tart: ${p.serviceHome}/.tart/tmp/x failed\u001b[2J`, n: 3, a: [`${p.serviceHome}/k`] }, p.serviceHome)).toEqual({ line: "tart: the service account's folder/.tart/tmp/x failed[2J", n: 3, a: ["the service account's folder/k"] });
   });
   test("is written whole, readable by every user, and removed for null", () => {
     const p = box();
@@ -32,7 +32,7 @@ describe("a copy", () => {
     expect(readdirSync(p.shared)).toEqual([]);
   });
   test("is no error before the install makes the folder", () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     expect(() => mirrorJson(p, "loopState", { slot: "idle" })).not.toThrow();
     expect(() => mirrorLogLine(p, "x")).not.toThrow();
   });
@@ -42,21 +42,21 @@ describe("the readers' trust", () => {
   test("trusts the folder only when it and each file are ci's alone and not links", () => {
     const p = box();
     expect(sharedProblem(p, me, me)).toBeUndefined();
-    expect(sharedProblem(p, me + 1, me)).toContain("isn't ci's alone");
-    expect(sharedProblem(p, undefined, me)).toBe("there is no ci user");
+    expect(sharedProblem(p, me + 1, me)).toContain("isn't the service account's alone");
+    expect(sharedProblem(p, undefined, me)).toBe("there is no service account");
     writeFileSync(join(p.shared, "loop-state.json"), "{}");
     chmodSync(join(p.shared, "loop-state.json"), 0o666);
-    expect(sharedProblem(p, me, me)).toContain("loop-state.json isn't ci's alone");
+    expect(sharedProblem(p, me, me)).toContain("loop-state.json isn't the service account's alone");
     const q = box();
-    symlinkSync(join(q.ciHome, "pull.json"), join(q.shared, "pull.json"));
-    expect(sharedProblem(q, me, me)).toContain("pull.json isn't ci's alone");
+    symlinkSync(join(q.serviceHome, "pull.json"), join(q.shared, "pull.json"));
+    expect(sharedProblem(q, me, me)).toContain("pull.json isn't the service account's alone");
     const r = box();
     chmodSync(r.shared, 0o777);
-    expect(sharedProblem(r, me, me)).toContain("isn't ci's alone");
-    expect(sharedProblem(paths(tempRoot(), "app"), me, me)).toContain("isn't there");
+    expect(sharedProblem(r, me, me)).toContain("isn't the service account's alone");
+    expect(sharedProblem(paths(tempRoot(), testBox()), me, me)).toContain("isn't there");
   });
   test("other users' paths point at the copies, and nothing else moves", () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     const s = sharedPaths(p);
     expect([s.loopState, s.pull, s.stopped, s.log]).toEqual(["loop-state.json", "pull.json", "stopped.json", "loop.log"].map((f) => join(p.shared, f)));
     expect(s.key).toBe(p.key);
@@ -128,25 +128,25 @@ describe("the writers", () => {
     const log = new Log(d.paths.log, (line) => mirrorLogLine(d.paths, line));
     log.secret(PEM);
     d.log = log;
-    d.log.write(`a line naming ${d.paths.ciHome}/.taskbox and the key ${PEM}`);
+    d.log.write(`a line naming ${d.paths.serviceHome}/.taskbox and the key ${PEM}`);
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("done");
     for (const name of readdirSync(d.paths.shared)) {
       const text = readFileSync(join(d.paths.shared, name), "utf8");
-      expect(text).not.toContain(d.paths.ciHome);
+      expect(text).not.toContain(d.paths.serviceHome);
       expect(text).not.toMatch(/BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|jitconfig|encoded_jit_config/i);
     }
     expect(JSON.parse(readFileSync(join(d.paths.shared, "loop-state.json"), "utf8")).slot).toBe("idle");
-    expect(readFileSync(join(d.paths.shared, "loop.log"), "utf8")).toContain("ci's folder/.taskbox");
+    expect(readFileSync(join(d.paths.shared, "loop.log"), "utf8")).toContain("the service account's folder/.taskbox");
   });
   test("the download's progress is copied each time it's written", () => {
     const p = box();
     mirrorPull(p.pull, (s) => mirrorJson(p, "pull", s));
     mkdirSync(p.projectState, { recursive: true });
     const rec = new PullRecorder(p.pull, "img", () => 1_000_000, "ghcr.io/x/y@sha256:" + "0".repeat(64));
-    rec.finish(false, `tart failed under ${p.ciHome}/.tart/tmp`);
+    rec.finish(false, `tart failed under ${p.serviceHome}/.tart/tmp`);
     const copy = join(p.shared, "pull.json");
     const s = JSON.parse(readFileSync(copy, "utf8"));
     expect(s.image).toBe("img");
-    expect(JSON.stringify(s)).not.toContain(p.ciHome);
+    expect(JSON.stringify(s)).not.toContain(p.serviceHome);
   });
 });

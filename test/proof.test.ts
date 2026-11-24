@@ -317,3 +317,18 @@ describe("one job VM can't reach another", () => {
     expect(peerTargets(["192.168.64.9", "", "203.0.113.4; rm -rf /", "fe80::1"]).map((t) => t.host)).toEqual(["192.168.64.9"]);
   });
 });
+
+// A Whole workspace can begin while the proof waits for the gate (docs/workspaces-design.md 5.6).
+describe("the proof and a held box", () => {
+  test("a hold that began before the gate let the proof in: no proof VM, and it says it didn't run", async () => {
+    const { Slots } = await import("../src/loop.ts");
+    const sys = new FakeSys();
+    guestAnswers(sys);
+    const d = linuxDeps(sys);
+    d.box = new Slots(2);
+    d.workspaces = () => ({ views: [{ size: "whole", phase: "active", name: "nova-1", approvedAt: null, ok: "you approved it" }] });
+    const r = await proveLinux(d);
+    expect(r).toMatchObject({ ok: false, notRun: true, detail: "CI paused for nova-1 (you approved it)" });
+    expect(sys.tartCalls().some((c) => c.startsWith("clone"))).toBe(false);
+  });
+});

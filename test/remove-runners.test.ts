@@ -5,7 +5,7 @@ import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
 import { type OpsDeps, remove } from "../src/ops.ts";
 import { FakeSys } from "./fake.ts";
-import { quietBox, servicesObey, settingsText, tempRoot } from "./helpers.ts";
+import { tempRoot, testBox, quietBox, servicesObey, settingsText } from "./helpers.ts";
 
 // X5 (#900): remove leaves the box's JIT runners for GitHub to drop. Root never reads ci's App key,
 // and never deletes another box's runners by a shared name prefix.
@@ -18,9 +18,9 @@ function removeDeps() {
     if (cmd === "/usr/bin/du") return { code: 0, stdout: "0\t/x\n", stderr: "" };
     return undefined;
   });
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   const said: string[] = [];
-  const d: OpsDeps = { sys, paths: p, uid: 502, ciUid: 502, say: (l) => said.push(l), ask: async () => "yes" };
+  const d: OpsDeps = { sys, paths: p, uid: 502, serviceUid: 502, say: (l) => said.push(l), ask: async () => "yes" };
   return { d, p, sys, said };
 }
 
@@ -30,7 +30,7 @@ describe("taskbox remove and the box's runners", () => {
     sys.fetch = async () => {
       throw new Error("remove called GitHub");
     };
-    expect(await remove(d, { ciUid: 502 })).toBe(0);
+    expect(await remove(d, { serviceUid: 502 })).toBe(0);
     expect(existsSync(d.paths.opt)).toBe(false);
     expect(said.find((l) => l.startsWith("Did: "))).toContain("left this box's runners for GitHub to drop within a day");
   });
@@ -40,7 +40,7 @@ describe("taskbox remove and the box's runners", () => {
     mkdirSync(join(p.key, ".."), { recursive: true });
     Bun.spawnSync(["/usr/bin/mkfifo", p.key]);
     // Opening a pipe with no writer waits for ever, so a read of it would time this test out.
-    expect(await remove(d, { ciUid: 502 })).toBe(0);
+    expect(await remove(d, { serviceUid: 502 })).toBe(0);
   });
 
   // The command itself, as the owner types it through sudo: with ci's key a pipe, a read of it
@@ -58,7 +58,7 @@ describe("taskbox remove and the box's runners", () => {
     const deps: CliDeps = {
       sys: () => sys,
       uid: 0,
-      ciUid: async () => 502,
+      serviceUid: async () => 502,
       env: { SUDO_USER: "owner", HOME: "/var/root" },
       tty: () => 0,
       user: () => "root",
