@@ -150,6 +150,8 @@ export interface CliDeps {
   terminal?(): boolean;
   // This Mac's name, for the envelope's box.name. The real one reads the host name.
   hostname?(): string;
+  // Tests: whether the guard's watch goes on. launchd's guard runs until it is stopped.
+  guardTicks?(): boolean;
 }
 
 export type Values = Record<string, string | true | string[]>;

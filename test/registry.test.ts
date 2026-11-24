@@ -2,7 +2,7 @@
 // command's flags, the global flags, exit codes, v2.6.0's renames, help, the footer, and hello's
 // version agreement. Each line runs through main on the fake box.
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliDeps, main } from "../src/cli.ts";
 import { type CommandSpec, duration, EXIT, memory, parse } from "../src/command.ts";
@@ -30,12 +30,14 @@ function box() {
   writeFileSync(join(p.app, "versions.json"), readFileSync(join(import.meta.dir, "../versions.json"), "utf8"));
   mkdirSync(dirname(p.jobsFile), { recursive: true, mode: 0o700 });
   mkdirSync(dirname(p.guardLog), { recursive: true });
+  mkdirSync(dirname(p.guardState), { recursive: true });
   writeFileSync(p.installed, JSON.stringify({ commit: "c0ffee0c0ffee0c0ffee0c0ffee0c0ffee0c0ff", tag: "v3.0.0-rc.1", pr: 2, title: "feat: install the box", mergedAt: "2026-11-12T10:00:00Z", files: {} }));
   return { root, p };
 }
 
-async function run(argv: string[], who: Caller = CALLERS.ci, o: { terminal?: boolean; healthy?: boolean } = {}) {
+async function run(argv: string[], who: Caller = CALLERS.ci, o: { terminal?: boolean; healthy?: boolean; setup?: (sys: FakeSys) => void; guardTicks?: () => boolean } = {}) {
   const sys = new FakeSys();
+  o.setup?.(sys);
   if (o.healthy) healthyBox(sys);
   quietBox(sys);
   fakeLaunchd(sys);
@@ -59,6 +61,7 @@ async function run(argv: string[], who: Caller = CALLERS.ci, o: { terminal?: boo
     hostname: () => "taskbox-1.local",
     root: box().root,
     chown: () => {},
+    ...(o.guardTicks ? { guardTicks: o.guardTicks } : {}),
   };
   const code = await main(argv, deps);
   return { code, said, errs, ttys, sys, root: deps.root };
@@ -187,14 +190,37 @@ describe("the command line", () => {
 });
 
 describe("a second guard (§4.10.1)", () => {
-  test("exits unless launchd started it under the current label, touching nothing, and says so in the guard's log", async () => {
+  // launchctl print system/<label>: 0 when launchd has that job loaded, 113 when it doesn't.
+  const loaded = (current: boolean) => (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: current && args[1]!.endsWith(".guard") && !args[1]!.includes("example") ? 0 : 113, stdout: "", stderr: "" } : undefined));
+
+  test("exits when the guard under the current label is loaded, touching nothing, and says so in the guard's log", async () => {
     const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
     for (const xpc of [previousLabels("com.example.taskbox").guard, `${GUARD_LABEL}x`, undefined]) {
-      const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", ...(xpc ? { XPC_SERVICE_NAME: xpc } : {}) } });
-      expect({ xpc, code: r.code, said: r.said, calls: r.sys.calls.length }).toEqual({ xpc, code: 1, said: [`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`], calls: 0 });
+      const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", ...(xpc ? { XPC_SERVICE_NAME: xpc } : {}) } }, { setup: loaded(true) });
+      expect({ xpc, code: r.code, said: r.said, calls: r.sys.calls.map((c) => [c.cmd, ...c.args].join(" ")) }).toEqual({ xpc, code: 1, said: [`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`], calls: [`/bin/launchctl print system/${GUARD_LABEL}`] });
       const log = readFileSync(paths(r.root, testBox()).guardLog, "utf8");
       expect(log).toContain(`exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
     }
+  });
+
+  // M1: an update swaps the code in, then retiring the old daemons fails and puts them back. The
+  // old-label guard now runs this code with no guard under the current label: it is the only guard.
+  test("a lone guard under an old label, after a failed update, keeps Screen Sharing's pf rules and the fence, and warns", async () => {
+    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
+    const old = previousLabels("com.example.taskbox").guard;
+    let ticks = 0;
+    const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", XPC_SERVICE_NAME: old } }, { setup: loaded(false), healthy: true, guardTicks: () => ++ticks < 3 });
+    const calls = r.sys.calls.map((c) => [c.cmd, ...c.args].join(" "));
+    expect(r.said).toEqual([]);
+    expect(calls).toContain(`/bin/launchctl print system/${GUARD_LABEL}`);
+    // The pf watch ran each tick, and the fence read its own anchor.
+    expect(calls.filter((c) => c === "/sbin/pfctl -s rules").length).toBeGreaterThanOrEqual(3);
+    expect(calls).toContain("/sbin/pfctl -a com.apple/240.taskbox-ws -s rules");
+    const p = paths(r.root, testBox());
+    const log = readFileSync(p.guardLog, "utf8");
+    expect(log).toContain(`This guard runs as ${old}, and none runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} runs.`);
+    // No workspace state written, and the agent not put back: those are the current guard's.
+    expect(existsSync(p.workspaces)).toBe(false);
   });
 });
 

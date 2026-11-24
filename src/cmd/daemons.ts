@@ -34,25 +34,36 @@ export const commands: CommandSpec[] = [
       }
       const { GUARD_LABEL, loadConfig } = await import("../config.ts");
       const { Log } = await import("../log.ts");
-      const { guardWatch, labelProblem, workspaceRunner } = await import("../guard.ts");
+      const { fenceRunner, guardWatch, labelProblem, workspaceRunner } = await import("../guard.ts");
       const { guardAgent } = await import("../install.ts");
       const p = c.p;
       const chown = c.chown;
       const glog = new Log(p.guardLog, undefined, 1_000_000);
-      // A second guard exits unless launchd started it under the current label (§4.10.1): two guards
-      // would be two writers of root's state. launchd starts the one under the current label.
+      const sys = c.deps.sys("/var/root");
+      const keepGoing = c.deps.guardTicks ?? (() => true);
       const xpc = c.env.XPC_SERVICE_NAME;
+      const was = xpc ? xpc.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 60) : "";
       if (labelProblem(xpc) !== undefined) {
-        const was = xpc ? xpc.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 60) : "";
-        glog.write(`A guard ${was ? `under ${was}` : "that launchd didn't start"} exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
-        c.say(`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`);
+        // A second guard exits (§4.10.1): with the guard under the current label loaded, two would be
+        // two writers of root's state.
+        const current = await sys.run("/bin/launchctl", ["print", `system/${GUARD_LABEL}`], { timeoutMs: 10_000 }).catch(() => ({ code: -1 }));
+        if (current.code === 0) {
+          glog.write(`A guard ${was ? `under ${was}` : "that launchd didn't start"} exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
+          c.say(`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`);
+          return 1;
+        }
+        // The only guard, under an old label: an update swapped the code in and then failed to move
+        // the daemons. It keeps Screen Sharing's pf rules and the fence, which writes nothing, so the
+        // box is never left with no guard. It writes no workspace and doesn't put the agent back.
+        glog.write(`This guard runs as ${was || "no label"}, and none runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} runs.`);
+        const cfg = loadConfig(p.app, p.boxSettings);
+        await guardWatch(sys, cfg, p, keepGoing, fenceRunner({ sys, cfg, p }));
         return 1;
       }
       // Runs until launchd stops it. launchd starts it again if it ends. The agent is put back beside
       // the first pass, never before it, so the rules aren't held up by fdesetup.
-      const sys = c.deps.sys("/var/root");
       const cfg = loadConfig(p.app, p.boxSettings);
-      await Promise.all([guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog), guardWatch(sys, cfg, p, undefined, workspaceRunner({ sys, cfg, p, chown }, glog))]);
+      await Promise.all([guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog), guardWatch(sys, cfg, p, keepGoing, workspaceRunner({ sys, cfg, p, chown }, glog))]);
       return 1;
     },
   },
