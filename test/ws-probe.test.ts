@@ -134,7 +134,7 @@ describe("the probe and its listener, over loopback", () => {
 
   test("the probe's timer gives timeoutCode with whether TCP connected", () => {
     const src = readFileSync(new URL("../src/workspace/probe.ts", import.meta.url), "utf8");
-    expect(src).toContain("const timer = setTimeout(() => end(timeoutCode(kind, connected), close), timeoutMs);");
+    expect(src).toContain("const cancel = clock.after(timeoutMs, () => end(timeoutCode(kind, connected), close));");
     expect(src.indexOf("connected = true;")).toBeGreaterThan(src.indexOf('s.on("connect"'));
   });
 

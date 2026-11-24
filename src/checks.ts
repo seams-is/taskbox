@@ -363,7 +363,7 @@ export async function publicAddresses(sys: Sys, names: readonly PublicAddressSou
   const got = await Promise.all(
     names.map(async (n) => {
       try {
-        const res = await sys.fetch(ADDRESS_SOURCES[n].url, { signal: AbortSignal.timeout(10_000) });
+        const res = await sys.fetch(ADDRESS_SOURCES[n].url, { signal: sys.timeout(10_000) });
         if (!res.ok) return null;
         const ip = ADDRESS_SOURCES[n].parse(await res.text());
         return ip ? { n, ip } : null;

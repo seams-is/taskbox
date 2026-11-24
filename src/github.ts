@@ -96,7 +96,7 @@ export class GitHub {
     try {
       return await this.sys.fetch(API + path, {
         method,
-        signal: AbortSignal.timeout(CALL_LIMIT_MS),
+        signal: this.sys.timeout(CALL_LIMIT_MS),
         headers: {
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
@@ -211,7 +211,7 @@ export class GitHub {
   // twice, since it never leaves api.github.com.
   private async download(token: string, url: string, accept: string): Promise<Uint8Array> {
     // A download may be large, so it has 10 minutes, the whole file included (v2.5.0).
-    const signal = AbortSignal.timeout(DOWNLOAD_LIMIT_MS);
+    const signal = this.sys.timeout(DOWNLOAD_LIMIT_MS);
     const api = (at: string) => this.sys.fetch(at, {
       redirect: "manual",
       signal,

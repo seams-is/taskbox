@@ -1,6 +1,7 @@
 // Everything that touches the machine goes through Sys, so tests can fake it.
 import { connect } from "node:net";
 import { networkInterfaces } from "node:os";
+import { type Clock, realClock } from "./clock.ts";
 
 export interface RunResult {
   code: number;
@@ -31,14 +32,13 @@ export interface SpawnOptions {
 
 export type ProbeResult = "refused" | "open" | "timeout" | "error";
 
-export interface Sys {
+// The machine's clock is part of it: now, sleep and every timer (clock.ts).
+export interface Sys extends Clock {
   run(cmd: string, args: string[], opts?: RunOptions): Promise<RunResult>;
   spawn(cmd: string, args: string[], opts?: SpawnOptions): Proc;
   fetch(url: string, init?: RequestInit): Promise<Response>;
   tcpProbe(host: string, port: number, timeoutMs: number): Promise<ProbeResult>;
   localIPv4(): string[];
-  now(): number;
-  sleep(ms: number): Promise<void>;
 }
 
 // Children get this environment and nothing else. Nothing is inherited, so
@@ -72,7 +72,7 @@ export function realSys(home: string): Sys {
         ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         ...(opts.group ? { detached: true } : {}),
       });
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let cancel: (() => void) | undefined;
       const kill = () => {
         if (opts.group) {
           try {
@@ -82,13 +82,13 @@ export function realSys(home: string): Sys {
         }
         p.kill(9);
       };
-      if (opts.timeoutMs) timer = setTimeout(kill, opts.timeoutMs);
+      if (opts.timeoutMs) cancel = realClock.after(opts.timeoutMs, kill);
       const [stdout, stderr, code] = await Promise.all([
         new Response(p.stdout).text(),
         new Response(p.stderr).text(),
         p.exited,
       ]);
-      if (timer) clearTimeout(timer);
+      cancel?.();
       return { code, stdout, stderr };
     },
     spawn(cmd, args, opts = {}) {
@@ -125,11 +125,13 @@ export function realSys(home: string): Sys {
       assertNotTest();
       return new Promise((resolve) => {
         const s = connect({ host, port });
+        // The socket sends nothing, so its time limit is one timer from the start.
+        const cancel = realClock.after(timeoutMs, () => done("timeout"));
         const done = (r: ProbeResult) => {
+          cancel();
           s.destroy();
           resolve(r);
         };
-        s.setTimeout(timeoutMs, () => done("timeout"));
         s.on("connect", () => done("open"));
         s.on("error", (e: NodeJS.ErrnoException) => done(e.code === "ECONNREFUSED" ? "refused" : "error"));
       });
@@ -142,7 +144,6 @@ export function realSys(home: string): Sys {
       }
       return out;
     },
-    now: () => Date.now(),
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    ...realClock,
   };
 }

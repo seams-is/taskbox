@@ -1,4 +1,5 @@
 import { spyOn } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import * as fs from "node:fs";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -355,17 +356,25 @@ export function fakeTailscale(sys: FakeSys, signedIn = false): void {
 // setuid bit (in bin, or in its own softnet folder, which is root's too), is read as root's.
 // taskbox jobs' parent folder holds box.json too, so it is the install's rootUid's, as the
 // install's own folders are (placeShared). Everything else is read as it is.
-export async function asRoot<T>(f: () => Promise<T>): Promise<T> {
-  const real = fs.lstatSync;
-  const spy = spyOn(fs, "lstatSync").mockImplementation(((path: string, o?: never) => {
-    const st = real(path, o);
-    return /\/(bin\/softnet|softnet\/softnet|softnet)$/.test(String(path)) ? Object.assign(st, { uid: 0, gid: 0 }) : st;
-  }) as never);
-  try {
-    return await f();
-  } finally {
-    spy.mockRestore();
+export function asRoot<T>(f: () => Promise<T>): Promise<T> {
+  return readAsRoot((path) => /\/(bin\/softnet|softnet\/softnet|softnet)$/.test(path), f);
+}
+
+// The paths read as root's while f runs, and only in f's own async flow: a test running at the same
+// time (bun test --concurrent) still reads its files as they are. The one spy on lstatSync is placed
+// once and passes every read through when no test has asked for root's paths.
+const rootOwned = new AsyncLocalStorage<((path: string) => boolean)[]>();
+let spied = false;
+export function readAsRoot<T>(match: (path: string) => boolean, f: () => Promise<T>): Promise<T> {
+  if (!spied) {
+    const real = fs.lstatSync;
+    spyOn(fs, "lstatSync").mockImplementation(((path: string, o?: never) => {
+      const st = real(path, o);
+      return st && rootOwned.getStore()?.some((m) => m(String(path))) ? Object.assign(st, { uid: 0, gid: 0 }) : st;
+    }) as never);
+    spied = true;
   }
+  return rootOwned.run([...(rootOwned.getStore() ?? []), match], f);
 }
 
 // tailscaled's socket folder as the guard leaves it (tssocket.ts): root's (the tester's), 700, with

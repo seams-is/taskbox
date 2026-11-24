@@ -164,12 +164,14 @@ describe("R5: a full disk never skips deleting the VM", () => {
 });
 
 describe("R3: a slow GitHub never holds a slot past its beat", () => {
-  // GitHub that never answers: each call waits until its signal aborts.
+  // GitHub that never answers: each call waits until its signal aborts. The signal's timer is the
+  // fake clock's, so the clock runs on a minute while the call waits.
   class SlowSys extends FakeSys {
     fetches = 0;
     override async fetch(_url: string, init?: RequestInit): Promise<Response> {
       this.fetches++;
       const signal = init?.signal!;
+      void this.sleep(60_000);
       return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
     }
   }

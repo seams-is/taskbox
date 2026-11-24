@@ -152,8 +152,11 @@ function statementFor(tree: string, over: Partial<Statement> = {}): Statement {
   };
 }
 
+// Each test here runs one at a time under bun test --concurrent: it runs real tar, git, ssh-keygen
+// or Python, or two installs, all of which block the one thread, so tests started together would
+// share their time limit.
 describe("the statement (§5.7, 4)", () => {
-  test("is read strictly: its fields, their shapes, one line", () => {
+  test.serial("is read strictly: its fields, their shapes, one line", () => {
     const st = statementFor("e".repeat(40));
     const text = `${JSON.stringify(st)}\n`;
     expect(parseStatement(text)).toEqual(st);
@@ -166,7 +169,7 @@ describe("the statement (§5.7, 4)", () => {
     expect(parseStatement(`${JSON.stringify({ ...st, settingsSchema: [5, 4] })}\n`)).toBeUndefined();
   });
 
-  test("must be newer than the release in place, at most one major past it, and allow it as a start", () => {
+  test.serial("must be newer than the release in place, at most one major past it, and allow it as a start", () => {
     const st = statementFor("e".repeat(40));
     expect(statementProblem(st, TAG, "v2.6.1")).toBeUndefined();
     expect(statementProblem(st, "v3.0.0-rc.2", "v2.6.1")).toBe("the signed statement is for v3.0.0-rc.1, not v3.0.0-rc.2");
@@ -176,7 +179,7 @@ describe("the statement (§5.7, 4)", () => {
     expect(statementProblem({ ...st, minFrom: "2.6.1" }, TAG, "v2.6.0")).toBe("v3.0.0-rc.1 needs v2.6.1 or later first. Type taskbox update v2.6.1");
   });
 
-  test("the signers file pins one or two security keys for releases, and nothing else", () => {
+  test.serial("the signers file pins one or two security keys for releases, and nothing else", () => {
     expect(signersProblem(`# a comment\n${KEY}`)).toBeUndefined();
     expect(signersProblem("# none yet\n")).toBe("v2.6.1 pins no release key yet: a later v2.6.x pins it");
     expect(signersProblem(KEY + KEY + KEY)).toBe("the signers file pins more than two keys");
@@ -185,13 +188,13 @@ describe("the statement (§5.7, 4)", () => {
 
   // M3: v2.6.1 is the one place the release key can be pinned without trusting the release itself.
   // v2.6.1 isn't released with a placeholder: the signers file must pin the owner's release key.
-  test("v2.6.1 isn't released until it pins the owner's release key", () => {
+  test.serial("v2.6.1 isn't released until it pins the owner's release key", () => {
     expect(signersProblem(readFileSync(join(import.meta.dir, "../signers/allowed_signers"), "utf8"))).toBeUndefined();
   });
 
   // A real signature from the owner's Secure Enclave key, made with Touch ID on 24 Nov 2026 over a
   // trial file, checked by the real ssh-keygen against the pinned file, with the user-present flag (L2).
-  test("the pinned key verifies a real Secure Enclave signature, and it carries the user-present flag (L2)", () => {
+  test.serial("the pinned key verifies a real Secure Enclave signature, and it carries the user-present flag (L2)", () => {
     const fx = (n: string) => join(import.meta.dir, "fixtures", n);
     const out = Bun.spawnSync(
       ["/usr/bin/ssh-keygen", "-Y", "verify", "-f", join(import.meta.dir, "../signers/allowed_signers"), "-I", PRINCIPAL, "-n", NAMESPACE, "-s", fx("release-key-trial.txt.sig")],
@@ -203,12 +206,12 @@ describe("the statement (§5.7, 4)", () => {
     expect(flags !== undefined && (flags & 1) === 1).toBe(true);
   });
 
-  test("tags with leading zeros aren't release tags, so two tags never name one version (L3)", () => {
+  test.serial("tags with leading zeros aren't release tags, so two tags never name one version (L3)", () => {
     for (const t of ["v03.0.0", "v3.00.0", "v3.0.0-rc.01", "v3.0.0-rc.0"]) expect(RELEASE_TAG.test(t)).toBe(false);
     expect(parseStatement(`${JSON.stringify({ ...statementFor("e".repeat(40)), version: "3.0.0-rc.01", tag: "v3.0.0-rc.01", tarball: "taskbox-v3.0.0-rc.01.tar.gz" })}\n`)).toBeUndefined();
   });
 
-  test("ssh-keygen's line for a good signature gives the key's type and fingerprint, from the real ssh-keygen (L2)", () => {
+  test.serial("ssh-keygen's line for a good signature gives the key's type and fingerprint, from the real ssh-keygen (L2)", () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-sig-"));
     const run = (args: string[], stdin?: string) => Bun.spawnSync(["/usr/bin/ssh-keygen", ...args], { stdin: stdin === undefined ? "ignore" : new Blob([stdin]), env: { PATH: "/usr/bin:/bin" } });
     run(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f", join(dir, "k")]);
@@ -225,7 +228,7 @@ describe("the statement (§5.7, 4)", () => {
   // L2, as far as it goes without Tart: the verify step as the box runs it, with sudo's own part faked
   // (it runs the rest as this user) and the real ssh-keygen, its files, stdin and line; a security
   // key's line; and sudo refusing nobody.
-  test("the verify step runs the real ssh-keygen over its own copies, and reads its line", async () => {
+  test.serial("the verify step runs the real ssh-keygen over its own copies, and reads its line", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-sshv-"));
     const kg = (args: string[]) => Bun.spawnSync(["/usr/bin/ssh-keygen", ...args], { env: { PATH: "/usr/bin:/bin" } });
     kg(["-q", "-t", "ed25519", "-N", "", "-C", "t", "-f", join(dir, "k")]);
@@ -257,7 +260,7 @@ describe("the statement (§5.7, 4)", () => {
   });
 
   // A listing can be skewed by a group name with spaces; the unpacked size is counted from the stream.
-  test("the unpacked size comes from the gzip stream, whatever the listing says", async () => {
+  test.serial("the unpacked size comes from the gzip stream, whatever the listing says", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-gz-"));
     const py = `import tarfile,io,sys
 t=tarfile.open(sys.argv[1],"w:gz")
@@ -274,7 +277,7 @@ t.close()`;
     await expect(gunzippedSize(join(dir, "not.gz"), 10)).rejects.toBeDefined();
   });
 
-  test("a tarball's listing: plain files and folders, inside its folder, within the size limit", () => {
+  test.serial("a tarball's listing: plain files and folders, inside its folder, within the size limit", () => {
     const line = (mode: string, size: number, name: string) => `${mode}  0 0      0      ${size} Nov 24 16:37 ${name}`;
     expect(tarListProblem([line("drwxr-xr-x", 0, "taskbox/"), line("-rw-r--r--", 3, "taskbox/a")].join("\n"), 10)).toBeUndefined();
     expect(tarListProblem(line("-rw-r--r--", 11, "taskbox/a"), 10)).toBe("its files are larger than taskbox takes");
@@ -286,13 +289,13 @@ t.close()`;
     expect(tarListProblem("", 10)).toBe("it is empty");
   });
 
-  test("a signature's presence flag is read from the SSHSIG itself", () => {
+  test.serial("a signature's presence flag is read from the SSHSIG itself", () => {
     expect(skFlags(sshsig(0x01))).toBe(1);
     expect(skFlags(sshsig(0x00))).toBe(0);
     expect(skFlags(new TextEncoder().encode("not a signature"))).toBeUndefined();
   });
 
-  test("the tree is git's tree ID of the files, with the executable bit", () => {
+  test.serial("the tree is git's tree ID of the files, with the executable bit", () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-tree-"));
     writeFileSync(join(dir, "a.txt"), "hello\n");
     mkdirSync(join(dir, "b"));
@@ -339,7 +342,8 @@ t.close()`;
     const r = Bun.spawnSync(["/usr/bin/python3", "-I", "-c", py, out, top, o.hostile]);
     if (r.exitCode !== 0) throw new Error(r.stderr.toString());
   } else {
-    Bun.spawnSync(["/usr/bin/tar", "-czf", out, "-C", dir, "taskbox"], { env: {} });
+    const r = Bun.spawnSync(["/usr/bin/tar", "-czf", out, "-C", dir, "taskbox"], { env: {} });
+    if (r.exitCode !== 0) throw new Error(`tar: ${r.exitCode} ${r.signalCode} ${r.stderr.toString()}`);
   }
   return { bytes: new Uint8Array(readFileSync(out)), tree };
 }
@@ -422,8 +426,11 @@ async function hopBox(o: { statement?: Partial<Statement>; flags?: number; verif
   return { sys, d, said, out, root, before, loaded, verified, boots, st, tarballAsked };
 }
 
+// Each test here runs one at a time under bun test --concurrent: it runs real tar, git, ssh-keygen
+// or Python, or two installs, all of which block the one thread, so tests started together would
+// share their time limit.
 describe("the hop to v3 (§5.7, 4 and 5)", () => {
-  test("verified against the pin first, then the tarball and its tree; the key shown before the yes; a rollback watcher before the swap", async () => {
+  test.serial("verified against the pin first, then the tarball and its tree; the key shown before the yes; a rollback watcher before the swap", async () => {
     const { d, said, out, before, loaded, verified, boots } = await hopBox();
     expect(out).toBe("installed");
     expect(said).toContain(`  Release: ${TAG}, a trial, from ${PUB}`);
@@ -453,7 +460,7 @@ describe("the hop to v3 (§5.7, 4 and 5)", () => {
     expect(existsSync(join(dirname(d.paths.guardState), "taskbox-update.lock"))).toBe(false);
   });
 
-  test("no is no: nothing is installed and no watcher placed", async () => {
+  test.serial("no is no: nothing is installed and no watcher placed", async () => {
     const { d, out, before } = await hopBox({ answer: "no" });
     expect(out).toContain("Stopped. Nothing was installed.");
     expect(linkTarget(d.paths.opt)).toBe(before);
@@ -469,7 +476,7 @@ describe("the hop to v3 (§5.7, 4 and 5)", () => {
     ["a trial GitHub doesn't publish as one", { prerelease: false }, `${TAG} is a trial, but ${PUB} doesn't publish it as one. Nothing was installed.`],
     ["a box whose settings name no public repo", { noPublicRepo: true }, `taskbox.json names no publicRepo, so ${TAG} can't be read.`],
   ] as const) {
-    test(`${name}: refused before the tarball is downloaded`, async () => {
+    test.serial(`${name}: refused before the tarball is downloaded`, async () => {
       const { d, out, before, tarballAsked, said } = await hopBox(o as Parameters<typeof hopBox>[0]);
       expect(out).toContain(want);
       expect(tarballAsked).toBe(false);
@@ -489,7 +496,7 @@ describe("the hop to v3 (§5.7, 4 and 5)", () => {
     ["a path that climbs out", { hostile: "dotdot" }, "it holds a path outside its own folder"],
     ["an absolute path", { hostile: "absolute" }, "it holds a path outside its own folder"],
   ] as const) {
-    test(`${name}: nothing is installed`, async () => {
+    test.serial(`${name}: nothing is installed`, async () => {
       const { d, out, before, said } = await hopBox(o as Parameters<typeof hopBox>[0]);
       expect(out).toContain(want);
       expect(linkTarget(d.paths.opt)).toBe(before);
@@ -499,7 +506,7 @@ describe("the hop to v3 (§5.7, 4 and 5)", () => {
     });
   }
 
-  test("a watcher launchd won't load: nothing is swapped", async () => {
+  test.serial("a watcher launchd won't load: nothing is swapped", async () => {
     const { d, out, before } = await hopBox({ watcherLoads: false });
     expect(out).toBe("the rollback watcher didn't load (Bootstrap failed: 5: Input/output error), so nothing was swapped. Nothing was installed.");
     expect(linkTarget(d.paths.opt)).toBe(before);
@@ -507,7 +514,7 @@ describe("the hop to v3 (§5.7, 4 and 5)", () => {
     expect(existsSync(rollbackWatchPaths(d.paths).file)).toBe(false);
   });
 
-  test("an update while another holds the lock changes nothing", async () => {
+  test.serial("an update while another holds the lock changes nothing", async () => {
     const { d } = await hopBox();
     const lock = join(dirname(d.paths.guardState), "taskbox-update.lock");
     writeFileSync(lock, String(process.pid));
@@ -516,10 +523,13 @@ describe("the hop to v3 (§5.7, 4 and 5)", () => {
   });
 });
 
+// Each test here runs one at a time under bun test --concurrent: it runs real tar, git, ssh-keygen
+// or Python, or two installs, all of which block the one thread, so tests started together would
+// share their time limit.
 describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
   const opsOf = (h: Awaited<ReturnType<typeof hopBox>>) => ({ sys: h.sys, paths: h.d.paths, uid: 0, serviceUid: 502, rootUid: process.getuid!(), say: () => {}, ask: async () => "no" });
 
-  test("before its deadline it does nothing; past it, unproved, it takes the box back and removes itself", async () => {
+  test.serial("before its deadline it does nothing; past it, unproved, it takes the box back and removes itself", async () => {
     const h = await hopBox();
     const daemons = dirname(h.d.paths.guardPlist);
     const agents = dirname(h.d.paths.agentPlist);
@@ -549,14 +559,14 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
   });
 
   // L6: the watcher's real entry passes the service account's uid, so a later release's agents in its gui domain go.
-  test("run by launchd through the command, it knows the service account's uid", async () => {
+  test.serial("run by launchd through the command, it knows the service account's uid", async () => {
     const sys = new FakeSys();
     const p = paths(mkdtempSync(join(tmpdir(), "taskbox-w-")), testBox());
     const ops = await watcherOps({ sys: () => sys, uid: 0, serviceUid: async () => 502, env: {}, tty: () => 0, user: () => "root", ask: async () => "no", say: () => {}, root: "/" }, p);
     expect([ops.uid, ops.serviceUid, ops.paths]).toEqual([0, 502, p]);
   });
 
-  test("a deadline v3's guard moves later is kept, up to 3 hours after it was placed (L1)", async () => {
+  test.serial("a deadline v3's guard moves later is kept, up to 3 hours after it was placed (L1)", async () => {
     const h = await hopBox();
     const w = readRollbackWatch(h.d.paths)!;
     writeFileSync(rollbackWatchPaths(h.d.paths).file, JSON.stringify({ ...w, deadline: w.placedAt + 10 * 60 * 60_000 }));
@@ -569,7 +579,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
     expect(linkTarget(h.d.paths.opt)).toBe(h.before);
   });
 
-  test("a go-back that fails keeps the watcher, shows in check, and tries again on a back-off (M2)", async () => {
+  test.serial("a go-back that fails keeps the watcher, shows in check, and tries again on a back-off (M2)", async () => {
     const h = await hopBox();
     // The kept install changed since it was installed, so undo refuses it.
     writeFileSync(join(h.before, "app/odd.txt"), "x");
@@ -602,7 +612,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
 
   // N2: v3's guard may mark proved, or move the deadline, while a go-back runs. A failed go-back
   // keeps what it wrote, so a proved v3 is never taken back later.
-  test("a failed go-back keeps v3's proved and its later deadline", async () => {
+  test.serial("a failed go-back keeps v3's proved and its later deadline", async () => {
     for (const write of ["proved", "deadline"] as const) {
       const h = await hopBox();
       const { file } = rollbackWatchPaths(h.d.paths);
@@ -630,7 +640,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
   });
 
   // L7: one process takes over a stale lock; a lock held too long by a live process says so.
-  test("a lock held by a process that is gone is taken over; one held for over 30 minutes is the owner's", async () => {
+  test.serial("a lock held by a process that is gone is taken over; one held for over 30 minutes is the owner's", async () => {
     const h = await hopBox();
     const lock = join(dirname(h.d.paths.guardState), "taskbox-update.lock");
     // A pid that is gone.
@@ -662,7 +672,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
   // A watch file it can't read or doesn't know the shape of keeps the watcher: a line in the guard's
   // log each hour, and the needs-you row. Only a proof it read, a good go-back, or no file at all (v3's
   // guard removed it) ends the watch.
-  test("a watch file it can't read keeps the watcher, says so, and raises the row", async () => {
+  test.serial("a watch file it can't read keeps the watcher, says so, and raises the row", async () => {
     for (const bad of ["not json", JSON.stringify({ v: 2, tag: TAG }), "SYMLINK"]) {
       const h = await hopBox();
       const { file, plist } = rollbackWatchPaths(h.d.paths);
@@ -686,7 +696,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
     }
   });
 
-  test("proved, or no longer running the release it watched, it removes itself and moves nothing; a held lock waits", async () => {
+  test.serial("proved, or no longer running the release it watched, it removes itself and moves nothing; a held lock waits", async () => {
     for (const how of ["proved", "moved", "locked"] as const) {
       const h = await hopBox();
       const { file } = rollbackWatchPaths(h.d.paths);
@@ -704,7 +714,7 @@ describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
     }
   });
 
-  test("undo by hand boots out daemons the install gone back to doesn't know, and keeps its own", async () => {
+  test.serial("undo by hand boots out daemons the install gone back to doesn't know, and keeps its own", async () => {
     const h = await hopBox();
     const daemons = dirname(h.d.paths.guardPlist);
     for (const l of ["local.taskbox.guardwatch", "local.taskbox.netwatch"]) {

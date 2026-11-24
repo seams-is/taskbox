@@ -4,6 +4,7 @@
 // more than any other `remote` session.
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { realClock } from "../clock.ts";
 
 export interface Paired {
   name: string; // the box's name in Tailscale when it was paired, for screens
@@ -117,7 +118,7 @@ export function readConfig(h: Home): ConfigRead {
 export const writePrivateFile = (path: string, body: string) => writePrivate(path, body);
 
 function writePrivate(path: string, body: string): void {
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const tmp = `${path}.${process.pid}.${realClock.now()}.tmp`;
   writeFileSync(tmp, body, { mode: 0o600, flag: "wx" });
   chmodSync(tmp, 0o600);
   renameSync(tmp, path);

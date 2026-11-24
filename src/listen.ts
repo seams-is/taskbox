@@ -8,6 +8,7 @@ import { timingSafeEqual } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type Clock, realClock } from "./clock.ts";
 import { manifestFor, pageHeaders, startPage } from "./connect.ts";
 
 // open: the listener opens its own start page in the admin's browser, through a private file, so the
@@ -27,14 +28,14 @@ const same = (a: string, b: string) => {
 // after 30 s, whichever comes first (Tart run of #34: root's SIGTERM skipped the exit handler).
 let dropStart: () => void = () => {};
 
-export function openPrivately(url: string, opener: (file: string) => void = (f) => void spawnSync("/usr/bin/open", [f], { env: {}, stdio: "ignore" })): void {
+export function openPrivately(url: string, opener: (file: string) => void = (f) => void spawnSync("/usr/bin/open", [f], { env: {}, stdio: "ignore" }), clock: Clock = realClock): void {
   const dir = mkdtempSync(join(tmpdir(), "taskbox-connect-"));
   const file = join(dir, "start.html");
   writeFileSync(file, `<!doctype html><meta http-equiv="refresh" content="0;url=${url.replace(/[^A-Za-z0-9:/._-]/g, "")}"><title>taskbox</title>`, { mode: 0o600 });
   opener(file);
   const gone = () => rmSync(dir, { recursive: true, force: true });
   dropStart = gone;
-  setTimeout(gone, 30_000).unref();
+  clock.after(30_000, gone, { unref: true });
   process.on("exit", gone);
 }
 
@@ -51,7 +52,7 @@ const TOKEN = /^[0-9a-f]{64}$/;
 
 // Serves the start page once and takes one redirect, then stops. A request with a wrong host, path or
 // token is answered 404 and doesn't count, so a favicon or a stranger can't use up a request.
-export function serveOnce(s: ListenSetup, emit: (e: ListenEvent) => void, opener?: (file: string) => void): { stop(): void; port: number } {
+export function serveOnce(s: ListenSetup, emit: (e: ListenEvent) => void, opener?: (file: string) => void, clock: Clock = realClock): { stop(): void; port: number } {
   if (!TOKEN.test(s.state) || !TOKEN.test(s.pageToken)) throw new Error("bad setup");
   let started = false;
   let done = false;
@@ -76,25 +77,25 @@ export function serveOnce(s: ListenSetup, emit: (e: ListenEvent) => void, opener
         if (!started || !same(state, s.state) || !/^[A-Za-z0-9_-]{1,100}$/.test(code)) return no();
         done = true;
         emit({ code, state });
-        setTimeout(() => stop(), 50);
+        clock.after(50, () => stop());
         return new Response("<!doctype html><title>taskbox</title><p>The App is made. Go back to Terminal.</p>", { headers: pageHeaders() });
       }
       return no();
     },
   });
-  const timer = setTimeout(() => {
+  const cancel = clock.after(s.minutes * 60_000, () => {
     if (!done) {
       done = true;
       emit({ timeout: true });
     }
     stop();
-  }, s.minutes * 60_000);
+  });
   const stop = () => {
-    clearTimeout(timer);
+    cancel();
     server.stop(true);
   };
   emit({ port: server.port as number });
-  if (s.open) openPrivately(`http://127.0.0.1:${server.port}/start/${s.pageToken}`, opener);
+  if (s.open) openPrivately(`http://127.0.0.1:${server.port}/start/${s.pageToken}`, opener, clock);
   return { stop, port: server.port as number };
 }
 
@@ -110,6 +111,6 @@ if (import.meta.main) {
   const out = (e: ListenEvent) => process.stdout.write(`${JSON.stringify(e)}\n`);
   serveOnce(setup, (e) => {
     out(e);
-    if (!("port" in e)) setTimeout(() => process.exit(0), 100);
+    if (!("port" in e)) realClock.after(100, () => process.exit(0));
   });
 }

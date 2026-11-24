@@ -1,4 +1,5 @@
-# taskbox's own CI: the test suite on macOS and the typecheck on Linux, on GitHub-hosted runners.
+# taskbox's own CI: the test suite on macOS, the same suite under stress, and the typecheck on Linux,
+# on GitHub-hosted runners.
 # A box never runs this repo's jobs. No secrets, read-only token, every action pinned by commit SHA.
 # Bun is fetched from its release by version and checked against its SHA-256. The macOS pin is the
 # one versions.json pins for the box (test/install.test.ts checks they match).
@@ -42,6 +43,39 @@ jobs:
       - run: bun --version
       - run: bun install --frozen-lockfile
       - run: bun test
+
+  # The suite under stress: each file's tests all at once (bun test --concurrent), ten times over. A
+  # test that leans on real time, or on another test's state, fails here first. Every timer in src
+  # goes through the clock (src/clock.ts), so the fake clock drives them all (test/clock.test.ts).
+  stress:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      BUN_ZIP: bun-darwin-aarch64
+      BUN_SHA256: c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - name: Fetch and check bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_ZIP}.zip"
+          echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
+      - run: bun --version
+      - run: bun install --frozen-lockfile
+      - name: bun test --concurrent, ten times
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 10); do
+            echo "::group::run $i of 10"
+            bun test --concurrent
+            echo "::endgroup::"
+          done
 
   typecheck:
     runs-on: ubuntu-24.04

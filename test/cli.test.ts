@@ -1,8 +1,7 @@
 // taskbox's commands by who types them, through main itself: the root gate, the copies a reader
 // reads, and the owner's words. Each row runs main on the fake box with a recording terminal and
 // a recording question, so no real command runs and no question goes unseen.
-import { describe, expect, spyOn, test } from "bun:test";
-import * as fs from "node:fs";
+import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { errorAnswer } from "../src/answers.ts";
@@ -12,7 +11,7 @@ import { ROOT_COMMANDS, SUDO, TASKBOX } from "../src/elevate.ts";
 import { CANT_REACH } from "../src/install.ts";
 import { AGENTS_THEN_UPDATE } from "../src/state.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
-import { fakeLaunchd, healthyBox, PEM, quietBox, tempRoot, testBox } from "./helpers.ts";
+import { fakeLaunchd, healthyBox, PEM, quietBox, readAsRoot, tempRoot, testBox } from "./helpers.ts";
 
 const CI = 502;
 type Caller = { uid: number; user: string; env: Record<string, string> };
@@ -155,16 +154,7 @@ describe("an update that stops before it changes anything", () => {
     (o.gh ?? githubRoutes)(sys);
     // The update moves the key from before into root's key folder first (connect-github design), and
     // the test's user can't make a folder root's, so that one folder reads as root's.
-    const real = fs.lstatSync;
-    const spy = spyOn(fs, "lstatSync").mockImplementation(((path: string, o?: never) => {
-      const st = real(path, o);
-      return String(path) === p.actionsKeyDir ? Object.assign(st, { uid: 0, gid: 0 }) : st;
-    }) as never);
-    try {
-      return await run(["update"], CALLERS["root via sudo"], { root, sys });
-    } finally {
-      spy.mockRestore();
-    }
+    return readAsRoot((path) => path === p.actionsKeyDir, () => run(["update"], CALLERS["root via sudo"], { root, sys }));
   }
 
   // To do: GitHub's client turns a network failure into its own error (ghfail.ts), which cantReach

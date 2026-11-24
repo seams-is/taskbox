@@ -152,7 +152,7 @@ async function fetchPinned(d: InstallDeps, name: string, pin: Pin, dir: string, 
       throw new Stop(`could not download ${name} (${(e as Error).message})`);
     }
   } else {
-    const res = await d.sys.fetch(pin.url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_LIMIT_MS) });
+    const res = await d.sys.fetch(pin.url, { redirect: "follow", signal: d.sys.timeout(DOWNLOAD_LIMIT_MS) });
     if (!res.ok) throw new Stop(`could not download ${name} (${res.status})`);
     data = new Uint8Array(await res.arrayBuffer());
   }

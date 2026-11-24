@@ -198,7 +198,7 @@ export async function withUpdateLock<T>(p: Pick<Paths, "guardState">, now: () =>
       } catch {
         try {
           // A takeover left by a process that died in the middle of one.
-          if (Date.now() - statSync(takeover).mtimeMs > 60_000) rmSync(takeover, { force: true });
+          if (now() - statSync(takeover).mtimeMs > 60_000) rmSync(takeover, { force: true });
         } catch {}
         return busy(seen.holder);
       }

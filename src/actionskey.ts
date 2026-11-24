@@ -58,7 +58,7 @@ async function call(d: Pick<InstallDeps, "sys">, method: string, path: string, a
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     redirect: "error",
-    signal: AbortSignal.timeout(15_000),
+    signal: d.sys.timeout(15_000),
   });
 }
 

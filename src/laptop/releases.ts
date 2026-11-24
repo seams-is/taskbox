@@ -2,6 +2,7 @@
 // with no token. Everything here is untrusted until verifyRelease has checked the owner's signature:
 // tags are checked against the release pattern, asset links against the one form GitHub uses, and
 // every download is capped and has a time limit.
+import { type Clock, realClock } from "../clock.ts";
 import type { Source } from "./home.ts";
 
 export const API = "https://api.github.com";
@@ -51,10 +52,10 @@ async function capped(r: Response, max: number): Promise<Uint8Array | undefined>
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-export async function get(fetch: Fetch, url: string, max: number, limitMs: number): Promise<Got<Uint8Array>> {
+export async function get(fetch: Fetch, url: string, max: number, limitMs: number, clock: Pick<Clock, "timeout"> = realClock): Promise<Got<Uint8Array>> {
   let r: Response;
   try {
-    r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(limitMs), redirect: "follow" });
+    r = await fetch(url, { headers: HEADERS, signal: clock.timeout(limitMs), redirect: "follow" });
   } catch {
     return { ok: false, why: "offline" };
   }
