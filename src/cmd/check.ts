@@ -26,7 +26,7 @@ export const commands: CommandSpec[] = [
       const ctx = await context(c);
       return c.opts.away ? away(ctx, c.ops) : check(ctx, c.ops, loadVersions(c.p.app), false);
     },
-    // check runs every row once: the envelope's lines are made from the result, not a second run.
+    // check runs every row once: the envelope's lines are made from the result, so nothing runs twice.
     answer: async (c) => {
       const { loadVersions } = await import("../config.ts");
       const { check } = await import("../ops.ts");

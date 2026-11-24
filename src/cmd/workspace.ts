@@ -87,7 +87,7 @@ export const commands: CommandSpec[] = [
       const { lchownSync } = await import("node:fs");
       const { clear } = await import("../workspace/clear.ts");
       if (await overSsh(c)) {
-        c.say("taskbox workspace clear works at the box itself, not over SSH.");
+        c.say("taskbox workspace clear works at the box itself. Over SSH it does nothing.");
         return 1;
       }
       return clear({ sys: c.ops.sys, say: c.say, ask: c.ask, chown: (path, u, g) => lchownSync(path, u, g), state: c.p.workspaces, poolRecord: c.p.poolRecord, usersDir: "/Users" }, c.args[0]!);

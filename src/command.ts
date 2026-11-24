@@ -12,7 +12,7 @@ import type { Sys } from "./sys.ts";
 export const EXIT = { ok: 0, failed: 1, usage: 2, timeout: 3, denied: 4, interrupted: 130 } as const;
 
 // The global flags (§2.2). Every command takes each one it declares, and refuses the others with
-// exit 2. --help, --version and --answers are taken by every command.
+// exit 2. --help, --version, --answers and --box are taken by every command.
 export const GLOBAL_FLAGS = {
   json: { names: ["--json"] },
   watch: { names: ["-w", "--watch"] },
@@ -28,7 +28,8 @@ export const GLOBAL_FLAGS = {
   tail: { names: ["-n", "--tail"], value: "N" },
 } as const;
 export type GlobalFlag = keyof typeof GLOBAL_FLAGS;
-export const ALWAYS = ["--help", "--version", "--answers"] as const;
+// Taken by every command: --help, --version, --answers (the reader's version, §3.1) and --box.
+export const ALWAYS = ["--help", "--version", "--answers", "--box"] as const;
 
 // A duration: 90s, 30m, 1h, 2d, or 0 for no limit (§2.2). In ms, or undefined when it isn't one.
 export function duration(v: string): number | undefined {
@@ -85,7 +86,7 @@ export interface CommandSpec {
   // Its text is a file to copy (YAML, a policy file): the footer goes to stderr.
   file?: boolean | ((c: Ctx) => boolean);
   // Rules between its words and flags that a flag's own check can't see. A line saying why, or undefined.
-  check?: (p: { args: string[]; opts: Values }) => string | undefined;
+  check?: (p: { args: string[]; opts: Values; flags: Partial<Record<GlobalFlag, string | true>> }) => string | undefined;
   // The folder whose settings name the box's accounts, where it isn't the installed one: the first
   // install's downloaded folder.
   namesFrom?: (c: Ctx) => string | undefined;
@@ -246,7 +247,8 @@ export function parse(specs: readonly CommandSpec[], argv: readonly string[]): P
       const g = (Object.keys(GLOBAL_FLAGS) as GlobalFlag[]).find((k) => (GLOBAL_FLAGS[k].names as readonly string[]).includes(flag));
       const o = (spec.options ?? []).find((x) => x.name === flag);
       if (g) {
-        if (!(spec.flags ?? []).includes(g)) return bad(`${name} doesn't take ${flag}.`);
+        // --box goes with every command: on a box it must name that box (§2.1), checked once settings are read.
+        if (g !== "box" && !(spec.flags ?? []).includes(g)) return bad(`${name} doesn't take ${flag}.`);
         if (flags[g] !== undefined) return bad(`${flag} is given twice.`);
         const def = GLOBAL_FLAGS[g];
         if ("value" in def) {
@@ -275,7 +277,7 @@ export function parse(specs: readonly CommandSpec[], argv: readonly string[]): P
     if (args.length > max) return bad(max ? `${name} takes at most ${max === 1 ? `one ${a!.name}` : `${max} words`}.` : `${name} takes no word after it, and ${clean(args[0]!)} isn't a flag.`);
     if (a && args.length < a.min) return bad(`${name} needs ${a.name}.`);
     if (a?.check) for (const v of args) if (!a.check(v)) return bad(`${name} doesn't take ${clean(v)}.`);
-    const why = spec.check?.({ args, opts });
+    const why = spec.check?.({ args, opts, flags });
     if (why) return bad(why);
   }
   return { ok: true, spec, path, args, opts, flags, help, version, ...(answers !== undefined ? { answers } : {}) };

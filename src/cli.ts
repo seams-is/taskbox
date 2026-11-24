@@ -164,6 +164,15 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     say(usage(spec));
     return EXIT.ok;
   }
+  // --version: this taskbox's release, from its install record.
+  if (parsed.version) {
+    let tag: unknown;
+    try {
+      tag = readJson<{ tag?: unknown }>(join(deps.root, "opt/taskbox/installed.json")).tag;
+    } catch {}
+    say(`taskbox ${typeof tag === "string" ? cleanLine(tag).slice(0, 30) : "(release not known)"}`);
+    return EXIT.ok;
+  }
   // The answers version this reader takes: one number, or for hello the list it reads (§3.1).
   const theirs = parsed.answers === undefined ? [4] : versionsOf(parsed.answers);
   if (!theirs || (spec.path[0] !== "hello" && theirs.length !== 1)) {

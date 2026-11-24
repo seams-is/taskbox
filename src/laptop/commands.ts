@@ -103,7 +103,7 @@ export async function status(d: Deps, sel?: string): Promise<Screen> {
 export function jobs(d: Deps, n = 20, sel?: string): Promise<Screen> {
   const count = Number.isInteger(n) && n >= 1 && n <= 1000 ? n : 20;
   return withBox(d, sel, async (c) => {
-    const j = await boxAsk(d, c.target, c.box.name, "jobs", `jobs ${count} --json`, READ_LIMIT_MS);
+    const j = await boxAsk(d, c.target, c.box.name, "jobs", `job list -n ${count} --json`, READ_LIMIT_MS);
     if (isStop(j)) return stopScreen(d, j, c.box.name);
     const s = await readStatus(d, c);
     if (isStop(s)) return stopScreen(d, s, c.box.name);
@@ -113,7 +113,7 @@ export function jobs(d: Deps, n = 20, sel?: string): Promise<Screen> {
 
 export function log(d: Deps, sel?: string): Promise<Screen> {
   return withBox(d, sel, async (c) => {
-    const l = await boxAsk(d, c.target, c.box.name, "log", "log --json", READ_LIMIT_MS);
+    const l = await boxAsk(d, c.target, c.box.name, "log", "logs --json", READ_LIMIT_MS);
     if (isStop(l)) return stopScreen(d, l, c.box.name);
     const s = await readStatus(d, c);
     if (isStop(s)) return stopScreen(d, s, c.box.name);

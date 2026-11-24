@@ -5,7 +5,7 @@
 // ID. A mismatch stops the command and names the cause. Pairing again is the only way to change it.
 import { type Config, type ConfigRead, findBox, type Home, knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { Runner } from "./run.ts";
-import { ANSWERS, type Answer, type Hello, type Kind, readAnswer } from "./schema.ts";
+import { type Answer, type Hello, type Kind, READS, readAnswer } from "./schema.ts";
 import { boxCall, type SshFailure, type Target } from "./ssh.ts";
 import { type AppKind, type Peer, readTailnet, type StatusRead, tailnetProblem, type TailnetState, whichApp } from "./tailscale.ts";
 
@@ -79,16 +79,9 @@ export function sshStop(name: string, why: SshFailure, limitMs: number): Stop {
 }
 
 const versionStop = (name: string, theirs: number): Stop =>
-  theirs > ANSWERS
-    ? { stop: `${name} answers in version ${theirs}, and this laptop reads version ${ANSWERS}.`, next: "Update taskbox on this laptop." }
-    : { stop: `${name} answers in version ${theirs}, and this laptop reads version ${ANSWERS}.`, next: "Update taskbox on the box: at the box, as your admin user, type taskbox update." };
-
-const BOX_ERRORS: Record<string, Stop> = {
-  "state-unreadable": { stop: "The box can't show its state to remote.", next: "Nothing to do: agents fix it on the box." },
-  "jobs-unreadable": { stop: "The box can't show its jobs to remote.", next: "Nothing to do: agents fix it on the box." },
-  unreadable: { stop: "The box couldn't read its own install.", next: "Nothing to do: agents fix it on the box." },
-  usage: { stop: "The box didn't take the command.", next: "Update taskbox on this laptop, or on the box." },
-};
+  theirs > Math.max(...READS)
+    ? { stop: `${name} answers in version ${theirs}, and this laptop reads versions ${READS.join(" and ")}.`, next: "Update taskbox on this laptop." }
+    : { stop: `${name} answers in version ${theirs}, and this laptop reads versions ${READS.join(" and ")}.`, next: "Update taskbox on the box: at the box, as your admin user, type taskbox update." };
 
 // One of the box's answers, read against the schema. Anything that doesn't match stops the command.
 export async function ask<K extends Kind>(d: Deps, t: Target, name: string, kind: K, line: string, limitMs: number): Promise<Answer<K> | Stop> {
@@ -97,7 +90,7 @@ export async function ask<K extends Kind>(d: Deps, t: Target, name: string, kind
   const a = readAnswer(kind, r.stdout);
   if (a.ok) return a.answer;
   if (a.why === "version") return versionStop(name, a.theirs);
-  if (a.why === "box-error") return BOX_ERRORS[a.error]!;
+  if (a.why === "box-error") return { stop: `${name} says: ${a.error.message}`, next: a.error.fix ?? "Update taskbox on this laptop, or on the box." };
   return { stop: `${name}'s answer to ${kind} doesn't match what taskbox reads (${a.detail}), so the command stopped.`, next: "Update taskbox on this laptop and on the box. If they match, agents look." };
 }
 
@@ -139,7 +132,7 @@ export async function connectBox(d: Deps, box: Paired, state: TailnetState): Pro
   const knownHosts = knownHostsFor(d.home, box.node);
   writeKnownHosts(knownHosts, box.node, box.hostKey);
   const target: Target = { address: p.address, node: box.node, knownHosts };
-  const h = await ask(d, target, box.name, "hello", "hello", 20_000);
+  const h = await ask(d, target, box.name, "hello", `hello --json --answers ${READS.join(",")}`, 20_000);
   if (isStop(h)) return h;
   const bad = helloStop(box.name, h, box.installId);
   if (bad) return bad;

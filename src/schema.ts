@@ -202,6 +202,7 @@ export function readEnvelopes(stdout: string, expect: { command?: string; instal
 export type Read<T> =
   | { ok: true; answer: T; version: number }
   | { ok: false; why: "unreachable"; detail: string }
+  | { ok: false; why: "version"; theirs: number }
   | { ok: false; why: "box-error"; error: { code: string; message: string; fix: string | null } };
 
 export function readAnswerOf<T>(kind: Kind, stdout: string, installId?: string | null): Read<T> {
@@ -210,6 +211,8 @@ export function readAnswerOf<T>(kind: Kind, stdout: string, installId?: string |
   try {
     v = lines.length === 1 ? JSON.parse(lines[0]!) : undefined;
   } catch {}
+  // A version this taskbox doesn't read: told apart, so the line can say which side to update.
+  if (isObj(v) && Number.isSafeInteger(v.answers) && !(READS as readonly unknown[]).includes(v.answers)) return { ok: false, why: "version", theirs: v.answers as number };
   // N-1: a box still on version 3 (v2.6.1 after a rollback) answers its v2.x line.
   if (isObj(v) && v.answers === 3) {
     if (Buffer.byteLength(lines[0]!) > ANSWER_MAX_BYTES) return { ok: false, why: "unreachable", detail: "an answer too long" };

@@ -12,7 +12,7 @@ export const commands: CommandSpec[] = [
     options: [{ name: "--state", value: "FOLDER" }],
     shell: true,
     sharedReads: true,
-    check: ({ opts }) => (opts.state !== undefined && opts.json !== undefined ? "--state is for status -w." : undefined),
+    check: ({ opts, flags }) => (opts.state !== undefined && flags.json !== undefined ? "--state is for status -w." : undefined),
     async run(c) {
       const { loadConfig } = await import("../config.ts");
       const { isAdmin } = await import("../elevate.ts");
