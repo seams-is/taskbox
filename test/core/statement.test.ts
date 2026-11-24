@@ -79,3 +79,12 @@ describe("the box's check", () => {
     });
   }
 });
+
+describe("review fixes: H1", () => {
+  test("args that hide a key in __proto__ are refused, never compared equal", async () => {
+    const hidden = JSON.parse('{"force":false,"timeout":0,"__proto__":{"admin":true}}');
+    expect(canonical(hidden)).toBeUndefined();
+    expect(canonical(JSON.parse('{"a":{"constructor":{"x":1}}}'))).toBeUndefined();
+    expect(await check(signedWord(base(), sign(base())), { want: { ...want, args: hidden } })).toMatchObject({ ok: false, code: "denied" });
+  });
+});

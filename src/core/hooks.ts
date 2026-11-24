@@ -10,6 +10,10 @@
 import type { Config, Kind, Paths } from "../config.ts";
 import type { Log } from "../log.ts";
 import type { Sys } from "../sys.ts";
+import { badKey } from "./rootfile.ts";
+
+// How long the loop waits for one hook's afterEnd: it runs in the job's cleanup.
+export const HOOK_MS = 30_000;
 
 export interface HookDeps {
   sys: Sys;
@@ -60,8 +64,10 @@ export async function afterEnd(hooks: readonly JobHook[], d: HookDeps, j: JobEnd
   for (const h of hooks) {
     if (!h.afterEnd) continue;
     try {
-      const r = await h.afterEnd(d, j);
-      for (const [k, v] of Object.entries(r ?? {})) if (!(k in out)) out[k] = v;
+      let cancel = () => {};
+      const limit = new Promise<never>((_, no) => (cancel = d.sys.after(HOOK_MS, () => no(new Error(`no answer in ${HOOK_MS / 1000} s`)))));
+      const r = await Promise.race([h.afterEnd(d, j), limit]).finally(() => cancel());
+      for (const [k, v] of Object.entries(r ?? {})) if (!badKey(k) && !Object.hasOwn(out, k)) out[k] = v;
     } catch (e) {
       d.log.write(`slot ${j.slot}: ${h.name} after the job: ${String((e as Error)?.message ?? e).replace(/[^\x20-\x7e]/g, " ").slice(0, 120)}`);
     }
@@ -71,7 +77,8 @@ export async function afterEnd(hooks: readonly JobHook[], d: HookDeps, j: JobEnd
 
 // The line written: the hooks' fields under the loop's own, so a hook adds and never replaces.
 export function withHookFields<T extends object>(record: T, extra: Record<string, unknown>): T {
-  const out: Record<string, unknown> = { ...extra };
-  for (const [k, v] of Object.entries(record)) if (v !== undefined || !(k in out)) out[k] = v;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(extra)) if (!badKey(k)) out[k] = v;
+  for (const [k, v] of Object.entries(record)) if (v !== undefined || !Object.hasOwn(out, k)) out[k] = v;
   return out as T;
 }

@@ -10,7 +10,7 @@ import { loopDeps, tempRoot } from "../helpers.ts";
 const job = { slot: 1, kind: "macos" as const, vm: "job-x", labels: ["taskbox"] };
 const deps = () => {
   const lines: string[] = [];
-  return { d: { log: { write: (l: string) => lines.push(l) } } as unknown as HookDeps, lines };
+  return { d: { sys: { after: () => () => {} }, log: { write: (l: string) => lines.push(l) } } as unknown as HookDeps, lines };
 };
 
 describe("the job hooks", () => {
@@ -88,5 +88,32 @@ describe("in the loop", () => {
     expect(record).toMatchObject({ job: "integration", result: "finished" });
     const line = JSON.parse(readFileSync(d.paths.jobsFile, "utf8"));
     expect(line).toMatchObject({ id: "j_abcdefgh", result: "finished", job: "integration" });
+  });
+});
+
+describe("review fixes: hooks' keys", () => {
+  test("a hook's __proto__ key never reaches the record's prototype", async () => {
+    const { d } = deps();
+    const evil: JobHook = { name: "evil", afterEnd: async () => JSON.parse('{"__proto__":{"result":"forged"},"id":"j_1"}') };
+    const extra = await afterEnd([evil], d, { ...job, outcome: "done", vmDeleted: true });
+    const line: Record<string, unknown> = withHookFields({ v: 1 }, extra);
+    expect(Object.getPrototypeOf(line)).toBe(Object.prototype);
+    expect(line).toEqual({ v: 1, id: "j_1" });
+  });
+});
+
+describe("review fixes: a hook that never answers", () => {
+  test("afterEnd gives a hook its time limit, then carries on", async () => {
+    const { FakeSys } = await import("../fake.ts");
+    const sys = new FakeSys();
+    const lines: string[] = [];
+    const d = { sys, log: { write: (l: string) => lines.push(l) } } as unknown as HookDeps;
+    const stuck: JobHook = { name: "stuck", afterEnd: () => new Promise(() => {}) };
+    const fine: JobHook = { name: "fine", afterEnd: async () => ({ id: "j_1" }) };
+    const out = afterEnd([stuck, fine], d, { ...job, outcome: "done", vmDeleted: true });
+    await Promise.resolve();
+    await sys.sleep(31_000);
+    expect(await out).toEqual({ id: "j_1" });
+    expect(lines.join()).toContain("stuck after the job: no answer in 30 s");
   });
 });

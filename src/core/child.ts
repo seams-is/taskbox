@@ -7,14 +7,18 @@
 // LaunchDaemon of launchd's own (oneShot below). launchd ends a job's whole process group on bootout,
 // so a reload run from the child would end the child that asked for it, and leave the daemon unloaded.
 // v2's undo already reloads tailscaled this way (ops.ts restartServices); v3 makes it the one way.
+import { lstatSync, writeSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Sys } from "../sys.ts";
 import type { EventLog } from "./events.ts";
-import { isObj, plain } from "./rootfile.ts";
+import { isObj, plain, safeParse, writeOwnedText } from "./rootfile.ts";
 import { end, type Op, opEvent, type OpFolder, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
 import { canonical, type Json } from "./statement.ts";
 
-// A report line: this prefix, then one JSON object.
+// A report line: this prefix, then one JSON object, on the child's fd 3 and nowhere else. The
+// programs a child runs get fds 0 to 2 only, so nothing they print can pass as a report.
 export const REPORT = "taskbox-report ";
+export const REPORT_FD = 3;
 export const REPORT_MAX = 4000;
 
 export interface Report {
@@ -31,12 +35,25 @@ export function reportLine(r: Report): string {
   return line;
 }
 
+// The child's side: one report, written whole to its report channel. False once nobody reads it, as
+// after its guard was reloaded (seen in a Tart guest: EPIPE): the child carries on, and its op's end
+// is the next guard's to settle (see the PR's notes for WP4).
+export function report(r: Report, fd = REPORT_FD): boolean {
+  const line = `${reportLine(r)}\n`;
+  try {
+    writeSync(fd, line);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // The guard's side: a report from one line, strictly, or undefined for any other line.
 export function parseReport(line: string): Report | undefined {
   if (!line.startsWith(REPORT) || line.length > REPORT_MAX) return undefined;
   let v: unknown;
   try {
-    v = JSON.parse(line.slice(REPORT.length));
+    v = safeParse(line.slice(REPORT.length));
   } catch {
     return undefined;
   }
@@ -66,8 +83,9 @@ export interface ChildDeps {
 }
 
 // Applies one report to the op, writing the record and its events. A report that can't apply (a phase
-// that goes back, an event type the guard doesn't write) is logged and dropped; the op carries on.
-export function applyReport(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, op: Op, r: Report): Op {
+// that goes back, an event type its op doesn't allow) is logged and dropped; the op carries on.
+// events: the event types this op's child may write, each a whole type or a family ending in ".".
+export function applyReport(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, op: Op, r: Report, events: readonly string[] = []): Op {
   let next = op;
   try {
     if (r.phase !== undefined) next = toPhase(next, r.phase, r.progress ?? null);
@@ -82,7 +100,9 @@ export function applyReport(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">
     const ev = opEvent(op, next);
     if (ev) write(d, ev);
   }
-  if (r.event) write(d, { type: r.event.type, text: r.event.text, op: op.id, subject: op.subject, actor: op.actor, ...(r.event.data ? { data: r.event.data } : {}) });
+  if (r.event && !events.some((t) => (t.endsWith(".") ? r.event!.type.startsWith(t) : r.event!.type === t))) {
+    d.log(`${op.id}: an event of type ${r.event.type.replace(/[^\x20-\x7e]/g, " ").slice(0, 40)} isn't one this op writes, so it was dropped`);
+  } else if (r.event) write(d, { type: r.event.type, text: r.event.text, op: op.id, subject: op.subject, actor: op.actor, ...(r.event.data ? { data: r.event.data } : {}) });
   return next;
 }
 
@@ -104,14 +124,18 @@ export interface Running {
 // A child that exits without ending its op ends it as failed, with its exit code. The child leads a
 // process group of its own: launchd ends the guard's whole process group when the guard is booted
 // out, and a child left in it ends with it (seen in a Tart guest: SIGTERM, then gone).
-export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[]): Running {
+// Reports come only on the child's own channel (REPORT_FD); its output goes to the log as text.
+export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Running {
   let cur = op;
   const p = d.sys.spawn(cmd, args, {
     group: true,
     onLine: (line) => {
+      if (line.trim()) d.log(`${op.id}: ${line.replace(/[^\x20-\x7e]/g, " ").slice(0, 200)}`);
+    },
+    onReport: (line) => {
       const r = parseReport(line);
-      if (r) cur = applyReport(d, cur, r);
-      else if (line.trim()) d.log(`${op.id}: ${line.replace(/[^\x20-\x7e]/g, " ").slice(0, 200)}`);
+      if (r) cur = applyReport(d, cur, r, o.events);
+      else d.log(`${op.id}: a line on the report channel isn't a report`);
     },
   });
   const done = (p.done ?? p.exited).then(
@@ -131,10 +155,10 @@ export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[]): Run
 export class Children {
   private live = new Map<string, Running>();
   constructor(private d: ChildDeps) {}
-  start(op: Op, cmd: string, args: string[]): Running {
+  start(op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Running {
     const have = this.live.get(op.id);
     if (have) return have;
-    const r = runChild(this.d, op, cmd, args);
+    const r = runChild(this.d, op, cmd, args, o);
     this.live.set(op.id, r);
     void r.done.finally(() => this.live.delete(op.id));
     return r;
@@ -210,18 +234,28 @@ export const oneShotLabel = (name: string) => {
 
 export interface OneShotDeps {
   sys: Pick<Sys, "run">;
-  write: (path: string, text: string, mode: number) => void;
   chown: (path: string, uid: number, gid: number) => void;
   timeoutMs: number;
+  rootUid?: number; // 0 on the box
+}
+
+// The folder a root file goes in must be root's and writable by nobody else, so nothing in it can
+// be swapped for a link between the check and the write.
+function rootFolder(path: string, rootUid: number): void {
+  const st = lstatSync(dirname(path));
+  if (!st.isDirectory() || st.uid !== rootUid || (st.mode & 0o022) !== 0) throw new Error(`${dirname(path)} isn't root's alone, so the one-shot isn't written there`);
 }
 
 // Asks launchd to reload o.target through the one-shot: writes the token, boots out a one-shot left
 // from before, writes the one-shot's plist as root's, and bootstraps it. True when launchd took it.
+// Both files are written root's way (rootfile.ts): a new name of their own, no link followed.
 export async function reloadThroughLaunchd(d: OneShotDeps, o: OneShot): Promise<boolean> {
-  d.write(o.token, "", 0o600);
+  const root = d.rootUid ?? 0;
+  rootFolder(o.token, root);
+  rootFolder(o.self, root);
+  writeOwnedText(o.token, "", { mode: 0o600, owner: root, chown: d.chown });
   await d.sys.run("/bin/launchctl", ["bootout", `system/${o.job}`], { timeoutMs: d.timeoutMs });
-  d.write(o.self, oneShotPlist(o.job, oneShotScript(o)), 0o644);
-  d.chown(o.self, 0, 0);
+  writeOwnedText(o.self, oneShotPlist(o.job, oneShotScript(o)), { mode: 0o644, owner: root, chown: d.chown });
   const r = await d.sys.run("/bin/launchctl", ["bootstrap", "system", o.self], { timeoutMs: d.timeoutMs });
   return r.code === 0;
 }

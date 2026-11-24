@@ -92,7 +92,7 @@ describe("the keeping pass", () => {
     const pass = keepingPass.make({ ...c, rootUid: uid })!;
     await pass.start!(sys.now())!();
     expect(readPending(s.pending, uid)).toEqual({ kind: "ok", value: noPending() });
-    expect(readEvents([{ dir: s.events, owner: uid, writer: "guard" }])).toMatchObject([{ type: "confirm.lapsed", subject: "channel", actor: "taskbox" }]);
+    expect(readEvents([{ dir: s.events, owner: uid, writer: "guard" }]).events).toMatchObject([{ type: "confirm.lapsed", subject: "channel", actor: "taskbox" }]);
   });
   test("a pending file it can't read is said once, and left", async () => {
     const { c, s, sys, lines } = ctx(true);
@@ -102,5 +102,36 @@ describe("the keeping pass", () => {
     await pass.start!(sys.now())!();
     await pass.start!(sys.now())!();
     expect(lines).toEqual(["keeping: the changes waiting for confirm can't be read: it doesn't parse"]);
+  });
+});
+
+describe("review fixes: L2", () => {
+  test("a pass whose start or next throws is logged and passed over; the others run", async () => {
+    const order: string[] = [];
+    const lines: string[] = [];
+    const bad: GuardPass = {
+      name: "bad",
+      at: "before",
+      start: () => {
+        throw new Error("start");
+      },
+      next: () => {
+        throw new Error("next");
+      },
+    };
+    const good: GuardPass = { name: "good", at: "tick", next: () => async () => void order.push("good") };
+    const p = new Passes([bad, good], clock(), (l) => lines.push(l));
+    p.begin("before");
+    p.tick();
+    await p.settle();
+    expect(order).toEqual(["good"]);
+    expect(lines).toEqual(["the bad pass failed: start", "the bad pass failed: next"]);
+  });
+  test("a maker that throws leaves its pass out", async () => {
+    const { makePasses } = await import("../../src/core/passes.ts");
+    const lines: string[] = [];
+    const list = makePasses([{ name: "x", make: () => { throw new Error("no"); } }, { name: "y", make: () => ({ name: "y", at: "tick", next: () => undefined }) }], {} as PassCtx, (l) => lines.push(l));
+    expect(list.map((p) => p.name)).toEqual(["y"]);
+    expect(lines).toEqual(["the x pass couldn't start: no"]);
   });
 });

@@ -434,7 +434,7 @@ export async function restartServices(d: OpsDeps, now: string, was: string, chow
       writeFileSync(d.paths.tailscaledPlist, want, { mode: 0o644 });
       // One left from an undo before is booted out and replaced (core/child.ts).
       const loaded = await reloadThroughLaunchd(
-        { sys: d.sys, write: (path, text, mode) => writeFileSync(path, text, { mode }), chown, timeoutMs: LAUNCHCTL_MS },
+        { sys: d.sys, chown, timeoutMs: LAUNCHCTL_MS, rootUid: d.rootUid ?? 0 },
         { job: RELOAD_JOB, target: TAILSCALED_LABEL, plist: d.paths.tailscaledPlist, token: reloadToken(d.paths), self: reloadPlistPath(d.paths), waitS: BOOTOUT_WAIT_S },
       );
       if (!loaded) missed.push("tailscaled");

@@ -35,9 +35,13 @@ export function parseNonces(v: unknown): Nonces | string {
 // The subject's nonce now, or undefined when it has none yet.
 export const currentNonce = (s: Nonces, subject: string): string | undefined => (Object.hasOwn(s.subjects, subject) ? s.subjects[subject]!.nonce : undefined);
 
-// The subject's nonce, made when it has none: what the laptop asks for before it signs.
-export function nonceFor(s: Nonces, subject: string, now: number, rand: NonceRand = realNonce): { state: Nonces; nonce: string; changed: boolean } {
+// The subject's nonce, made when it has none: what the laptop asks for before it signs. Only for a
+// subject that exists: box and rules always, a workspace while the caller's exists() says it is there,
+// so nobody can push live subjects out by asking for made-up ones.
+export const always = (subject: string) => subject === "box" || subject === "rules";
+export function nonceFor(s: Nonces, subject: string, now: number, rand: NonceRand = realNonce, exists: (subject: string) => boolean = always): { state: Nonces; nonce: string; changed: boolean } {
   if (!SUBJECT.test(subject)) throw new Error("not a subject for a nonce");
+  if (!always(subject) && !exists(subject)) throw new Error(`${subject} isn't one this box has, so it has no nonce`);
   const have = currentNonce(s, subject);
   if (have) return { state: s, nonce: have, changed: false };
   return { ...rotateNonce(s, subject, now, rand), changed: true };

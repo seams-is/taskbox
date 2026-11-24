@@ -15,7 +15,7 @@
 // proof of a touch. Lasting changes wait for confirm at the box (pending.ts).
 import { fingerprint } from "../approver.ts";
 import { fromB64url, toB64url, verifySignature, type VerifyDeps } from "../workspace/approval.ts";
-import { isObj } from "./rootfile.ts";
+import { badKey, isObj, safeParse } from "./rootfile.ts";
 import { NONCE, SUBJECT } from "./nonces.ts";
 
 export const CONTROL_NS = "taskbox-control";
@@ -60,11 +60,15 @@ export function canonical(v: unknown, depth = 4): Json | undefined {
     return out;
   }
   if (isObj(v)) {
+    // A key that could reach a prototype makes the whole value one taskbox doesn't take: assigned,
+    // __proto__ would vanish from the text and hide what it holds from the comparison.
+    if (Object.getPrototypeOf(v) !== Object.prototype && Object.getPrototypeOf(v) !== null) return undefined;
     const out: { [k: string]: Json } = {};
     for (const k of Object.keys(v).sort()) {
+      if (badKey(k)) return undefined;
       const c = canonical(v[k], depth - 1);
       if (c === undefined) return undefined;
-      out[k] = c;
+      Object.defineProperty(out, k, { value: c, enumerable: true, writable: true, configurable: true });
     }
     return out;
   }
@@ -90,7 +94,7 @@ export function parseStatement(text: string): Statement | undefined {
   if (text.length > STATEMENT_MAX || /[^\x20-\x7e]/.test(text)) return undefined;
   let v: unknown;
   try {
-    v = JSON.parse(text);
+    v = safeParse(text);
   } catch {
     return undefined;
   }
@@ -132,7 +136,8 @@ export interface Want {
 
 // Checks a signed word against the box, the clock, the nonce, the command and the pinned keys.
 // keys: approvers.ts pinnedKeys, never a key from settings or the request. nonce: the subject's
-// current nonce (nonces.ts currentNonce). The caller rotates the nonce once the request applies.
+// current nonce (nonces.ts currentNonce). This is the pure check: callers use signed.ts consumeSigned,
+// which rotates the nonce under its lock before the request applies.
 export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readonly string[]; installId: string; now: number; nonce: (subject: string) => string | undefined; want: Want }): Promise<Checked> {
   if (!o.keys.length) return refuse("denied", "No approver key is pinned on this box yet. Type taskbox key trust approver at the box.");
   const parts = splitSigned(o.word);

@@ -6,7 +6,8 @@ import { eventLog, keepEvents } from "../core/events.ts";
 import { keepOps } from "../core/ops.ts";
 import { everyPass, type PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
-import { lapse, readPending, writePending } from "../core/pending.ts";
+import { lapse, noPending, parsePending, PENDING_MAX_BYTES } from "../core/pending.ts";
+import { updateOwnedJson } from "../core/rootfile.ts";
 import { GUARD_FULL_MS } from "../guard.ts";
 
 export const keepingPass: PassMaker = {
@@ -20,18 +21,20 @@ export const keepingPass: PassMaker = {
     return everyPass("keeping", "after", GUARD_FULL_MS, async () => {
       const problems: string[] = [];
       const now = c.sys.now();
-      const pending = readPending(s.pending, root);
-      if (pending.kind === "ok") {
-        const l = lapse(pending.value, now);
-        if (l.lapsed.length) {
-          writePending(s.pending, l.state, {});
-          for (const p of l.lapsed) {
-            try {
-              events.write({ type: "confirm.lapsed", subject: p.subject, actor: "taskbox", text: `A ${p.kind} waited 24 hours for confirm at the box and lapsed.`, ...(p.op ? { op: p.op } : {}) });
-            } catch {}
-          }
+      // Under pending.json's lock, so a confirm answered at the same time is never undone (rootfile.ts).
+      try {
+        const lapsed = await updateOwnedJson(s.pending, { owner: root, max: PENDING_MAX_BYTES }, parsePending, noPending, (p) => {
+          const l = lapse(p, now);
+          return { state: l.lapsed.length ? l.state : p, out: l.lapsed };
+        }, { mode: 0o644, owner: root });
+        for (const p of lapsed) {
+          try {
+            events.write({ type: "confirm.lapsed", subject: p.subject, actor: "taskbox", text: `A ${p.kind} waited 24 hours for confirm at the box and lapsed.`, ...(p.op ? { op: p.op } : {}) });
+          } catch {}
         }
-      } else if (pending.kind === "bad") problems.push(`the changes waiting for confirm can't be read: ${pending.why}`);
+      } catch (e) {
+        problems.push(`the changes waiting for confirm can't be read: ${String((e as Error).message).replace(/^.*can't be read: /, "")}`);
+      }
       keepEvents({ dir: s.events, owner: root }, now);
       keepOps({ dir: s.ops, owner: root }, now);
       const now2 = problems.join("; ");

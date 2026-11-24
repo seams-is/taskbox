@@ -103,10 +103,15 @@ export function parseOp(v: unknown): Op | string {
 
 export type Begun = { kind: "start"; op: Op } | { kind: "attach"; op: Op } | { kind: "busy"; op: Op; why: string };
 
-const same = (a: unknown, b: unknown) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+const same = (a: unknown, b: unknown) => {
+  const x = canonical(a);
+  const y = canonical(b);
+  return x !== undefined && y !== undefined && JSON.stringify(x) === JSON.stringify(y);
+};
 
 // Starts an op, attaches to the running one it repeats, or refuses as busy.
 export function begin(running: readonly Op[], t: OpType, o: { subject: string; params: Record<string, Json>; actor: string; deadline?: number | null }, now: number, rand: Rand = realRand): Begun {
+  if (!isObj(canonical(o.params))) throw new Error("an op's params are an object of JSON values, with no key that reaches a prototype");
   const live = running.filter((r) => r.state === "running");
   const twin = live.find((r) => r.type === t.type && r.subject === o.subject);
   if (twin) {
@@ -240,10 +245,14 @@ export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: s
   return { ops, bad };
 }
 
-// Removes records past keeping. The ids removed.
+// Removes records past keeping. Age is counted from the newest record's time when the clock is past
+// it, so a clock that jumps ahead never ages out the days kept. The ids removed.
 export function keepOps(f: OpFolder, now: number): string[] {
   const gone: string[] = [];
-  for (const op of listOps(f).ops.filter((o) => expired(o, now))) {
+  const ops = listOps(f).ops;
+  const newest = Math.max(0, ...ops.map((o) => o.endedAt ?? o.startedAt));
+  const ref = ops.length ? Math.min(now, newest) : now;
+  for (const op of ops.filter((o) => expired(o, ref))) {
     try {
       unlinkSync(join(f.dir, `${op.id}.json`));
       gone.push(op.id);

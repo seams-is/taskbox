@@ -37,11 +37,27 @@ export interface PassMaker {
   make(c: PassCtx): GuardPass | undefined; // undefined: this guard doesn't run it
 }
 
+// The passes the makers give. A maker that throws leaves its pass out, and says so, so one bad pass
+// never stops the guard before its first pf pass.
+export function makePasses(makers: readonly PassMaker[], c: PassCtx, log: (line: string) => void): GuardPass[] {
+  const out: GuardPass[] = [];
+  for (const m of makers) {
+    try {
+      const p = m.make(c);
+      if (p) out.push(p);
+    } catch (e) {
+      log(`the ${m.name} pass couldn't start: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
+    }
+  }
+  return out;
+}
+
 export class Passes {
   private running = new Map<string, Promise<unknown>>();
   constructor(
     private list: readonly GuardPass[],
     private clock: Pick<Sys, "now">,
+    private log: (line: string) => void = () => {},
   ) {
     const names = list.map((p) => p.name);
     if (new Set(names).size !== names.length) throw new Error("two guard passes share a name");
@@ -61,13 +77,19 @@ export class Passes {
   }
   // The passes that start at this stage.
   begin(stage: "before" | "after"): void {
-    for (const p of this.list) if (p.at === stage) this.run(p, p.start?.(this.clock.now()));
+    for (const p of this.list) if (p.at === stage) this.run(p, this.ask(p, () => p.start?.(this.clock.now())));
   }
   tick(): void {
     const now = this.clock.now();
-    for (const p of this.list) {
-      const job = p.next(now, this.running.has(p.name));
-      this.run(p, job);
+    for (const p of this.list) this.run(p, this.ask(p, () => p.next(now, this.running.has(p.name))));
+  }
+  // A pass's start or next that throws is logged, and that pass skips this turn; the others run.
+  private ask(p: GuardPass, f: () => Job | undefined): Job | undefined {
+    try {
+      return f();
+    } catch (e) {
+      this.log(`the ${p.name} pass failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
+      return undefined;
     }
   }
   // For tests and a clean stop: every pass running now, ended.

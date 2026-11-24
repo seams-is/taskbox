@@ -189,3 +189,30 @@ describe("a request", () => {
 function dirname(p: string): string {
   return p.slice(0, p.lastIndexOf("/"));
 }
+
+describe("review fixes: H1 in requests", () => {
+  test("a body with __proto__ is refused before its kind's validator sees it", () => {
+    const name = "rq_01JD8Q4AAAAAAAAAAAAAAAAAAA.drain.json";
+    const text = `{"v":1,"id":"rq_01JD8Q4AAAAAAAAAAAAAAAAAAA","at":${T},"kind":"drain","body":{"__proto__":{"force":true}}}`;
+    const f: SpoolFile = { bytes: new TextEncoder().encode(text), uid, nlink: 1, isFile: true };
+    expect(readRequest(name, f, { owner: uid, now: T, kinds })).toMatchObject({ ok: false, why: "the request doesn't parse" });
+  });
+});
+
+describe("review fixes: L9 and L10", () => {
+  test("L9: each spool keeps its own outcomes", async () => {
+    const { rootState } = await import("../../src/core/paths.ts");
+    const s = rootState("/r");
+    expect(new Set([s.outcomes("agent"), s.outcomes("service"), s.outcomes("pool-1")]).size).toBe(3);
+  });
+  test("L10: a request of a kind no longer read goes once stale, and folders are counted each pass", async () => {
+    const dir = spool();
+    const old = "rq_01JD8Q4AAAAAAAAAAAAAAAAAAA.retired.json";
+    writeFileSync(join(dir, old), "{}");
+    utimesSync(join(dir, old), (T - 3 * 60_000) / 1000, (T - 3 * 60_000) / 1000);
+    mkdirSync(join(dir, "a-folder"));
+    const { report } = await pass(dir);
+    expect(readdirSync(dir).sort()).toEqual(["a-folder"]);
+    expect(report.problems.join()).toContain("1 name that isn't a plain file");
+  });
+});

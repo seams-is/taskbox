@@ -9,6 +9,7 @@
 // is readable by every account on the box.
 import { createHash } from "node:crypto";
 import { looksSecret } from "./events.ts";
+import { canonical } from "./statement.ts";
 import { idOf, isId, type Rand, realRand } from "./ids.ts";
 import { isObj, plain, readOwnedJson, type Read, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
 
@@ -40,7 +41,16 @@ export interface PendingState {
 export const noPending = (): PendingState => ({ v: 1, items: [] });
 
 const canon = (v: unknown) => JSON.stringify(v);
-export const digestOf = (kind: Kind, subject: string, payload: unknown) => createHash("sha256").update(canon([kind, subject, payload])).digest("hex");
+// Over canonical JSON, so the same change with its keys in another order is the same digest. A
+// payload JSON can't say one way digests as nothing, and raise refuses it.
+export const digestOf = (kind: Kind, subject: string, payload: unknown) => {
+  const c = canonical({ kind, subject, payload: payload ?? null }, 6);
+  return c === undefined ? "" : createHash("sha256").update(JSON.stringify(c)).digest("hex");
+};
+// An item asked more than this after the clock's now was asked before the clock went back. It lapses,
+// so a clock set back never stretches its 24 hours.
+export const SKEW_MS = 5 * 60_000;
+const live = (p: { askedAt: number; lapsesAt: number }, now: number) => p.lapsesAt > now && p.askedAt <= now + SKEW_MS;
 
 function itemProblem(p: unknown): string | undefined {
   if (!isObj(p)) return "an item isn't an object";
@@ -51,7 +61,7 @@ function itemProblem(p: unknown): string | undefined {
   if (!time(p.askedAt) || !time(p.lapsesAt) || (p.lapsesAt as number) - (p.askedAt as number) !== LAPSE_MS) return "an item's times aren't ones taskbox reads";
   if (p.op !== undefined && !isId("op", p.op)) return "an item's op isn't an op id";
   if (Buffer.byteLength(canon(p.payload ?? null)) > PAYLOAD_MAX) return "an item's payload is too big";
-  if (p.digest !== digestOf(p.kind as Kind, p.subject as string, p.payload)) return "an item's digest isn't its own";
+  if (p.digest === "" || p.digest !== digestOf(p.kind as Kind, p.subject as string, p.payload)) return "an item's digest isn't its own";
   if (looksSecret(canon(p))) return "an item holds something shaped like a secret";
   return undefined;
 }
@@ -82,10 +92,11 @@ export type Raised = { ok: true; state: PendingState; item: Pending; again: bool
 // entry (again: true), so a re-run attaches to it. A full list refuses.
 export function raise(s: PendingState, a: Ask, now: number, rand: Rand = realRand): Raised {
   const digest = digestOf(a.kind, a.subject, a.payload);
-  const live = s.items.filter((p) => p.lapsesAt > now);
-  const same = live.find((p) => p.digest === digest);
+  if (!digest) return { ok: false, why: "The change's payload isn't one taskbox keeps." };
+  const same = s.items.find((p) => live(p, now) && p.digest === digest);
   if (same) return { ok: true, state: s, item: same, again: true };
-  if (live.length >= PENDING_MAX) return { ok: false, why: `${PENDING_MAX} changes wait for confirm already. Type taskbox confirm at the box first.` };
+  // Every item counts, lapsed ones too until the keeping pass removes them: the file holds PENDING_MAX.
+  if (s.items.length >= PENDING_MAX) return { ok: false, why: `${PENDING_MAX} changes are waiting or lapsed. Type taskbox confirm at the box, or wait a minute for the lapsed ones to go.` };
   const item: Pending = { id: idOf("pc", now, rand), kind: a.kind, subject: a.subject, shows: a.shows.map((l) => l.replace(/[^\x20-\x7e]/g, " ").slice(0, 120)).slice(0, SHOWS_MAX), actor: a.actor, askedAt: now, lapsesAt: now + LAPSE_MS, ...(a.op !== undefined ? { op: a.op } : {}), payload: a.payload, digest };
   const why = itemProblem(item);
   if (why) return { ok: false, why };
@@ -94,12 +105,12 @@ export function raise(s: PendingState, a: Ask, now: number, rand: Rand = realRan
 
 // Items past their 24 hours leave the list. The caller writes a confirm.lapsed event for each.
 export function lapse(s: PendingState, now: number): { state: PendingState; lapsed: Pending[] } {
-  const lapsed = s.items.filter((p) => p.lapsesAt <= now);
-  return lapsed.length ? { state: { v: 1, items: s.items.filter((p) => p.lapsesAt > now) }, lapsed } : { state: s, lapsed };
+  const lapsed = s.items.filter((p) => !live(p, now));
+  return lapsed.length ? { state: { v: 1, items: s.items.filter((p) => live(p, now)) }, lapsed } : { state: s, lapsed };
 }
 
 // What waits now, oldest first.
-export const waiting = (s: PendingState, now: number): Pending[] => s.items.filter((p) => p.lapsesAt > now).sort((a, b) => a.askedAt - b.askedAt);
+export const waiting = (s: PendingState, now: number): Pending[] => s.items.filter((p) => live(p, now)).sort((a, b) => a.askedAt - b.askedAt);
 
 export type Taken = { ok: true; state: PendingState; item: Pending } | { ok: false; why: string };
 
@@ -108,7 +119,7 @@ export type Taken = { ok: true; state: PendingState; item: Pending } | { ok: fal
 export function answer(s: PendingState, id: string, now: number): Taken {
   const item = s.items.find((p) => p.id === id);
   if (!item) return { ok: false, why: "Nothing with that id waits for confirm." };
-  if (item.lapsesAt <= now) return { ok: false, why: "That change waited 24 hours and lapsed. Ask for it again from the laptop." };
+  if (!live(item, now)) return { ok: false, why: "That change waited 24 hours and lapsed. Ask for it again from the laptop." };
   return { ok: true, state: { v: 1, items: s.items.filter((p) => p.id !== id) }, item };
 }
 

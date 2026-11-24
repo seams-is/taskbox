@@ -10,14 +10,14 @@ import { join } from "node:path";
 import type { Clock } from "../clock.ts";
 import { readUpTo } from "../workspace/read.ts";
 import { idOf, isId, monotonic, type Rand, realRand } from "./ids.ts";
-import { isObj, plain } from "./rootfile.ts";
+import { isObj, plain, safeParse } from "./rootfile.ts";
 
 export type Writer = "guard" | "loop";
 
 // The closed list of event families per writer. A type is <family>.<word>.
 export const FAMILIES: Record<Writer, readonly string[]> = {
-  guard: ["op", "drain", "pause", "resume", "stop", "start", "update", "rollback", "remove", "workspace", "key", "connect", "login", "guard", "check", "settings", "confirm", "takeover", "self-test"],
-  loop: ["op", "job", "vm", "image", "selftest", "self-test", "tool", "net", "check", "load"],
+  guard: ["events", "op", "drain", "pause", "resume", "stop", "start", "update", "rollback", "remove", "workspace", "key", "connect", "login", "guard", "check", "settings", "confirm", "takeover", "self-test"],
+  loop: ["events", "op", "job", "vm", "image", "selftest", "self-test", "tool", "net", "check", "load"],
 };
 const TYPE = /^([a-z][a-z-]{0,15})\.([a-z][a-z-]{0,23})$/;
 
@@ -38,6 +38,14 @@ export const TEXT_MAX = 240;
 export const KEEP_DAYS = 30;
 export const KEEP_MB = 200; // both writers together; each keeps half (keepEvents)
 export const READ_FILE_MAX = 64 * 1024 * 1024;
+// A day's events go in parts of at most this many bytes: <day>.jsonl, then <day>.1.jsonl and on, so
+// the cap can take a busy day's older parts and never the one being written.
+export const PART_MAX = 16 * 1024 * 1024;
+// What one reader takes in all, newest first; files past it are named as skipped.
+export const READ_MAX = 256 * 1024 * 1024;
+export const READ_FILES_MAX = 2_000;
+// Events one actor may write a minute; past it they are counted, and one events.dropped says so.
+export const PER_ACTOR_PER_MINUTE = 60;
 
 // Shapes that are secrets, or carry one, and so never go in an event.
 const SECRET_SHAPES = [
@@ -96,13 +104,24 @@ export function newEvent(writer: Writer, d: Draft, clock: Pick<Clock, "now">, ra
   return e;
 }
 
-export const dayFile = (at: string) => `${at.slice(0, 10)}.jsonl`;
-const DAY_FILE = /^\d{4}-\d\d-\d\d\.jsonl$/;
+export const dayFile = (at: string, part = 0) => `${at.slice(0, 10)}${part ? `.${part}` : ""}.jsonl`;
+const DAY_FILE = /^(\d{4}-\d\d-\d\d)(?:\.([1-9]\d{0,3}))?\.jsonl$/;
+// A file's day and part, so files sort by time: the day, then the part.
+const partOf = (name: string) => {
+  const m = DAY_FILE.exec(name);
+  return m ? { day: m[1]!, part: Number(m[2] ?? 0) } : undefined;
+};
+const byTime = (a: string, b: string) => {
+  const x = partOf(a)!;
+  const y = partOf(b)!;
+  return x.day < y.day ? -1 : x.day > y.day ? 1 : x.part - y.part;
+};
 
 export interface Folder {
   dir: string;
   owner: number; // the writer's uid
   chown?: (path: string, uid: number, gid: number) => void;
+  partMax?: number; // PART_MAX, smaller in tests
 }
 
 // Appends one event to its day's file. The folder is made when missing, the writer's at 755; a file is
@@ -111,7 +130,13 @@ export interface Folder {
 export function appendEvent(f: Folder, e: Event): void {
   const line = eventLine(e);
   ensureFolder(f);
-  const path = join(f.dir, dayFile(e.at));
+  const day = e.at.slice(0, 10);
+  const parts = readdirSync(f.dir)
+    .filter((n) => partOf(n)?.day === day)
+    .map((n) => partOf(n)!.part);
+  let part = parts.length ? Math.max(...parts) : 0;
+  if (sizeOf(join(f.dir, dayFile(day, part))) + Buffer.byteLength(line) > (f.partMax ?? PART_MAX)) part++;
+  const path = join(f.dir, dayFile(day, part));
   const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644);
   try {
     const st = fstatSync(fd);
@@ -173,7 +198,7 @@ function readFile(path: string, owner: number): string | undefined {
 export function parseEvent(line: string, writer: Writer): Event | undefined {
   let v: unknown;
   try {
-    v = JSON.parse(line);
+    v = safeParse(line);
   } catch {
     return undefined;
   }
@@ -182,46 +207,83 @@ export function parseEvent(line: string, writer: Writer): Event | undefined {
   return eventProblem(e) === undefined ? e : undefined;
 }
 
-// Both writers' events, merged by id, filtered. A writer's file that isn't safe to read is passed over.
-export function readEvents(sources: readonly (Source & { writer: Writer })[], f: Filter = {}): Event[] {
-  const out: Event[] = [];
-  const fromDay = f.since !== undefined ? new Date(f.since).toISOString().slice(0, 10) : undefined;
-  const toDay = f.until !== undefined ? new Date(f.until).toISOString().slice(0, 10) : undefined;
-  for (const s of sources) {
-    let names: string[];
-    try {
-      const st = lstatSync(s.dir);
-      if (!st.isDirectory() || st.uid !== s.owner) continue;
-      names = readdirSync(s.dir).filter((n) => DAY_FILE.test(n));
-    } catch {
-      continue;
-    }
-    for (const n of names) {
-      const day = n.slice(0, 10);
-      if ((fromDay && day < fromDay) || (toDay && day > toDay)) continue;
-      const text = readFile(join(s.dir, n), s.owner);
-      if (text === undefined) continue;
-      for (const line of text.split("\n")) {
-        if (!line) continue;
-        const e = parseEvent(line, s.writer);
-        if (!e) continue;
-        const t = Date.parse(e.at);
-        if (f.since !== undefined && t < f.since) continue;
-        if (f.until !== undefined && t > f.until) continue;
-        if (f.op !== undefined && e.op !== f.op) continue;
-        if (f.type !== undefined && e.type !== f.type && !e.type.startsWith(`${f.type}.`)) continue;
-        out.push(e);
-      }
-    }
-  }
-  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const seen = new Set<string>();
-  const merged = out.filter((e) => (seen.has(e.id) ? false : (seen.add(e.id), true)));
-  return f.limit !== undefined ? merged.slice(-Math.max(0, f.limit)) : merged;
+export interface EventsRead {
+  events: Event[];
+  skipped: string[]; // files that couldn't be read, or past the reader's cap: `taskbox events` says so
 }
 
-// Keeps one writer's folder within keepDays and maxBytes: days past keepDays go, then the oldest
-// day while the rest is over maxBytes. Today's file is never removed. The names removed.
+// Both writers' events, merged by id, filtered. Newest files are read first, up to the reader's cap;
+// a file that isn't safe to read, or past the cap, is named in skipped, never passed over unsaid.
+export function readEvents(sources: readonly (Source & { writer: Writer })[], f: Filter = {}, cap: { maxBytes?: number; maxFiles?: number } = {}): EventsRead {
+  const out: Event[] = [];
+  const skipped: string[] = [];
+  const fromDay = f.since !== undefined ? new Date(f.since).toISOString().slice(0, 10) : undefined;
+  const toDay = f.until !== undefined ? new Date(f.until).toISOString().slice(0, 10) : undefined;
+  const files: { path: string; name: string; s: Source & { writer: Writer } }[] = [];
+  for (const s of sources) {
+    try {
+      const st = lstatSync(s.dir);
+      if (!st.isDirectory()) {
+        skipped.push(s.dir);
+        continue;
+      }
+      if (st.uid !== s.owner) {
+        skipped.push(s.dir);
+        continue;
+      }
+      for (const name of readdirSync(s.dir)) {
+        const p = partOf(name);
+        if (!p || (fromDay && p.day < fromDay) || (toDay && p.day > toDay)) continue;
+        files.push({ path: join(s.dir, name), name, s });
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") skipped.push(s.dir);
+    }
+  }
+  files.sort((a, b) => byTime(b.name, a.name));
+  let bytes = 0;
+  const maxBytes = cap.maxBytes ?? READ_MAX;
+  const maxFiles = cap.maxFiles ?? READ_FILES_MAX;
+  let taken = 0;
+  for (const x of files) {
+    const size = sizeOf(x.path);
+    if (taken >= maxFiles || bytes + size > maxBytes) {
+      skipped.push(x.path);
+      continue;
+    }
+    const text = readFile(x.path, x.s.owner);
+    if (text === undefined) {
+      skipped.push(x.path);
+      continue;
+    }
+    taken++;
+    bytes += size;
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      const e = parseEvent(line, x.s.writer);
+      if (!e) continue;
+      const t = Date.parse(e.at);
+      if (f.since !== undefined && t < f.since) continue;
+      if (f.until !== undefined && t > f.until) continue;
+      if (f.op !== undefined && e.op !== f.op) continue;
+      if (f.type !== undefined && e.type !== f.type && !e.type.startsWith(`${f.type}.`)) continue;
+      out.push(e);
+    }
+  }
+  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : a.writer < b.writer ? -1 : a.writer > b.writer ? 1 : 0));
+  // One line per writer and id: a writer can't hide or stand in for the other's event by its id.
+  const seen = new Set<string>();
+  const merged = out.filter((e) => {
+    const k = `${e.writer} ${e.id}`;
+    return seen.has(k) ? false : (seen.add(k), true);
+  });
+  return { events: f.limit !== undefined ? merged.slice(-Math.max(0, f.limit)) : merged, skipped };
+}
+
+// Keeps one writer's folder within keepDays and maxBytes, every file counted, today's parts too:
+// files past keepDays go, then the oldest while the rest is over maxBytes. The newest file, the one
+// being written, is never removed. Age is counted from the newest file's day when the clock is past
+// it, so a clock that jumps ahead never ages out the days kept. The names removed.
 export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBytes?: number } = {}): string[] {
   const keepDays = o.keepDays ?? KEEP_DAYS;
   const maxBytes = o.maxBytes ?? (KEEP_MB / 2) * 1024 * 1024;
@@ -230,19 +292,24 @@ export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBy
     const st = lstatSync(f.dir);
     if (!st.isDirectory() || st.uid !== f.owner) return [];
     files = readdirSync(f.dir)
-      .filter((n) => DAY_FILE.test(n))
-      .sort()
+      .filter((n) => partOf(n) !== undefined)
+      .sort(byTime)
       .map((name) => ({ name, size: sizeOf(join(f.dir, name)) }));
   } catch {
     return [];
   }
-  const today = dayFile(new Date(now).toISOString());
-  const oldest = dayFile(new Date(now - keepDays * 86_400_000).toISOString());
+  if (!files.length) return [];
+  const newestDay = partOf(files.at(-1)!.name)!.day;
+  const nowDay = new Date(now).toISOString().slice(0, 10);
+  const ref = nowDay < newestDay ? now : Date.parse(`${newestDay}T00:00:00Z`);
+  const oldest = new Date(ref - keepDays * 86_400_000).toISOString().slice(0, 10);
+  // Files dated after the clock (it went back) are kept, and never hold up the others' ageing.
+  const future = files.filter((x) => partOf(x.name)!.day > nowDay && nowDay < newestDay);
   const gone: string[] = [];
   let total = files.reduce((n, x) => n + x.size, 0);
-  for (const x of files) {
-    if (x.name === today) break;
-    if (x.name < oldest || total > maxBytes) {
+  for (const x of files.slice(0, -1)) {
+    if (future.includes(x)) continue;
+    if (partOf(x.name)!.day < oldest || total > maxBytes) {
       try {
         unlinkSync(join(f.dir, x.name));
         gone.push(x.name);
@@ -281,14 +348,34 @@ export function appendAdmin(path: string, e: { id: string; name: string }, chown
 export interface EventLog {
   write(d: Draft): Event;
 }
-// Its ids keep their order within a millisecond.
-export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, rand: Rand = realRand): EventLog {
+// Its ids keep their order within a millisecond. One actor writes at most perActorPerMinute events a
+// minute; past it they are counted, and the actor's next write after the minute is preceded by one
+// events.dropped saying how many went.
+export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, rand: Rand = realRand, o: { perActorPerMinute?: number } = {}): EventLog {
   const next = monotonic(rand);
+  const limit = o.perActorPerMinute ?? PER_ACTOR_PER_MINUTE;
+  const windows = new Map<string, { from: number; n: number; dropped: number }>();
+  const put = (d: Draft) => {
+    const e = newEvent(writer, d, clock, rand, next);
+    appendEvent(f, e);
+    return e;
+  };
   return {
     write(d) {
-      const e = newEvent(writer, d, clock, rand, next);
-      appendEvent(f, e);
-      return e;
+      const now = d.at ?? clock.now();
+      let w = windows.get(d.actor);
+      if (!w || now - w.from >= 60_000) {
+        if (w?.dropped) put({ type: "events.dropped", actor: "taskbox", text: `${w.dropped} events from ${d.actor} were dropped in the minute before.`.slice(0, TEXT_MAX) });
+        w = { from: now, n: 0, dropped: 0 };
+        windows.set(d.actor, w);
+        if (windows.size > 1000) windows.delete(windows.keys().next().value!);
+      }
+      if (w.n >= limit) {
+        w.dropped++;
+        return newEvent(writer, d, clock, rand, next);
+      }
+      w.n++;
+      return put(d);
     },
   };
 }

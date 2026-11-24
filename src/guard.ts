@@ -9,7 +9,7 @@ import { type Config, DEFAULT_TUN, GUARD_LABEL, type Installed, LAUNCHCTL_MS, ty
 import type { Sys } from "./sys.ts";
 import { linkTarget } from "./layout.ts";
 import { vmStarting } from "./loopwatch.ts";
-import { type GuardPass, type PassMaker, Passes } from "./core/passes.ts";
+import { makePasses, type PassMaker, Passes } from "./core/passes.ts";
 import { passMakers } from "./passes/index.ts";
 import { Log } from "./log.ts";
 import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
@@ -222,10 +222,8 @@ export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () 
   // Only the guard under its current label writes root's shared state (labelProblem).
   const writer = labelProblem(process.env.XPC_SERVICE_NAME) === undefined;
   const ctx = { sys, cfg, p, log, writer, ...(ws ? { ws } : {}) };
-  const passes = new Passes(
-    makers.map((m) => m.make(ctx)).filter((x): x is GuardPass => x !== undefined),
-    sys,
-  );
+  const say = (l: string) => log.write(l);
+  const passes = new Passes(makePasses(makers, ctx, say), sys, say);
   // First, before the rules: after a restart, the pool's processes stop before anything else.
   passes.begin("before");
   // The record from before a restart of the guard, however old: its boot says whether the rules

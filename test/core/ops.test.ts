@@ -135,7 +135,7 @@ describe("records", () => {
   test("are kept 30 days after they end", () => {
     const f = folder();
     const old = end(started(drain), "succeeded", T);
-    const live = started(drain, {}, "x");
+    const live = { ...started(drain, {}, "x"), startedAt: T + KEEP_MS + 1 };
     writeOp(f, old);
     writeOp(f, live);
     expect(keepOps(f, T + KEEP_MS)).toEqual([]);
@@ -152,5 +152,23 @@ describe("events", () => {
     expect(opEvent(a, b)).toMatchObject({ type: "op.progress", text: "drain: drained, 0 jobs." });
     expect(opEvent(b, end(b, "succeeded", T))?.type).toBe("op.succeeded");
     expect(opEvent(b, b)).toBeUndefined();
+  });
+});
+
+describe("review fixes: H1 in params", () => {
+  test("params with a hidden __proto__ key are refused, and never attach", () => {
+    const hidden = JSON.parse('{"__proto__":{"admin":true}}');
+    expect(() => begin([], drain, { subject: "box", params: hidden, ...who }, T, rand)).toThrow();
+    const op = started(drain);
+    expect(() => begin([op], drain, { subject: "box", params: hidden, ...who }, T, rand)).toThrow();
+  });
+});
+
+describe("review fixes: L6 in ops", () => {
+  test("a clock that jumps ahead keeps the newest records' 30 days", () => {
+    const f = { dir: mkdtempSync(join(tmpdir(), "taskbox-ops-")), owner: uid };
+    const op = end(started(drain), "succeeded", T);
+    writeOp(f, op);
+    expect(keepOps(f, T + 365 * 86_400_000)).toEqual([]);
   });
 });

@@ -6,7 +6,7 @@
 // This file is pure apart from read and write. Who may make each change is the caller's:
 // - trustFirst: an admin at the box's screen, after a typed yes, when no key is pinned;
 // - add and replace: only after `confirm` at the box (a lasting change, pending.ts);
-// - remove: a signed request by another pinned key, at once (narrowing);
+// - remove: a signed request by another pinned key, at once (narrowing), with no ban;
 // - reset: an admin at the box, after a typed yes.
 import { approverKeyProblem, fingerprint, type Pin } from "../approver.ts";
 import { isObj, readOwnedJson, type Read, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
@@ -105,7 +105,9 @@ export function removeKey(s: Approvers, fp: string, signerFp: string): Change {
   if (!findKey(s, signerFp)) return no("The request isn't signed by a key this box pins.");
   if (fp === signerFp) return no("A key can't remove itself. Sign with another pinned key, or type taskbox key reset approver at the box.");
   if (!findKey(s, fp)) return no(`${fp} isn't pinned on this box.`);
-  return { ok: true, state: { ...s, gen: s.gen + 1, keys: s.keys.filter((k) => k.fingerprint !== fp), cleared: keepCleared([...s.cleared, fp]) }, said: `Removed approver key ${fp}.` };
+  // Not banned: a stolen key that removes the owner's others mustn't stop them being pinned again.
+  // Only key reset approver, at the box, bans keys.
+  return { ok: true, state: { ...s, gen: s.gen + 1, keys: s.keys.filter((k) => k.fingerprint !== fp) }, said: `Removed approver key ${fp}.` };
 }
 
 // A lost laptop: every key goes, and none of them is ever pinned again.

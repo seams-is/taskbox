@@ -106,13 +106,14 @@ describe("the log", () => {
       { ...g, writer: "guard" as const },
       { ...l, writer: "loop" as const },
     ];
-    expect(readEvents(src).map((e) => e.text)).toEqual(["1", "2", "3", "4"]);
-    expect(readEvents(src, { op }).map((e) => e.text)).toEqual(["1", "3"]);
-    expect(readEvents(src, { type: "drain" }).map((e) => e.text)).toEqual(["1", "3"]);
-    expect(readEvents(src, { type: "job.started" }).map((e) => e.text)).toEqual(["4"]);
-    expect(readEvents(src, { since: T + 6 }).map((e) => e.text)).toEqual(["3", "4"]);
-    expect(readEvents(src, { until: T + 6 }).map((e) => e.text)).toEqual(["1", "2"]);
-    expect(readEvents(src, { limit: 1 }).map((e) => e.text)).toEqual(["4"]);
+    expect(readEvents(src).events.map((e) => e.text)).toEqual(["1", "2", "3", "4"]);
+    expect(readEvents(src, { op }).events.map((e) => e.text)).toEqual(["1", "3"]);
+    expect(readEvents(src, { type: "drain" }).events.map((e) => e.text)).toEqual(["1", "3"]);
+    expect(readEvents(src, { type: "job.started" }).events.map((e) => e.text)).toEqual(["4"]);
+    expect(readEvents(src, { since: T + 6 }).events.map((e) => e.text)).toEqual(["3", "4"]);
+    expect(readEvents(src, { until: T + 6 }).events.map((e) => e.text)).toEqual(["1", "2"]);
+    expect(readEvents(src, { limit: 1 }).events.map((e) => e.text)).toEqual(["4"]);
+    expect(readEvents(src).skipped).toEqual([]);
   });
   test("a line the wrong writer wrote, or a bad line, is skipped", () => {
     const root = tmp();
@@ -120,9 +121,9 @@ describe("the log", () => {
     eventLog("guard", g, clock(T)).write({ type: "guard.started", actor: "taskbox", text: "ok" });
     const loopLine = eventLine(newEvent("loop", { type: "job.started", actor: "taskbox", text: "planted" }, clock(T), rand));
     writeFileSync(join(g.dir, "2026-11-23.jsonl"), `${readFileSync(join(g.dir, "2026-11-23.jsonl"), "utf8")}not json\n${loopLine}{"id":1}\n`);
-    expect(readEvents([{ ...g, writer: "guard" }]).map((e) => e.text)).toEqual(["ok"]);
+    expect(readEvents([{ ...g, writer: "guard" }]).events.map((e) => e.text)).toEqual(["ok"]);
   });
-  test("keeps 30 days and a size cap, oldest first, never today", () => {
+  test("keeps 30 days and a size cap, oldest first, never the file being written", () => {
     const dir = tmp();
     for (const d of ["2026-10-01", "2026-10-30", "2026-11-20", "2026-11-23"]) writeFileSync(join(dir, `${d}.jsonl`), "x".repeat(100));
     writeFileSync(join(dir, "notes.txt"), "kept");
@@ -151,7 +152,7 @@ describe("a folder that isn't there", () => {
     expect(statSync(dir).mode & 0o777).toBe(0o755 & ~process.umask());
   });
   test("reads as no events", () => {
-    expect(readEvents([{ dir: "/nonexistent/x", owner: uid, writer: "guard" }])).toEqual([]);
+    expect(readEvents([{ dir: "/nonexistent/x", owner: uid, writer: "guard" }])).toEqual({ events: [], skipped: [] });
   });
 });
 
@@ -165,5 +166,64 @@ describe("one writer's ids", () => {
     const d = next(T + 1);
     expect([a, b, c, d]).toEqual([a, b, c, d].slice().sort());
     expect(new Set([a, b, c, d]).size).toBe(4);
+  });
+});
+
+describe("review fixes: M3 and the lows on events", () => {
+  test("M3: a day's file is cut into parts, and today's parts count in the cap", () => {
+    const dir = join(tmp(), "e");
+    const f = { dir, owner: uid, partMax: 10_000 };
+    const log = eventLog("guard", f, clock(T), rand, { perActorPerMinute: Number.POSITIVE_INFINITY });
+    for (let i = 0; i < 25; i++) log.write({ type: "guard.started", actor: "taskbox", text: "x", data: { big: "x".repeat(900) } });
+    const parts = readdirSync(dir).sort();
+    expect(parts).toEqual(["2026-11-23.1.jsonl", "2026-11-23.2.jsonl", "2026-11-23.jsonl"]);
+    for (const p of parts) expect(statSync(join(dir, p)).size).toBeLessThanOrEqual(10_000);
+    expect(readEvents([{ dir, owner: uid, writer: "guard" }]).events).toHaveLength(25);
+    expect(keepEvents(f, T, { maxBytes: 10_000 })).toEqual(["2026-11-23.jsonl", "2026-11-23.1.jsonl"]);
+    expect(readdirSync(dir)).toEqual(["2026-11-23.2.jsonl"]);
+  });
+  test("M3: a file events can't read is named, never passed over without a word", () => {
+    const dir = tmp();
+    writeFileSync(join(dir, "2026-11-23.jsonl"), "");
+    chmodSync(join(dir, "2026-11-23.jsonl"), 0o666);
+    expect(readEvents([{ dir, owner: uid, writer: "guard" }]).skipped).toEqual([join(dir, "2026-11-23.jsonl")]);
+  });
+  test("M3: one actor's flood is cut to a summary", () => {
+    const dir = join(tmp(), "e");
+    const t = { now: T };
+    const log = eventLog("guard", { dir, owner: uid }, { now: () => t.now }, rand);
+    for (let i = 0; i < 100; i++) log.write({ type: "workspace.denied", actor: "agent nova", text: "refused" });
+    log.write({ type: "guard.started", actor: "taskbox", text: "other actors still write" });
+    t.now += 61_000;
+    log.write({ type: "workspace.denied", actor: "agent nova", text: "refused" });
+    const ev = readEvents([{ dir, owner: uid, writer: "guard" }]).events;
+    expect(ev.filter((e) => e.actor === "agent nova" && e.type === "workspace.denied")).toHaveLength(61);
+    expect(ev.find((e) => e.type === "events.dropped")).toMatchObject({ actor: "taskbox", text: "40 events from agent nova were dropped in the minute before." });
+  });
+  test("L4: the loop can't shadow a guard event by copying its id", () => {
+    const root = tmp();
+    const g = { dir: join(root, "g"), owner: uid };
+    const l = { dir: join(root, "l"), owner: uid };
+    const e = eventLog("guard", g, clock(T), rand).write({ type: "drain.started", actor: "owner (unsigned)", text: "real" });
+    mkdirSync(l.dir);
+    writeFileSync(join(l.dir, "2026-11-23.jsonl"), eventLine({ ...e, writer: "loop", type: "job.started", text: "copy" }));
+    const both = readEvents([{ ...l, writer: "loop" }, { ...g, writer: "guard" }]).events;
+    expect(both.map((x) => x.text).sort()).toEqual(["copy", "real"]);
+  });
+  test("L5: a reader reads at most its byte cap, newest files first, and names the rest", () => {
+    const dir = join(tmp(), "e");
+    eventLog("guard", { dir, owner: uid }, clock(T - 86_400_000), rand).write({ type: "guard.started", actor: "taskbox", text: "old" });
+    eventLog("guard", { dir, owner: uid }, clock(T), rand).write({ type: "guard.started", actor: "taskbox", text: "new" });
+    const r = readEvents([{ dir, owner: uid, writer: "guard" }], {}, { maxBytes: statSync(join(dir, "2026-11-23.jsonl")).size });
+    expect(r.events.map((e) => e.text)).toEqual(["new"]);
+    expect(r.skipped).toEqual([join(dir, "2026-11-22.jsonl")]);
+  });
+  test("L6: a clock that jumps ahead doesn't age out the last 30 days of events", () => {
+    const dir = tmp();
+    for (const d of ["2026-11-01", "2026-11-23"]) writeFileSync(join(dir, `${d}.jsonl`), "x");
+    expect(keepEvents({ dir, owner: uid }, T + 365 * 86_400_000)).toEqual([]);
+    // Back in time: a file from the future is kept and never stops the rest being aged.
+    writeFileSync(join(dir, "2026-09-01.jsonl"), "x");
+    expect(keepEvents({ dir, owner: uid }, T)).toEqual(["2026-09-01.jsonl"]);
   });
 });

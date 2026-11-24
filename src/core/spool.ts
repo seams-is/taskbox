@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import type { Clock } from "../clock.ts";
 import { readUpTo } from "../workspace/read.ts";
 import { isId, type Rand, realRand, idOf } from "./ids.ts";
-import { isObj, plain, readOwnedJson, type Read, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
+import { isObj, plain, readOwnedJson, type Read, safeParse, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
 
 export const REQUEST_MAX = 4096;
 export const REQUEST_FOR_MS = 2 * 60_000;
@@ -151,7 +151,7 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
       stuck++;
     }
   }
-  if (stuck) report.problems.push(`the spool holds ${stuck} name${stuck === 1 ? "" : "s"} that aren't plain files and can't be removed`);
+  if (stuck) report.problems.push(`the spool holds ${stuck} name${stuck === 1 ? " that isn't a plain file" : "s that aren't plain files"} and can't be removed, such as a folder`);
   // A name whose unlink failed before, such as a file with the immutable flag, never takes a slot or
   // counts toward the cap. Names that are gone are forgotten.
   const here = new Set(all.map((x) => x.name));
@@ -160,7 +160,9 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
   let entries = all.filter((x) => x.plain && !mem.stuck.has(x.name));
   // A plain file that isn't named as a request, such as a temporary name a command left when it
   // stopped, goes once it is older than a request may be. Root only unlinks it.
-  const old = entries.filter((x) => !r.isRequest(x.name) && clock.now() - x.mtimeMs > forMs);
+  // A request of a kind root no longer reads goes the same way: the order never takes it.
+  const readable = new Set(r.order(entries.filter((e) => r.isRequest(e.name)), Number.MAX_SAFE_INTEGER));
+  const old = entries.filter((x) => !readable.has(x.name) && clock.now() - x.mtimeMs > forMs);
   for (const e of old) {
     try {
       unlinkSync(join(spool, e.name));
@@ -168,7 +170,7 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
       mem.stuck.add(e.name);
     }
   }
-  if (old.length) report.did.push(`removed ${old.length} of the spool's files that aren't requests, over ${Math.round(forMs / 60_000)} minutes old`);
+  if (old.length) report.did.push(`removed ${old.length} of the spool's files that aren't requests it reads, over ${Math.round(forMs / 60_000)} minutes old`);
   entries = entries.filter((x) => !old.includes(x));
   // A flood: the oldest past max go.
   if (entries.length > max) {
@@ -251,7 +253,7 @@ export function readRequest(file: string, f: SpoolFile, o: { owner: number; now:
   }
   let v: unknown;
   try {
-    v = JSON.parse(text);
+    v = safeParse(text);
   } catch {
     return refuse("the request doesn't parse");
   }
