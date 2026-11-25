@@ -86,7 +86,8 @@ describe("the lows", () => {
     for (let n = 0; n < 300; n++) {
       const r = begin([], t, { subject: `box${n}`, params: {}, actor: "owner" }, T);
       if (r.kind !== "start") throw new Error();
-      writeOp(f, r.op);
+      // Numbered here, as writeOp would number them, so it doesn't read the folder for each.
+      writeOp(f, { ...r.op, seq: n + 1 });
       running.push(r.op.id);
     }
     const text = JSON.stringify({ ...b.op, state: "succeeded", endedAt: T });

@@ -343,7 +343,7 @@ describe("after the yes", () => {
     githubRoutes(sys, { settings });
     const stage = mkdtempSync(join(tmpdir(), "taskbox-src-"));
     const top = join(stage, "example-org-taskbox-abc1234");
-    copyRepo(top);
+    copyRepo(top, ["test", "docs"]);
     writeFileSync(join(top, "taskbox.json"), JSON.stringify(settings));
     // An empty tailscale pin, so the install stops right after the accounts, with nothing downloaded.
     const v = JSON.parse(readFileSync(join(top, "versions.json"), "utf8"));

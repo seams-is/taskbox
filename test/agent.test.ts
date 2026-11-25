@@ -327,7 +327,7 @@ describe("an agent step that stops the install", () => {
     githubRoutes(sys);
     const st = mkdtempSync(join(tmpdir(), "taskbox-src-"));
     const top = join(st, "example-org-taskbox-abc1234");
-    copyRepo(top);
+    copyRepo(top, ["test", "docs"]);
     writeFileSync(join(top, "taskbox.json"), JSON.stringify(CFG));
     const tar = Bun.spawnSync(["/usr/bin/tar", "-czf", "-", "-C", st, "example-org-taskbox-abc1234"]);
     sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(tar.stdout) : undefined));

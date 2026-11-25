@@ -61,13 +61,17 @@ describe("retention by write order", () => {
     const { OPS_KEEP } = await import("../../src/core/ops.ts");
     const f = { dir: tmp(), owner: uid };
     const ids: string[] = [];
+    // writeOp numbers the first five itself. Each new number reads every record before it, so the
+    // rest carry the next number already, as writeOp would give it: that keeps the test to one read
+    // of the folder per record instead of a million.
     for (let i = 0; i < OPS_KEEP + 3; i++) {
       const at = i % 2 ? T + 365 * DAY : T - 365 * DAY;
       const b = begin([], update, { subject: `s${i}`, params: {}, actor: "owner" }, at);
       if (b.kind !== "start") throw new Error();
-      writeOp(f, end(b.op, "succeeded", at));
+      writeOp(f, { ...end(b.op, "succeeded", at), ...(i < 5 ? {} : { seq: i + 1 }) });
       ids.push(b.op.id);
     }
+    expect(ids.slice(0, 5).map((id) => { const r = readOp(f, id); return r.kind === "ok" ? r.value.seq : undefined; })).toEqual([1, 2, 3, 4, 5]);
     expect(keepOps(f).sort()).toEqual(ids.slice(0, 3).sort());
   }, 60_000);
   test.serial("F6 and N4: a running op is always seen, however many records there are", () => {
