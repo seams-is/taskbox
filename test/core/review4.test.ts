@@ -16,63 +16,6 @@ const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-review4-"));
 const day = (k: number) => new Date(T + k * DAY).toISOString().slice(0, 10);
 const update: OpType = { type: "update", phases: ["a"], onBoot: () => "fail" };
 
-describe("M2: ageing by count, never by the clock", () => {
-  test("D1: seven forward steps of a day, one event each, leave the real days", () => {
-    const dir = tmp();
-    for (let k = -29; k <= 0; k++) writeFileSync(join(dir, `${day(k)}.jsonl`), "{}\n");
-    for (let j = 1; j <= 7; j++) {
-      writeFileSync(join(dir, `${day(400 + j)}.jsonl`), "{}\n");
-      keepEvents({ dir, owner: uid }, T + (400 + j) * DAY);
-    }
-    const left = readdirSync(dir).sort();
-    expect(left).toHaveLength(30);
-    expect(left).toContain(`${day(0)}.jsonl`);
-  });
-  test("the newest 30 distinct days stay, whatever the clock says", () => {
-    const dir = tmp();
-    for (let k = -39; k <= 0; k++) writeFileSync(join(dir, `${day(k)}.jsonl`), "{}\n");
-    for (const now of [T, T + 365 * DAY, T - 365 * DAY]) keepEvents({ dir, owner: uid }, now);
-    expect(readdirSync(dir).sort()[0]).toBe(`${day(-29)}.jsonl`);
-    expect(readdirSync(dir)).toHaveLength(30);
-  });
-  test("D4 and L3: under the size cap, days after today go first, and today's file never goes", () => {
-    const dir = tmp();
-    for (let k = -5; k <= 5; k++) writeFileSync(join(dir, `${day(k)}.jsonl`), "x".repeat(1000));
-    const gone = keepEvents({ dir, owner: uid }, T, { maxBytes: 5000 });
-    expect(gone).not.toContain(`${day(0)}.jsonl`);
-    expect(gone.slice(0, 5)).toEqual([5, 4, 3, 2, 1].map((k) => `${day(k)}.jsonl`));
-  });
-  test("D2: op records keep the newest 30 distinct days, by count", () => {
-    const f = { dir: tmp(), owner: uid };
-    for (let k = -20; k <= 0; k++) {
-      const b = begin([], update, { subject: `r${k}`, params: {}, actor: "owner" }, T + k * DAY);
-      if (b.kind !== "start") throw new Error();
-      writeOp(f, { ...b.op, state: "succeeded", endedAt: T + k * DAY });
-    }
-    for (let j = 1; j <= 7; j++) {
-      const b = begin([], update, { subject: `f${j}`, params: {}, actor: "owner" }, T + (400 + j) * DAY);
-      if (b.kind !== "start") throw new Error();
-      writeOp(f, { ...b.op, state: "succeeded", endedAt: T + (400 + j) * DAY });
-      keepOps(f, T + 1000 * DAY);
-    }
-    expect(readdirSync(f.dir).filter((n) => n.endsWith(".json"))).toHaveLength(28);
-    for (let k = 1; k <= 10; k++) {
-      const b = begin([], update, { subject: `g${k}`, params: {}, actor: "owner" }, T + (500 + k) * DAY);
-      if (b.kind !== "start") throw new Error();
-      writeOp(f, { ...b.op, state: "succeeded", endedAt: T + (500 + k) * DAY });
-    }
-    keepOps(f, T + 1000 * DAY);
-    expect(readdirSync(f.dir).filter((n) => n.endsWith(".json"))).toHaveLength(30);
-  });
-  test("D3 and L5: outcomes dated in the future go too", () => {
-    const dir = join(tmp(), "outcomes", "agent");
-    const id = `rq_${"0".repeat(26)}`;
-    recordOutcome(dir, { id, at: T, ok: false, said: "x" }, { owner: uid });
-    utimesSync(join(dir, `${id}.json`), new Date(Date.now() + 365 * DAY), new Date(Date.now() + 365 * DAY));
-    expect(keepOutcomes(dir, Date.now())).toEqual([id]);
-  });
-});
-
 describe("L2: refused requests, by one cap", () => {
   const ev = () => ({ dir: join(tmp(), "ev"), owner: uid });
   test("F2: rotating the actor's name doesn't get past it", () => {

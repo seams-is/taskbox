@@ -35,7 +35,7 @@ import { dirname, join } from "node:path";
 import { waitSync } from "../clock.ts";
 import type { Sys } from "../sys.ts";
 import type { EventLog } from "./events.ts";
-import { end, listOps, type Op, opEvent, type OpFolder, type OpType, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
+import { end, listOps, type Op, readOp, opEvent, type OpFolder, type OpType, pastNoReturn, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
 import { isObj, plain, readOwnedText, safeParse, writeOwnedText } from "./rootfile.ts";
 import { canonical, type Json } from "./statement.ts";
 
@@ -225,6 +225,17 @@ export interface ChildInfo {
   applied: number; // the number of the last report applied
   events: string[];
   done?: true; // its job has been booted out
+  limitMs?: number; // how long it may run: its op's deadline less its start, measured on mono time
+  monoAt?: number; // monoNow() when its job started
+  overrun?: true; // past its limit, but not cancellable: flagged, never ended
+}
+
+// A clock that no change of the wall clock moves: kern.monotonicclock_usecs, in ms. Undefined when it
+// can't be read, and then no deadline is judged.
+export async function monoNow(sys: Pick<Sys, "run">): Promise<number | undefined> {
+  const r = await sys.run("/usr/sbin/sysctl", ["-n", "kern.monotonicclock_usecs"], { timeoutMs: 5_000 }).catch(() => undefined);
+  const m = r?.code === 0 ? /^(\d+)/.exec(r.stdout.trim()) : null;
+  return m ? Math.floor(Number(m[1]) / 1000) : undefined;
 }
 const childOf = (op: Op): ChildInfo | undefined => {
   const c = op.child;
@@ -304,10 +315,24 @@ ${Object.entries(env)
 // /Library/LaunchDaemons, so a restart never starts it again. The op's record names the job first,
 // then launchd is asked to load it; a job launchd won't take fails its op. The op as written.
 export async function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Promise<Op> {
-  if (cmd !== CHILD_BUN || !APP_FILE.test(args[0] ?? "")) throw new Error("an op's child is taskbox's own Bun running a file of taskbox's app, and nothing else");
-  if (args.length !== 1) throw new Error("an op's child takes no arguments: it reads its op's record");
-  rootFolder(plistPath(d.ops, op.id), d.ops.owner);
-  if (!d.boot) throw new Error("an op's child needs this boot's time, so a later guard can tell a restart");
+  // A refusal ends the op it was asked for, with why, if a record of it is there, so no op is left
+  // running with no child; then it throws to the caller.
+  const refuse = (why: string): never => {
+    if (readOp(d.ops, op.id).kind === "ok") {
+      try {
+        applyReport(d, op, { end: { state: "failed", why: `its job couldn't be made: ${why}` } });
+      } catch {}
+    }
+    throw new Error(why);
+  };
+  if (cmd !== CHILD_BUN || !APP_FILE.test(args[0] ?? "")) refuse("an op's child is taskbox's own Bun running a file of taskbox's app, and nothing else");
+  if (args.length !== 1) refuse("an op's child takes no arguments: it reads its op's record");
+  try {
+    rootFolder(plistPath(d.ops, op.id), d.ops.owner);
+  } catch (e) {
+    refuse((e as Error).message);
+  }
+  if (!d.boot) refuse("an op's child needs this boot's time, so a later guard can tell a restart");
   const label = jobLabel(op.id);
   const env = {
     PATH: "/opt/taskbox/bin:/usr/bin:/bin:/usr/sbin:/sbin",
@@ -327,7 +352,10 @@ export async function runChild(d: ChildDeps, op: Op, cmd: string, args: string[]
   // prints may be private.
   writeOwnedText(logPath(d.ops, op.id), "", { ...w, mode: 0o600 });
   writeOwnedText(plistPath(d.ops, op.id), plist(label, cmd, args, env, logPath(d.ops, op.id)), { ...w, mode: 0o644 });
-  const child: ChildInfo = { label, boot: d.boot, spawnedAt: d.sys.now(), applied: 0, events: [...(o.events ?? [])] };
+  // A deadline becomes a length of time from now, on the monotonic clock, so no clock step ends it.
+  const limit = op.deadline !== null ? Math.max(0, op.deadline - op.startedAt) : undefined;
+  const monoAt = limit !== undefined ? await monoNow(d.sys) : undefined;
+  const child: ChildInfo = { label, boot: d.boot, spawnedAt: d.sys.now(), applied: 0, events: [...(o.events ?? [])], ...(limit !== undefined && monoAt !== undefined ? { limitMs: limit, monoAt } : {}) };
   let cur: Op = { ...op, child };
   writeOp(d.ops, cur);
   const r = await d.sys.run("/bin/launchctl", ["bootstrap", "system", plistPath(d.ops, op.id)], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: -1 }));
@@ -380,7 +408,7 @@ export async function follow(d: ChildDeps): Promise<Op[]> {
           restarted = true;
         }
       }
-      if (!restarted && cur.deadline !== null && d.sys.now() > cur.deadline) cur = applyReport(d, cur, { end: { state: "failed", why: "it passed its deadline" } });
+      if (!restarted && c.limitMs !== undefined && c.monoAt !== undefined && cur.state === "running") cur = await overrun(d, cur);
       if (!restarted && cur.state === "running") {
         const held = leaseHeld(leasePath(d.ops, op.id));
         trimLog(logPath(d.ops, op.id));
@@ -392,6 +420,23 @@ export async function follow(d: ChildDeps): Promise<Op[]> {
     if (cur.state !== "running") await settle(d, cur);
   }
   return ended;
+}
+
+// An op past its deadline, by the monotonic clock in this boot: a cancellable op before its point of
+// no return fails and its job is booted out; any other is never ended, only flagged once, with an
+// op.overrun event, for the "Op deadlines" row.
+async function overrun(d: ChildDeps, op: Op): Promise<Op> {
+  const c = childOf(op)!;
+  const mono = await monoNow(d.sys);
+  if (mono === undefined || mono - c.monoAt! <= c.limitMs!) return op;
+  if (op.cancellable && !pastNoReturn(op)) return applyReport(d, op, { end: { state: "failed", why: "it passed its deadline" } });
+  if (c.overrun) return op;
+  const next: Op = { ...op, child: { ...c, overrun: true } };
+  writeOp(d.ops, next);
+  try {
+    d.events.write({ type: "op.overrun", op: op.id, subject: op.subject, actor: "taskbox", text: `The ${op.type} is past its deadline, and can't be ended now: it is past ${op.pointOfNoReturn ?? "the point where it can be cancelled"}.`.slice(0, 240) });
+  } catch {}
+  return next;
 }
 
 function takeReports(d: ChildDeps, op: Op): Op {

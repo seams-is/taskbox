@@ -209,7 +209,14 @@ export interface OpFolder {
 }
 const FILE = /^(op_[0-9A-HJKMNP-TV-Z]{26})\.json$/;
 
+// A record gets its place in write order the first time it is written: seq, one more than any record
+// there. Retention and listing order go by seq, never by the clock.
 export function writeOp(f: OpFolder, op: Op): void {
+  if (!Number.isSafeInteger(op.seq)) {
+    const was = readOp(f, op.id);
+    const seq = was.kind === "ok" && Number.isSafeInteger(was.value.seq) ? (was.value.seq as number) : Math.max(0, ...allOps(f).ops.map(order)) + 1;
+    op = { ...op, seq };
+  }
   const why = opProblem(op);
   if (why) throw new Error(`the op wasn't written: ${why}`);
   const text = `${JSON.stringify(op)}\n`;
@@ -224,8 +231,13 @@ export function readOp(f: Pick<OpFolder, "dir" | "owner">, id: string): Read<Op>
   return r;
 }
 
-// Every record that reads, newest first. One that doesn't read is passed over and named.
-export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: string[] } {
+const order = (x: Op) => (Number.isSafeInteger(x.seq) ? (x.seq as number) : 0);
+// Newest by write order first; a record with no seq (an older release's) is oldest, then by id.
+const newestFirst = (a: Op, b: Op) => order(b) - order(a) || (a.id < b.id ? 1 : -1);
+// The scan's bound: keepOps keeps far fewer, so it is reached only if keeping fails for long.
+const SCAN = 20_000;
+
+function allOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: string[] } {
   let names: string[];
   try {
     const st = lstatSync(f.dir);
@@ -236,32 +248,36 @@ export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: s
   }
   const ops: Op[] = [];
   const bad: string[] = [];
-  // Newest first, so past the cap the oldest are the ones not read.
-  for (const n of names.sort().reverse().slice(0, 5_000)) {
+  for (const n of names.slice(0, SCAN)) {
     const r = readOp(f, FILE.exec(n)![1]!);
     if (r.kind === "ok") ops.push(r.value);
     else bad.push(n);
   }
-  ops.sort((a, b) => (a.id < b.id ? 1 : -1));
-  return { ops, bad };
+  return { ops: ops.sort(newestFirst), bad };
 }
 
-// Keeps the records of the newest KEEP_DAYS_N distinct days up to today, by count, never by the
-// clock, so no clock change can age out the history. Never removed: a running op, a record that
-// ended today, one dated after today (kept apart and flagged, as events' are), or one whose child's
-// job is still loaded (child.ts settles it first). Past maxBytes of the folder, the oldest ended
-// records go first, with their child's files. The ids removed.
-export const KEEP_DAYS_N = 30;
+// Every running op, then the newest max other records by write order. One that doesn't read is
+// passed over and named.
+export function listOps(f: Pick<OpFolder, "dir" | "owner">, o: { max?: number } = {}): { ops: Op[]; bad: string[] } {
+  const { ops, bad } = allOps(f);
+  const running = ops.filter((x) => x.state === "running");
+  const rest = ops.filter((x) => x.state !== "running").slice(0, o.max ?? 5_000);
+  return { ops: [...running, ...rest].sort(newestFirst), bad };
+}
+
+// Keeps the newest OPS_KEEP ended records by write order, and the folder within maxBytes, removing
+// the records written first. Nothing about it reads the clock, so no clock step, either way, removes a
+// record sooner. Never removed: a running op, or one whose child's job is still loaded (child.ts
+// settles it first). A removed record's child files go with it. The ids removed.
+export const OPS_KEEP = 1_000;
 export const OPS_MAX_BYTES = 256 * 1024 * 1024;
 const CHILD_FILES = ["reports", "progress", "lease", "log", "plist"];
-export function keepOps(f: OpFolder, now: number, o: { maxBytes?: number } = {}): string[] {
+export function keepOps(f: OpFolder, o: { maxBytes?: number; keep?: number } = {}): string[] {
   const gone: string[] = [];
-  const today = new Date(now).toISOString().slice(0, 10);
-  const ops = listOps(f).ops;
-  const dayOf = (x: Op) => new Date(x.endedAt ?? x.startedAt).toISOString().slice(0, 10);
+  const ops = allOps(f).ops;
   const loaded = (x: Op) => isObj(x.child) && x.child.done !== true;
-  const removable = ops.filter((x) => x.state !== "running" && !loaded(x) && dayOf(x) < today).sort((a, b) => (a.id < b.id ? -1 : 1));
-  const kept = new Set([...new Set(ops.filter((x) => x.state !== "running" && dayOf(x) <= today).map(dayOf))].sort().slice(-KEEP_DAYS_N));
+  const ended = ops.filter((x) => x.state !== "running");
+  const removable = ended.filter((x) => !loaded(x));
   const sizeOf = (x: Op) => [x.id + ".json", ...CHILD_FILES.map((e) => `${x.id}.${e}`)].reduce((n, name) => {
     try {
       return n + lstatSync(join(f.dir, name)).size;
@@ -280,21 +296,17 @@ export function keepOps(f: OpFolder, now: number, o: { maxBytes?: number } = {})
       } catch {}
     }
   };
-  for (const x of removable.filter((y) => !kept.has(dayOf(y)))) drop(x);
+  const keep = new Set(ended.slice(0, o.keep ?? OPS_KEEP).map((x) => x.id));
+  for (const x of removable.filter((y) => !keep.has(y.id))) drop(x);
   let total = ops.filter((x) => !gone.includes(x.id)).reduce((n, x) => n + sizeOf(x), 0);
-  for (const x of removable.filter((y) => !gone.includes(y.id))) {
+  for (const x of [...removable].reverse()) {
     if (total <= (o.maxBytes ?? OPS_MAX_BYTES)) break;
+    if (gone.includes(x.id)) continue;
     total -= sizeOf(x);
     drop(x);
   }
   return gone;
 }
-
-// The op records dated after today.
-export const futureOps = (f: Pick<OpFolder, "dir" | "owner">, now: number): Op[] => {
-  const today = new Date(now).toISOString().slice(0, 10);
-  return listOps(f).ops.filter((x) => new Date(x.endedAt ?? x.startedAt).toISOString().slice(0, 10) > today);
-};
 
 // The event an op's change writes (events.ts Draft): op.started, op.progress and so on.
 export function opEvent(before: Op | undefined, after: Op): { type: string; op: string; subject: string; actor: string; text: string } | undefined {

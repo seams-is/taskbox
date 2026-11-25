@@ -176,20 +176,6 @@ describe("review 2: the keeping pass", () => {
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     return { c, s, sys, uid };
   }
-  test("L6: a clock that jumps a year ahead, with an event written at the new time, keeps every day by count", async () => {
-    const { c, s, sys, uid } = ctx();
-    const { appendEvent, newEvent } = await import("../../src/core/events.ts");
-    const day = 86_400_000;
-    for (let d = 0; d < 10; d++) appendEvent({ dir: s.events, owner: uid }, newEvent("guard", { type: "check.failed", actor: "taskbox", text: "x" }, { now: () => sys.now() - d * day }));
-    const pass = keepingPass.make(c)!;
-    await pass.start!(sys.now())!();
-    sys.clock += 365 * day;
-    appendEvent({ dir: s.events, owner: uid }, newEvent("guard", { type: "check.failed", actor: "taskbox", text: "x" }, sys));
-    await pass.next(sys.now(), false)!();
-    await pass.next(sys.now() + GUARD, false)!();
-    // Days are kept by count, never aged by the clock (review 4, M2): all 11 days stay.
-    expect(readdirSync(s.events)).toHaveLength(11);
-  });
   test("N7 and L9: it sweeps temporary names a crash left, and outcomes past their hour", async () => {
     const { c, s, sys, uid } = ctx();
     const { recordOutcome } = await import("../../src/core/spool.ts");

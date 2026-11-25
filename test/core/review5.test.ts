@@ -36,58 +36,6 @@ const mkOp = (s: ReturnType<typeof setup>, at: number, state: "succeeded" | "run
   return b.op.id;
 };
 
-describe("M1: days after today", () => {
-  test("K1: future-dated days aren't counted and never push out real ones; they stay", () => {
-    const dir = tmp();
-    for (let i = 1; i <= 40; i++) writeFileSync(join(dir, `${day(T - i * DAY)}.jsonl`), "{}\n");
-    for (let i = 1; i <= 30; i++) writeFileSync(join(dir, `${day(T + 365 * DAY + i * DAY)}.jsonl`), "{}\n");
-    writeFileSync(join(dir, `${day(T)}.jsonl`), "{}\n");
-    keepEvents({ dir, owner: uid }, T);
-    const left = readdirSync(dir).sort();
-    expect(left.filter((n) => n <= `${day(T)}.jsonl`)).toHaveLength(30);
-    expect(left.filter((n) => n > `${day(T)}.jsonl`)).toHaveLength(30);
-    writeFileSync(join(dir, `${day(T + DAY)}.jsonl`), "{}\n");
-    keepEvents({ dir, owner: uid }, T + DAY);
-    expect(existsSync(join(dir, `${day(T)}.jsonl`))).toBe(true);
-  });
-  test("K2: op records likewise; a record that ended today is never removed", () => {
-    const s = setup();
-    for (let i = 1; i <= 30; i++) mkOp(s, T + 365 * DAY + i * DAY);
-    const todays = mkOp(s, T);
-    for (let i = 1; i <= 40; i++) mkOp(s, T - i * DAY);
-    keepOps(s.d.ops, T);
-    expect(readOp(s.d.ops, todays).kind).toBe("ok");
-    expect(listOps(s.d.ops).ops).toHaveLength(30 + 30);
-  });
-  test("future-dated files go first under the size cap", () => {
-    const dir = tmp();
-    for (let k = -3; k <= 3; k++) writeFileSync(join(dir, `${day(T + k * DAY)}.jsonl`), "x".repeat(1000));
-    const gone = keepEvents({ dir, owner: uid }, T, { maxBytes: 4000 });
-    expect(gone).toEqual([3, 2, 1].map((k) => `${day(T + k * DAY)}.jsonl`));
-  });
-  test("they are flagged: a check row WARN, and one event while they last", async () => {
-    const { historyRow } = await import("../../src/rows/keeping.ts");
-    const { keepingPass } = await import("../../src/passes/keeping.ts");
-    const { rootState } = await import("../../src/core/paths.ts");
-    const root = tmp();
-    const st = rootState(root);
-    mkdirSync(st.events, { recursive: true });
-    mkdirSync(st.ops, { recursive: true });
-    const c = { paths: { installId: join(st.dir, "install-id") }, rootUid: uid, sys: { now: () => T } } as never;
-    expect(await historyRow(c)).toMatchObject({ status: "OK" });
-    writeFileSync(join(st.events, `${day(T + 40 * DAY)}.jsonl`), "");
-    expect(await historyRow(c)).toMatchObject({ status: "WARN", detail: expect.stringContaining(day(T + 40 * DAY)) });
-    const sys = new FakeSys();
-    sys.clock = T;
-    const pc = { sys, cfg: {}, p: { installId: join(st.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as never;
-    const pass = keepingPass.make(pc)!;
-    for (let i = 0; i < 3; i++) await pass.start!(sys.now())!();
-    expect(readEvents([{ dir: st.events, owner: uid, writer: "guard" }]).events.filter((e) => e.type === "guard.clock-ahead")).toHaveLength(1);
-    const { rows } = await import("../../src/rows/index.ts");
-    expect(rows("check", { cfg: {} } as never).map(([n]) => n)).toContain("Event history");
-  });
-});
-
 describe("M2: undo ends every op job", () => {
   test("undo boots out every running op's job and cancels its op before it swaps", async () => {
     const { endOpJobs } = await import("../../src/core/child.ts");
@@ -180,7 +128,7 @@ describe("the lows", () => {
     s.sys.clock += STARTUP_MS + 1;
     await follow(s.d);
     for (let i = 1; i <= 31; i++) mkOp(s, T + i * DAY);
-    expect(keepOps(s.d.ops, T + 32 * DAY)).not.toContain(b.op.id);
+    expect(keepOps(s.d.ops, { keep: 5 })).not.toContain(b.op.id);
     code = 0;
     await follow(s.d);
     const r = readOp(s.d.ops, b.op.id);
@@ -212,17 +160,6 @@ describe("the lows", () => {
     const ids = Array.from({ length: 5 }, (_, i) => mkOp(s, T - (5 - i) * DAY));
     writeFileSync(join(s.root, `${ids[0]}.log`), "x".repeat(5000));
     writeFileSync(join(s.root, `${ids[1]}.log`), "x".repeat(5000));
-    expect(keepOps(s.d.ops, T, { maxBytes: 8000 })).toEqual([ids[0]!]);
-  });
-  test("L6: an op past its deadline fails, and its job is booted out", async () => {
-    const s = setup();
-    const b = begin([], update, { subject: "box", params: {}, actor: "owner", deadline: T + 1000 }, T);
-    if (b.kind !== "start") throw new Error();
-    await runChild(s.d, b.op, CHILD_BUN, [APP]);
-    const lease = openSync(leasePath(s.d.ops, b.op.id), constants.O_RDWR | constants.O_CREAT | O_EXLOCK | constants.O_NONBLOCK, 0o600);
-    s.sys.clock = T + 2000;
-    expect((await follow(s.d))[0]).toMatchObject({ state: "failed", why: "it passed its deadline" });
-    expect(s.calls.some((c) => c === `bootout system/${jobLabel(b.op.id)}`)).toBe(true);
-    closeSync(lease);
+    expect(keepOps(s.d.ops, { maxBytes: 8000 })).toEqual([ids[0]!]);
   });
 });

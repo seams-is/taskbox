@@ -35,7 +35,6 @@ export interface Event {
 
 export const LINE_MAX = 4000; // under 4 KB with room for the newline
 export const TEXT_MAX = 240;
-export const KEEP_DAYS = 30;
 export const KEEP_MB = 200; // both writers together; each keeps half (keepEvents)
 export const READ_FILE_MAX = 64 * 1024 * 1024;
 // A day's events go in parts of at most this many bytes: <day>.jsonl, then <day>.1.jsonl and on, so
@@ -91,8 +90,10 @@ export function eventLine(e: Event): string {
   return line;
 }
 
-// known: the event is about a request that carried a valid signature by a pinned key, or came from a
-// known principal. Such a refusal is always written whole; only unauthenticated junk is capped.
+// known: the verifier's own result, true only when the refused request carried a valid signature by
+// a pinned key or came from a known principal. Set it field by field from that result, never by
+// spreading a request: only a typed true counts. Known refusals get a window per principal; junk
+// shares one cap; neither can fill the disk, and each count is written.
 export type Draft = Omit<Event, "id" | "at" | "writer"> & { at?: number; known?: true };
 
 // A new event from a draft, its id and time from the clock. Text is cut to one printable line.
@@ -106,18 +107,18 @@ export function newEvent(writer: Writer, d: Draft, clock: Pick<Clock, "now">, ra
   return e;
 }
 
-export const dayFile = (at: string, part = 0) => `${at.slice(0, 10)}${part ? `.${part}` : ""}.jsonl`;
-const DAY_FILE = /^(\d{4}-\d\d-\d\d)(?:\.([1-9]\d{0,3}))?\.jsonl$/;
-// A file's day and part, so files sort by time: the day, then the part.
-const partOf = (name: string) => {
-  const m = DAY_FILE.exec(name);
-  return m ? { day: m[1]!, part: Number(m[2] ?? 0) } : undefined;
+// Each file is named by a number taskbox gives it in write order, then the day it was started on:
+// 00000042-2026-11-25.jsonl. The number orders the files; the date is a label for people and decides
+// nothing that removes anything.
+const SEQ_FILE = /^(\d{8})-(\d{4}-\d\d-\d\d)\.jsonl$/;
+const seqOf = (name: string) => {
+  const m = SEQ_FILE.exec(name);
+  return m ? { seq: Number(m[1]), day: m[2]! } : undefined;
 };
-const byTime = (a: string, b: string) => {
-  const x = partOf(a)!;
-  const y = partOf(b)!;
-  return x.day < y.day ? -1 : x.day > y.day ? 1 : x.part - y.part;
-};
+export const seqFile = (seq: number, day: string) => `${String(seq).padStart(8, "0")}-${day}.jsonl`;
+const byWrite = (a: string, b: string) => seqOf(a)!.seq - seqOf(b)!.seq;
+// For tests and readers: the day a file was started on.
+export const dayOfFile = (name: string) => seqOf(name)?.day;
 
 export interface Folder {
   dir: string;
@@ -126,19 +127,20 @@ export interface Folder {
   partMax?: number; // PART_MAX, smaller in tests
 }
 
-// Appends one event to its day's file. The folder is made when missing, the writer's at 755; a file is
-// made at 644. A link at the file's name is refused (O_NOFOLLOW), and a file that isn't the writer's
-// is never written.
+// Appends one event to the newest file, or starts the next file when that one is full or the day
+// has moved on past its label. A clock that went back keeps writing to the newest file, so a clock
+// going back and forth can't make many files. The folder is made when missing, the writer's at 755;
+// a file is made at 644. A link at the file's name is refused (O_NOFOLLOW), and a file that isn't the
+// writer's is never written.
 export function appendEvent(f: Folder, e: Event): void {
   const line = eventLine(e);
   ensureFolder(f);
   const day = e.at.slice(0, 10);
-  const parts = readdirSync(f.dir)
-    .filter((n) => partOf(n)?.day === day)
-    .map((n) => partOf(n)!.part);
-  let part = parts.length ? Math.max(...parts) : 0;
-  if (sizeOf(join(f.dir, dayFile(day, part))) + Buffer.byteLength(line) > (f.partMax ?? PART_MAX)) part++;
-  const path = join(f.dir, dayFile(day, part));
+  const last = readdirSync(f.dir).filter((n) => seqOf(n) !== undefined).sort(byWrite).at(-1);
+  const at = last ? seqOf(last)! : undefined;
+  const full = last !== undefined && sizeOf(join(f.dir, last)) + Buffer.byteLength(line) > (f.partMax ?? PART_MAX);
+  const name = at && !full && day <= at.day ? last! : seqFile((at?.seq ?? 0) + 1, at && day < at.day ? at.day : day);
+  const path = join(f.dir, name);
   const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644);
   try {
     const st = fstatSync(fd);
@@ -219,8 +221,6 @@ export interface EventsRead {
 export function readEvents(sources: readonly (Source & { writer: Writer })[], f: Filter = {}, cap: { maxBytes?: number; maxFiles?: number } = {}): EventsRead {
   const out: Event[] = [];
   const skipped: string[] = [];
-  const fromDay = f.since !== undefined ? new Date(f.since).toISOString().slice(0, 10) : undefined;
-  const toDay = f.until !== undefined ? new Date(f.until).toISOString().slice(0, 10) : undefined;
   const files: { path: string; name: string; s: Source & { writer: Writer } }[] = [];
   for (const s of sources) {
     try {
@@ -234,15 +234,14 @@ export function readEvents(sources: readonly (Source & { writer: Writer })[], f:
         continue;
       }
       for (const name of readdirSync(s.dir)) {
-        const p = partOf(name);
-        if (!p || (fromDay && p.day < fromDay) || (toDay && p.day > toDay)) continue;
+        if (!seqOf(name)) continue;
         files.push({ path: join(s.dir, name), name, s });
       }
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") skipped.push(s.dir);
     }
   }
-  files.sort((a, b) => byTime(b.name, a.name));
+  files.sort((a, b) => byWrite(b.name, a.name));
   let bytes = 0;
   const maxBytes = cap.maxBytes ?? READ_MAX;
   const maxFiles = cap.maxFiles ?? READ_FILES_MAX;
@@ -282,57 +281,34 @@ export function readEvents(sources: readonly (Source & { writer: Writer })[], f:
   return { events: f.limit !== undefined ? merged.slice(-Math.max(0, f.limit)) : merged, skipped };
 }
 
-// Keeps one writer's folder to the newest keepDays distinct days up to today, and within maxBytes.
-// Age is by count, never by the clock, so no clock change can age out the history. Days dated after
-// today (a clock that was ahead) are kept apart: they don't count toward keepDays and push out no real
-// day, and the keeping pass says they are there (futureDays). Past maxBytes they go first, newest
-// first, then the oldest days; today's files, the ones being written, never go. The names removed.
-export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBytes?: number } = {}): string[] {
-  const keepDays = o.keepDays ?? KEEP_DAYS;
+// Keeps one writer's folder within maxBytes, removing the files taskbox wrote first. Nothing about
+// it reads the clock, so no clock step, either way, removes an event sooner: a run of fake days only
+// makes small files, which count by their bytes alone. The newest file, the one being written, never
+// goes. The names removed.
+export function keepEvents(f: Folder, o: { maxBytes?: number } = {}): string[] {
   const maxBytes = o.maxBytes ?? (KEEP_MB / 2) * 1024 * 1024;
-  let files: { name: string; size: number; day: string }[];
+  let files: { name: string; size: number }[];
   try {
     const st = lstatSync(f.dir);
     if (!st.isDirectory() || st.uid !== f.owner) return [];
     files = readdirSync(f.dir)
-      .filter((n) => partOf(n) !== undefined)
-      .sort(byTime)
-      .map((name) => ({ name, size: sizeOf(join(f.dir, name)), day: partOf(name)!.day }));
+      .filter((n) => seqOf(n) !== undefined)
+      .sort(byWrite)
+      .map((name) => ({ name, size: sizeOf(join(f.dir, name)) }));
   } catch {
     return [];
   }
-  const today = new Date(now).toISOString().slice(0, 10);
-  const kept = new Set([...new Set(files.filter((x) => x.day <= today).map((x) => x.day))].slice(-keepDays));
   const gone: string[] = [];
-  const remove = (x: { name: string; size: number }) => {
+  let total = files.reduce((n, x) => n + x.size, 0);
+  for (const x of files.slice(0, -1)) {
+    if (total <= maxBytes) break;
     try {
       unlinkSync(join(f.dir, x.name));
       gone.push(x.name);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const left = files.filter((x) => x.day >= today || kept.has(x.day) || !remove(x));
-  let total = left.reduce((n, x) => n + x.size, 0);
-  const order = [...left.filter((x) => x.day > today).reverse(), ...left.filter((x) => x.day < today)];
-  for (const x of order) {
-    if (total <= maxBytes) break;
-    if (remove(x)) total -= x.size;
+      total -= x.size;
+    } catch {}
   }
   return gone;
-}
-
-// The days of a writer's folder dated after today: a clock that was ahead, or is wrong now.
-export function futureDays(f: Pick<Folder, "dir" | "owner">, now: number): string[] {
-  const today = new Date(now).toISOString().slice(0, 10);
-  try {
-    const st = lstatSync(f.dir);
-    if (!st.isDirectory() || st.uid !== f.owner) return [];
-    return [...new Set(readdirSync(f.dir).map((n) => partOf(n)?.day).filter((d): d is string => d !== undefined && d > today))].sort();
-  } catch {
-    return [];
-  }
 }
 
 function sizeOf(path: string): number {
@@ -454,7 +430,9 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
   const lim = l;
   return {
     write(d) {
-      if (REFUSED(d.type) && !d.known) {
+      // Known only as the verifier's own typed true: a spread request's "known" is junk.
+      const known = d.known === true;
+      if (REFUSED(d.type) && !known) {
         const now = d.at ?? lim.clock.now();
         const w = lim.refused;
         if (now - w.from >= 60_000) {
@@ -471,7 +449,9 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
         if (r.dropped++ === 0) lim.put({ type: "events.dropped", actor: "taskbox", text: `More than ${REFUSED_PER_MINUTE} refused requests this minute: the rest are counted, and the count is written when the minute ends.` });
         return newEvent(writer, d, lim.clock, rand);
       }
-      if (!LIMITED(d.type)) return lim.put(d);
+      // Progress, and known refusals: a window per actor. A known sender is still capped, so no agent
+      // with a key can fill the disk; its first dropped line says so at once.
+      if (!LIMITED(d.type) && !(REFUSED(d.type) && known)) return lim.put(d);
       const now = d.at ?? lim.clock.now();
       let w = lim.windows.get(d.actor);
       if (!w || now - w.from >= 60_000) {
@@ -486,7 +466,7 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
         }
       }
       if (w.n >= lim.limit) {
-        w.dropped++;
+        if (w.dropped++ === 0 && REFUSED(d.type)) lim.put({ type: "events.dropped", actor: "taskbox", text: `More than ${lim.limit} refused requests from ${d.actor} this minute: the rest are counted.`.slice(0, TEXT_MAX) });
         return newEvent(writer, d, lim.clock, rand);
       }
       w.n++;

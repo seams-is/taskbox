@@ -500,9 +500,10 @@ export const KNOWN_AGENTS = [AGENT_LABEL];
 // agentsUid: whose gui domain the agents run in (ci's); with none, their plists still go.
 // v3's op jobs (core/child.ts) have their plists in root's ops folder, outside these folders, so with
 // an ops folder there, every op job launchd lists is booted out too.
-export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist"> & Partial<Pick<Paths, "installId">>, keep: string[] = KNOWN_DAEMONS, agentsUid?: number): Promise<string[]> {
+// missed: the op jobs it couldn't end, for the caller to say.
+export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist"> & Partial<Pick<Paths, "installId">>, keep: string[] = KNOWN_DAEMONS, agentsUid?: number, missed: string[] = []): Promise<string[]> {
   const gone: string[] = [];
-  if (p.installId && existsSync(rootStateOf({ installId: p.installId }).ops)) await bootOutListed(sys).catch(() => []);
+  if (p.installId && existsSync(rootStateOf({ installId: p.installId }).ops)) missed.push(...(await bootOutListed(sys).catch(() => ["launchd's list of jobs couldn't be read"])));
   for (const [dir, known, domain] of [
     [dirname(p.guardPlist), keep, "system"],
     [dirname(p.agentPlist), KNOWN_AGENTS, agentsUid === undefined ? undefined : `gui/${agentsUid}`],
