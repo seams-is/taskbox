@@ -287,7 +287,9 @@ export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<s
   served.set(assetUrl(cfg, TAILSCALE_ASSET), ts);
   edit(v);
   const src = archive("src", (dir) => {
-    cpSync(REPO, dir, { recursive: true, filter: (f) => !/\/(node_modules|\.git)(\/|$)/.test(f.slice(REPO.length)) });
+    // The commit's files, less test/ and docs/: the install reads none of them, and they are half
+    // the tree, which each install copies, then copies and hashes again.
+    cpSync(REPO, dir, { recursive: true, filter: (f) => !/^\/(test|docs)(\/|$)|\/(node_modules|\.git)(\/|$)/.test(f.slice(REPO.length)) });
     writeFileSync(join(dir, "taskbox.json"), JSON.stringify(cfg));
     writeFileSync(join(dir, "versions.json"), JSON.stringify(v));
     extra(dir);
