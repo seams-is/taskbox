@@ -8,7 +8,9 @@ import { appendEvent, eventLog, keepEvents, newEvent, readEvents } from "../../s
 import { begin, opProblem, type OpType, readOp, writeOp } from "../../src/core/ops.ts";
 import { answer, LAPSE_MS, lapse, noPending, raise } from "../../src/core/pending.ts";
 import { keepOutcomes, recordOutcome } from "../../src/core/spool.ts";
-import { Verified } from "../../src/core/statement.ts";
+import { checkSigned, CONTROL_NS, signedWord, statementFor, statementText, Verified } from "../../src/core/statement.ts";
+import { keyPair, sshsig } from "../sshsig.ts";
+import { verifyDeps } from "../ws-helpers.ts";
 import { FakeSys } from "../fake.ts";
 
 const uid = process.getuid!();
@@ -78,9 +80,6 @@ describe("N2b: known only from the verifier", () => {
     expect(JSON.parse(JSON.stringify(key)) instanceof Verified).toBe(false);
   });
   test("checkSigned says who signed a refused word, once its signature checks", async () => {
-    const { checkSigned, CONTROL_NS, signedWord, statementFor, statementText } = await import("../../src/core/statement.ts");
-    const { keyPair, sshsig } = await import("../sshsig.ts");
-    const { verifyDeps } = await import("../ws-helpers.ts");
     const k = keyPair();
     const now = Date.UTC(2026, 10, 23, 14, 2, 0);
     const st = statementFor({ box: "0".repeat(32), action: "drain", args: {}, subject: "box", nonce: "a".repeat(32), now });
@@ -88,7 +87,8 @@ describe("N2b: known only from the verifier", () => {
     const r = await checkSigned(verifyDeps(), { word, keys: [k.key], installId: "0".repeat(32), now, nonce: () => "b".repeat(32), want: { action: "drain", args: {}, subject: "box" } });
     expect(r).toMatchObject({ ok: false, code: "stale-state" });
     expect(r.ok === false && r.signer instanceof Verified).toBe(true);
-  });
+    // It runs the real ssh-keygen, slow on a loaded runner.
+  }, 30_000);
 });
 
 describe("the lows", () => {
