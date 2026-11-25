@@ -9,6 +9,9 @@ import { ANCHOR, expectedLoaded, guardOnce, PFCTL } from "../../src/guard.ts";
 import { MAX_HOLD_MS } from "../../src/hop.ts";
 import { oneJob, vmStartGuard } from "../../src/loop.ts";
 import { decideWatch, watchClockFile, watchUsed } from "../../src/ops.ts";
+import { beatFor } from "../../src/beat.ts";
+import { writeLoopState } from "../../src/loop.ts";
+import { newLoopWatch, watchLoop } from "../../src/loopwatch.ts";
 import { FakeSys } from "../fake.ts";
 import { CFG, loopDeps, quietBox, tempRoot } from "../helpers.ts";
 
@@ -172,5 +175,106 @@ describe("the rollback watcher: an unread clock falls back to the 3 h wall cap",
     // Unread clocks: no count, so the wall cap decides.
     expect(watchUsed(d, w, { mono: undefined, boot: U })).toBeUndefined();
     expect(watchUsed(d, w, { mono: 5, boot: undefined })).toBeUndefined();
+  });
+});
+
+describe("the loop watch's stale beat, on mono", () => {
+  const ME = process.getuid!();
+  const RUNNING = `gui/${ME}/x = {\n\tstate = running\n\tpid = 4242\n}\n`;
+  function box() {
+    const sys = new FakeSys();
+    const kicks: string[][] = [];
+    sys.responders.unshift((cmd, args) => {
+      if (cmd === "/usr/bin/id") return { code: 0, stdout: `${ME}\n`, stderr: "" };
+      if (cmd === "/bin/launchctl") {
+        if (args[0] === "kickstart") kicks.push(args);
+        return { code: 0, stdout: args[0] === "print" ? RUNNING : "", stderr: "" };
+      }
+      return undefined;
+    });
+    const d = loopDeps(sys, tempRoot());
+    mkdirSync(dirname(d.paths.loopState), { recursive: true });
+    return { sys, d, kicks };
+  }
+  const passes = async (t: ReturnType<typeof box>, w: ReturnType<typeof newLoopWatch>, n: number) => {
+    for (let i = 0; i < n; i++) {
+      await watchLoop(t.sys, t.d.paths, w);
+      t.sys.clock += 60_000;
+    }
+  };
+  test("a wall clock step back never makes a stale beat look fresh", async () => {
+    const t = box();
+    const w = newLoopWatch();
+    writeLoopState(t.d.paths, { slotCount: 1, slots: { "1": { beat: beatFor("waiting", t.sys.now()) } } });
+    await watchLoop(t.sys, t.d.paths, w);
+    // The loop freezes; the wall clock goes back 2 hours; mono runs on.
+    step(t.sys, -2 * H);
+    await passes(t, w, 15);
+    expect(t.kicks.length).toBe(1);
+  });
+  test("a wall clock step forward never makes a beating loop look stale", async () => {
+    const t = box();
+    const w = newLoopWatch();
+    for (let i = 0; i < 20; i++) {
+      writeLoopState(t.d.paths, { slotCount: 1, slots: { "1": { beat: beatFor("waiting", t.sys.now()) } } });
+      await watchLoop(t.sys, t.d.paths, w);
+      if (i === 5) step(t.sys, 2 * 86_400_000);
+      t.sys.clock += 60_000;
+    }
+    // A job's beat that stays to its ceiling, seen before a 2-day step: still within it on mono.
+    writeLoopState(t.d.paths, { slotCount: 1, slots: { "1": { beat: beatFor("running a job", t.sys.now(), 65 * 60_000) } } });
+    await watchLoop(t.sys, t.d.paths, w);
+    step(t.sys, 2 * 86_400_000);
+    await passes(t, w, 10);
+    expect(t.kicks).toEqual([]);
+  });
+  test("a pass that can't read mono decides nothing", async () => {
+    const t = box();
+    const w = newLoopWatch();
+    const m = { fail: false, calls: 0 };
+    monoFails(t.sys, m);
+    writeLoopState(t.d.paths, { slotCount: 1, slots: { "1": { beat: beatFor("waiting", t.sys.now()) } } });
+    await watchLoop(t.sys, t.d.paths, w);
+    m.fail = true;
+    await passes(t, w, 15);
+    expect(t.kicks).toEqual([]);
+  });
+  test("the loop watch reads the wall clock for its record's label only: it is off the allowlist", () => {
+    const list = JSON.parse(readFileSync(new URL("./wall-reads.json", import.meta.url), "utf8"));
+    expect(list["loopwatch.ts"].reads).toBe(2);
+    expect(list["loopwatch.ts"].why).not.toMatch(/stale|restarted/);
+    const src = readFileSync(new URL("../../src/loopwatch.ts", import.meta.url), "utf8");
+    expect(src).not.toContain("staleBeat(");
+  });
+});
+
+describe("a loss marked while mono was unread clears on a later pass that finds the rules in place", () => {
+  const last = (sys: FakeSys) => ({ ok: true, detail: "x", at: sys.now() - 2000, tun: "utun99", inPlaceBoot: U, missingAt: sys.now() - 60_000, missingUnread: true as const });
+  test("rules in place, mono read: the mark goes, and the pass's mono bounds the loss, so a start before it still refuses", async () => {
+    const sys = new FakeSys();
+    pfSteady(sys);
+    const r = await guardOnce(sys, CFG, last(sys));
+    expect(r.missingUnread).toBeUndefined();
+    const m = sys.clock + sys.monoOffset;
+    expect(r.missingMono).toBe(m);
+    expect(vmStartGuard(r, sys.now() - 120_000, [], m - 30_000).rulesWentMissing).toBe(true);
+    expect(vmStartGuard(r, sys.now() + 1, [], m + 1).rulesWentMissing).toBe(false);
+  });
+  test("rules in place, mono unread: the mark still goes", async () => {
+    const sys = new FakeSys();
+    pfSteady(sys);
+    monoFails(sys, { fail: true, calls: 0 });
+    expect((await guardOnce(sys, CFG, last(sys))).missingUnread).toBeUndefined();
+  });
+  test("never while the rules are missing, or can't be read", async () => {
+    const gone = new FakeSys();
+    gone.responders.push((cmd, args) => (cmd === PFCTL && args.join(" ") === `-a ${ANCHOR} -s rules` ? { code: 0, stdout: "", stderr: "" } : undefined));
+    pfSteady(gone);
+    monoFails(gone, { fail: true, calls: 0 });
+    expect((await guardOnce(gone, CFG, last(gone))).missingUnread).toBe(true);
+    const unread = new FakeSys();
+    unread.responders.push((cmd, args) => (cmd === PFCTL && args.join(" ") === "-s rules" ? { code: 1, stdout: "", stderr: "no" } : undefined));
+    pfSteady(unread);
+    expect((await guardOnce(unread, CFG, last(unread))).missingUnread).toBe(true);
   });
 });

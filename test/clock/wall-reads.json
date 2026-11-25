@@ -145,7 +145,7 @@
   },
   "loopwatch.ts": {
     "reads": 2,
-    "why": "the loop watch's pass time and vmStarting. A pass after a jump either way judges nothing; on the next, a forward step can still make a beating loop look stale and be restarted (review 7, low-medium), left for WP14, which owns the loop watch. vmStarting only puts off a one-time move of Softnet for a loop older than v2.5.1"
+    "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
   },
   "loop.ts": {
     "reads": 103,

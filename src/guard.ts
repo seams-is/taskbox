@@ -80,7 +80,7 @@ export interface GuardRecord {
   tunUp?: boolean; // the utun exists with a Tailscale address, so Screen Sharing reaches the tailnet
   missingAt?: number; // the last time a pass found the rules gone, put them back, and dropped Screen Sharing's states
   missingMono?: number; // the same on the monotonic clock (core/boot.ts), which a VM start compares against
-  missingUnread?: true; // the last loss was found on a pass that couldn't read mono: every VM start refuses until a loss with mono, or a restart
+  missingUnread?: true; // the last loss was found on a pass that couldn't read mono: every VM start refuses until a later pass reads the rules in place
   // The boot, by kern.bootsessionuuid (which a clock step leaves alone), in which this guard has had
   // the rules in place. Rules found gone after that went missing; at a boot's first pass they were
   // never there (v2.1.1). A number is v2's boot seconds, which matches no uuid.
@@ -194,6 +194,17 @@ export async function guardOnce(sys: Sys, cfg: Config, last?: GuardRecord): Prom
     } else {
       delete keep.missingMono;
       keep.missingUnread = true;
+    }
+  }
+  // Rules read in place on a later pass clear a loss marked while mono was unread. The loss came
+  // before this pass, so this pass's mono, when read, bounds it: a VM that started before still
+  // counts it. Never on a pass that finds them missing, or can't read them (that returns above).
+  if (!wasMissing && keep.missingUnread) {
+    delete keep.missingUnread;
+    missingUnread = undefined;
+    if (mono !== undefined) {
+      keep.missingMono = mono;
+      missingMono = mono;
     }
   }
   const load = await sys.run(PFCTL, ["-a", ANCHOR, "-f", "-"], { stdin: anchorRules(tun), timeoutMs: 10_000 });

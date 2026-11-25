@@ -20,7 +20,8 @@
 // opened without blocking, at most LOOP_STATE_MAX bytes. A file out of shape is no beat: no action.
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { staleBeat } from "./beat.ts";
+import { type Beat, DEFAULT_GRACE_MS } from "./beat.ts";
+import { monoNow } from "./core/boot.ts";
 import { AGENT_LABEL, type Paths, readStateJson } from "./config.ts";
 import type { Sys } from "./sys.ts";
 import { loopFrom } from "./watch.ts";
@@ -28,17 +29,41 @@ import { loopFrom } from "./watch.ts";
 export const LOOP_WATCH_EXTRA_MS = 3 * 60_000;
 export const LOOP_KICK_GAP_MS = 15 * 60_000;
 export const LOOP_STATE_MAX = 1_048_576;
-// Passes further apart than this mean the Mac slept or the clock jumped: judge on the next one.
+// Passes further apart than this on the monotonic clock mean the Mac slept: judge on the next one.
 export const LOOP_WATCH_GAP_MS = 3 * 60_000;
 // launchctl answers at once; a short limit keeps a hung launchctl from holding the guard.
 export const LOOP_LAUNCHCTL_MS = 10_000;
 
+// Every time here is on the box's monotonic clock (core/boot.ts), so no wall clock step, either way,
+// makes a stale beat look fresh or a fresh one stale. A beat's wall times are its name and the length
+// it may last (until - at, both written at once); how long it has stood is counted on mono from the
+// pass that first saw it. A guard that just started counts from then, so it acts later, never sooner.
 export interface LoopWatch {
-  lastPass: number | null;
-  kickedAt: number | null;
+  lastPass: number | null; // mono
+  kickedAt: number | null; // mono
   seen: string | null; // the stale beat the last pass found, as slot and time
+  firstSeen: Map<string, number>; // each beat, by slot and time, and the mono it was first seen at
 }
-export const newLoopWatch = (): LoopWatch => ({ lastPass: null, kickedAt: null, seen: null });
+export const newLoopWatch = (): LoopWatch => ({ lastPass: null, kickedAt: null, seen: null, firstSeen: new Map() });
+
+// The first counted slot whose beat has stood, on mono, past the length it may last, the grace and
+// the margin.
+export function staleOnMono(loop: { slots?: Record<string, { beat?: Beat }>; slotCount?: number; beatGraceMs?: number }, mono: number, firstSeen: Map<string, number>): { slot: string; beat: Beat } | undefined {
+  const grace = Number.isSafeInteger(loop.beatGraceMs) && (loop.beatGraceMs as number) >= 0 ? (loop.beatGraceMs as number) : DEFAULT_GRACE_MS;
+  const count = loop.slotCount ?? 1;
+  const now = new Set<string>();
+  let stale: { slot: string; beat: Beat } | undefined;
+  for (const [slot, s] of Object.entries(loop.slots ?? {})) {
+    if (Number(slot) > count || !s.beat) continue;
+    const key = `${slot}@${s.beat.at}`;
+    now.add(key);
+    if (!firstSeen.has(key)) firstSeen.set(key, mono);
+    const lasts = Math.max(0, s.beat.until - s.beat.at) + grace + LOOP_WATCH_EXTRA_MS;
+    if (!stale && mono - firstSeen.get(key)! > lasts) stale = { slot, beat: s.beat };
+  }
+  for (const k of [...firstSeen.keys()]) if (!now.has(k)) firstSeen.delete(k);
+  return stale;
+}
 
 export interface KickRecord {
   at: number;
@@ -86,22 +111,26 @@ const PHASE = /^[A-Za-z ]{1,40}$/;
 
 // One pass, from the guard's full pass. Returns what it did, for the guard's record and tests.
 export async function watchLoop(sys: Sys, p: Paths, w: LoopWatch): Promise<string | undefined> {
-  const now = sys.now();
-  const gap = w.lastPass === null ? 0 : now - w.lastPass;
-  w.lastPass = now;
-  // A sleep, or the clock jumping either way: judge on the next pass, and forget a restart time the
-  // jump made meaningless.
+  // A pass that can't read mono decides nothing.
+  const mono = await monoNow(sys);
+  if (mono === undefined) return undefined;
+  const now = sys.now(); // a label in the kick's record only
+  const gap = w.lastPass === null ? 0 : mono - w.lastPass;
+  w.lastPass = mono;
+  // A sleep (mono counts it), or a counter that went back (a restart): judge on the next pass, and
+  // count every beat again from then.
   if (gap > LOOP_WATCH_GAP_MS || gap < 0) {
     if (gap < 0) w.kickedAt = null;
     w.seen = null;
+    w.firstSeen.clear();
     return undefined;
   }
-  if (w.kickedAt !== null && now - w.kickedAt < LOOP_KICK_GAP_MS) return undefined;
+  if (w.kickedAt !== null && mono - w.kickedAt < LOOP_KICK_GAP_MS) return undefined;
   const ci = await uidOf(sys, p.service);
   if (ci === undefined) return undefined;
   const loop = loopFrom(readOwnedJson(p.loopState, ci));
   if (loop.endingAt !== undefined) return undefined;
-  const st = staleBeat(loop, now - LOOP_WATCH_EXTRA_MS);
+  const st = staleOnMono(loop, mono, w.firstSeen);
   const key = st ? `${st.slot}@${st.beat.at}` : null;
   const before = w.seen;
   w.seen = key;
@@ -113,7 +142,7 @@ export async function watchLoop(sys: Sys, p: Paths, w: LoopWatch): Promise<strin
   const print = await sys.run("/bin/launchctl", ["print", target], { timeoutMs: LOOP_LAUNCHCTL_MS }).catch(() => ({ code: 1, stdout: "" }));
   if (print.code !== 0 || !runningNow(print.stdout)) return undefined;
   const kick = await sys.run("/bin/launchctl", ["kickstart", "-k", target], { timeoutMs: LOOP_LAUNCHCTL_MS }).catch(() => ({ code: 1, stdout: "" }));
-  w.kickedAt = now;
+  w.kickedAt = mono;
   const rec: KickRecord = { at: now, slot: st.slot, phase: st.beat.phase, beatAt: st.beat.at, ok: kick.code === 0 };
   writeKick(p, rec);
   return `restarted the loop: slot ${rec.slot} hadn't moved since its beat (${rec.phase})${rec.ok ? "" : ", but launchctl refused"}`;
