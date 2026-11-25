@@ -5,11 +5,11 @@ import { readFileSync } from "node:fs";
 import { BLOCKED, failCode, INTERNET_V4, timeoutCode, INTERNET_V6, probe, type ProbeDeps, proveFence, realListen } from "../src/workspace/probe.ts";
 import { N } from "./ws-helpers.ts";
 
-type Fail = { nobody?: boolean; nobodyUnseen?: boolean; poolReaches?: boolean; poolExit0?: boolean; poolTimesOut?: string; internet?: string; listen?: string; v6Control?: boolean };
+type Fail = { goneAfterPool?: string; nobody?: boolean; nobodyUnseen?: boolean; poolReaches?: boolean; poolExit0?: boolean; poolTimesOut?: string; internet?: string; listen?: string; v6Control?: boolean };
 
 function fake(fail: Fail = {}) {
   const runs: string[][] = [];
-  const listeners: { host: string; proto: string; seen: Set<string> }[] = [];
+  const listeners: { host: string; proto: string; seen: Set<string>; pooled?: boolean }[] = [];
   let t = 0;
   const deps: ProbeDeps = {
     token: () => N(80000 + ++t),
@@ -26,9 +26,12 @@ function fake(fail: Fail = {}) {
       if (kind === "tcp" || kind === "udp") {
         if (user === "nobody") {
           if (fail.nobody || (fail.v6Control && host!.includes(":"))) return 1;
+          // The listener closed after the pool's try: the port refuses everyone.
+          if (fail.goneAfterPool === l.proto && l.pooled) return BLOCKED;
           if (!fail.nobodyUnseen) l.seen.add(token!);
           return 0;
         }
+        l.pooled = true;
         if (fail.poolReaches) l.seen.add(token!);
         if (fail.poolTimesOut === host) return 1;
         return fail.poolExit0 ? 0 : BLOCKED;
@@ -57,6 +60,11 @@ describe("proveFence", () => {
     expect(c![0]).toBe("nobody");
     expect(p![0]).toBe("taskbox-ws1");
     expect(c![4]).not.toBe(p![4]);
+    // The control goes again after the pool's try, with a token of its own, at the same listener.
+    const a = f.runs[2]!;
+    expect(a.slice(0, 4)).toEqual(c!.slice(0, 4));
+    expect(new Set([c![4], p![4], a[4]]).size).toBe(3);
+    expect(f.runs.filter((r) => r[0] === "nobody").length).toBe(12);
   });
 
   test("with a ULA only: the LAN step tries it, and the internet is asked over IPv4 only", async () => {
@@ -84,6 +92,8 @@ describe("proveFence", () => {
     ["the pool reaches the listener", { poolReaches: true }, LAN, "taskbox-ws1 reached the box's own IPv4 address over TCP"],
     ["the pool's probe says it got through", { poolExit0: true }, LAN, "taskbox-ws1 reached the box's own IPv4 address over TCP"],
     ["the pool's try times out instead of being refused", { poolTimesOut: "192.168.1.20" }, LAN, "taskbox-ws1's try at the box's own IPv4 address over TCP wasn't refused (exit 1)"],
+    ["the listener is gone after the pool's try, so the refusal may be a closed port", { goneAfterPool: "tcp" }, LAN, "the control didn't reach the box's own IPv4 address over TCP again after taskbox-ws1's try"],
+    ["the UDP listener is gone after the pool's try", { goneAfterPool: "udp" }, LAN, "over UDP again after taskbox-ws1's try, so its refusal can't be told from a closed port"],
     ["the pool's try at the Tailscale address times out", { poolTimesOut: "100.101.102.103" }, LAN, "the box's own Tailscale address over TCP wasn't refused"],
     ["no internet over TCP", { internet: `tcp-open ${INTERNET_V4}` }, LAN, "couldn't reach the internet over IPv4 TCP"],
     ["no internet over UDP", { internet: `dns ${INTERNET_V4}` }, LAN, "couldn't reach the internet over IPv4 UDP"],
@@ -97,6 +107,24 @@ describe("proveFence", () => {
     });
   }
 });
+
+// Whether this runtime reports the ICMP port unreachable a UDP send to a closed loopback port gets.
+async function icmpReported(port: number): Promise<boolean> {
+  const { createSocket } = await import("node:dgram");
+  const s = createSocket("udp4");
+  return new Promise((resolve) => {
+    const end = (v: boolean) => {
+      clearTimeout(timer);
+      try {
+        s.close();
+      } catch {}
+      resolve(v);
+    };
+    const timer = setTimeout(() => end(false), 300);
+    s.on("error", (e) => end((e as NodeJS.ErrnoException).code === "ECONNREFUSED"));
+    s.connect(port, "127.0.0.1", () => s.send("x\n"));
+  });
+}
 
 describe("the probe and its listener, over loopback", () => {
   for (const proto of ["tcp", "udp"] as const) {
@@ -114,9 +142,50 @@ describe("the probe and its listener, over loopback", () => {
       const port = dead.port;
       dead.close();
       await new Promise((r) => setTimeout(r, 20));
-      // TCP's refusal is BLOCKED. A UDP port with nobody there sends nothing back that Bun reports,
-      // so it is a plain failure: silence is never taken as refused.
-      expect(await probe([proto, "127.0.0.1", String(port), N(3)], 300)).toBe(proto === "tcp" ? BLOCKED : 1);
+      // A closed port refuses: a RST for TCP, an ICMP port unreachable for UDP. The probe can't tell
+      // that from pf's block return, so proveFence's control goes again after the pool's try. UDP's
+      // refusal is BLOCKED where the runtime reports the ICMP (Bun 1.4.4 does, 1.3.13 doesn't); where
+      // it reports nothing, the probe hears silence, and silence is never taken as refused.
+      const expected = proto === "tcp" || (await icmpReported(port)) ? BLOCKED : 1;
+      expect(await probe([proto, "127.0.0.1", String(port), N(3)], 300)).toBe(expected);
+    });
+  }
+
+  test("the bun the box runs reports a UDP refusal, so a UDP fence proof can pass on the box", async () => {
+    const pin = JSON.parse(readFileSync(new URL("../versions.json", import.meta.url), "utf8")).bun.version;
+    const dead = await realListen("127.0.0.1", "udp");
+    const port = dead.port;
+    dead.close();
+    await new Promise((r) => setTimeout(r, 20));
+    if (Bun.version === pin) expect(await icmpReported(port)).toBe(true);
+  });
+
+  // With real sockets: the pool's try lands on a closed port, which refuses it the way pf would. The
+  // proof must still fail, on any bun, because the listener isn't there for the control after it.
+  for (const proto of ["tcp", "udp"] as const) {
+    test(`${proto}: a refusal from a closed port never passes the proof`, async () => {
+      let l: Awaited<ReturnType<typeof realListen>> | undefined;
+      let t = 0;
+      const runs: string[] = [];
+      const deps: ProbeDeps = {
+        token: () => N(90000 + ++t),
+        listen: async (host, p) => (l = await realListen(host, p)),
+        async runAs(user, args) {
+          runs.push(`${user} ${args[0]}`);
+          if (user !== "nobody") {
+            // The other protocol's try is fenced: it never lands, and the listener stays.
+            if (args[0] !== proto) return BLOCKED;
+            l!.close();
+            await new Promise((r) => setTimeout(r, 20));
+          }
+          return probe(args, 300);
+        },
+      };
+      const r = await proveFence(deps, { user: "taskbox-ws1", lan: { v4: "127.0.0.1" } });
+      expect(r.ok).toBe(false);
+      expect(r.ok ? "" : r.why).toContain(`over ${proto.toUpperCase()}`);
+      expect(r.ok ? "" : r.why).toMatch(/again after taskbox-ws1's try|wasn't refused/);
+      expect(runs).toContain(`taskbox-ws1 ${proto}`);
     });
   }
 

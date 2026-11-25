@@ -4,9 +4,14 @@
 //   address when it has them;
 // - the probe run as nobody must reach the listener, so the listener is reachable at all;
 // - the same probe run as the pool account must be refused: it must exit BLOCKED, which it gives only
-//   for ECONNREFUSED or EHOSTUNREACH (what pf's block return gives), or for a TCP connect that
-//   never opened within its time (timeoutCode), and the listener must not have seen it. Any other
-//   failure is a failed proof, never a pass;
+//   for ECONNREFUSED or EHOSTUNREACH, or for a TCP connect that never opened within its time
+//   (timeoutCode), and the listener must not have seen it. Any other failure is a failed proof, never
+//   a pass;
+// - the control as nobody must reach the listener again after the pool's try, with a new token. A
+//   refusal alone can't be told from a closed port: pf's block return out answers a UDP packet with
+//   an ICMP port unreachable, the same as a port with nothing bound (seen in a Tart run on macOS 27.2,
+//   where the send itself succeeds). With the listener proved there before and after, what turned the
+//   pool away stood in front of it and matched by user, and that is the fence;
 // - the probe run as the pool account must reach the internet, TCP and UDP, so the fence leaves it
 //   open; over IPv6 too when the box has a global IPv6 address.
 // Each probe is taskbox's own code, this file, run by taskbox's bun with env -i HOME=/var/empty, from
@@ -19,7 +24,9 @@ import { type Clock, realClock } from "../clock.ts";
 
 export const PROBE_TIMEOUT_MS = 3_000;
 // The probe's exit codes: 0 reached and answered; BLOCKED refused by the network; 1 any other
-// failure, such as a timeout; 2 words it doesn't take.
+// failure, such as a timeout; 2 words it doesn't take. A UDP refusal is the ICMP unreachable the
+// runtime reports on the connected socket as ECONNREFUSED. Bun 1.4.4, the box's pin, reports it.
+// Bun 1.3.13 reports nothing, so there a refused UDP try is silence and exits 1, and the proof fails.
 export const BLOCKED = 3;
 const REFUSED = ["ECONNREFUSED", "EHOSTUNREACH"];
 export const failCode = (e: unknown) => (REFUSED.includes(String((e as NodeJS.ErrnoException)?.code)) ? BLOCKED : 1);
@@ -75,6 +82,9 @@ export async function proveFence(d: ProbeDeps, o: { user: string; lan: { v4?: st
         const p = await d.runAs(o.user, [proto, host, String(l.port), pool]);
         if (p === 0 || l.got(pool)) return { ok: false, why: `${o.user} reached the box's own ${fam} address over ${proto.toUpperCase()}, so the fence isn't holding` };
         if (p !== BLOCKED) return { ok: false, why: `${o.user}'s try at the box's own ${fam} address over ${proto.toUpperCase()} wasn't refused (exit ${p}), so the fence isn't proved` };
+        const again = d.token();
+        const c2 = await d.runAs("nobody", [proto, host, String(l.port), again]);
+        if (c2 !== 0 || !l.got(again)) return { ok: false, why: `the control didn't reach the box's own ${fam} address over ${proto.toUpperCase()} again after ${o.user}'s try, so its refusal can't be told from a closed port` };
       } finally {
         l.close();
       }
@@ -135,7 +145,14 @@ export function realListen(host: string, proto: Proto, clock: Clock = realClock)
         s.send("ok\n", from.port, from.address);
       }
     });
-    s.bind({ address: host, port: 0, exclusive: true }, () => resolve({ port: s.address().port, got, close: () => s.close() }));
+    // close may come twice, and a UDP socket throws on a second close.
+    let open = true;
+    const close = () => {
+      if (open) s.close();
+      open = false;
+    };
+    s.on("close", () => (open = false));
+    s.bind({ address: host, port: 0, exclusive: true }, () => resolve({ port: s.address().port, got, close }));
   });
 }
 
