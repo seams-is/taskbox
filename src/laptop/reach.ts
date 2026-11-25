@@ -6,6 +6,7 @@
 import { type Config, type ConfigRead, findBox, type Home, knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { Runner } from "./run.ts";
 import { type Answer, type Hello, type Kind, READS, readAnswer } from "./schema.ts";
+import { rememberAnswers } from "./versions.ts";
 import { boxCall, type SshFailure, type Target } from "./ssh.ts";
 import { type AppKind, type Peer, readTailnet, type StatusRead, tailnetProblem, type TailnetState, whichApp } from "./tailscale.ts";
 
@@ -179,6 +180,9 @@ export async function connectBox(d: Deps, box: Paired, state: TailnetState): Pro
   if (isStop(h)) return h;
   const bad = helloStop(box.name, h, box.installId);
   if (bad) return bad;
+  // A box that drops to an older answers version is said once (a rollback, or a box to look at).
+  const dropped = rememberAnswers(d.home, box.node, box.name, h.answers, h.release);
+  if (dropped) d.out(dropped);
   return { box, target, hello: h, state };
 }
 
