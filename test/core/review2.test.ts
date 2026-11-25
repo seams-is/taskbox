@@ -309,3 +309,26 @@ describe("N6: a pass that fails is seen", () => {
     expect(rows("check", { cfg: {} } as never).map(([n]) => n)).toContain("Guard passes");
   });
 });
+
+describe("N6: the event for a failed pass", () => {
+  test("each pass problem is one guard.pass-failed event, however many ticks it lasts", async () => {
+    const { passTeller } = await import("../../src/guard.ts");
+    const { makePasses, Passes } = await import("../../src/core/passes.ts");
+    const { eventLog, readEvents } = await import("../../src/core/events.ts");
+    const e = { dir: join(tmp(), "ev"), owner: uid };
+    const problems = new Map<string, string>();
+    const list = makePasses([{ name: "logins", make: () => { throw new Error("no keeper"); } }, { name: "bad", make: () => ({ name: "bad", at: "tick", next: () => { throw new Error("each tick"); } }) }], {} as never, () => {}, problems);
+    const p = new Passes(list, { now: () => T }, () => {}, problems);
+    const tell = passTeller(eventLog("guard", e, { now: () => T }));
+    for (let i = 0; i < 3; i++) {
+      p.tick();
+      tell(p);
+    }
+    const got = readEvents([{ ...e, writer: "guard" }]).events;
+    expect(got.map((x) => [x.type, x.text])).toEqual([
+      ["guard.pass-failed", "the logins pass couldn't start: no keeper"],
+      ["guard.pass-failed", "the bad pass failed: each tick"],
+    ]);
+    expect(() => passTeller(undefined)(p)).not.toThrow();
+  });
+});

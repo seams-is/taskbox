@@ -10,7 +10,7 @@ import type { Sys } from "./sys.ts";
 import { linkTarget } from "./layout.ts";
 import { vmStarting } from "./loopwatch.ts";
 import { makePasses, type PassMaker, Passes } from "./core/passes.ts";
-import { eventLog, flushEvents } from "./core/events.ts";
+import { type EventLog, eventLog, flushEvents } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { passMakers } from "./passes/index.ts";
 import { Log } from "./log.ts";
@@ -227,17 +227,7 @@ export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () 
   const ctx = { sys, cfg, p, log, writer, ...(ws ? { ws } : {}) };
   const say = (l: string) => log.write(l);
   // Each pass problem once, as a guard.pass-failed event, by the one writer only.
-  const told = new Set<string>();
-  const events = writer ? eventLog("guard", { dir: rootStateOf(p).events, owner: 0 }, sys) : undefined;
-  const tellPasses = (ps: Passes) => {
-    for (const why of ps.problems()) {
-      if (told.has(why)) continue;
-      told.add(why);
-      try {
-        events?.write({ type: "guard.pass-failed", actor: "taskbox", text: why });
-      } catch {}
-    }
-  };
+  const tellPasses = passTeller(writer ? eventLog("guard", { dir: rootStateOf(p).events, owner: 0 }, sys) : undefined);
   const problems = new Map<string, string>();
   const passes = new Passes(makePasses(makers, ctx, say, problems), sys, say, problems);
   // First, before the rules: after a restart, the pool's processes stop before anything else.
@@ -376,6 +366,21 @@ export function settler(sys: Sys, p: Paths, log: Pick<Log, "write">): () => Prom
       settled = true;
     } catch (e) {
       log.write(`Softnet wasn't moved to its own folder yet: ${(e as Error).message}`);
+    }
+  };
+}
+
+// Writes each pass problem once, as a guard.pass-failed event, however many ticks it lasts. With no
+// event log (a guard that isn't the one writer), it writes nothing.
+export function passTeller(events: EventLog | undefined): (ps: Passes) => void {
+  const told = new Set<string>();
+  return (ps) => {
+    for (const why of ps.problems()) {
+      if (told.has(why)) continue;
+      told.add(why);
+      try {
+        events?.write({ type: "guard.pass-failed", actor: "taskbox", text: why });
+      } catch {}
     }
   };
 }
