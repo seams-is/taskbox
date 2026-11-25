@@ -3,7 +3,7 @@
 // root's own file, so a PR can change taskbox.json's key but never the one the box trusts:
 // - the first key is pinned at the box's screen, after the owner's yes, with its fingerprint shown;
 // - a new key after that needs a statement signed by the pinned key, naming the new one;
-// - taskbox approver --reset, at the box, clears the pin, for a lost laptop.
+// - taskbox key reset approver, at the box, clears the pin, for a lost laptop.
 // This file is pure: no Sys, no files, no commands. The signature check is a Verifier the caller
 // gives: the update gives src/workspace/approval.ts keyChangeVerifier.
 import { createHash } from "node:crypto";
@@ -86,7 +86,7 @@ export type Verifier = (o: { key: string; namespace: string; message: string; si
 export const NO_VERIFIER: Verifier = async () => false;
 
 // What root's pin file (pin.ts) holds: no file; a key, with its generation and the fingerprints
-// cleared at the box; a key cleared by taskbox approver --reset; or something taskbox can't read,
+// cleared at the box; a key cleared by taskbox key reset approver; or something taskbox can't read,
 // which is never taken for no key.
 export type Pin =
   | { state: "none" }
@@ -104,7 +104,7 @@ export type ApproverPlan =
   | { change: "off"; from: string }
   | { refuse: string };
 
-const RESET = "To change it without the old key, type taskbox approver --reset at the box, then taskbox update.";
+const RESET = "To change it without the old key, type taskbox key reset approver at the box, then taskbox update.";
 
 // What an update does with the release's approverKey, given the box's pin. next and change are the
 // release's, already checked for shape. box is the install ID, or undefined before the first install.
@@ -114,7 +114,7 @@ export async function approverPlan(pin: Pin, next: string | undefined, change: K
   if (pin.state === "cleared") {
     if (next === undefined) return { change: "none" };
     // A key cleared at the box stays out: whoever has the lost laptop has it.
-    if (pin.cleared.includes(fingerprint(next))) return { refuse: `The release's taskbox.json names the approver key ${fingerprint(next)}, which was cleared at this box with taskbox approver --reset. Nothing was installed. Make a new key on your laptop, and put it in taskbox.json in a PR.` };
+    if (pin.cleared.includes(fingerprint(next))) return { refuse: `The release's taskbox.json names the approver key ${fingerprint(next)}, which was cleared at this box with taskbox key reset approver. Nothing was installed. Make a new key on your laptop, and put it in taskbox.json in a PR.` };
     return { change: "first", key: next, fingerprint: fingerprint(next), gen: pin.gen + 1, cleared: pin.cleared };
   }
   const from = fingerprint(pin.key);
@@ -141,7 +141,7 @@ export function approverLine(p: ApproverPlan): string | undefined {
   if ("refuse" in p) return undefined;
   if (p.change === "first") return `Approver key: ${p.fingerprint}, new. It turns workspaces on and signs every workspace step. Check it is the fingerprint taskbox approver showed on your laptop.`;
   if (p.change === "rotate") return `Approver key: from ${p.from} to ${p.fingerprint}, signed by the old key. Check the new one is the fingerprint taskbox approver showed on your laptop: the next question asks for its last 6 characters.`;
-  if (p.change === "off") return `Approver key: taskbox.json names none, so workspaces are off. The box keeps ${p.from}: taskbox approver --reset clears it.`;
+  if (p.change === "off") return `Approver key: taskbox.json names none, so workspaces are off. The box keeps ${p.from}: taskbox key reset approver clears it.`;
   return undefined;
 }
 

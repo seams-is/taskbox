@@ -139,7 +139,7 @@ describe("taskbox stop", () => {
     const some = launchd({ "local.taskbox.loop": "running" });
     some.d.cleanVms = async () => ({ removed: 1, failed: 1 });
     expect(await stop(some.d)).toBe(0);
-    expect(some.said.slice(-3)).toEqual(["Removed the VM the loop left.", "A VM the loop left couldn't be removed. Type taskbox clean to try again.", STOPPED]);
+    expect(some.said.slice(-3)).toEqual(["Removed the VM the loop left.", "A VM the loop left couldn't be removed. Type taskbox prune to try again.", STOPPED]);
     const none = launchd({ "local.taskbox.loop": "running" });
     none.d.cleanVms = async () => ({ removed: 0, failed: 0 });
     expect(await stop(none.d)).toBe(0);
@@ -149,7 +149,7 @@ describe("taskbox stop", () => {
       throw new Error("taskbox.json: bad");
     };
     expect(await stop(bad.d)).toBe(0);
-    expect(bad.said.at(-2)).toBe("Couldn't check for VMs the loop left. taskbox log says why.");
+    expect(bad.said.at(-2)).toBe("Couldn't check for VMs the loop left. taskbox logs says why.");
     expect(bad.logged.join("\n")).toContain("taskbox.json: bad");
   });
 
@@ -191,7 +191,7 @@ describe("taskbox stop", () => {
   });
 });
 
-describe("taskbox stop --drain", () => {
+describe("taskbox drain", () => {
   test("writes the drain, names the running jobs, and changes nothing else", async () => {
     const b = box(true);
     writeFileSync(b.d.paths.loopState, JSON.stringify({ slots: { "1": { slot: "running a job", job: "app/test" }, "2": { slot: "waiting for a job" } } }));
@@ -199,7 +199,7 @@ describe("taskbox stop --drain", () => {
     expect(existsSync(b.d.paths.drain)).toBe(true);
     expect(b.up()).toBe(true);
     expect(existsSync(b.d.paths.stopped)).toBe(false);
-    expect(b.said).toEqual(["Draining: app/test finishes, then the loop stops. No new job starts.", "Jobs that come meanwhile wait on GitHub. taskbox watch shows the drain, and taskbox start cancels it."]);
+    expect(b.said).toEqual(["Draining: app/test finishes, then the loop stops. No new job starts.", "Jobs that come meanwhile wait on GitHub. taskbox status -w shows the drain, and taskbox start cancels it."]);
   });
 
   test("with no job running, it says the loop stops within a minute", async () => {
@@ -234,7 +234,7 @@ describe("taskbox start", () => {
     writeFileSync(b.d.paths.stopped, JSON.stringify({ at: 1 }));
     expect(await start(b.d)).toBe(0);
     expect(b.up()).toBe(true);
-    expect(b.said.at(-1)).toBe("Started. Type taskbox watch to see what it does.");
+    expect(b.said.at(-1)).toBe("Started. Type taskbox status -w to see what it does.");
     expect(existsSync(b.d.paths.stopped)).toBe(false);
   });
 
@@ -269,7 +269,7 @@ describe("what status says while a drain runs", () => {
 
   test("Waiting says no new job starts, never that it carries on by itself", async () => {
     const { computeState } = await import("../src/state.ts");
-    const s = computeState({ now, loopRunning: true, loop: { slot: "waiting", waitingFor: "taskbox stop --drain: running jobs finish, then the loop stops", drainingSince: now - 120_000 } });
+    const s = computeState({ now, loopRunning: true, loop: { slot: "waiting", waitingFor: "taskbox drain: running jobs finish, then the loop stops", drainingSince: now - 120_000 } });
     expect(s.word).toBe("Waiting");
     expect(s.detail).toContain("no new job starts, and the loop stops within a minute");
     expect(s.next).not.toContain("carries on by itself");

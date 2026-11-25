@@ -103,7 +103,7 @@ export function policyEntries(p: Policy): string {
   return out.join("\n");
 }
 
-// What `taskbox policy` was given on its command line, or why it can't run.
+// What `taskbox policy show` was given on its command line, or why it can't run.
 export function policyArgs(rest: readonly string[]): { owner?: string; admins: string[]; whole: boolean } | string {
   const admins: string[] = [];
   let owner: string | undefined;
@@ -118,7 +118,7 @@ export function policyArgs(rest: readonly string[]): { owner?: string; admins: s
       if (!ok) return `${a} needs ${a === "--owner" ? "your Tailscale login, such as you@example.com" : "an admin account's short name"}`;
       if (a === "--owner") owner = v;
       else admins.push(v!);
-    } else return "taskbox policy [--owner <your Tailscale login>] [--admin <name>]... [--whole]";
+    } else return "taskbox policy show [--owner <your Tailscale login>] [--admin <name>]... [--whole]";
   }
   return { ...(owner !== undefined ? { owner } : {}), admins, whole };
 }
@@ -143,6 +143,6 @@ export function sshChangeLines(before: string[], after: string[]): string[] {
   const lines: string[] = [];
   if (lost.length) lines.push(`${lost.join(" and ")} ${lost.length === 1 ? "loses" : "lose"} Tailscale SSH to the box. Screen Sharing stays.`);
   if (gained.length) lines.push(`${gained.join(" and ")} ${gained.length === 1 ? "gains" : "gain"} Tailscale SSH to the box, in check mode.`);
-  lines.push("After the update, type taskbox policy, and in Tailscale's admin console replace taskbox's entries with what it prints. Until then the console keeps the old rules.");
+  lines.push("After the update, type taskbox policy show, and in Tailscale's admin console replace taskbox's entries with what it prints. Until then the console keeps the old rules.");
   return lines;
 }

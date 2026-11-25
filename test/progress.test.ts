@@ -107,6 +107,6 @@ describe("watch's clock", () => {
     const at = new Date(2026, 10, 13, 1, 7, 5).getTime();
     expect(clock(at)).toBe("01:07:05");
     const lines = screen({ pullFile: join(d, "none.json"), loopFile: join(d, "none2.json"), now: at });
-    expect(lines[2]).toBe("taskbox watch, redrawn every 2 s. Last drawn 01:07:05. Ctrl-C stops watching; the box carries on.");
+    expect(lines[2]).toBe("taskbox status -w, redrawn every 2 s. Last drawn 01:07:05. Ctrl-C stops watching; the box carries on.");
   });
 });

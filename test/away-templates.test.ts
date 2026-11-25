@@ -69,7 +69,7 @@ describe("the settings", () => {
   });
 });
 
-describe("taskbox away's check of the copy in the repo", () => {
+describe("taskbox check --away's check of the copy in the repo", () => {
   const ctx = (uid = 501) => {
     const d = loopDeps(new FakeSys(), tempRoot());
     return { sys: d.sys, cfg: TWO, paths: d.paths, uid, serviceUid: 501 } as never;
@@ -90,7 +90,7 @@ describe("taskbox away's check of the copy in the repo", () => {
   test("each way it can be wrong names what to do", async () => {
     const c = ctx();
     const now = (c as { sys: FakeSys }).sys.now();
-    expect(await deployedRow(c, "watchdog", repoWith({}))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/isn't in .*From away: type taskbox watchdog/) });
+    expect(await deployedRow(c, "watchdog", repoWith({}))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/isn't in .*From away: type taskbox template show box-check/) });
     expect(await deployedRow(c, "watchdog", repoWith({ path: FILE, state: "disabled_inactivity" }))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/turned off on GitHub \(disabled_inactivity\)\. From away/) });
     expect(await deployedRow(c, "watchdog", repoWith({ path: FILE, title: "taskbox watchdog 000000000000", at: now }))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/wasn't made from this box's settings/) });
     expect(await deployedRow(c, "watchdog", repoWith({ path: FILE, at: now - 5 * 3600_000 }))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/last ran 5 h ago/) });
@@ -98,18 +98,18 @@ describe("taskbox away's check of the copy in the repo", () => {
   });
 
   test("with no job source, it can't be checked, and says how to compare by hand", async () => {
-    expect(await deployedRow(ctx(), "watchdog")).toMatchObject({ status: "SKIP", detail: expect.stringMatching(/Compare it by hand with taskbox watchdog$/) });
+    expect(await deployedRow(ctx(), "watchdog")).toMatchObject({ status: "SKIP", detail: expect.stringMatching(/Compare it by hand with taskbox template show box-check$/) });
   });
 
   test("as remote, the loop's last check is read, without the jobs repo's name; with none lately, it says so", async () => {
     const base = ctx(502) as { sys: FakeSys; paths: { loopState: string }; cfg: typeof TWO };
     // No job source App: nothing to read, as for ci.
-    expect(await deployedRow(base as never, "watchdog")).toMatchObject({ status: "SKIP", detail: expect.stringMatching(/no job source App.*Compare it by hand with taskbox watchdog$/) });
+    expect(await deployedRow(base as never, "watchdog")).toMatchObject({ status: "SKIP", detail: expect.stringMatching(/no job source App.*Compare it by hand with taskbox template show box-check$/) });
     const c = { ...base, cfg: { ...TWO, jobsFrom: "example-org/app", actionsAppId: 4242 } };
     const none = await deployedRow(c as never, "watchdog");
     expect(none.status).toBe("SKIP");
     expect(none.detail).toMatch(/the loop checks the copy in the jobs repo hourly, and hasn't lately/);
-    expect(none.detail).not.toContain("type taskbox away");
+    expect(none.detail).not.toContain("type taskbox check --away");
     const { writeLoopState } = await import("../src/loop.ts");
     writeLoopState(c.paths as never, { workflows: { at: c.sys.now(), watchdog: { status: "OK", detail: "the copy in example-org/app matches this box" }, canary: { status: "FAIL", detail: "isn't in the repo" } } });
     const w = await deployedRow(c as never, "watchdog");

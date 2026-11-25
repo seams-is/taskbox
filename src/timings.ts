@@ -1,4 +1,4 @@
-// taskbox timings (v2.4.0, docs/scheduling-design.md section 4). From each job's phases, per kind,
+// taskbox job timings (v2.4.0, docs/scheduling-design.md section 4). From each job's phases, per kind,
 // over its last 50 jobs: the median and 90th percentile of how long a VM took to be ready, how long
 // a job waited, how long it ran and how long the cleanup took. Then each timing setting beside what
 // the numbers suggest. It suggests; the owner, or an agent's PR, changes taskbox.json. The box never
@@ -95,7 +95,7 @@ const line = (name: string, x?: Spread) => `  ${name.padEnd(9)}${x ? `median ${f
 
 export function timingsScreen(cfg: Config, jobs: JobRecord[], gaveWay: Partial<Record<Kind, number>> = {}, accept?: Criterion[]): string[] {
   const all = kindsOf(cfg).map((k) => kindTimings(jobs, k));
-  const out = [`taskbox timings: each kind's last ${TIMINGS_JOBS} jobs with phases. Jobs from before v2.4.0 have none.`, ""];
+  const out = [`taskbox job timings: each kind's last ${TIMINGS_JOBS} jobs with phases. Jobs from before v2.4.0 have none.`, ""];
   for (const k of all) {
     out.push(`${KIND_WORD[k.kind]}: ${k.jobs} jobs measured${gaveWay[k.kind] ? `, ${gaveWay[k.kind]} VMs gave way since the loop started` : ""}`);
     out.push(line("boot", k.boot), line("wait", k.wait), line("ready", k.ready), line("run", k.run), line("cleanup", k.cleanup), "");
@@ -114,12 +114,12 @@ export function timingsLine(cfg: Config, jobs: JobRecord[]): string {
   const all = kindsOf(cfg).map((k) => kindTimings(jobs, k));
   const sug = suggestions(cfg, all).filter((s) => s.suggests !== undefined && s.suggests !== s.now);
   const measured = all.map((k) => `${KIND_WORD[k.kind]} ${k.jobs}`).join(", ");
-  return `give way ${t.giveWayMinutes} min, floor ${t.floorMinutes} min, busy within ${t.busyWithinSeconds} s for ${t.busyForMinutes} min, source every ${t.sourcePollSeconds} s. Jobs measured: ${measured}.${sug.length ? ` taskbox timings suggests a change to ${sug.map((s) => s.setting).join(", ")}` : ""}`;
+  return `give way ${t.giveWayMinutes} min, floor ${t.floorMinutes} min, busy within ${t.busyWithinSeconds} s for ${t.busyForMinutes} min, source every ${t.sourcePollSeconds} s. Jobs measured: ${measured}.${sug.length ? ` taskbox job timings suggests a change to ${sug.map((s) => s.setting).join(", ")}` : ""}`;
 }
 
 // Acceptance criteria (v2.4.0), read from the job lines and the give-way log over the last
 // ACCEPT_WINDOW_MS. Each has a number, a limit and PASS or FAIL, or NOT MEASURED when the lines can't
-// show it, such as job waits without a job source. A FAIL means: taskbox undo, then a fix (README).
+// show it, such as job waits without a job source. A FAIL means: taskbox rollback, then a fix (README).
 export const ACCEPT_WINDOW_MS = 48 * 3600_000;
 export const ACCEPT = {
   burstSharePercent: 55,

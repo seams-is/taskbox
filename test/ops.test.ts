@@ -3,8 +3,9 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, rea
 import { hashTree } from "../src/checks.ts";
 import { join } from "node:path";
 import { paths } from "../src/config.ts";
-import { cleanBox, COMMANDS, commandsFor, log, type OpsDeps, plainLog, remove, status, undo } from "../src/ops.ts";
+import { cleanBox, commandsFor, log, type OpsDeps, plainLog, remove, status, undo } from "../src/ops.ts";
 import { linkTarget } from "../src/layout.ts";
+import { commandList } from "../src/registry.ts";
 import { computeState, footer } from "../src/state.ts";
 import { FakeSys } from "./fake.ts";
 import { screen } from "../src/watch.ts";
@@ -111,7 +112,7 @@ describe("taskbox status", () => {
     linked(p);
     expect(await status(d)).toBe(0);
     expect(said[0]).toBe("app: Ready. Waiting for a job.");
-    expect(said.join("\n")).toContain("Commands: status, watch, jobs, timings, load, logins, stop, start, check, away, watchdog, canary, clean, log");
+    expect(said.join("\n")).toContain("Commands: check, drain, job, load, logins, logs, policy, prune, status, stop, start, template");
     expect(tail(said)).toEqual(["Now: Ready. Waiting for a job.", "Did: Nothing changed.", "Next: Nothing to do."]);
   });
 
@@ -146,12 +147,12 @@ describe("taskbox status", () => {
   test("each user sees only the commands they can run", () => {
     const { d } = ops({ running: true });
     const notCi = { ...d, uid: d.uid + 1 };
-    expect(commandsFor(d, { remote: false, admin: false })).toBe(COMMANDS);
-    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: status, watch, jobs, timings, load, log, logins, check, hello, away, watchdog, canary, queue, wait, progress, release, deny, signed, workspaces.");
-    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: status, watch, jobs, timings, load, log, logins, check, hello, away, watchdog, canary, queue, wait, progress, release, deny, signed, workspaces.");
-    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: status, watch, jobs, timings, load report, log, logins, check, workspaces, and update, undo, remove, unlock, connect, disconnect, clear.");
-    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: status, watch, jobs, timings, load report, log, logins, check, workspaces.");
-    expect(commandsFor(notCi, undefined)).toBe(COMMANDS);
+    expect(commandsFor(d, { remote: false, admin: false })).toBe(commandList());
+    expect(commandList()).toBe("Commands: check, drain, job, load, logins, logs, policy, prune, status, stop, start, template, workspace, queue, wait, progress, deny, signed, workspaces, and as your admin user: connect, disconnect, key, remove, rollback, unlock, update, workspace.");
+    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, hello, job, load, logins, logs, status, template, workspace, queue, wait, progress, deny, signed, workspaces.");
+    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, job, load, logins, logs, policy, status, template, workspaces, and connect, disconnect, key, remove, rollback, unlock, update, workspace.");
+    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, job, load, logins, logs, policy, status, template, workspaces.");
+    expect(commandsFor(notCi, undefined)).toBe(commandList());
   });
 
   test("between the two updates to the links, status says the update isn't finished, with its fix", async () => {
@@ -169,7 +170,7 @@ describe("taskbox status", () => {
   });
 });
 
-describe("taskbox clean", () => {
+describe("taskbox prune", () => {
   test("nothing to clean", async () => {
     const { d, said } = ops({ running: true });
     expect(await cleanBox(d, loopDeps(d.sys as FakeSys, d.paths.opt.replace(/\/opt\/taskbox$/, "")))).toBe(0);
@@ -185,11 +186,11 @@ describe("taskbox clean", () => {
   test("as the admin: run it as ci", async () => {
     const { d, said } = ops({ asService: false });
     expect(await cleanBox(d, {} as never)).toBe(1);
-    expect(said[0]).toBe("Run taskbox clean as taskbox: the images and VMs are taskbox's.");
+    expect(said[0]).toBe("Run taskbox prune as taskbox: the images and VMs are taskbox's.");
   });
 });
 
-describe("taskbox log", () => {
+describe("taskbox logs", () => {
   test("the last day in plain sentences, and nothing older", () => {
     const lines = [
       "2026-11-11T10:00:00.000Z job job-old done",
@@ -212,7 +213,7 @@ describe("taskbox log", () => {
   });
 });
 
-describe("taskbox undo", () => {
+describe("taskbox rollback", () => {
   test("no kept install: says so, changes nothing", async () => {
     const { d, said } = ops();
     expect(await undo(d)).toBe(1);

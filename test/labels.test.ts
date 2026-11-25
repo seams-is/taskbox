@@ -265,7 +265,7 @@ describe("stop, start and remove while the old loop may still run", () => {
     expect(await start({ sys, paths: p, uid: 502, say: (s) => said.push(s), ask: async () => "no" })).toBe(0);
     expect(sys.calls.find((c) => c.args[0] === "bootstrap")!.args).toEqual(["bootstrap", "gui/502", oldFile]);
     expect(l[`gui/502/${old.loop}`]).toBeGreaterThan(0);
-    expect(said.at(-1)).toBe("Started. Type taskbox watch to see what it does.");
+    expect(said.at(-1)).toBe("Started. Type taskbox status -w to see what it does.");
     expect(existsSync(p.stopped)).toBe(false);
   });
 
@@ -366,7 +366,7 @@ describe("time limits", () => {
   });
 });
 
-describe("taskbox undo back across the label move", () => {
+describe("taskbox rollback back across the label move", () => {
   // The kept install, now behind /opt/taskbox: its launchd folder has the old labels' files only.
   function box(keptHasNew = false) {
     const sys = new FakeSys();

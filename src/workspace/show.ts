@@ -4,7 +4,7 @@
 //
 // Every user sees the same names: root's state is 644, so anyone on the box can read them anyway (an
 // accepted residual, design section 6). Disk use needs root, since each pool account's home is its
-// own at mode 700: an admin sees it at taskbox clear. The agent's last words show to whoever can
+// own at mode 700: an admin sees it at taskbox workspace clear. The agent's last words show to whoever can
 // read the agent's progress folder: the agent account and root.
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
@@ -61,7 +61,7 @@ export function workspacesLines(i: ShowInputs): string[] {
   if (!list.length) out.push("No workspaces now.");
   for (const w of list) {
     const bytes = w.user ? i.disk(w.user) : undefined;
-    const disk = !w.user ? "no account yet" : bytes === undefined ? "disk use shows at taskbox clear" : gb(bytes);
+    const disk = !w.user ? "no account yet" : bytes === undefined ? "disk use shows at taskbox workspace clear" : gb(bytes);
     out.push(`${w.name}  ${w.agent}  ${w.user ?? "-"}  ${stateLine(w)}  ${disk}`);
     out.push(`  Why: ${w.why}`);
     const n = noteOf(s, w.name, w.phase);

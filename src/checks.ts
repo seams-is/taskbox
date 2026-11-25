@@ -31,7 +31,7 @@ import { readStateFile, spoolProblem } from "./workspace/pass.ts";
 import { socketDirProblem } from "./tssocket.ts";
 import { failMode } from "./workspace/store.ts";
 
-// WARN is taskbox away's only (v2.5.0): worth a look, and no reason to stay. check never gives it.
+// WARN is taskbox check --away's only (v2.5.0): worth a look, and no reason to stay. check never gives it.
 export type Status = "OK" | "FAIL" | "SKIP" | "WARN";
 
 export interface Check {
@@ -410,7 +410,7 @@ export function busySlots(loopState: string): number {
   return Object.values(slots).filter((s) => !!s && typeof s === "object" && VM_SLOTS.has((s as { slot?: unknown }).slot as string)).length;
 }
 
-export const ROOM_FIX = "Make room on the box: every user's files count, other users' apps and caches too. taskbox clean removes old images and VMs while no download is part done.";
+export const ROOM_FIX = "Make room on the box: every user's files count, other users' apps and caches too. taskbox prune removes old images and VMs while no download is part done.";
 
 async function freeDisk(c: CheckContext): Promise<Omit<Check, "name">> {
   const gb = await freeGB(c.sys);
@@ -674,7 +674,7 @@ export async function approverRow(c: CheckContext): Promise<Omit<Check, "name">>
   const at = "At the box, as your admin user, type taskbox update, and check the fingerprint it shows";
   if (pin.state === "none") return fail(`taskbox.json names the approver key ${fingerprint(key)}, and the box hasn't pinned it yet, so workspaces stay off. ${at}.`);
   if (pin.state === "cleared") return fail(`the approver key was cleared at the box, so workspaces stay off. ${at}.`);
-  if (pin.state === "bad") return fail(`the box's pinned approver key isn't root's plain file, so workspaces stay off. At the box, as your admin user, type taskbox approver --reset, then taskbox update.`);
+  if (pin.state === "bad") return fail(`the box's pinned approver key isn't root's plain file, so workspaces stay off. At the box, as your admin user, type taskbox key reset approver, then taskbox update.`);
   return fail(`taskbox.json names the approver key ${fingerprint(key)}, but the box trusts ${fingerprint(pin.key)}, so workspaces stay off. ${at}.`);
 }
 
@@ -895,11 +895,11 @@ export async function screenLockRow(c: CheckContext): Promise<Omit<Check, "name"
 async function rollbackRow(c: CheckContext): Promise<Omit<Check, "name">> {
   const state = rollbackWatchState(c.paths);
   if (state.kind === "gone") return ok("none waiting");
-  if (state.kind === "unreadable") return fail("the rollback watcher's file can't be read, so it keeps watching and moves nothing. If the box should go back, type taskbox undo as your admin user. Otherwise agents fix the file");
+  if (state.kind === "unreadable") return fail("the rollback watcher's file can't be read, so it keeps watching and moves nothing. If the box should go back, type taskbox rollback as your admin user. Otherwise agents fix the file");
   const { w } = state;
   const tag = w.tag.replace(/[^\x20-\x7e]/g, "").slice(0, 24);
   if (w.blocked) return fail(`${tag} can't be checked by the rollback watcher: ${w.blocked.replace(/[^\x20-\x7e]/g, "").slice(0, 120)}. If no update or undo is running, restart the box`);
-  if (w.failures) return fail(`${tag} wasn't proved, and going back to the install before failed ${w.failures} time${w.failures === 1 ? "" : "s"}: ${(w.lastError ?? "").replace(/[^\x20-\x7e]/g, "").slice(0, 200)}. It tries again by itself. To go back now, type taskbox undo as your admin user`);
+  if (w.failures) return fail(`${tag} wasn't proved, and going back to the install before failed ${w.failures} time${w.failures === 1 ? "" : "s"}: ${(w.lastError ?? "").replace(/[^\x20-\x7e]/g, "").slice(0, 200)}. It tries again by itself. To go back now, type taskbox rollback as your admin user`);
   return ok(`watching ${tag}: back to the install before unless it is proved by ${new Date(Math.min(w.deadline, w.placedAt + MAX_HOLD_MS)).toISOString().slice(11, 16)} UTC`);
 }
 

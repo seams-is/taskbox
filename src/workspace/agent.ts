@@ -43,7 +43,7 @@ export const USAGE: Record<AgentName, string> = {
   queue: 'taskbox queue --as <agent> --why "<words>"',
   wait: "taskbox wait <name>",
   progress: 'taskbox progress <name> "<words>" [--step N/M] [--can-pause|--busy], or taskbox progress <name> --saved "<words>"',
-  release: "taskbox release <name>",
+  release: "taskbox workspace end <name>",
   deny: 'taskbox deny <name> --as <who> [--reason "<words>"]',
   signed: "taskbox signed <statement> <signature>, both base64url",
   workspaces: "taskbox workspaces",
@@ -261,7 +261,7 @@ export function dealLines(name: string): string[] {
   return [
     `Report with taskbox progress ${name} "<words>" at least every 10 minutes.`,
     `Exit 10 from progress means save: then type taskbox progress ${name} --saved "<what you saved>".`,
-    `Type taskbox release ${name} when you're done, and CI starts again.`,
+    `Type taskbox workspace end ${name} when you're done, and CI starts again.`,
   ];
 }
 

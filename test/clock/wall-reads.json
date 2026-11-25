@@ -76,8 +76,8 @@
     "why": "the guard's record's freshness: a stale read FAILs, so a step fails closed"
   },
   "cli.ts": {
-    "reads": 8,
-    "why": "the now passed to screens, the workspaces gate's freshness check (fails closed both ways) and the load session's wanted read: display and refusals"
+    "reads": 3,
+    "why": "the answers envelope's at, for a usage error, a rename and every answer: a label (§3.1)"
   },
   "ops.ts": {
     "reads": 15,
@@ -150,5 +150,29 @@
   "loop.ts": {
     "reads": 103,
     "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both"
+  },
+  "cmd/daemons.ts": {
+    "reads": 2,
+    "why": "moved from cli.ts: the load session's wanted read and the workspaces hold's freshness for the loop, which fails closed both ways. The guard's step-down proof reads no clock: a new guard record file"
+  },
+  "cmd/job.ts": {
+    "reads": 1,
+    "why": "moved from cli.ts: the now job timings' acceptance rows are read against: display"
+  },
+  "cmd/logins.ts": {
+    "reads": 1,
+    "why": "moved from cli.ts: the now the logins screen counts back from: display"
+  },
+  "cmd/status.ts": {
+    "reads": 2,
+    "why": "moved from cli.ts: the now for status's recent-logins line: display"
+  },
+  "cmd/workspace.ts": {
+    "reads": 2,
+    "why": "moved from cli.ts: the workspaces screen's now, and the agent commands' now for the state's freshness, which fails closed both ways, and their waits for the guard's answer, which give up and change nothing"
+  },
+  "shell.ts": {
+    "reads": 1,
+    "why": "the agent shell's refusal envelope's at: a label (§3.1)"
   }
 }

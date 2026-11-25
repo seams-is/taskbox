@@ -11,7 +11,8 @@ export const SSH = "/usr/bin/ssh";
 export const REMOTE = "remote";
 
 // The box's commands a controller may send, as remote's shell takes them (src/shell.ts).
-const LINE = /^(?:hello|status --json|jobs [1-9]\d{0,3} --json|log --json|check --json)$/;
+// The lines the laptop sends, in v3's words and in v2.6.1's (reach.ts linesFor). Nothing else goes.
+const LINE = /^(?:hello --json --answers 4,3|job list -n [1-9]\d{0,3} --json|logs --json|hello|status --json|jobs [1-9]\d{0,3} --json|log --json|check --json)$/;
 
 export interface Target {
   address: string; // the box's Tailscale address

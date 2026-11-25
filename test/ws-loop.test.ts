@@ -208,7 +208,7 @@ describe("the watchers' lines", () => {
     expect([stale.word, headline(stale), stale.next, stale.notify]).toEqual(["Failing", `Failing. The guard hasn't made a pass for 3 minutes, so the workspaces state is stale and no workspace opens.`, "Restart the Mac if it stays so.", true]);
   });
 
-  test("taskbox watch leads with it", () => {
+  test("taskbox status -w leads with it", () => {
     const root = tempRoot();
     const f = join(root, "loop.json");
     writeFileSync(f, JSON.stringify(loop({ ...held, slot: "waiting", waitingFor: LINE, slots: { "1": { slot: "waiting", waitingFor: LINE, heldEmpty: true }, "2": { slot: "waiting", waitingFor: LINE, heldEmpty: true } } })));
@@ -218,7 +218,7 @@ describe("the watchers' lines", () => {
   });
 });
 
-describe("taskbox away while a Whole holds the box", () => {
+describe("taskbox check --away while a Whole holds the box", () => {
   const LCFG: Config = { ...CFG, linux: { label: "taskbox-linux", image: "ghcr.io/cirruslabs/ubuntu-runner-arm64@sha256:" + "1".repeat(64), vmCpus: 4, vmMemoryMB: 8192 } };
   const row = (name: string) => AWAY_ONLY.find(([n]) => n === name)![1];
   function ctxWith(hold: boolean) {

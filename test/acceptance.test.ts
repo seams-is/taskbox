@@ -94,7 +94,7 @@ describe("the criteria on a modelled day", () => {
 });
 
 describe("calibrating the simulator from a saved day", () => {
-  test("a day from taskbox jobs --json becomes a replay with that day's boots, and names no job", () => {
+  test("a day from taskbox job list --json becomes a replay with that day's boots, and names no job", () => {
     const answer = {
       jobs: [
         { vmKind: "linux", className: null, jobAt: T0 + 2 * M, endedAt: T0 + 5 * M, phases: { queued: -30_000, runnerStarted: 70_000, jobStarted: 80_000, jobDone: 260_000 } },

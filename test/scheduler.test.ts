@@ -180,7 +180,7 @@ describe("what a job can hold a VM with", () => {
   });
 });
 
-// Two real days of a CI load, anonymised, as the owner's taskbox jobs showed them, replayed. Times are minutes after 20:40.
+// Two real days of a CI load, anonymised, as the owner's taskbox job list showed them, replayed. Times are minutes after 20:40.
 const at = (min: number) => min * M;
 const L = (name: string, q: number, minutes: number, labels = ["taskbox-linux"], event?: string): SimJob => ({ name, kind: "linux", labels, queuedAt: at(q), minutes, ...(event ? { event } : {}) });
 const MAC = (name: string, q: number, minutes: number): SimJob => ({ name, kind: "macos", labels: ["taskbox-macos"], queuedAt: at(q), minutes });

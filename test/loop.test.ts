@@ -589,10 +589,10 @@ describe("an update during a pull", () => {
 
 describe("taskbox hold and share typed after the update", () => {
   // test.serial: more than 50 ms of work alone (test/setup.ts).
-  test.serial("each gets one line saying it's gone, and changes nothing", () => {
+  test.serial("each gets one line saying it's gone, exits 2 as v3's other old names do (§2.6), and changes nothing", () => {
     for (const cmd of [["hold", "--for", "1h", "--reason", "x"], ["share"]]) {
       const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "src/cli.ts"), ...cmd], { env: { PATH: "/usr/bin:/bin", HOME: tempRoot() } });
-      expect(r.exitCode).toBe(1);
+      expect(r.exitCode).toBe(2);
       expect(r.stdout.toString()).toBe(`taskbox ${cmd[0]} is gone from v2.2.0: jobs share the box with every user, all the time. To stop jobs, the service account types taskbox stop.\n`);
     }
   });

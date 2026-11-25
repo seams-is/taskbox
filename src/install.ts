@@ -116,9 +116,9 @@ export function trustFilesLine(changes: { names: string[]; files?: number; compl
 // no remove between): what it keeps, each on its own line before the yes.
 export function earlierWorkspaces(pin: KeyPin, pool: PoolRecord | "bad"): string[] {
   const out: string[] = [];
-  if (pin.state === "pinned") out.push(`Approver key: an earlier install on this box pinned ${fingerprint(pin.key)}, and this install keeps it. If that isn't your key, type no, then taskbox approver --reset once taskbox is installed.`);
+  if (pin.state === "pinned") out.push(`Approver key: an earlier install on this box pinned ${fingerprint(pin.key)}, and this install keeps it. If that isn't your key, type no, then taskbox key reset approver once taskbox is installed.`);
   else if (pin.state === "cleared") out.push("Approver key: an earlier install on this box cleared its key, and the keys it cleared stay refused.");
-  else if (pin.state === "bad") out.push("Approver key: an earlier install left a pinned key taskbox can't read, so no new key is taken until taskbox approver --reset.");
+  else if (pin.state === "bad") out.push("Approver key: an earlier install left a pinned key taskbox can't read, so no new key is taken until taskbox key reset approver.");
   if (pool === "bad") out.push("The workspace account's record from an earlier install can't be read, so taskbox leaves that account alone.");
   else for (const name of Object.keys(pool.made)) out.push(`The workspace account ${name}, from an earlier install, stays, and keeps its files.`);
   return out;
@@ -257,7 +257,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   };
   const token = await gh.token("contents").catch(missing("token"));
   // What goes in root's key folder: a key from Downloads, and the runner key from before v2.8.0, which
-  // stays in the service's home too, for taskbox undo. Each key is the service's. An update places
+  // stays in the service's home too, for taskbox rollback. Each key is the service's. An update places
   // them now, before the yes. A first install, or a run that makes the service, places them at step 7,
   // so a no or a stop before it leaves the download for the next run of install.sh (P3).
   const early = !opts.first && !plan.make;
@@ -287,10 +287,10 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   const head = { ...(await gh.head(token, await gh.tagCommit(token, rel.tag))), tag: rel.tag };
   if (!(await gh.onMain(token, head.sha))) throw new Stop(`Release ${rel.tag} isn't a commit on taskbox main, so nothing was installed. Nothing to do: agents fix it.`);
   // Never back: an older release may have a flaw a later one fixed (v2.0.0 and v2.0.1 left
-  // tailscaled's SFTP on). Going back is taskbox undo's job, with its own floor. Both the tag's number
+  // tailscaled's SFTP on). Going back is taskbox rollback's job, with its own floor. Both the tag's number
   // and the commit must move on, so a high-numbered tag on an old commit of main can't take the box back.
   if (installed?.tag && RELEASE_TAG.test(installed.tag) && olderTag(rel.tag, installed.tag)) {
-    throw new Stop(`${rel.tag} is older than ${installed.tag}, the installed release, so nothing was installed. An update never goes back. To go back one install, type taskbox undo.`, opts.tag !== undefined);
+    throw new Stop(`${rel.tag} is older than ${installed.tag}, the installed release, so nothing was installed. An update never goes back. To go back one install, type taskbox rollback.`, opts.tag !== undefined);
   }
   if (installed && !(await gh.follows(token, installed.commit, head.sha))) {
     throw new Stop(`Release ${rel.tag} doesn't come after the installed commit on main, so nothing was installed. Nothing to do: agents fix it.`);
@@ -379,7 +379,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     try {
       before = sshPeopleOf(JSON.parse(readFileSync(join(d.configDir, "taskbox.json"), "utf8")));
     } catch {}
-    if (before === undefined) d.say("  taskbox couldn't read who has Tailscale SSH now. After the update, compare what taskbox policy prints with Tailscale's admin console.");
+    if (before === undefined) d.say("  taskbox couldn't read who has Tailscale SSH now. After the update, compare what taskbox policy show prints with Tailscale's admin console.");
     else for (const l of sshChangeLines(before, relAccounts.ssh ?? [])) d.say(`  ${l}`);
   }
   if (typeof list === "string") d.say(`  ${list}, so it leaves the list as it is. taskbox check says what's on it.`);
@@ -470,7 +470,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
 
     // 8. A new install folder beside the old one, then /opt/taskbox's link swapped to it.
     mkdirSync(dirname(d.paths.opt), { recursive: true });
-    // taskbox jobs' folder first: root's parent, then the service's own folder per project, readable by every
+    // taskbox job list' folder first: root's parent, then the service's own folder per project, readable by every
     // user. It stops the install while nothing has changed.
     const kept = placeShared(d.paths, serviceUid, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
     if (kept) d.say(`The old requests folder, ${d.paths.requests}, couldn't be removed: another user keeps something in it. Nothing reads it, and taskbox never walks into what they left.`);
@@ -527,7 +527,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     };
     writeFileSync(join(next, "installed.json"), JSON.stringify(record, null, 2), { mode: 0o644 });
     d.chown(join(next, "installed.json"), 0, 0);
-    // One rename swaps it in. The install it replaces is kept for taskbox undo, behind
+    // One rename swaps it in. The install it replaces is kept for taskbox rollback, behind
     // /opt/taskbox.prev; one is kept. After the swap, so a failure here never leaves the box
     // without taskbox. A kept install that can't be made inert isn't kept.
     let old: string | undefined;
@@ -609,7 +609,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
       rmSync(d.bootstrap + ".zip", { force: true });
     }
     if (cfg.accounts.agent !== undefined) d.say(`  Agents and laptops reach the box as ${cfg.accounts.agent}: taskbox pair on a laptop asks for that name.`);
-    d.say(opts.first ? `Installed. Now log in as ${d.paths.service}. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
+    d.say(opts.first ? `Installed. Now log in as ${d.paths.service}. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -894,7 +894,7 @@ export async function retirePrevious(d: Pick<InstallDeps, "sys" | "paths" | "say
   }
 }
 
-// taskbox undo to an install from before the label move: that install's code knows only the old
+// taskbox rollback to an install from before the label move: that install's code knows only the old
 // labels, so its services go back under them. The new guard and tailscaled are booted out, then the
 // old ones loaded from the kept install's own plists, one at a time, so two never run at once. The
 // loop's file goes back too; the running loop runs the kept code at once and takes its old name at
@@ -1043,7 +1043,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
     return;
   }
   // Tailscale refuses the tag until the policy names its owner (tailscale.com/kb/1068), so that
-  // entry goes in first. The rest of the policy comes after the sign-in: taskbox policy prints it.
+  // entry goes in first. The rest of the policy comes after the sign-in: taskbox policy show prints it.
   d.say(`Before the box signs in: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
   d.say(`  "${TAILNET_TAG}": ["OWNER"]`);
   // A line for the owner only when Tailscale gives a link: a box that signs in without one needs nothing.
@@ -1087,7 +1087,7 @@ async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what
 }
 
 // /opt/taskbox-state and its project folder. A link or someone else's folder in either place stops
-// the install, so nobody but the service writes what taskbox jobs shows.
+// the install, so nobody but the service writes what taskbox job list shows.
 // Returns how many names stayed in the old requests folder, so the install can say it stayed.
 // rootUid: root, whose folder the parent is; tests use their own user, as for box.json beside it.
 export function placeShared(p: Paths, serviceUid: number, chown: (path: string, uid: number, gid: number) => void, rootUid = 0): number {

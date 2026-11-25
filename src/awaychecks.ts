@@ -1,5 +1,5 @@
 // v2.5.0 away-ready check rows (docs/away-ready-design.md). Each is its own function, run by
-// `taskbox check` (CHECK_EXTRA) and by `taskbox away`, never before a VM. Every row says what to do
+// `taskbox check` (CHECK_EXTRA) and by `taskbox check --away`, never before a VM. Every row says what to do
 // and where: at the box, from away, or nothing. Rows that need ci or root show, for anyone else, the
 // loop's last recorded result, and never name a user.
 import { readFileSync } from "node:fs";
@@ -118,7 +118,7 @@ export async function restartPlanRow(c: CheckContext): Promise<Row> {
   return ok(`FileVault is off by the owner's choice, and ${c.paths.service} logs in by itself after a restart`);
 }
 
-// In taskbox check (CHECK_EXTRA) and taskbox away. The restart plan is in taskbox away only: a box
+// In taskbox check (CHECK_EXTRA) and taskbox check --away. The restart plan is in taskbox check --away only: a box
 // nobody leaves needs none.
 export const AWAY_ROWS: [string, (c: CheckContext) => Promise<Row>][] = [
   ["GitHub", (c) => githubRow(c)],

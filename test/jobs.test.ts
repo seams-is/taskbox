@@ -1,4 +1,4 @@
-// taskbox jobs: one record per VM, readable by every user, and nothing a job controls shown raw.
+// taskbox job list: one record per VM, readable by every user, and nothing a job controls shown raw.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -102,7 +102,7 @@ describe("the screen", () => {
     expect(l[0]).toContain("VM NOT deleted");
     expect(l[0]).toContain("guard: rules went missing at start");
     expect(l[2]).toBe("              The job reached its ceiling, so the box stopped it.");
-    expect(l[3]).toBe("              The VM wasn't deleted. taskbox clean removes it once no job runs.");
+    expect(l[3]).toBe("              The VM wasn't deleted. taskbox prune removes it once no job runs.");
   });
   test("a line with a field of the wrong type or an unknown value isn't shown", () => {
     const p = shared();
@@ -126,9 +126,9 @@ describe("the screen", () => {
   });
   test("shows 20, says how many there are, and --all shows every one", () => {
     const all = Array.from({ length: 25 }, (_, i) => rec({ startedAt: T0 + i }));
-    expect(jobsScreen(all, 20)[0]).toBe("taskbox jobs: 20 of 25, newest first. Type taskbox jobs --all for every one.");
-    expect(jobsScreen(all, "all")[0]).toBe("taskbox jobs: 25 of 25, newest first.");
-    expect(jobsScreen([], 20)).toEqual(["taskbox jobs: no jobs yet."]);
+    expect(jobsScreen(all, 20)[0]).toBe("taskbox job list: 20 of 25, newest first. Type taskbox job list --all for every one.");
+    expect(jobsScreen(all, "all")[0]).toBe("taskbox job list: 25 of 25, newest first.");
+    expect(jobsScreen([], 20)).toEqual(["taskbox job list: no jobs yet."]);
   });
 });
 

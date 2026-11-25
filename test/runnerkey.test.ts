@@ -78,7 +78,7 @@ describe("a key in Downloads on an update", () => {
     expect(existsSync(join(r.dl, "example-taskbox.2026-11-19.private-key.pem"))).toBe(false);
     expect(r.said).toContain("  example-taskbox.2026-11-19.private-key.pem from Downloads is now the runner App's key, and is gone from Downloads.");
     expect(r.jobs()).toBe("{}\n");
-    // The key from before stays where the release before reads it, for taskbox undo.
+    // The key from before stays where the release before reads it, for taskbox rollback.
     expect(readFileSync(r.d.paths.oldKey, "utf8")).toBe(PEM);
     expect(tokenAsked(r)).toBe(true);
   });

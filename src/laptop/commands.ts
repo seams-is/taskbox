@@ -1,7 +1,7 @@
 // The controller's commands: status, jobs, log and watch, each run
 // on the paired box as remote. The command line, watch and the Claude tool all call these, so there
 // is one code path. Each returns a screen: the header, the body, and Now, Did and Next.
-import { ask as boxAsk, type Connected, connect, connectAll, type Deps, isStop, type Stop } from "./reach.ts";
+import { ask as boxAsk, type Connected, connect, connectAll, type Deps, isStop, linesFor, type Stop } from "./reach.ts";
 import { type Paired, readConfig } from "./home.ts";
 import type { Status } from "./schema.ts";
 import { CONTROLLER_ANSWERS, controllerStatus, save } from "./statusline.ts";
@@ -26,7 +26,9 @@ async function withBox(d: Deps, sel: string | undefined, f: (c: Connected) => Pr
   return f(c);
 }
 
-const readStatus = (d: Deps, c: Connected) => boxAsk(d, c.target, c.box.name, "status", "status --json", READ_LIMIT_MS);
+// Each read in the version hello agreed with this box, checked against its pairing's install ID.
+const on = (c: Connected) => ({ installId: c.box.installId, version: c.hello.answers });
+const readStatus = (d: Deps, c: Connected) => boxAsk(d, c.target, c.box.name, "status", linesFor(c.hello.answers).status, READ_LIMIT_MS, on(c));
 
 function statusScreen(d: Deps, c: Connected, s: Status, did: string, next = nextFor(s)): Screen {
   return { lines: [header(c.box.name, d.version), ...statusBody(s, d.version), ...footer(nowLine(s), did, next)], code: 0 };
@@ -103,7 +105,7 @@ export async function status(d: Deps, sel?: string): Promise<Screen> {
 export function jobs(d: Deps, n = 20, sel?: string): Promise<Screen> {
   const count = Number.isInteger(n) && n >= 1 && n <= 1000 ? n : 20;
   return withBox(d, sel, async (c) => {
-    const j = await boxAsk(d, c.target, c.box.name, "jobs", `jobs ${count} --json`, READ_LIMIT_MS);
+    const j = await boxAsk(d, c.target, c.box.name, "jobs", linesFor(c.hello.answers).jobs(count), READ_LIMIT_MS, on(c));
     if (isStop(j)) return stopScreen(d, j, c.box.name);
     const s = await readStatus(d, c);
     if (isStop(s)) return stopScreen(d, s, c.box.name);
@@ -113,7 +115,7 @@ export function jobs(d: Deps, n = 20, sel?: string): Promise<Screen> {
 
 export function log(d: Deps, sel?: string): Promise<Screen> {
   return withBox(d, sel, async (c) => {
-    const l = await boxAsk(d, c.target, c.box.name, "log", "log --json", READ_LIMIT_MS);
+    const l = await boxAsk(d, c.target, c.box.name, "log", linesFor(c.hello.answers).log, READ_LIMIT_MS, on(c));
     if (isStop(l)) return stopScreen(d, l, c.box.name);
     const s = await readStatus(d, c);
     if (isStop(s)) return stopScreen(d, s, c.box.name);
@@ -123,7 +125,7 @@ export function log(d: Deps, sel?: string): Promise<Screen> {
 
 // The box's own checks, as remote sees them: names and OK or FAIL, with no detail.
 export async function boxChecks(d: Deps, c: Connected): Promise<{ lines: string[]; failed: number } | Stop> {
-  const r = await boxAsk(d, c.target, c.box.name, "check", "check --json", CHECK_LIMIT_MS);
+  const r = await boxAsk(d, c.target, c.box.name, "check", linesFor(c.hello.answers).check, CHECK_LIMIT_MS, on(c));
   if (isStop(r)) return r;
   return { lines: boxChecksBody(r.checks), failed: r.checks.filter((x) => x.status === "FAIL").length };
 }

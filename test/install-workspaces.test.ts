@@ -133,7 +133,7 @@ describe("the update's yes screen and the approver key", () => {
     const u = update({ approverKey: B }, "yes", { pin: A, verify: async () => true });
     const out = await u.run();
     expect(out).toContain(`The release's taskbox.json names a new approver key, ${fingerprint(B)}, with no statement signed by the old key. The box keeps ${fingerprint(A)}.`);
-    expect(out).toContain("taskbox approver --reset");
+    expect(out).toContain("taskbox key reset approver");
     expect(u.before()).toBeUndefined();
     expect(tarball(u.sys)).toBe(false);
     expect(readPin(u.d.paths.approverPin, process.getuid!())).toEqual({ state: "pinned", key: A, gen: 1, cleared: [] });
@@ -251,7 +251,7 @@ describe("the update's yes screen and the approver key", () => {
   test("a release with no key: workspaces off, said before the yes, and the pin stays", async () => {
     const u = update({}, "no", { pin: A });
     await u.run();
-    expect(u.before()).toContain(`  Approver key: taskbox.json names none, so workspaces are off. The box keeps ${fingerprint(A)}: taskbox approver --reset clears it.`);
+    expect(u.before()).toContain(`  Approver key: taskbox.json names none, so workspaces are off. The box keeps ${fingerprint(A)}: taskbox key reset approver clears it.`);
     expect(u.before()!.some((l) => l.includes(POOL_USER))).toBe(false);
   });
 
@@ -294,7 +294,7 @@ describe("a first install on a box an earlier install left workspace files on", 
     writePin({ chown: () => {}, rootUid: process.getuid!() }, d.paths.approverPin, { key: A, gen: 2, cleared: [] });
     writePoolRecord({ chown: () => {}, rootUid: process.getuid!() }, d.paths.poolRecord, { made: { [POOL_USER]: { uid: 471 } }, groups: { [POOL_GROUP]: { gid: 471 } } });
     expect(await install(d, { first: true }).then(() => "", (e: Error) => e.message)).toMatch(/You typed "no"/);
-    expect(before).toContain(`  Approver key: an earlier install on this box pinned ${fingerprint(A)}, and this install keeps it. If that isn't your key, type no, then taskbox approver --reset once taskbox is installed.`);
+    expect(before).toContain(`  Approver key: an earlier install on this box pinned ${fingerprint(A)}, and this install keeps it. If that isn't your key, type no, then taskbox key reset approver once taskbox is installed.`);
     expect(before).toContain(`  The workspace account ${POOL_USER}, from an earlier install, stays, and keeps its files.`);
   });
   test("the lines for each state", () => {

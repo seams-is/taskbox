@@ -1,4 +1,4 @@
-// v2.5.0: taskbox away's UPS line, from pmset -g ps. OK when a UPS is seen and the box runs on AC
+// v2.5.0: taskbox check --away's UPS line, from pmset -g ps. OK when a UPS is seen and the box runs on AC
 // through it, WARN when none is seen under the restart plan accept, SKIP for other plans.
 import { describe, expect, test } from "bun:test";
 import { AWAY_ONLY, verdict } from "../src/away.ts";

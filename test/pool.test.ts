@@ -409,7 +409,7 @@ describe("remove and the pool account", () => {
 
 const keyOf = (fill: number) => `sk-ecdsa-sha2-nistp256@openssh.com ${Buffer.concat([Buffer.from([0, 0, 0, 34]), Buffer.from("sk-ecdsa-sha2-nistp256@openssh.com"), Buffer.from([0, 0, 0, 8]), Buffer.from("nistp256"), Buffer.from([0, 0, 0, 65, 4]), Buffer.alloc(64, fill), Buffer.from([0, 0, 0, 4]), Buffer.from("ssh:")]).toString("base64")}`;
 
-describe("taskbox approver --reset", () => {
+describe("taskbox key reset approver", () => {
   const KEY = keyOf(3);
   function resetSetup(answers: string[], pin?: string | { key: string | null; gen: number; cleared: string[] }) {
     const root = tempRoot();

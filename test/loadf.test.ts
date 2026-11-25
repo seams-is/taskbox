@@ -49,7 +49,7 @@ describe("S3: the test repo row as root", () => {
 describe("T8: the calibration path, end to end", () => {
   // A day made by the simulator, carried through the box's own jobs answer and JSON, then replayed:
   // the saved-day test's comparison must hold on a day that is the model's own.
-  test("a simulated day, as taskbox jobs --all --json, replays within 3 minutes on the macOS wait", () => {
+  test("a simulated day, as taskbox job list --all --json, replays within 3 minutes on the macOS wait", () => {
     const r = rng(7);
     const jobs: SimJob[] = Array.from({ length: 40 }, (_, i) => {
       const kind = r() < 0.5 ? "macos" : "linux";

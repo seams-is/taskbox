@@ -363,7 +363,7 @@ export function fakeTailscale(sys: FakeSys, signedIn = false): void {
 
 // The test runs as its own user, so what a root install leaves as root's alone, Softnet with its
 // setuid bit (in bin, or in its own softnet folder, which is root's too), is read as root's.
-// taskbox jobs' parent folder holds box.json too, so it is the install's rootUid's, as the
+// taskbox job list' parent folder holds box.json too, so it is the install's rootUid's, as the
 // install's own folders are (placeShared). Everything else is read as it is.
 export function asRoot<T>(f: () => Promise<T>): Promise<T> {
   return readAsRoot((path) => /\/(bin\/softnet|softnet\/softnet|softnet)$/.test(path), f);

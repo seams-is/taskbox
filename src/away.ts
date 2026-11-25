@@ -1,4 +1,4 @@
-// `taskbox away` (v2.5.0, docs/away-ready-design.md): one screen of checks before the owner leaves
+// `taskbox check --away` (v2.5.0, docs/away-ready-design.md): one screen of checks before the owner leaves
 // the box for days. Every check row, then the rows that matter only for leaving. Each line is OK,
 // FAIL with its fix and where it is done, WARN (worth a look, no reason to stay), or SKIP; the
 // screen ends "Ready to leave." or "N things to do before leaving." remote may run it, as it runs check: no row names a user, and rows that need
@@ -84,7 +84,7 @@ function imagesNow(c: CheckContext): Waiting {
     }
   }
   if (!waiting.length) return { row: ok("every kind's image is on the box"), waitsOnLoop: false };
-  return { row: fail(`the ${waiting.join(" and ")} ${waiting.length === 1 ? "image isn't" : "images aren't"} on the box yet. Nothing to do: wait for ${waiting.length === 1 ? "its download" : "their downloads"} before leaving (taskbox watch)`), waitsOnLoop: !failed };
+  return { row: fail(`the ${waiting.join(" and ")} ${waiting.length === 1 ? "image isn't" : "images aren't"} on the box yet. Nothing to do: wait for ${waiting.length === 1 ? "its download" : "their downloads"} before leaving (taskbox status -w)`), waitsOnLoop: !failed };
 }
 
 // The Linux proof holds while its image and taskbox's install are the ones it proved, whatever its
@@ -113,7 +113,7 @@ async function roomRow(c: CheckContext): Promise<Row> {
   if (free === undefined) return skip("free disk couldn't be read");
   const biggest = Math.max(0, ...kindsOf(c.cfg).map((k) => forKind(c.cfg, k).imageGB ?? 0));
   const need = c.cfg.minFreeDiskGB + biggest;
-  return free >= need ? ok(`${free} GB free, room for a new image (${need} GB)`) : fail(`${free} GB free, and a new image needs ${need} GB. At the box: as ${c.paths.service}, type taskbox clean, or free space`);
+  return free >= need ? ok(`${free} GB free, room for a new image (${need} GB)`) : fail(`${free} GB free, and a new image needs ${need} GB. At the box: as ${c.paths.service}, type taskbox prune, or free space`);
 }
 
 // The box's own Tailscale key. A tagged node's doesn't expire unless someone set it to.

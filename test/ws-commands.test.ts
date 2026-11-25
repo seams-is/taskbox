@@ -58,7 +58,8 @@ describe("the agent commands' words", () => {
     expect("no" in parseAgent(["workspaces", "--all"])).toBe(true);
   });
   test("every usage line names its command", () => {
-    for (const [c, u] of Object.entries(USAGE)) expect(u.startsWith(`taskbox ${c}`)).toBe(true);
+    // release is the box's taskbox workspace end.
+    for (const [c, u] of Object.entries(USAGE)) expect(u.startsWith(`taskbox ${c === "release" ? "workspace end" : c}`)).toBe(true);
   });
 });
 
@@ -362,7 +363,7 @@ describe("taskbox workspaces", () => {
   });
   test("disk use it can't read is said so; no word is no line", () => {
     const l = workspacesLines({ ...base, disk: () => undefined, word: () => undefined, read: { kind: "ok", state: s } });
-    expect(l[0]).toBe("nova-1  nova  taskbox-ws1  Active  disk use shows at taskbox clear");
+    expect(l[0]).toBe("nova-1  nova  taskbox-ws1  Active  disk use shows at taskbox workspace clear");
     expect(l.some((x) => x.includes("Last word"))).toBe(false);
   });
   test("stale, bad and missing states", () => {

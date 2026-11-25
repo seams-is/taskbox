@@ -1,4 +1,4 @@
-// taskbox clear <agent>, as an admin at the box (docs/workspaces-design.md, section 3): deletes the
+// taskbox workspace clear <agent>, as an admin at the box (docs/workspaces-design.md, section 3): deletes the
 // files of that agent's pool account, after a typed yes naming their size.
 //
 // - It takes only an account pool.json records, by user ID, and only while the account has that ID.
@@ -74,7 +74,7 @@ type Target = { agent: string; user: string; uid: number; gid: number; home: str
 // The account to clear, or why not. Each read is root's file, read the safe way.
 async function target(d: ClearDeps, agent: string): Promise<Target | { no: string }> {
   const root = d.rootUid ?? 0;
-  if (!AGENT.test(agent)) return { no: "Type taskbox clear and an agent's name, such as nova." };
+  if (!AGENT.test(agent)) return { no: "Type taskbox workspace clear and an agent's name, such as nova." };
   const r = readStateFile(d.state, root);
   if (r.kind === "missing") return { no: "This box has no workspaces, so no agent has an account to clear." };
   if (r.kind !== "ok") return { no: `The workspaces state can't be read (${r.why}), so nothing was cleared.` };
@@ -208,7 +208,7 @@ export async function clear(d: ClearDeps, agent: string): Promise<number> {
     }
   }
   if (left.length) {
-    d.say(`${t.home} is empty again, at mode 700, but some files moved aside couldn't be deleted as ${t.user}: ${left.join(", ")}. Type taskbox clear ${t.agent} again to try once more.`);
+    d.say(`${t.home} is empty again, at mode 700, but some files moved aside couldn't be deleted as ${t.user}: ${left.join(", ")}. Type taskbox workspace clear ${t.agent} again to try once more.`);
     return 1;
   }
   d.say(`Cleared ${size}. ${t.home} is empty, ${t.user}'s own, at mode 700.`);

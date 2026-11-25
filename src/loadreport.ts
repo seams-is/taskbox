@@ -63,7 +63,7 @@ export function loadReport(cfg: Config, jobs: JobRecord[], file: LoadFile, gaveW
   const repo = loadRepoOf(cfg);
   if (!repo) return "taskbox.json has no test repo for the load test";
   const s = n === undefined ? file.sessions.at(-1) : file.sessions.find((x) => x.n === n);
-  if (!s) return n === undefined ? "no load test session yet: type taskbox load on" : `no session ${n}`;
+  if (!s) return n === undefined ? "no load test session yet: type taskbox load start" : `no session ${n}`;
   const end = sessionEnd(s, now);
   // Whether the box saw the queue during the session, as the loop noted it; else as it is now.
   const withSource = s.sawQueue ?? withSourceNow;

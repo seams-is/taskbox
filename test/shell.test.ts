@@ -1,18 +1,30 @@
 // The remote user's login shell: taskbox's commands that read the box, nothing else.
 import { describe, expect, test } from "bun:test";
-import { commandFor, words } from "../src/shell.ts";
+import { commandFor, refusal, words } from "../src/shell.ts";
+import { readEnvelopes } from "../src/schema.ts";
 
 describe("remote's shell", () => {
   test("takes taskbox's reading commands, with or without the word taskbox", () => {
     expect(commandFor("status")).toEqual({ args: ["status"] });
-    expect(commandFor("taskbox jobs 50")).toEqual({ args: ["jobs", "50"] });
+    expect(commandFor("taskbox job list -n 50")).toEqual({ args: ["job", "list", "-n", "50"] });
+    expect(commandFor("logs --json")).toEqual({ args: ["logs", "--json"] });
+    expect(commandFor("template show box-check")).toEqual({ args: ["template", "show", "box-check"] });
     expect(commandFor("taskbox hello")).toEqual({ args: ["hello"] });
     expect(commandFor("  ")).toEqual({ args: ["status"] });
   });
   test("refuses su, other programs, admin commands and anything a shell would read as more than words", () => {
-    for (const line of ["su admin", "su -", "sudo -i", "taskbox update", "taskbox undo", "taskbox remove", "taskbox unlock", "taskbox stop", "bash", "/bin/zsh", "scp -t /tmp", "sftp-server", "status; su admin", "status && sh", "status | sh", "status $(id)", "status `id`", "status > /tmp/x", "hold --reason 'a\\nb'", "status\nsu", "cd /tmp", "export PATH=/tmp", 'taskbox hold --for 3h --reason "x"', "share"]) {
+    for (const line of ["su admin", "su -", "sudo -i", "taskbox update", "taskbox rollback", "taskbox remove", "taskbox unlock", "taskbox stop", "bash", "/bin/zsh", "scp -t /tmp", "sftp-server", "status; su admin", "status && sh", "status | sh", "status $(id)", "status `id`", "status > /tmp/x", "hold --reason 'a\\nb'", "status\nsu", "cd /tmp", "export PATH=/tmp", 'taskbox hold --for 3h --reason "x"', "share"]) {
       expect("no" in commandFor(line)).toBe(true);
     }
+  });
+  test("passes v2.6.0's old names whose new command it runs, so taskbox says what they became", () => {
+    for (const line of ["watch", "watch --once", "jobs 50", "timings", "log", "away --json", "watchdog", "canary", "load", "load workflow"]) expect({ line, ok: "args" in commandFor(line) }).toEqual({ line, ok: true });
+    // The new command is the service account's or root's: refused here, as before.
+    for (const line of ["clean", "undo", "stop --drain", "load on", "load off"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
+  });
+  test("refuses a flag or word the command doesn't take, with the command's own line", () => {
+    expect(commandFor("status --force")).toEqual({ no: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]" });
+    for (const line of ["status myproject", "job list -n x", "job list --tail", "job", "check --away --away", "logs --json=1", "template show nothing", "policy show", "connect github", "key reset approver"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
   });
   test("takes the agent's workspace commands, each checked in full", () => {
     for (const line of [
@@ -23,7 +35,7 @@ describe("remote's shell", () => {
       'progress nova-1 "Frame 1200 of 4000" --step 1200/4000 --can-pause',
       'progress nova-1 "Building shaders" --busy',
       'progress nova-1 --saved "Saved after frame 1800"',
-      "release nova-1",
+      "workspace end nova-1",
       'deny nova-2 --as laptop --reason "after 6pm"',
       "signed eyJhY3Rpb24iOiJhcHByb3ZlIn0 U1NIU0lHAAAAAQ_-",
       "workspaces",
@@ -48,8 +60,9 @@ describe("remote's shell", () => {
       'progress nova-1 "x" --step 9/4',
       "progress nova-1",
       'progress nova-1 --saved "x" --busy',
-      "release",
-      "release nova-1 --now",
+      "workspace end",
+      "workspace end nova-1 --now",
+      "release nova-1",
       "deny nova-2",
       "deny nova-2 --as owner",
       "deny nova-2 --as taskbox",
@@ -67,5 +80,47 @@ describe("remote's shell", () => {
   test("words: quotes keep spaces; an unclosed quote is refused", () => {
     expect(words(`a "b c" 'd e' f`)).toEqual(["a", "b c", "d e", "f"]);
     expect(words(`a "b`)).toBeUndefined();
+  });
+});
+
+describe("the review's points on the shell", () => {
+  // L2: a raw command whose words no parser here checks never reaches taskbox.
+  test("a raw shell command that isn't one of #47's verbs is refused", async () => {
+    const { registry } = await import("../src/registry.ts");
+    const specs = [...registry(), { path: ["later"], summary: "x", who: ["agent"], shell: true, raw: true, run: async () => 0 } as never];
+    expect("no" in commandFor("later anything at all", specs)).toBe(true);
+  });
+
+  // L3: an old name reaches taskbox as its own words alone, so taskbox's rename line is all that runs.
+  test("an old name passes as its own words, and --json, and nothing else", () => {
+    expect(commandFor("jobs --anything /etc/passwd")).toEqual({ args: ["jobs"] });
+    expect(commandFor("jobs 50 --json x")).toEqual({ args: ["jobs", "50", "--json"] });
+    expect(commandFor("watch --once")).toEqual({ args: ["watch", "--once"] });
+  });
+
+  // L7: a refusal is a usage error, exit 2, and an envelope when the line asked for --json.
+  test("a refusal is exit 2, and with --json an error envelope", () => {
+    expect(refusal("status --force")).toEqual({ out: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]", code: 2 });
+    const r = refusal("logs -f --json");
+    expect(r?.code).toBe(2);
+    const e = JSON.parse(r!.out);
+    expect([e.answers, e.ok, e.exit, e.error.code]).toEqual([4, false, 2, "usage"]);
+    expect(readEnvelopes(r!.out).ok).toBe(true);
+    expect(refusal("status")).toBeUndefined();
+  });
+
+  // Nit: the usage of a command the shell doesn't run, or a noun's other verbs, isn't shown here.
+  test("a line naming a command the shell doesn't run gets the shell's own list", () => {
+    for (const line of ["load start --x", "workspace", "workspace clear nova"]) {
+      const c = commandFor(line);
+      expect({ line, no: "no" in c ? c.no : "" }).toEqual({ line, no: expect.stringMatching(/^Here you can type: /) });
+    }
+  });
+
+  // Nit: workspace end's refusal names workspace end, not #47's release.
+  test("workspace end's refusal names its own command", () => {
+    const c = commandFor("workspace end nova-1 --as x");
+    expect("no" in c && c.no).toContain("taskbox workspace end");
+    expect("no" in c && c.no).not.toContain("taskbox release");
   });
 });

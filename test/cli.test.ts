@@ -5,9 +5,10 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { errorAnswer } from "../src/answers.ts";
+import { readEnvelopes } from "../src/schema.ts";
 import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
-import { ROOT_COMMANDS, SUDO, TASKBOX } from "../src/elevate.ts";
+import { rootPaths, SUDO, TASKBOX } from "../src/elevate.ts";
 import { CANT_REACH } from "../src/install.ts";
 import { AGENTS_THEN_UPDATE } from "../src/state.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
@@ -60,10 +61,10 @@ async function run(argv: string[], who: Caller, o: { root?: string; sys?: FakeSy
 }
 
 describe("the root commands", () => {
-  // Each as it is typed: connect and disconnect name what they connect (connect-github design).
-  const typed = (cmd: string) => (cmd === "connect" || cmd === "disconnect" ? [cmd, "github"] : cmd === "approver" ? [cmd, "--reset"] : cmd === "clear" ? [cmd, "builder"] : [cmd]);
+  // Each as it is typed: workspace clear names the agent.
+  const typed = (cmd: string) => [...cmd.split(" "), ...(cmd === "workspace clear" ? ["builder"] : [])];
   test("an admin's command runs again through sudo, which asks for the admin's password", async () => {
-    for (const cmd of ROOT_COMMANDS) {
+    for (const cmd of rootPaths()) {
       const r = await run(typed(cmd), CALLERS.admin);
       expect([r.code, r.said, r.ttys, r.asked]).toEqual([0, [`taskbox ${cmd} needs your admin password.`], [[SUDO, "-p", "Password for %u: ", "--", TASKBOX, ...typed(cmd)]], []]);
     }
@@ -71,7 +72,7 @@ describe("the root commands", () => {
 
   test("a standard user and ci are told to switch to the admin user, and nothing runs", async () => {
     for (const who of [CALLERS["a standard user"], CALLERS.ci]) {
-      for (const cmd of ROOT_COMMANDS) {
+      for (const cmd of rootPaths()) {
         const r = await run(typed(cmd), who);
         expect([r.code, r.said, r.ttys, r.asked]).toEqual([1, [`Switch to your admin user and type taskbox ${cmd}.`], [], []]);
       }
@@ -79,7 +80,7 @@ describe("the root commands", () => {
   });
 
   test("root with no admin behind it is told to log in as the admin user", async () => {
-    for (const cmd of ROOT_COMMANDS) {
+    for (const cmd of rootPaths()) {
       const r = await run(typed(cmd), CALLERS["root with no SUDO_USER"]);
       expect([r.code, r.said, r.ttys, r.asked]).toEqual([1, [`Log in as your admin user, then type taskbox ${cmd}.`], [], []]);
     }
@@ -87,11 +88,11 @@ describe("the root commands", () => {
 
   test("a root command given words it doesn't take is refused before the gate", async () => {
     const r = await run(["update", "main"], CALLERS.admin);
-    expect([r.code, r.said, r.ttys]).toEqual([1, ["Type taskbox update for the newest release, or taskbox update and a release, such as v2.6.1 or v3.0.0-rc.1."], []]);
+    expect([r.code, r.said, r.ttys]).toEqual([2, ["taskbox update doesn't take main.\nUsage: taskbox update [VERSION] [--to VERSION]"], []]);
   });
 
   test("root through sudo reaches the command itself", async () => {
-    const r = await run(["undo"], CALLERS["root via sudo"]);
+    const r = await run(["rollback"], CALLERS["root via sudo"]);
     expect(r.code).toBe(1);
     expect(r.said[0]).toBe("No previous install is kept, so there's nothing to go back to.");
     expect(r.said.at(-1)).toBe("Next: Type taskbox check.");
@@ -109,29 +110,44 @@ describe("the root commands", () => {
 describe("the copies every user reads", () => {
   test("anyone but ci and root reads the shared copies, and is told when they can't be trusted", async () => {
     // The temp root's state folder is the test's, not root's, so the copies can't be trusted.
-    for (const cmd of ["status", "log", "jobs"]) {
-      const reader = await run([cmd], CALLERS["a standard user"]);
+    for (const cmd of [["status"], ["logs"], ["job", "list"]]) {
+      const reader = await run(cmd, CALLERS["a standard user"]);
       expect(reader.said[0]).toMatch(/^The box's state can't be shown to you: .*taskbox-state\/app isn't there\. Nothing to do: agents fix it\.$/);
-      const ci = await run([cmd], CALLERS.ci);
+      const ci = await run(cmd, CALLERS.ci);
       expect(ci.said.some((l) => l.startsWith("The box's state can't be shown to you"))).toBe(false);
     }
   });
 
-  test("with --json, a reader gets one line of JSON with the error and no path", async () => {
-    for (const cmd of ["status", "check", "away", "jobs", "log", "timings"]) {
-      const r = await run([cmd, "--json"], CALLERS["a standard user"]);
-      expect([r.code, r.said]).toEqual([1, [JSON.stringify(errorAnswer("state-unreadable"))]]);
+  test("with --json, a reader gets one envelope with the error and no path; with --answers 3, v2's line", async () => {
+    for (const cmd of [["status"], ["check"], ["check", "--away"], ["job", "list"], ["logs"], ["job", "timings"]]) {
+      const r = await run([...cmd, "--json"], CALLERS["a standard user"]);
+      expect(r.code).toBe(1);
+      expect(r.said.length).toBe(1);
+      const e = JSON.parse(r.said[0]!);
+      expect(readEnvelopes(r.said[0]!).ok).toBe(true);
+      expect([e.answers, e.command, e.ok, e.exit, e.error.code, e.error.message]).toEqual([4, cmd[0] === "check" ? "check" : cmd.join("."), false, 1, "failed", "The box's state can't be shown to you."]);
       expect(r.said[0]).not.toContain("/");
+      const v3 = await run([...cmd, "--json", "--answers", "3"], CALLERS["a standard user"]);
+      expect([v3.code, v3.said]).toEqual([1, [JSON.stringify(errorAnswer("state-unreadable"))]]);
     }
   });
 });
 
 describe("ci's answers for a controller", () => {
-  test("status --json and log --json are one line of JSON each", async () => {
-    for (const cmd of ["status", "log"]) {
+  test("status --json and logs --json are one envelope each, with the box's lines and v3's fields as the result", async () => {
+    for (const [cmd, kind] of [["status", "status"], ["logs", "log"]] as const) {
       const r = await run([cmd, "--json"], CALLERS.ci);
       expect([r.code, r.said.length]).toEqual([0, 1]);
-      expect(JSON.parse(r.said[0]!).kind).toBe(cmd);
+      const read = readEnvelopes(r.said[0]!, { command: cmd });
+      expect(read.ok).toBe(true);
+      const e = JSON.parse(r.said[0]!);
+      expect(e.lines.at(-1)).toMatch(/^Next: /);
+      expect(e.box.release).toBe("2.0.0");
+      // N-1: the same command with --answers 3 is v2's line, whose fields are the envelope's result.
+      const v3 = await run([cmd, "--json", "--answers", "3"], CALLERS.ci);
+      const old = JSON.parse(v3.said[0]!);
+      expect([old.answers, old.kind]).toEqual([3, kind]);
+      expect(Object.keys(e.result).sort()).toEqual(Object.keys(old).filter((k) => k !== "answers" && k !== "kind").sort());
     }
   });
 
@@ -224,7 +240,7 @@ describe("taskbox update with a trial's tag", () => {
     // Tags that aren't releases are still refused before anything runs.
     for (const bad of ["v3.0.0-rc.01", "v03.0.0", "v3.0.0-beta.1", "main"]) {
       const b = await run(["update", bad], CALLERS.admin);
-      expect([b.code, b.ttys]).toEqual([1, []]);
+      expect([b.code, b.ttys]).toEqual([2, []]);
     }
   });
 });

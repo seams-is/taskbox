@@ -296,7 +296,7 @@ async function finish(d: ConnectDeps, appId: number, slug: string, pem: string, 
   return 0;
 }
 
-// taskbox connect github --load <org/repo> <runner group>, or --load off: the box's test repo for
+// taskbox connect github --load <org/repo> --group <runner group>, or --load off: the box's test repo for
 // taskbox load (v2.6.0), checked and proved with the App before it is written.
 async function setLoad(d: ConnectDeps, load: LoadRepo | "off"): Promise<number> {
   const u = inUse(d);
@@ -323,7 +323,7 @@ async function setLoad(d: ConnectDeps, load: LoadRepo | "off"): Promise<number> 
   return 0;
 }
 
-// taskbox connect github [--new-key | --load <org/repo> <runner group> | --load off]
+// taskbox connect github [--new-key | --load <org/repo> --group <runner group> | --load off]
 export async function connectGithub(d: ConnectDeps, opts: { newKey?: boolean; load?: LoadRepo | "off" } = {}): Promise<number> {
   if (opts.load) return setLoad(d, opts.load);
   // An App made before and not yet installed (connect-github design).

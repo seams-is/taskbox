@@ -10,7 +10,8 @@ import { type Config, paths } from "../src/config.ts";
 import { appName, conversionProblem, manifestFor, startPage } from "../src/connect.ts";
 import { type ConnectDeps, connectGithub, disconnectGithub, fingerprint } from "../src/connectflow.ts";
 import { type ListenEvent, serveOnce } from "../src/listen.ts";
-import { argsProblem, ROOT_COMMANDS } from "../src/elevate.ts";
+import { rootPaths } from "../src/elevate.ts";
+import { parseLine } from "../src/registry.ts";
 import { Log } from "../src/log.ts";
 import { FakeSys, json } from "./fake.ts";
 import { CFG, keyFolderAcl, testBox } from "./helpers.ts";
@@ -405,17 +406,17 @@ describe("the Tart run's cases", () => {
 });
 
 describe("the commands", () => {
-  test("connect and disconnect are root commands, with their one form each", () => {
-    expect(ROOT_COMMANDS).toContain("connect");
-    expect(ROOT_COMMANDS).toContain("disconnect");
-    expect(argsProblem("connect", ["github"])).toBeUndefined();
-    expect(argsProblem("connect", ["github", "--new-key"])).toBeUndefined();
-    expect(argsProblem("connect", ["github", "--load", "example-org/load", "taskbox load"])).toBeUndefined();
-    expect(argsProblem("connect", ["github", "--load", "off"])).toBeUndefined();
-    for (const bad of [["github", "--load"], ["github", "--load", "example-org/load"], ["gitlab", "--load", "off"]]) expect(argsProblem("connect", bad)).toMatch(/^Type taskbox connect github/);
-    expect(argsProblem("disconnect", ["github"])).toBeUndefined();
-    for (const bad of [[], ["gitlab"], ["github", "--force"], ["github", "--new-key", "x"]]) expect(argsProblem("connect", bad)).toMatch(/^Type taskbox connect github/);
-    expect(argsProblem("disconnect", [])).toBe("Type taskbox disconnect github.");
+  test("connect github and disconnect github are root commands, with their flags", () => {
+    expect(rootPaths()).toContain("connect github");
+    expect(rootPaths()).toContain("disconnect github");
+    const ok = (...a: string[]) => parseLine(a).ok;
+    expect(ok("connect", "github")).toBe(true);
+    expect(ok("connect", "github", "--new-key")).toBe(true);
+    expect(ok("connect", "github", "--load", "example-org/load", "--group", "taskbox load status")).toBe(true);
+    expect(ok("connect", "github", "--load", "off")).toBe(true);
+    for (const bad of [["github", "--load"], ["github", "--load", "example-org/load"], ["github", "--load", "off", "--group", "x"], ["github", "--group", "x"], ["gitlab", "--load", "off"], [], ["gitlab"], ["github", "--force"], ["github", "--new-key", "x"], ["github", "--new-key", "--load", "off"]]) expect({ bad, ok: ok("connect", ...bad) }).toEqual({ bad, ok: false });
+    expect(ok("disconnect", "github")).toBe(true);
+    expect(ok("disconnect")).toBe(false);
   });
 });
 

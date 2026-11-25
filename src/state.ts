@@ -51,9 +51,9 @@ function ago(ms: number): string {
   return m < 1 ? "under a minute" : m < 90 ? `${m} min` : `${Math.round(m / 60)} h`;
 }
 
-export const softnetFix = () => `As ${serviceName()}, type taskbox start to run jobs again; every VM's start checks Softnet again. Agents look at why: taskbox log names the process`;
+export const softnetFix = () => `As ${serviceName()}, type taskbox start to run jobs again; every VM's start checks Softnet again. Agents look at why: taskbox logs names the process`;
 
-// While a drain runs (taskbox stop --drain), Running and Waiting say it, and what comes next.
+// While a drain runs (taskbox drain), Running and Waiting say it, and what comes next.
 export function computeState(i: StateInputs): State {
   const s = withHold(baseState(i), i.loop);
   const since = i.loop.drainingSince;
@@ -117,7 +117,7 @@ function baseState(i: StateInputs): State {
   if (i.loop.lastCheck === "FAIL") {
     return { word: "Needs you", detail: `a check failed: ${clean((i.loop.failed ?? []).join(", "))}`, next: "Type taskbox check: each FAIL line has its fix.", notify: true };
   }
-  if (i.pull && i.pull.state !== "ready") return { word: "Downloading", detail: alongside(pullLine(i.pull, i.now, i.loopRunning, i.stoppedAt), i.others), next: "Nothing to do. taskbox watch shows it live.", notify: false };
+  if (i.pull && i.pull.state !== "ready") return { word: "Downloading", detail: alongside(pullLine(i.pull, i.now, i.loopRunning, i.stoppedAt), i.others), next: "Nothing to do. taskbox status -w shows it live.", notify: false };
   // v2.5.0: GitHub refusing the runner chain reads Failing at its threshold, naming who acts, and a
   // rate limit's wait reads Waiting. After Stopped, ci away and Downloading, which keep their words.
   const gh = githubState(i.loop.github, i.now);

@@ -1,11 +1,12 @@
-// taskbox clear <agent> (src/workspace/clear.ts) on a fake box: it takes only the account pool.json
+// taskbox workspace clear <agent> (src/workspace/clear.ts) on a fake box: it takes only the account pool.json
 // records, by user ID; it refuses while the workspace is waiting, Active or Saving, or while any of
 // the account's processes is left; it deletes as the account's user ID with a cleared environment,
 // never as root; and it needs a typed yes naming the size.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, type Stats, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { elevation, argsProblem, ROOT_COMMANDS } from "../src/elevate.ts";
+import { elevation, rootPaths } from "../src/elevate.ts";
+import { parseLine } from "../src/registry.ts";
 import { writePoolRecord } from "../src/pin.ts";
 import { clear, type ClearDeps } from "../src/workspace/clear.ts";
 import { advance, end, pause, type WsState } from "../src/workspace/model.ts";
@@ -67,12 +68,12 @@ function clearBox(o: { state?: WsState | string | null; procs?: string; pgrepCod
 
 const sudoRuns = (sys: FakeSys) => sys.calls.filter((c) => c.cmd === "/usr/bin/sudo").map((c) => c.args);
 
-describe("taskbox clear", () => {
+describe("taskbox workspace clear", () => {
   test("is an admin's command at the box, and takes one agent's name", () => {
-    expect(ROOT_COMMANDS).toContain("clear");
-    expect(argsProblem("clear", ["nova"])).toBeUndefined();
-    for (const a of [[], ["nova", "rex"], ["../x"], ["Nova"], ["taskbox-ws1"]]) expect({ a, why: argsProblem("clear", a) !== undefined }).toEqual({ a, why: true });
-    expect(elevation("clear", ["nova"], false).argv).toBeUndefined();
+    expect(rootPaths()).toContain("workspace clear");
+    expect(parseLine(["workspace", "clear", "nova"]).ok).toBe(true);
+    for (const a of [[], ["nova", "rex"], ["../x"], ["Nova"], ["taskbox-ws1"]]) expect({ a, ok: parseLine(["workspace", "clear", ...a]).ok }).toEqual({ a, ok: false });
+    expect(elevation("workspace clear", ["nova"], false).argv).toBeUndefined();
   });
 
   test("after a yes naming the size: the home moved aside and made again empty at 700, then the old one deleted as the account from /", async () => {

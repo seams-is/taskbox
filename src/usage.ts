@@ -2,8 +2,8 @@
 // job, so VMs can later be sized per label and more run at once. (The job line keeps the box's
 // highest memory pressure beside it, as before.)
 // Every sample goes through the VM engine (vm.ts), with a time limit; a failed sample is skipped and
-// never fails a job. The job line keeps the peak and the 90th percentile; taskbox jobs shows them,
-// and taskbox timings shows each label's median and 90th percentile across its jobs.
+// never fails a job. The job line keeps the peak and the 90th percentile; taskbox job list shows them,
+// and taskbox job timings shows each label's median and 90th percentile across its jobs.
 //
 // What it doesn't measure: disk and network; GPU; the VM process's own memory on the box (the guest's
 // view only, which leaves out the hypervisor's overhead); anything between samples, so a spike
@@ -96,12 +96,12 @@ export function validUsage(v: unknown): v is JobUsage {
 const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
 const cpu = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(1));
 
-// taskbox jobs: one line for what the job used.
+// taskbox job list: one line for what the job used.
 export function usageLine(u: JobUsage): string {
   return `Used: memory ${gb(u.memPeakMB)} at peak, 90% of the time under ${gb(u.memP90MB)}, of ${gb(u.memTotalMB)}; CPUs ${cpu(u.cpuPeak)} at peak, 90% under ${cpu(u.cpuP90)}, of ${u.cpus}. ${u.samples} ${u.samples === 1 ? "sample" : "samples"}.`;
 }
 
-// taskbox timings: each label's jobs with a record, newest first, at most `last` of them: the median
+// taskbox job timings: each label's jobs with a record, newest first, at most `last` of them: the median
 // and 90th percentile of each job's peak memory and peak CPU.
 export interface LabelUsage {
   label: string; // the runner's first label, with the job's class when it has one

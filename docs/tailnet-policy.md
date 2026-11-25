@@ -15,7 +15,7 @@ This policy is the only thing that decides who reaches the box. taskbox keeps no
 
 ## The policy
 
-taskbox makes this policy from the box's settings. At the box, type `taskbox policy --owner <your Tailscale login>`: it prints the entries to add, with the box's own account names and admins. `taskbox policy --whole` prints the whole file, for a tailnet with nothing else in it. Below is the whole file for the example settings (`taskbox.example.json`) with one person, `pat`, in `accounts.people` and in `accounts.ssh`; a test checks it against the code that prints it. With nobody in `accounts.ssh`, the `check` rule isn't there, and with nobody in `accounts.people`, port 5900 isn't either.
+taskbox makes this policy from the box's settings. At the box, type `taskbox policy show --owner <your Tailscale login>`: it prints the entries to add, with the box's own account names and admins. `taskbox policy show --whole` prints the whole file, for a tailnet with nothing else in it. Below is the whole file for the example settings (`taskbox.example.json`) with one person, `pat`, in `accounts.people` and in `accounts.ssh`; a test checks it against the code that prints it. With nobody in `accounts.ssh`, the `check` rule isn't there, and with nobody in `accounts.people`, port 5900 isn't either.
 
 Your Tailscale login, in place of `OWNER`, is the email on the admin console's Users page. It stays in the policy file, in the admin console, and taskbox never stores it. Keep it and the admins' names out of anything you post.
 
@@ -62,7 +62,7 @@ A tag must be in the policy before a device can carry it (read: tailscale.com/kb
 1. On the Machines page, check for an exit node or subnet routes, which would need a grant of their own, and for any other user or tagged device, which this policy would cut off.
 2. Open a Screen Sharing session to the box, or sit at it, and keep that open until step 6.
 3. Copy the policy file into a note again.
-4. At the box, type `taskbox policy --owner <your Tailscale login>`. On the Access controls page, remove the "allow all" rule. It is either an `acls` entry from `*` to `*:*`, or a grant from `*` to `*` with ip `*`. Remove whichever is there. Then put in the `grants`, `ssh`, `sshTests` and `tests` entries it printed. Where the file already has taskbox's own entries from before, replace them with these, rather than adding beside them: an old `check` rule left beside the new tests makes the console refuse the save.
+4. At the box, type `taskbox policy show --owner <your Tailscale login>`. On the Access controls page, remove the "allow all" rule. It is either an `acls` entry from `*` to `*:*`, or a grant from `*` to `*` with ip `*`. Remove whichever is there. Then put in the `grants`, `ssh`, `sshTests` and `tests` entries it printed. Where the file already has taskbox's own entries from before, replace them with these, rather than adding beside them: an old `check` rule left beside the new tests makes the console refuse the save.
 5. Save. The console runs the tests and refuses a file that fails them.
 6. From your laptop, check each path: `ssh` as the agent account to the box's Tailscale name, followed by `check`, on one line; a new Screen Sharing session as your own account; and `ssh` as that account to the box, which must be refused unless the account is in `accounts.ssh`. If one fails, paste the note from step 3 back, and say which one failed.
 7. Then close the session from step 2.

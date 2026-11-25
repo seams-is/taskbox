@@ -1,6 +1,6 @@
 // v2.6.0: the load test (docs/load-test-design.md). The test repo in the settings, its own runner
 // group, the App on both repos, the reader's budget per repo, the scheduler's roles, the sessions,
-// taskbox load on, off and report, and replays that check real jobs never wait behind load.
+// taskbox load start, off and report, and replays that check real jobs never wait behind load.
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -353,7 +353,7 @@ function cmd(o: { asService?: boolean; answers?: string[]; cfg?: Config } = {}) 
   return { d, said, asked, p, sys, run };
 }
 
-describe("taskbox load", () => {
+describe("taskbox load status", () => {
   test("no test repo: says so and does nothing", async () => {
     const c = cmd({ cfg: CFG });
     expect(await c.run("on")).toBe(1);
@@ -366,9 +366,9 @@ describe("taskbox load", () => {
     try {
       const c = cmd({ asService: false });
       expect(await c.run("on")).toBe(1);
-      expect(c.said).toEqual(["Type taskbox load on as builder, at the box."]);
+      expect(c.said).toEqual(["Type taskbox load start as builder, at the box."]);
       expect(await c.run("off")).toBe(1);
-      expect(c.said.at(-1)).toBe("Type taskbox load off as builder, at the box.");
+      expect(c.said.at(-1)).toBe("Type taskbox load stop as builder, at the box.");
       expect(await testRepoRow(rowCtx(new FakeSys(), 501))).toEqual({ status: "SKIP", detail: "run as builder to check" });
       // Whatever taskbox load says, to the service or anyone else, it names the account only in
       // "as builder".
@@ -429,7 +429,7 @@ describe("taskbox load", () => {
     expect(c.asked).toEqual([]);
     expect(c.said[0]).toContain("Load test session 1 is on until 14:00 UTC, beside the real repo");
     expect(await c.run("on")).toBe(1);
-    expect(c.said.at(-1)).toContain("taskbox load off first");
+    expect(c.said.at(-1)).toContain("taskbox load stop first");
     expect(await cmd().run("on", "--for", "a day")).toBe(1);
     const short = cmd();
     expect(await short.run("on", "--for", "5m")).toBe(1);
@@ -629,7 +629,7 @@ describe("taskbox check's test repo row", () => {
 });
 
 describe("the v2.5.0 hooks", () => {
-  test("taskbox load workflow makes the test repo's workflow from the box's settings, with a canary pattern", async () => {
+  test("taskbox template show load makes the test repo's workflow from the box's settings, with a canary pattern", async () => {
     const { loadWorkflowYaml } = await import("../src/loadcmd.ts");
     const LIN: Config = { ...LOADCFG, linux: { label: "taskbox-linux", image: "ghcr.io/cirruslabs/ubuntu-runner-arm64@sha256:" + "1".repeat(64), vmCpus: 4, vmMemoryMB: 8192 } };
     const y = loadWorkflowYaml(LIN);
@@ -651,10 +651,10 @@ describe("the v2.5.0 hooks", () => {
     expect(await c.run("workflow")).toBe(0);
     expect(c.said[0]).toContain("name: load");
   });
-  test("load on runs taskbox away's checks first, names what isn't met, and the session keeps it", async () => {
+  test("load on runs taskbox check --away's checks first, names what isn't met, and the session keeps it", async () => {
     const c = cmd();
     expect(await c.run("on")).toBe(0);
-    const line = c.said.find((l) => l.startsWith("taskbox away has "));
+    const line = c.said.find((l) => l.startsWith("taskbox check --away has "));
     const s = currentSession(readLoad(c.p), NOW)!;
     // The fake box meets few of the checks for leaving.
     expect(line).toBeDefined();

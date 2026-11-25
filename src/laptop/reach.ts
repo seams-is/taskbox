@@ -5,7 +5,8 @@
 // ID. A mismatch stops the command and names the cause. Pairing again is the only way to change it.
 import { type Config, type ConfigRead, findBox, type Home, knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { Runner } from "./run.ts";
-import { ANSWERS, type Answer, type Hello, type Kind, readAnswer } from "./schema.ts";
+import { type Answer, type Hello, type Kind, READS, readAnswer } from "./schema.ts";
+import { rememberAnswers } from "./versions.ts";
 import { boxCall, type SshFailure, type Target } from "./ssh.ts";
 import { type AppKind, type Peer, readTailnet, type StatusRead, tailnetProblem, type TailnetState, whichApp } from "./tailscale.ts";
 
@@ -79,26 +80,62 @@ export function sshStop(name: string, why: SshFailure, limitMs: number): Stop {
 }
 
 const versionStop = (name: string, theirs: number): Stop =>
-  theirs > ANSWERS
-    ? { stop: `${name} answers in version ${theirs}, and this laptop reads version ${ANSWERS}.`, next: "Update taskbox on this laptop." }
-    : { stop: `${name} answers in version ${theirs}, and this laptop reads version ${ANSWERS}.`, next: "Update taskbox on the box: at the box, as your admin user, type taskbox update." };
+  theirs > Math.max(...READS)
+    ? { stop: `${name} answers in version ${theirs}, and this laptop reads versions ${READS.join(" and ")}.`, next: "Update taskbox on this laptop." }
+    : { stop: `${name} answers in version ${theirs}, and this laptop reads versions ${READS.join(" and ")}.`, next: "Update taskbox on the box: at the box, as your admin user, type taskbox update." };
 
-const BOX_ERRORS: Record<string, Stop> = {
-  "state-unreadable": { stop: "The box can't show its state to remote.", next: "Nothing to do: agents fix it on the box." },
-  "jobs-unreadable": { stop: "The box can't show its jobs to remote.", next: "Nothing to do: agents fix it on the box." },
-  unreadable: { stop: "The box couldn't read its own install.", next: "Nothing to do: agents fix it on the box." },
-  usage: { stop: "The box didn't take the command.", next: "Update taskbox on this laptop, or on the box." },
+// The laptop's own Next line for each of the box's error codes: the box's own fix is shown as its
+// words, never as the laptop's next step.
+const NEXT_FOR: Record<string, string> = {
+  usage: "Update taskbox on this laptop, or on the box.",
+  renamed: "Update taskbox on this laptop.",
+  "refused-over-ssh": "Do it at the box.",
+  "needs-confirm": "At the box, type taskbox confirm.",
+  denied: "Nothing changed.",
+  expired: "Try again.",
 };
 
-// One of the box's answers, read against the schema. Anything that doesn't match stops the command.
-export async function ask<K extends Kind>(d: Deps, t: Target, name: string, kind: K, line: string, limitMs: number): Promise<Answer<K> | Stop> {
+// The words the laptop sends for each read, in the box's answers version: v3's, or v2.6.1's (N-1).
+export interface Lines {
+  hello: string;
+  status: string;
+  jobs: (n: number) => string;
+  log: string;
+  check: string;
+}
+const LINES: Record<number, Lines> = {
+  4: { hello: `hello --json --answers ${READS.join(",")}`, status: "status --json", jobs: (n) => `job list -n ${n} --json`, log: "logs --json", check: "check --json" },
+  3: { hello: "hello", status: "status --json", jobs: (n) => `jobs ${n} --json`, log: "log --json", check: "check --json" },
+};
+export const linesFor = (version: number): Lines => LINES[version] ?? LINES[4]!;
+
+type Got<K extends Kind> = Answer<K> | Stop | { usage: true };
+
+async function read<K extends Kind>(d: Deps, t: Target, name: string, kind: K, line: string, limitMs: number, o: { installId?: string | null; version?: number }): Promise<Got<K>> {
   const r = await boxCall(sshDeps(d), t, line, limitMs);
   if (!r.ok) return sshStop(name, r.why, limitMs);
-  const a = readAnswer(kind, r.stdout);
+  const a = readAnswer(kind, r.stdout, o.installId, o.version);
   if (a.ok) return a.answer;
   if (a.why === "version") return versionStop(name, a.theirs);
-  if (a.why === "box-error") return BOX_ERRORS[a.error]!;
+  if (a.why === "box-error") {
+    if (a.error.code === "usage" && kind === "hello") return { usage: true };
+    return { stop: `${name} says: ${a.error.message}${a.error.fix ? ` The box's own words for the fix: ${a.error.fix}` : ""}`, next: NEXT_FOR[a.error.code] ?? "Nothing to do: agents fix it on the box." };
+  }
   return { stop: `${name}'s answer to ${kind} doesn't match what taskbox reads (${a.detail}), so the command stopped.`, next: "Update taskbox on this laptop and on the box. If they match, agents look." };
+}
+
+// One of the box's answers, read against the schema. Anything that doesn't match stops the command.
+// installId and version: the pairing's install and the version hello agreed, checked on every read.
+export async function ask<K extends Kind>(d: Deps, t: Target, name: string, kind: K, line: string, limitMs: number, o: { installId?: string | null; version?: number } = {}): Promise<Answer<K> | Stop> {
+  const a = await read(d, t, name, kind, line, limitMs, o);
+  return "usage" in a ? { stop: `${name} didn't take ${kind}.`, next: NEXT_FOR.usage! } : a;
+}
+
+// hello, in v3's words first; a box on v2.6.1 refuses any word after hello, so then its own bare hello.
+export async function helloOf(d: Deps, t: Target, name: string): Promise<Hello | Stop> {
+  const h = await read(d, t, name, "hello", linesFor(4).hello, 20_000, {});
+  if (!("usage" in h)) return h;
+  return ask(d, t, name, "hello", linesFor(3).hello, 20_000);
 }
 
 // hello's answer against the pairing: role box (the schema), and the same install ID.
@@ -139,10 +176,13 @@ export async function connectBox(d: Deps, box: Paired, state: TailnetState): Pro
   const knownHosts = knownHostsFor(d.home, box.node);
   writeKnownHosts(knownHosts, box.node, box.hostKey);
   const target: Target = { address: p.address, node: box.node, knownHosts };
-  const h = await ask(d, target, box.name, "hello", "hello", 20_000);
+  const h = await helloOf(d, target, box.name);
   if (isStop(h)) return h;
   const bad = helloStop(box.name, h, box.installId);
   if (bad) return bad;
+  // A box that drops to an older answers version is said once (a rollback, or a box to look at).
+  const dropped = rememberAnswers(d.home, box.node, box.name, h.answers, h.release);
+  if (dropped) d.out(dropped);
   return { box, target, hello: h, state };
 }
 

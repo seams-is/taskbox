@@ -1,4 +1,4 @@
-// `taskbox watch`: one screen that stays open and shows what the box is doing, redrawn every two
+// `taskbox status -w`: one screen that stays open and shows what the box is doing, redrawn every two
 // seconds. It only reads files the loop writes, so it never slows or changes the box.
 import { serviceName } from "./names.ts";
 import { type Beat, readBeat } from "./beat.ts";
@@ -11,7 +11,7 @@ import { stoppedLine } from "./stopstart.ts";
 import { type Clock, realClock } from "./clock.ts";
 
 export interface LoopView {
-  drainingSince?: number; // taskbox stop --drain: when it began, or 0 when it can't be read
+  drainingSince?: number; // taskbox drain: when it began, or 0 when it can't be read
   // Why the box is held now (loop.ts showHold): workspace for a Whole the owner approved, which is
   // expected; bad or stale for a workspaces state the loop can't trust; newer, which holds nothing,
   // for taskbox update. heldFor is the line.
@@ -169,7 +169,7 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   const linux = o.pullLinuxFile ? readPull(o.pullLinuxFile) : undefined;
   const loop = readLoop(o.loopFile);
   const st = computeState({ now: o.now, loopRunning: o.loopRunning, stoppedAt: o.stoppedAt, pull: activePull(pull, linux), loop, others: o.others, unfinished: o.unfinished });
-  const lines = [`Now: ${st.word}. Next: ${st.next}`, "", `taskbox watch, redrawn every 2 s. Last drawn ${clock(o.now)}. Ctrl-C stops watching; the box carries on.`, ""];
+  const lines = [`Now: ${st.word}. Next: ${st.next}`, "", `taskbox status -w, redrawn every 2 s. Last drawn ${clock(o.now)}. Ctrl-C stops watching; the box carries on.`, ""];
   if (o.unfinished) lines.push("Update:    the update isn't finished.");
   lines.push(`Download:  ${downloadLine(pull, loop, o.now, o.loopRunning, o.stoppedAt)}`);
   if (linux) lines.push(`Linux:     ${pullLine(linux, o.now, o.loopRunning, o.stoppedAt)}`);
