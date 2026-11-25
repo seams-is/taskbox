@@ -318,6 +318,7 @@ describe("the guard puts the agent back", () => {
 // after it undone, so the release in place stays current and running.
 describe("an agent step that stops the install", () => {
   const repo = join(import.meta.dir, "..");
+  let srcTar: Uint8Array | undefined;
   async function run(dir: Dir, before?: (p: InstallDeps["paths"]) => void) {
     const { healthyBox, installDeps } = await import("./helpers.ts");
     // The service, there already, a standard user who can unlock the disk.
@@ -325,12 +326,17 @@ describe("an agent step that stops the install", () => {
     const sys = dir.sys();
     healthyBox(sys);
     githubRoutes(sys);
-    const st = mkdtempSync(join(tmpdir(), "taskbox-src-"));
-    const top = join(st, "example-org-taskbox-abc1234");
-    copyRepo(top, ["test", "docs"]);
-    writeFileSync(join(top, "taskbox.json"), JSON.stringify(CFG));
-    const tar = Bun.spawnSync(["/usr/bin/tar", "-czf", "-", "-C", st, "example-org-taskbox-abc1234"]);
-    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(tar.stdout) : undefined));
+    // The commit's tarball is the same for every test here, so it is made once: real tar, gzip and
+    // the repo's files are most of each test's work.
+    srcTar ??= (() => {
+      const st = mkdtempSync(join(tmpdir(), "taskbox-src-"));
+      const top = join(st, "example-org-taskbox-abc1234");
+      copyRepo(top, ["test", "docs"]);
+      writeFileSync(join(top, "taskbox.json"), JSON.stringify(CFG));
+      return Bun.spawnSync(["/usr/bin/tar", "-czf", "-", "-C", st, "example-org-taskbox-abc1234"]).stdout;
+    })();
+    const tar = srcTar;
+    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(tar) : undefined));
     const real = sys.run.bind(sys);
     sys.run = async (cmd, args, opts) => {
       if (cmd === "/usr/bin/tar" && args.some((a) => a.endsWith("src.tar.gz"))) {
