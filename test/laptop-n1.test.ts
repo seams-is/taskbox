@@ -69,14 +69,14 @@ describe("each read's own checks", () => {
   const box = (stdout: string) => deps(async () => ok(stdout));
   const v4 = (installId: string, v3: Record<string, unknown>, command: string) => `${JSON.stringify(envelope({ command, box: { name: "taskbox-1", installId, release: "3.0.0" }, at: 0, exit: 0, result: resultOf(v3), lines: [] }))}\n`;
 
-  // L1: the install ID on every read, and no v3 answer after hello agreed 4.
+  // The install ID on every read, and no v3 answer after hello agreed 4.
   test("a read from another install, or a v3 answer after hello agreed 4, stops the command", async () => {
     expect(await ask(box(v4(ID, jobsAnswer([]) as never, "job.list")), T, "taskbox-1", "jobs", "job list -n 20 --json", 5_000, { installId: ID, version: 4 })).toMatchObject({ kind: "jobs" });
     expect(await ask(box(v4("f".repeat(32), jobsAnswer([]) as never, "job.list")), T, "taskbox-1", "jobs", "job list -n 20 --json", 5_000, { installId: ID, version: 4 })).toHaveProperty("stop");
     expect(await ask(box(`${JSON.stringify(jobsAnswer([]))}\n`), T, "taskbox-1", "jobs", "job list -n 20 --json", 5_000, { installId: ID, version: 4 })).toHaveProperty("stop");
   });
 
-  // L4: the box's fix is shown as the box's words; the laptop's Next is its own, from the error's code.
+  // The box's fix is shown as the box's words; the laptop's Next is its own, from the error's code.
   test("a box's error shows its words in the stop line, and the Next line is the laptop's own", async () => {
     const err = `${JSON.stringify(envelope({ command: "status", box: null, at: 0, exit: 1, lines: ["x"], error: { ...errorFromV3("state-unreadable"), fix: "Run taskbox remove now." } }))}\n`;
     const s = (await ask(box(err), T, "taskbox-1", "status", "status --json", 5_000)) as { stop: string; next: string };
@@ -84,7 +84,7 @@ describe("each read's own checks", () => {
     expect(s.next).toBe("Nothing to do: agents fix it on the box.");
   });
 
-  // L8: an answer over the cap is refused by its size before it is parsed.
+  // An answer over the cap is refused by its size before it is parsed.
   test("an answer over the cap is too long, whatever version it claims", () => {
     const big = JSON.stringify({ answers: 9, pad: "x".repeat(1_100_000) });
     expect(readAnswerOf("status", big)).toEqual({ ok: false, why: "unreachable", detail: "an answer too long" });

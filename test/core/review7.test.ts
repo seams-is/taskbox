@@ -1,4 +1,3 @@
-// The seventh review, part one: what is left on #7.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, closeSync, constants, mkdtempSync, openSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,7 +38,7 @@ function setup(mono: number | null = 1_000_000, uuid = "11111111-2222-3333-4444-
 }
 const lease = (s: ReturnType<typeof setup>, id: string) => openSync(join(s.root, `${id}.lease`), constants.O_RDWR | constants.O_CREAT | O_EXLOCK | constants.O_NONBLOCK, 0o600);
 
-describe("D3: the boot is kern.bootsessionuuid", () => {
+describe("the boot is kern.bootsessionuuid", () => {
   test("bootId reads it, and a clock step can't change it", async () => {
     const { bootId } = await import("../../src/core/boot.ts");
     const s = setup();
@@ -58,8 +57,8 @@ describe("D3: the boot is kern.bootsessionuuid", () => {
   });
 });
 
-describe("N2b: known only from the verifier", () => {
-  test("K1: a spread request with \"known\": true is junk; the Draft has no such field", () => {
+describe("known only from the verifier", () => {
+  test("a spread request with \"known\": true is junk; the Draft has no such field", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid };
     const log = eventLog("guard", e, { now: () => T });
     for (let a = 0; a < 50; a++) for (let i = 0; i < 70; i++) log.write({ ...JSON.parse(`{"type":"workspace.refused","actor":"x${a}","text":"junk","known":true}`) });
@@ -92,7 +91,7 @@ describe("N2b: known only from the verifier", () => {
 });
 
 describe("the lows", () => {
-  test("D4: no mono at spawn: the limit is still kept, taken on the first tick mono reads, and the row warns meanwhile", async () => {
+  test("no mono at spawn: the limit is still kept, taken on the first tick mono reads, and the row warns meanwhile", async () => {
     const s = setup(null);
     const b = begin([], update, { subject: "box", params: {}, actor: "owner", deadline: T + H }, T);
     if (b.kind !== "start") throw new Error();
@@ -108,7 +107,7 @@ describe("the lows", () => {
     expect((await follow(s.d))[0]).toMatchObject({ why: "it passed its deadline" });
     closeSync(l);
   });
-  test("D5: a resumed op takes a new monoAt and keeps only what is left of its limit", async () => {
+  test("a resumed op takes a new monoAt and keeps only what is left of its limit", async () => {
     const resumer: OpType = { ...update, onBoot: () => "resume" };
     const s = setup(10 ** 9);
     const b = begin([], resumer, { subject: "box", params: {}, actor: "owner", deadline: T + 10 * H }, T);
@@ -123,7 +122,7 @@ describe("the lows", () => {
     expect((await follow({ ...s.d, boot: "b2", types: [resumer] }))[0]).toMatchObject({ why: "it passed its deadline" });
     closeSync(l);
   });
-  test("P2: a lapse needs the wall clock, the monotonic clock and the boot; an unread clock lapses", () => {
+  test("a lapse needs the wall clock, the monotonic clock and the boot; an unread clock lapses", () => {
     const ask = { kind: "channel" as const, subject: "c", shows: ["x"], actor: "owner", payload: {} };
     const r = raise(noPending(), ask, { wall: T, mono: 5, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" });
     if (!r.ok) throw new Error();
@@ -132,7 +131,7 @@ describe("the lows", () => {
     expect(lapse(r.state, { wall: T + 1, mono: 6, boot: undefined }).lapsed).toHaveLength(1);
     expect(answer(r.state, r.item.id, { wall: T + 1, mono: 5 + LAPSE_MS, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" }).ok).toBe(false);
   });
-  test("O1: a back step of the clock never removes an outcome; boot and mono decide then", () => {
+  test("a back step of the clock never removes an outcome; boot and mono decide then", () => {
     const id = `rq_${"0".repeat(26)}`;
     const dir = join(tmp(), "outcomes", "agent");
     recordOutcome(dir, { id, at: T, ok: true, said: "x", mono: 100, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" }, { owner: uid });
@@ -141,7 +140,7 @@ describe("the lows", () => {
     expect(keepOutcomes(dir, { wall: T - 1000, mono: 200, boot: "0A1B2C3D-4E5F-4061-8293-A4B5C6D7E8F9" })).toEqual([id]);
   });
   // test.serial: more than 50 ms of work alone (test/setup.ts).
-  test.serial("W2: readers read by bytes, so many small files hide nothing", () => {
+  test.serial("readers read by bytes, so many small files hide nothing", () => {
     const dir = join(tmp(), "ev");
     appendEvent({ dir, owner: uid }, newEvent("guard", { type: "guard.started", actor: "taskbox", text: "the oldest" }, { now: () => T }));
     for (let i = 1; i <= 2100; i++) appendEvent({ dir, owner: uid }, newEvent("guard", { type: "guard.started", actor: "taskbox", text: "x" }, { now: () => T + i * 86_400_000 }));
@@ -149,7 +148,7 @@ describe("the lows", () => {
     expect(r.events.some((e) => e.text === "the oldest")).toBe(true);
     expect(r.skipped).toEqual([]);
   }, 60_000);
-  test("W3: numbering past eight digits goes on, read and kept", () => {
+  test("numbering past eight digits goes on, read and kept", () => {
     const dir = join(tmp(), "ev");
     appendEvent({ dir, owner: uid }, newEvent("guard", { type: "guard.started", actor: "taskbox", text: "a" }, { now: () => T }));
     const only = readdirSync(dir)[0]!;
@@ -158,7 +157,7 @@ describe("the lows", () => {
     expect(readdirSync(dir).sort()).toEqual([`100000000-${new Date(T + 86_400_000).toISOString().slice(0, 10)}.jsonl`, only.replace(/^\d{8}/, "99999999")]);
     expect(readEvents([{ dir, owner: uid, writer: "guard" }]).events.map((e) => e.text)).toEqual(["a", "b"]);
   });
-  test("W4: an op's seq must be a non-negative safe integer", () => {
+  test("an op's seq must be a non-negative safe integer", () => {
     const b = begin([], update, { subject: "box", params: {}, actor: "owner" }, T);
     if (b.kind !== "start") throw new Error();
     expect(opProblem({ ...b.op, seq: -1 })).toBeDefined();
@@ -176,7 +175,7 @@ describe("the lows", () => {
     expect(ev).toContain("an op ended");
     expect(ev).toContain("approved");
   });
-  test("C1: keeping.ts no longer says it keeps by count of days", () => {
+  test("keeping.ts no longer says it keeps by count of days", () => {
     expect(readFileSync(new URL("../../src/passes/keeping.ts", import.meta.url), "utf8")).not.toContain("count of days");
   });
 });

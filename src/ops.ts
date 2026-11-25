@@ -692,7 +692,7 @@ export const TAILSCALED_STOP_TRIES = 20;
 
 export async function remove(d: OpsDeps, o: { serviceUid?: number; overSsh?: boolean; people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {
   // Removing taskbox's Tailscale ends a session that came in over it, and remove with it, half done
-  // and with no way back in (v2.2.2 review).
+  // and with no way back in.
   if (o.overSsh) {
     for (const l of ["taskbox remove runs at the box only: it takes the box off your tailnet, which would end this session halfway.", "", "Now: unchanged.", "Did: Nothing changed.", "Next: At the box, log in as your admin user and type taskbox remove."]) d.say(l);
     return 1;

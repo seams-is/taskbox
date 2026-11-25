@@ -7,7 +7,7 @@ import { type OpsDeps, remove } from "../src/ops.ts";
 import { FakeSys } from "./fake.ts";
 import { tempRoot, testBox, quietBox, servicesObey, settingsText } from "./helpers.ts";
 
-// X5 (#900): remove leaves the box's JIT runners for GitHub to drop. Root never reads ci's App key,
+// Remove leaves the box's JIT runners for GitHub to drop. Root never reads ci's App key,
 // and never deletes another box's runners by a shared name prefix.
 function removeDeps() {
   const sys = new FakeSys();

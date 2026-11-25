@@ -1,4 +1,4 @@
-// The sixth review: the clock out of every decision that deletes or kills.
+// The clock out of every decision that deletes or kills.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, closeSync, constants, mkdtempSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,7 +35,7 @@ function setup(mono = 1_000_000) {
 const write = (dir: string, at: number, text = "x", partMax?: number) => appendEvent({ dir, owner: uid, ...(partMax ? { partMax } : {}) }, newEvent("guard", { type: "guard.started", actor: "taskbox", text }, { now: () => at }));
 
 describe("retention by write order", () => {
-  test("F3: 30 forward steps of the clock, a keeping pass each, keep every real event", () => {
+  test("30 forward steps of the clock, a keeping pass each, keep every real event", () => {
     const dir = join(tmp(), "ev");
     for (let i = 40; i >= 1; i--) write(dir, T - i * DAY, `real ${i}`);
     for (let i = 1; i <= 30; i++) {
@@ -74,7 +74,7 @@ describe("retention by write order", () => {
     expect(ids.slice(0, 5).map((id) => { const r = readOp(f, id); return r.kind === "ok" ? r.value.seq : undefined; })).toEqual([1, 2, 3, 4, 5]);
     expect(keepOps(f).sort()).toEqual(ids.slice(0, 3).sort());
   }, 60_000);
-  test.serial("F6 and N4: a running op is always seen, however many records there are", () => {
+  test.serial("a running op is always seen, however many records there are", () => {
     const f = { dir: tmp(), owner: uid };
     const b = begin([], update, { subject: "real", params: {}, actor: "owner" }, T);
     if (b.kind !== "start") throw new Error();
@@ -89,8 +89,8 @@ describe("retention by write order", () => {
   });
 });
 
-describe("N1: deadlines on the monotonic clock, and never past the point of no return", () => {
-  test("D1: a wall clock step past the deadline ends nothing; monotonic time past it does", async () => {
+describe("deadlines on the monotonic clock, and never past the point of no return", () => {
+  test("a wall clock step past the deadline ends nothing; monotonic time past it does", async () => {
     const s = setup();
     const b = begin([], update, { subject: "box", params: {}, actor: "owner", deadline: T + 3_600_000 }, T);
     if (b.kind !== "start") throw new Error();
@@ -127,8 +127,8 @@ describe("N1: deadlines on the monotonic clock, and never past the point of no r
   });
 });
 
-describe("N2: known refusals", () => {
-  test("K3: a known sender is capped per principal, with its count said", () => {
+describe("known refusals", () => {
+  test("a known sender is capped per principal, with its count said", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid };
     const log = eventLog("guard", e, { now: () => T });
     for (let i = 0; i < 5000; i++) log.refused({ type: "workspace.refused", text: "x" }, Verified.principal("agent-1"));
@@ -138,7 +138,7 @@ describe("N2: known refusals", () => {
     expect(ev.some((x) => x.text === "the owner's")).toBe(true);
     expect(ev.some((x) => x.type === "events.dropped" && x.text.includes("agent-1"))).toBe(true);
   });
-  test("K4: a spread request's own 'known' is junk", () => {
+  test("a spread request's own 'known' is junk", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid };
     const log = eventLog("guard", e, { now: () => T });
     const req = JSON.parse('{"type":"workspace.refused","actor":"nobody","text":"junk","known":"yes"}');
@@ -158,7 +158,7 @@ describe("the lows", () => {
     const r = readOp(s.d.ops, b.op.id);
     expect(r.kind === "ok" && [r.value.state, r.value.why]).toEqual(["failed", expect.stringContaining("its job couldn't be made")]);
   });
-  test("N4: the hop's sweep says the jobs it couldn't end", async () => {
+  test("the hop's sweep says the jobs it couldn't end", async () => {
     const { bootOutUnknown } = await import("../../src/hop.ts");
     const { rootStateOf } = await import("../../src/core/paths.ts");
     const sys = new FakeSys();
@@ -170,7 +170,7 @@ describe("the lows", () => {
     await bootOutUnknown(sys, p, undefined, undefined, missed);
     expect(missed).toEqual(["local.taskbox.op.op_01ARZ3NDEKTSV4RRFFQ69G5FAV"]);
   });
-  test("N6: no comment claims a clock change can't age the history out", () => {
+  test("no comment claims a clock change can't age the history out", () => {
     for (const f of ["events.ts", "ops.ts"]) expect(readFileSync(new URL(`../../src/core/${f}`, import.meta.url), "utf8")).not.toContain("never by the clock, so no clock change");
   });
 });

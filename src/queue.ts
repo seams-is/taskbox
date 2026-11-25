@@ -92,7 +92,7 @@ export class QueueReader {
   private token?: { value: string; at: number };
   private loadToken?: { value: string; at: number };
   // v2.6.0: whether to read the test repo now (a session on, or ended in the last 2 minutes), and why its last read
-  // failed. Its trouble never hides the real repo's queue (security review, finding 4).
+  // failed. Its trouble never hides the real repo's queue.
   loadWanted: () => boolean = () => true;
   loadProblem?: string;
   private etags = new Map<string, { etag: string; body: unknown }>();
@@ -204,10 +204,9 @@ export class QueueReader {
   // Each waiting job as the scheduler reads it (v2.4.0, source.ts): every label it asks for, as
   // GitHub lists them, when it was queued, and its run's event, which GitHub sets and a workflow
   // can't. A job with a label out of shape, or more than 16, is odd: it fits no kind, so it never
-  // holds a VM (the v2.4.0 security review, finding 1).
+  // holds a VM.
   // Queued jobs sit in queued runs and in runs already in progress, so both are read. The runs of
-  // the events the classes name are read first, so other runs can't push them out of view (finding
-  // 3). A run's jobs are read again only when the run changed since the last look.
+  // the events the classes name are read first, so other runs can't push them out of view. A run's jobs are read again only when the run changed since the last look.
   async items(): Promise<WaitingItem[]> {
     this.deadline = this.sys.timeout(this.deadlineMs);
     try {

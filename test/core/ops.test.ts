@@ -159,7 +159,7 @@ describe("events", () => {
   });
 });
 
-describe("review fixes: H1 in params", () => {
+describe("params", () => {
   test("params with a hidden __proto__ key are refused, and never attach", () => {
     const hidden = JSON.parse('{"__proto__":{"admin":true}}');
     expect(() => begin([], drain, { subject: "box", params: hidden, ...who }, T, rand)).toThrow();

@@ -297,7 +297,7 @@ describe("taskbox connect github, against a fake GitHub", () => {
   });
 });
 
-describe("the review's cases", () => {
+describe("more cases", () => {
   test("every App's name carries a random suffix, so a second connect never clashes with an App GitHub keeps", async () => {
     const names: string[] = [];
     for (let i = 0; i < 2; i++) {
@@ -420,7 +420,7 @@ describe("the commands", () => {
   });
 });
 
-// Independent test of package H (S2): v2.6.0's test repo lives in the job source's repos. connect and
+// v2.6.0's test repo lives in the job source's repos. connect and
 // adoption rewrite the box's sources, and must keep it, or the load test loses its repo.
 describe("the test repo in the job source", () => {
   const LOAD = { name: "example-org/load", role: "load" as const, runnerGroup: "taskbox-load" };

@@ -202,7 +202,7 @@ export class Slots {
   }
 
   // A slot's VM is gone: its kind may now have none. A start the box's checks refused made no VM,
-  // so it leaves the kind's no-VM time as it was (product review, finding 3).
+  // so it leaves the kind's no-VM time as it was.
   release(slot: number, now: number): void {
     const o = this.held.get(slot);
     this.held.delete(slot);
@@ -702,7 +702,7 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
 // One job, start to finish. Returns how it ended. waits: why the loop waited before this VM.
 // The Linux Softnet proof (proof.ts): a Linux VM under a job's Softnet rules, sealed as a job's is,
 // tries the box and its networks from inside. No runner, nothing from GitHub. The VM is deleted.
-// notRun: the proof never started, so it says nothing about Softnet (review, finding 6).
+// notRun: the proof never started, so it says nothing about Softnet.
 // What a proof that couldn't run writes: nothing over a pass that still holds, else when it tries again.
 export function infraProofLine(held: boolean, detail: string, nextAt: number): { linuxProof?: string } {
   return held ? {} : { linuxProof: `couldn't run: ${detail}. It tries again at ${new Date(nextAt).toTimeString().slice(0, 5)}` };
@@ -804,15 +804,15 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   const asked = d.sys.now();
   // queued is when the job the VM was started for was queued; GitHub may give it another of the same labels.
   const phases: Phases = turn.queuedAt !== undefined && asked - turn.queuedAt <= 7 * 86_400_000 && turn.queuedAt <= asked ? { queued: Math.round(turn.queuedAt - asked) } : {};
-  // Never before the ask, even if the clock steps back (product review, finding 10).
+  // Never before the ask, even if the clock steps back.
   const mark = (p: keyof Phases) => (phases[p] = Math.max(0, Math.round(d.sys.now() - asked)));
   const guest = guestOf(kind);
-  // Inside the gate, so exact: never a third macOS VM, whatever chose this one (review, finding 3).
+  // Inside the gate, so exact: never a third macOS VM, whatever chose this one.
   if (kind === "macos" && others.filter((o) => o.kind === "macos").length >= MACOS_MAX) {
     d.log.write(`slot ${d.slot}: no VM started: ${MACOS_MAX} macOS VMs run already`);
     return "held-back";
   }
-  // A loop that is stopping starts nothing more (finding 4).
+  // A loop that is stopping starts nothing more.
   if (d.box?.halt !== undefined) return "halted";
   const RUNNER_DIR = `${guest.home}/taskbox-runner`;
   const STATUS_FILE = `${guest.home}/taskbox-status.json`;
@@ -826,7 +826,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   }
   if (!allOk(checks)) {
     const failed = checks.filter((c) => c.status === "FAIL").map((c) => c.name);
-    // Room for one VM but not one more: the box works, one VM fewer. A wait, never a FAIL (finding 1).
+    // Room for one VM but not one more: the box works, one VM fewer. A wait, never a FAIL.
     if (others.length && failed.length === 1 && failed[0] === "Free disk") {
       const detail = checks.find((c) => c.name === "Free disk")!.detail.split(". ")[0];
       d.log.write(`slot ${d.slot}: no VM started: no room for one more VM (${detail})`);
@@ -908,7 +908,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
           } catch (e) {
             // The test repo's group is set up wrong: the session ends, so the box doesn't try each
             // minute. Anything else, such as GitHub being down, is tried again and counted by the
-            // chain (product review, finding 4). The real repo carries on either way.
+            // chain. The real repo carries on either way.
             const m = (e as Error).message;
             if (groupSetupWrong(m)) loadFailed(d.paths, d.sys.now(), `the test repo's runner group: ${m}`);
             throw e;
@@ -1112,7 +1112,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     writeState(d, { slot: "waiting for a job", slotAt: d.sys.now() });
     let exited = false;
     void runner.exited.then(() => (exited = true));
-    // A load job has a short ceiling of its own, whatever its workflow says (security review, finding 3).
+    // A load job has a short ceiling of its own, whatever its workflow says.
     const ceiling = turn.role === "load" ? Math.min(ceilingMs(d.cfg), LOAD_JOB_MAX_MS) : ceilingMs(d.cfg);
     const booted = d.sys.now();
     // The caps below are on the monotonic clock alone, so a wall clock step ends no job (core/boot.ts).

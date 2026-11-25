@@ -1,5 +1,5 @@
 // A stock Mac: the firewall and stealth mode off, AirPlay Receiver on. The install makes the box's
-// own settings true itself, so the preflight passes (P1, P6).
+// own settings true itself, so the preflight passes.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { install, makeServiceHome, settleBox, Stop } from "../src/install.ts";
@@ -154,7 +154,7 @@ describe("a fresh Mac", () => {
     expect(asked).toEqual(["Type yes to install v2.0.0: "]);
     expect(asked[0]).not.toMatch(/main|match/);
   });
-  // Found by the package B test pass: on a first install there is no taskbox command yet, and the
+  // On a first install there is no taskbox command yet, and the
   // owner is already the admin user, so "type taskbox update" is a step that can't be taken.
   test("a first install whose firewall step is refused names a step that works on a Mac with no taskbox yet", async () => {
     const sys = new FakeSys();

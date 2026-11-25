@@ -381,11 +381,11 @@ export interface RollbackWatch {
   // up to MAX_HOLD_MS after placedAt.
   deadline: number;
   proved?: boolean; // written by v3's guard once proving passes
-  // A go-back that failed: how many, the last reason, and when the next try is (v2.6.1, M2).
+  // A go-back that failed: how many, the last reason, and when the next try is (v2.6.1).
   failures?: number;
   lastError?: string;
   nextTry?: number;
-  // The update lock held by another process for over 30 minutes, and when that was last logged (L7).
+  // The update lock held by another process for over 30 minutes, and when that was last logged.
   blocked?: string;
   blockedLogAt?: number;
   // v3 on: the monotonic clock and the boot when it was placed (core/boot.ts). v3's watcher judges the

@@ -6,7 +6,7 @@ import { oneJob } from "../src/loop.ts";
 import { FakeSys, MAIN_SHA } from "./fake.ts";
 import { CFG, loopDeps, PEM, tempRoot } from "./helpers.ts";
 
-// X4: "on main" means the branch refs/heads/main. A tag or any other ref named main changes nothing.
+// "on main" means the branch refs/heads/main. A tag or any other ref named main changes nothing.
 const A = "aaaa1234def5678abc1234def5678abc1234def5";
 const X = "cccc1234def5678abc1234def5678abc1234def5";
 const REPO = "/repos/example-org/taskbox";

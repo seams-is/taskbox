@@ -186,15 +186,15 @@ describe("the statement", () => {
     expect(signersProblem("taskbox-release ssh-ed25519 AAAA\n")).toBe("the signers file has a line taskbox doesn't take");
   });
 
-  // M3: v2.6.1 is the one place the release key can be pinned without trusting the release itself.
+  // V2.6.1 is the one place the release key can be pinned without trusting the release itself.
   // v2.6.1 isn't released with a placeholder: the signers file must pin the owner's release key.
   test.serial("v2.6.1 isn't released until it pins the owner's release key", () => {
     expect(signersProblem(readFileSync(join(import.meta.dir, "../signers/allowed_signers"), "utf8"))).toBeUndefined();
   });
 
   // A real signature from the owner's Secure Enclave key, made with Touch ID on 24 Nov 2026 over a
-  // trial file, checked by the real ssh-keygen against the pinned file, with the user-present flag (L2).
-  test.serial("the pinned key verifies a real Secure Enclave signature, and it carries the user-present flag (L2)", () => {
+  // trial file, checked by the real ssh-keygen against the pinned file, with the user-present flag.
+  test.serial("the pinned key verifies a real Secure Enclave signature, and it carries the user-present flag", () => {
     const fx = (n: string) => join(import.meta.dir, "fixtures", n);
     const out = Bun.spawnSync(
       ["/usr/bin/ssh-keygen", "-Y", "verify", "-f", join(import.meta.dir, "../signers/allowed_signers"), "-I", PRINCIPAL, "-n", NAMESPACE, "-s", fx("release-key-trial.txt.sig")],
@@ -206,12 +206,12 @@ describe("the statement", () => {
     expect(flags !== undefined && (flags & 1) === 1).toBe(true);
   });
 
-  test.serial("tags with leading zeros aren't release tags, so two tags never name one version (L3)", () => {
+  test.serial("tags with leading zeros aren't release tags, so two tags never name one version", () => {
     for (const t of ["v03.0.0", "v3.00.0", "v3.0.0-rc.01", "v3.0.0-rc.0"]) expect(RELEASE_TAG.test(t)).toBe(false);
     expect(parseStatement(`${JSON.stringify({ ...statementFor("e".repeat(40)), version: "3.0.0-rc.01", tag: "v3.0.0-rc.01", tarball: "taskbox-v3.0.0-rc.01.tar.gz" })}\n`)).toBeUndefined();
   });
 
-  test.serial("ssh-keygen's line for a good signature gives the key's type and fingerprint, from the real ssh-keygen (L2)", () => {
+  test.serial("ssh-keygen's line for a good signature gives the key's type and fingerprint, from the real ssh-keygen", () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-sig-"));
     const run = (args: string[], stdin?: string) => Bun.spawnSync(["/usr/bin/ssh-keygen", ...args], { stdin: stdin === undefined ? "ignore" : new Blob([stdin]), env: { PATH: "/usr/bin:/bin" } });
     run(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f", join(dir, "k")]);
@@ -225,7 +225,7 @@ describe("the statement", () => {
     expect(good.fingerprint).toMatch(/^SHA256:[A-Za-z0-9+/]{43}$/);
   });
 
-  // L2, as far as it goes without Tart: the verify step as the box runs it, with sudo's own part faked
+  // As far as it goes without Tart: the verify step as the box runs it, with sudo's own part faked
   // (it runs the rest as this user) and the real ssh-keygen, its files, stdin and line; a security
   // key's line; and sudo refusing nobody.
   test.serial("the verify step runs the real ssh-keygen over its own copies, and reads its line", async () => {
@@ -558,7 +558,7 @@ describe("the rollback watcher and undo", () => {
     expect(outs.at(-1)).toBe(`system/${ROLLBACK_LABEL}`);
   });
 
-  // L6: the watcher's real entry passes the service account's uid, so a later release's agents in its gui domain go.
+  // The watcher's real entry passes the service account's uid, so a later release's agents in its gui domain go.
   test.serial("run by launchd through the command, it knows the service account's uid", async () => {
     const sys = new FakeSys();
     const p = paths(mkdtempSync(join(tmpdir(), "taskbox-w-")), testBox());
@@ -566,7 +566,7 @@ describe("the rollback watcher and undo", () => {
     expect([ops.uid, ops.serviceUid, ops.paths]).toEqual([0, 502, p]);
   });
 
-  test.serial("a deadline v3's guard moves later is kept, up to 3 hours after it was placed (L1)", async () => {
+  test.serial("a deadline v3's guard moves later is kept, up to 3 hours after it was placed", async () => {
     const h = await hopBox();
     const w = readRollbackWatch(h.d.paths)!;
     writeFileSync(rollbackWatchPaths(h.d.paths).file, JSON.stringify({ ...w, deadline: w.placedAt + 10 * 60 * 60_000 }));
@@ -579,7 +579,7 @@ describe("the rollback watcher and undo", () => {
     expect(linkTarget(h.d.paths.opt)).toBe(h.before);
   });
 
-  test.serial("a go-back that fails keeps the watcher, shows in check, and tries again on a back-off (M2)", async () => {
+  test.serial("a go-back that fails keeps the watcher, shows in check, and tries again on a back-off", async () => {
     const h = await hopBox();
     // The kept install changed since it was installed, so undo refuses it.
     writeFileSync(join(h.before, "app/odd.txt"), "x");
@@ -610,7 +610,7 @@ describe("the rollback watcher and undo", () => {
     expect([retryAfterMs(1), retryAfterMs(3), retryAfterMs(9)]).toEqual([60_000, 240_000, 3_600_000]);
   });
 
-  // N2: v3's guard may mark proved, or move the deadline, while a go-back runs. A failed go-back
+  // V3's guard may mark proved, or move the deadline, while a go-back runs. A failed go-back
   // keeps what it wrote, so a proved v3 is never taken back later.
   test.serial("a failed go-back keeps v3's proved and its later deadline", async () => {
     for (const write of ["proved", "deadline"] as const) {
@@ -639,7 +639,7 @@ describe("the rollback watcher and undo", () => {
     }
   });
 
-  // L7: one process takes over a stale lock; a lock held too long by a live process says so.
+  // One process takes over a stale lock; a lock held too long by a live process says so.
   test.serial("a lock held by a process that is gone is taken over; one held for over 30 minutes is the owner's", async () => {
     const h = await hopBox();
     const lock = join(dirname(h.d.paths.guardState), "taskbox-update.lock");

@@ -1,5 +1,3 @@
-// The third review's findings, each held by a test; the reviewer's probes that fit
-// are here, asserting what the code must do.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,7 +62,7 @@ describe("N6 and L3: a pass whose job rejects", () => {
   });
 });
 
-describe("N8: the lock", () => {
+describe("the lock", () => {
   test("two spellings through a linked folder share one lock", async () => {
     const d = tmp();
     mkdirSync(join(d, "real"));

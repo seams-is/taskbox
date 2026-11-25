@@ -1,4 +1,3 @@
-// The eighth review, the part on #7.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -76,7 +75,7 @@ describe("the lows", () => {
     expect(kept).toContain("op.started");
   });
   // test.serial: more than 50 ms of work alone (test/setup.ts).
-  test.serial("review-6 N4: past 20,000 records, no running op is hidden by the folder's order", () => {
+  test.serial("past 20,000 records, no running op is hidden by the folder's order", () => {
     const f = { dir: tmp(), owner: uid };
     chmodSync(f.dir, 0o755);
     const t: OpType = { type: "drain", phases: ["a"], onBoot: () => "fail" };

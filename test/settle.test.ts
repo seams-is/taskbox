@@ -1,4 +1,4 @@
-// The settings the install keeps true, and the rows that read them, whose fix is taskbox update (P4).
+// The settings the install keeps true, and the rows that read them, whose fix is taskbox update.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { AWAY_ONLY } from "../src/away.ts";

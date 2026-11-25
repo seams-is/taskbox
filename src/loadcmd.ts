@@ -51,7 +51,7 @@ export function loadWorkflowYaml(cfg: Config, template = readFileSync(join(TEMPL
   return body.replace(/__([A-Z]+)__/g, (m, k: string) => values[k] ?? m);
 }
 
-// taskbox check's row for the test repo (product review, finding 3): its runner group exists, is
+// taskbox check's row for the test repo: its runner group exists, is
 // limited to selected private repos, and lists the test repo alone. As the service account, with
 // the box's own App. Root skips it: the key's path is in that account's home, which it controls.
 export const TEST_REPO_ROW = "Test repo";
@@ -131,7 +131,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
     if (only) {
       const seen = f.seen;
       const fresh = !!seen?.known && now - seen.at <= FRESH_MS;
-      // Ask whenever real jobs wait, and whenever the box can't say (both reviews).
+      // Ask whenever real jobs wait, and whenever the box can't say.
       if (fresh && seen!.real > 0) d.say(`${seen!.real} real job${seen!.real > 1 ? "s wait" : " waits"} on GitHub now${seen!.realMerge ? `, ${seen!.realMerge} of them merge queue jobs` : ""}. With --only they wait until the session ends.`);
       if (!fresh) d.say(`The box can't say whether real jobs wait: ${blind ?? "it can't see the queue now"}. With --only they wait until the session ends.`);
       if (!fresh || seen!.real > 0) {

@@ -1,4 +1,4 @@
-// The agent is an account taskbox made, and only that (v2.7.0, review findings P2, S9 and X6).
+// The agent is an account taskbox made, and only that.
 // planAgent refuses any other account before the yes; placeAgent makes it, or puts it back as it
 // should be, before anything is installed. A fake macOS directory stands for dscl and its friends.
 import { describe, expect, test } from "bun:test";

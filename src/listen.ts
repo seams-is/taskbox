@@ -12,7 +12,7 @@ import { type Clock, realClock } from "./clock.ts";
 import { manifestFor, pageHeaders, startPage } from "./connect.ts";
 
 // open: the listener opens its own start page in the admin's browser, through a private file, so the
-// page token is never on a command line any local user can read (security review, M1).
+// page token is never on a command line any local user can read.
 export type ListenSetup = { org: string; appName: string; state: string; pageToken: string; minutes: number; open?: boolean };
 export type ListenEvent = { port: number } | { code: string; state: string } | { timeout: true };
 

@@ -53,7 +53,7 @@ export interface CheckContext {
   rootUid?: number; // who must own /usr/local: root; tests use their own user
   // How many other VMs run now (v2.2.0). The loop says before each start; check reads the loop's state.
   vmsRunning?: number;
-  // An image download under way beside this start, in GB still to come (v2.2.0 review, finding 5).
+  // An image download under way beside this start, in GB still to come.
   downloadGB?: number;
 }
 

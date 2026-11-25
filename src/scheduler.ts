@@ -44,7 +44,7 @@ export interface SchedulerInput {
   kinds: KindView[]; // in the box's order, macOS first
   slotStates: SlotState[];
   // The slots with no VM that may start one now. Absent: every slot with no VM. A slot held back by
-  // the box's checks, sleeping before it asks again, isn't free (product review, finding 3).
+  // the box's checks, sleeping before it asks again, isn't free.
   free?: number[];
   snapshot: Snapshot;
   classes: ClassRule[];
@@ -69,8 +69,7 @@ const aJob = (className: string) => (className === LAST_CLASS ? "a job" : `a ${c
 // The kind whose runners have every label the item asks for: the kind's own labels, or the ones
 // GitHub gives its runners itself, without regard to case. It must ask for at least one of the
 // kind's own. An odd item, or one asking for a label no runner of the box has, such as windows,
-// isn't the box's: GitHub would never give it to one of its VMs, so it holds none (security review,
-// finding 1). With it, the labels a VM registers to take it, in the kind's own spelling.
+// isn't the box's: GitHub would never give it to one of its VMs, so it holds none. With it, the labels a VM registers to take it, in the kind's own spelling.
 export function fitOf(item: WaitingItem, kinds: KindView[]): { kv: KindView; register: string[] } | undefined {
   if (item.odd || !item.labels.length) return undefined;
   for (const k of kinds) {
@@ -93,7 +92,7 @@ type Unmatched = ReturnType<typeof ranked>[number] & { kv: KindView; register: s
 // VM of its kind that registered every label it needs, the one with the fewest labels first, so a
 // VM that can take more stays free for the rest. matched: each matched slot and the rank of the item
 // that matched it. A match where both the item has waited and the VM has been ready for staleMs isn't
-// happening, so that VM doesn't count as matched (security review, finding 1; product review, 7).
+// happening, so that VM doesn't count as matched.
 export function assign(items: ReturnType<typeof ranked>, slotStates: SlotState[], kinds: KindView[], now = 0, staleMs = Infinity) {
   const waiting = slotStates.filter((s) => s.state === "waiting").sort((a, b) => a.labels.length - b.labels.length || a.slot - b.slot);
   const matched = new Map<number, number>();
@@ -132,7 +131,7 @@ export function decide(s: SchedulerInput): Decision[] {
   for (const x of s.slotStates) count.set(x.kind, (count.get(x.kind) ?? 0) + 1);
   let loads = s.slotStates.filter((x) => roleOf(x) === "load").length;
   // Load VMs per kind. Beside the real repo, load also leaves each kind one VM below its cap, so a
-  // real macOS job never waits for load to free macOS's last place (security review, finding 1).
+  // real macOS job never waits for load to free macOS's last place.
   const loadsOf = new Map<Kind, number>();
   for (const x of s.slotStates) if (roleOf(x) === "load") loadsOf.set(x.kind, (loadsOf.get(x.kind) ?? 0) + 1);
   const loadKindOk = (k: KindView, less = 0) => (loadsOf.get(k.kind) ?? 0) - less < (only ? k.cap : k.cap - 1);
@@ -162,11 +161,10 @@ export function decide(s: SchedulerInput): Decision[] {
       .sort((a, b) => a.rank - b.rank || a.queuedAt - b.queuedAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     const { matched, unmatched } = assign(items, s.slotStates, s.kinds, s.now, t.floorMinutes * 60_000 + 5 * 60_000);
     // A load VM no load job came for in giveWayMinutes goes, so its slot is free for real work
-    // before a real job has to wait for it (product review, finding 12).
+    // before a real job has to wait for it.
     if (load) for (const x of s.slotStates) if (roleOf(x) === "load" && !wrong(x) && !matched.has(x.slot) && idleFor(x) >= giveWayMs && !out.some((d) => d.slot === x.slot)) out.push({ slot: x.slot, do: "give-way", why: `no load test job came for ${mins(idleFor(x))} since it was ready` });
     // The source lags: a job a VM here took in the last two reads may still be listed. For each such
-    // start, the oldest unmatched job that VM's labels could take is taken already (product review,
-    // finding 4).
+    // start, the oldest unmatched job that VM's labels could take is taken already.
     // Only a start after the snapshot was read can still be listed in it, plus GitHub's own lag.
     const after = s.snapshot.at - t.sourcePollSeconds * 1000;
     const recent = s.kinds.flatMap((k) => (s.history[k.kind]?.jobStarts ?? []).filter((x) => x.at >= after).map((x) => ({ kind: k.kind, labels: x.labels })));
@@ -179,7 +177,7 @@ export function decide(s: SchedulerInput): Decision[] {
     queue.sort((a, b) => a.rank - b.rank || a.queuedAt - b.queuedAt || (a.key < b.key ? -1 : 1));
     // The next job for a free slot: the best class first. Within it, a kind with no VM at all goes
     // first, so a backlog of one kind never keeps the other waiting behind it; then the oldest
-    // (product review, finding 5).
+    //.
     const next = () => {
       const ok = queue.filter((it) => capOk(it.kv) && (it.role !== "load" || (loads < loadCap && loadKindOk(it.kv))));
       if (!ok.length) return -1;
@@ -206,8 +204,7 @@ export function decide(s: SchedulerInput): Decision[] {
         const victims = s.slotStates
           .filter((x) => x.state === "waiting" && !wrong(x) && (!matched.has(x.slot) || (x.readySince !== undefined && matched.get(x.slot)! > it.rank)))
           // A load job may take a slot only within the load cap, counting this VM's going.
-          // A load job may take only a waiting load VM's place, never a real VM's (security review,
-          // finding 2), and only within the load caps, counting this VM's going.
+          // A load job may take only a waiting load VM's place, never a real VM's, and only within the load caps, counting this VM's going.
           .filter((x) => it.role !== "load" || (roleOf(x) === "load" && loads - 1 < loadCap && loadKindOk(it.kv, x.kind === it.kv.kind ? 1 : 0)))
           .filter((x) => it.kv.open && (count.get(it.kv.kind) ?? 0) - (x.kind === it.kv.kind ? 1 : 0) < it.kv.cap)
           .sort((a, b) => Number(matched.has(a.slot)) - Number(matched.has(b.slot)) || (matched.get(b.slot) ?? 0) - (matched.get(a.slot) ?? 0) || Number(b.kind === it.kv.kind) - Number(a.kind === it.kv.kind) || b.slot - a.slot);
@@ -226,8 +223,7 @@ export function decide(s: SchedulerInput): Decision[] {
   // a view of the queue, so beside the real repo a waiting load VM goes after giveWayMinutes.
   if (load && !only) for (const x of s.slotStates) if (roleOf(x) === "load" && idleFor(x) >= giveWayMs && !out.some((d) => d.slot === x.slot)) out.push({ slot: x.slot, do: "give-way", why: `the box can't see the queue, so no load test job comes for this VM` });
   // A kind is busy while one of its VMs took a job soon after it was ready, recently, and none of its
-  // VMs has waited ready for giveWayMinutes since: one that has shows the run is over (product
-  // review, finding 1).
+  // VMs has waited ready for giveWayMinutes since: one that has shows the run is over.
   const busy = (k: Kind) => {
     const f = s.history[k]?.fastAt;
     if (f === undefined || s.now - f > t.busyForMinutes * 60_000) return false;

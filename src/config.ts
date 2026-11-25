@@ -219,7 +219,7 @@ export const CLASS_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 export const ANY_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,49}$/;
 export const RUNNER_DEFAULT_LABELS = ["self-hosted", "macos", "linux", "windows", "arm64", "x64", "arm"];
 // The labels GitHub gives each kind's runners itself: a job that asks for any other default, such as
-// windows or x64, never runs on this box (v2.4.0 review, security finding 1).
+// windows or x64, never runs on this box.
 export function runnerDefaults(kind: Kind): string[] {
   return ["self-hosted", kind === "macos" ? "macos" : "linux", "arm64"];
 }

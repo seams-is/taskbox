@@ -33,6 +33,12 @@ describe("the docs", () => {
         for (const [p] of text.matchAll(/\b(?:docs|templates)\/[\w-]+\.md\b/g)) if (!existsSync(join(repo, p))) seen.push(`${f}: ${p}`);
         for (const [p] of text.matchAll(/\b[\w-]*(?:design|review-wp\d\w*)\.md\b/g)) seen.push(`${f}: ${p}`);
         if (/\bWP\d+[a-z]?\b|\bWave [A-E]\b|#47\b/.test(text)) seen.push(`${f}: a planning label`);
+        for (const line of text.split("\n")) {
+          const code = "(?:[A-Z]\\d{1,2}[a-z]?|M-[a-d])";
+          const lead = new RegExp(`^\\s*//\\s*${code}[:,]|\\b(?:test|describe|it)(?:\\.\\w+)?\\(["'\`]${code}[:,]`);
+          const tail = new RegExp(`//.*\\((?:v\\d+\\.\\d+\\.\\d+, )?${code}(?:, ${code})*\\)|//.*\\b(?:review \\d|reviews?\\)|finding \\d)`);
+          if (lead.test(line) || tail.test(line)) seen.push(`${f}: a review code: ${line.trim().slice(0, 60)}`);
+        }
         if (/§\d/.test(text)) seen.push(`${f}: a § section of a doc that isn't here`);
       }
     }

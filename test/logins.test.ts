@@ -119,7 +119,7 @@ describe("tailscaled's log, as v1.104.5 prints it: unverified detail only", () =
   });
 });
 
-// The review's forgeries (scratchpad forge.ts), with made-up names. A client chooses the user it asks
+// Forgeries, with made-up names. A client chooses the user it asks
 // for, and tailscaled prints it raw, so each of these is a line any device on port 22 can write.
 describe("forged lines in tailscaled's log", () => {
   const real = [

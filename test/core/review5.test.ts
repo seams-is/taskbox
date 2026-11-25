@@ -1,4 +1,3 @@
-// The fifth review's findings, with the reviewer's probes as what the code must do.
 import { describe, expect, test } from "bun:test";
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +36,7 @@ const mkOp = (s: ReturnType<typeof setup>, at: number, state: "succeeded" | "run
   return b.op.id;
 };
 
-describe("M2: undo ends every op job", () => {
+describe("undo ends every op job", () => {
   test("undo boots out every running op's job and cancels its op before it swaps", async () => {
     const { endOpJobs } = await import("../../src/core/child.ts");
     const s = setup();
@@ -70,8 +69,8 @@ describe("M2: undo ends every op job", () => {
   });
 });
 
-describe("L2: a real refusal is never hidden", () => {
-  test("K4: 60 junk refusals, then one that names a known key: the known one is written whole", () => {
+describe("a real refusal is never hidden", () => {
+  test("60 junk refusals, then one that names a known key: the known one is written whole", () => {
     const s = setup();
     for (let i = 0; i < REFUSED_PER_MINUTE + 10; i++) s.d.events.write({ type: "workspace.refused", actor: `x${i}`, text: "junk" });
     s.d.events.refused({ type: "workspace.refused", text: "a stale nonce" }, Verified.signer(`SHA256:${"r".repeat(43)}`));
@@ -92,7 +91,7 @@ describe("the runner's rules for its callers", () => {
     for (const k of ["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT"]) expect(plist).toContain(k);
     expect(plist).not.toContain("SSH_AUTH_SOCK");
   });
-  test("L5: the ops folder must be root's alone before a plist goes in it", async () => {
+  test("the ops folder must be root's alone before a plist goes in it", async () => {
     const s = setup();
     require("node:fs").chmodSync(s.root, 0o777);
     const b = begin([], update, { subject: "box", params: {}, actor: "owner" }, T);
@@ -102,7 +101,7 @@ describe("the runner's rules for its callers", () => {
 });
 
 describe("the lows", () => {
-  test("L1: a child taking its lease while the guard probes it waits a moment, and takes it", () => {
+  test("a child taking its lease while the guard probes it waits a moment, and takes it", () => {
     const p = join(tmp(), "x.lease");
     writeFileSync(p, "");
     let probe: number | undefined = openSync(p, constants.O_RDONLY | O_EXLOCK | constants.O_NONBLOCK);
@@ -111,7 +110,7 @@ describe("the lows", () => {
     expect(leaseHeld(p)).toBe(true);
     closeSync(fd);
   });
-  test("L1: a lease another child truly holds is still refused, after its few tries", () => {
+  test("a lease another child truly holds is still refused, after its few tries", () => {
     const p = join(tmp(), "x.lease");
     const held = takeLease(p);
     let waits = 0;
@@ -144,7 +143,7 @@ describe("the lows", () => {
     const ended = await follow({ ...s.d, boot: "b2", types: [resumer] });
     expect(ended[0]).toMatchObject({ state: "failed", why: "its process ended before it finished" });
   });
-  test("L4: the job's output is trimmed past its cap; listOps sees the newest records first", async () => {
+  test("the job's output is trimmed past its cap; listOps sees the newest records first", async () => {
     const { LOG_MAX } = await import("../../src/core/child.ts");
     const s = setup();
     const b = begin([], update, { subject: "box", params: {}, actor: "owner" }, T);
@@ -156,7 +155,7 @@ describe("the lows", () => {
     expect(statSync(join(s.root, `${b.op.id}.log`)).size).toBeLessThan(LOG_MAX);
     closeSync(lease);
   });
-  test("L4: the ops folder keeps under its byte cap, oldest ended records first", () => {
+  test("the ops folder keeps under its byte cap, oldest ended records first", () => {
     const s = setup();
     const ids = Array.from({ length: 5 }, (_, i) => mkOp(s, T - (5 - i) * DAY));
     writeFileSync(join(s.root, `${ids[0]}.log`), "x".repeat(5000));

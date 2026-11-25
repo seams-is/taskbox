@@ -77,8 +77,7 @@ export function suggestions(cfg: Config, all: KindTimings[]): Suggestion[] {
   const gw = out[0]!.suggests ?? t.giveWayMinutes;
   out.push({ setting: "floorMinutes", now: t.floorMinutes, suggests: Math.max(t.floorMinutes, 2 * gw), from: "at least twice giveWayMinutes; how long a job may wait in a burst is yours to set" });
   // Busy: three times the slowest kind's 90th percentile of how soon a ready VM took its job, and
-  // never under 30 s, since GitHub takes seconds to hand a waiting job to a runner (product review,
-  // finding 9). Too low, and the box never sees a kind as busy.
+  // never under 30 s, since GitHub takes seconds to hand a waiting job to a runner. Too low, and the box never sees a kind as busy.
   const readies = all.filter(enough).flatMap((k) => (k.ready ? [Math.min(k.ready.p90, 120_000)] : []));
   out.push({ setting: "busyWithinSeconds", now: t.busyWithinSeconds, ...(readies.length ? { suggests: Math.min(600, Math.max(30, Math.ceil((3 * Math.max(...readies)) / 1000))) } : {}), from: "three times the slowest kind's 90% of how soon a ready VM took a job, at least 30 s" });
   out.push({ setting: "busyForMinutes", now: t.busyForMinutes, suggests: t.busyForMinutes, from: "kept: the gaps between a burst's jobs, which a later version can measure" });

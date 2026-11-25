@@ -101,8 +101,7 @@ async function proveOnce(d: ProveDeps, cfg: Config, pem: string, appId: number):
   if (!inst.ok) return `GitHub answered ${inst.status} for the App's installations`;
   const list = (await inst.json()) as { id?: unknown; repository_selection?: unknown; account?: { login?: unknown } }[];
   // v2.6.0: jobsFrom, and the test repo if taskbox.json names one, and no other repo. The App may
-  // lack the test repo for a while, so adding or removing it works in either order (product review,
-  // finding 2): the box then can't read the test repo, and says so.
+  // lack the test repo for a while, so adding or removing it works in either order: the box then can't read the test repo, and says so.
   const want = servedRepos(cfg).map((r) => r.name);
   const only = want.length > 1 ? `on ${want[0]}, may be on ${want[1]}, and on no other repo` : `on ${want[0]} only`;
   if (!Array.isArray(list)) return `GitHub's answer for the App's installations had no list`;

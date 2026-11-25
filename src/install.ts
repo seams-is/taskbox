@@ -231,7 +231,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if (linkWhy) throw new Stop(`${linkWhy}, so taskbox can't put its command there. Nothing was installed. Nothing to do: agents fix it.`);
 
   // 3. The key and a contents token. A key in Downloads is proved first, so a revoked key in place
-  // never stops the update that brings its replacement (P3).
+  // never stops the update that brings its replacement.
   const again = opts.first ? "sh ~/Downloads/taskbox-main/install.sh" : "taskbox update";
   const installedCfg = opts.first ? loadConfig(d.configDir) : loadConfig(d.configDir, d.paths.boxSettings, d.rootUid ?? 0);
   const took = await takeDownloadedKey(d, installedCfg, join(d.ownerHome, "Downloads"), { again, source: !opts.first, skip: !opts.first });
@@ -259,7 +259,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // What goes in root's key folder: a key from Downloads, and the runner key from before v2.8.0, which
   // stays in the service's home too, for taskbox rollback. Each key is the service's. An update places
   // them now, before the yes. A first install, or a run that makes the service, places them at step 7,
-  // so a no or a stop before it leaves the download for the next run of install.sh (P3).
+  // so a no or a stop before it leaves the download for the next run of install.sh.
   const early = !opts.first && !plan.make;
   const oldRunnerKey = fresh?.app !== "runner" && d.paths.key === d.paths.oldKey;
   const after = early ? "Nothing was installed." : `${fresh ? "The key stays in Downloads. " : ""}Type ${again} again.`;

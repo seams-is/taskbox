@@ -100,7 +100,7 @@ describe("install", () => {
     expect(tarballFetched(sys)).toBe(false);
   });
 
-  // X4: a tag named main on the release commit doesn't make it on main.
+  // A tag named main on the release commit doesn't make it on main.
   test("update refuses a release the branch main doesn't hold, whatever a ref named main says", async () => {
     const sys = new FakeSys();
     healthyBox(sys);

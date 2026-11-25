@@ -204,7 +204,7 @@ describe("a second guard", () => {
   // launchctl print system/<label>: 0 when launchd has that job loaded, 113 when it doesn't.
   const loaded = (current: boolean) => (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: current && args[1]!.endsWith(".guard") && !args[1]!.includes("example") ? 0 : 113, stdout: "", stderr: "" } : cmd === "/bin/launchctl" && args[0] === "bootout" ? { code: 0, stdout: "", stderr: "" } : undefined));
 
-  // M1: an update swaps the code in, then retiring the old daemons fails and puts them back. The
+  // An update swaps the code in, then retiring the old daemons fails and puts them back. The
   // old-label guard now runs this code with no guard under the current label: it is the only guard.
   test("a lone guard under an old label, after a failed update, keeps Screen Sharing's pf rules and the fence, and warns", async () => {
     const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
@@ -225,7 +225,7 @@ describe("a second guard", () => {
   });
 });
 
-describe("the guard's label, the confirming review (L-a, L-b)", () => {
+describe("the guard's label", () => {
   const OLD_PREFIX = "com.example.taskbox";
   const root = { uid: 0, user: "root", env: { HOME: "/var/root" } };
   const withPrefix = (p: ReturnType<typeof paths>) => {
@@ -442,7 +442,7 @@ describe("v2.6.0's old names", () => {
 });
 
 describe("the footer on every command", () => {
-  // L5: anyone but the service account and root gets a footer from the copies every user may read.
+  // Anyone but the service account and root gets a footer from the copies every user may read.
   test("a reader's footer is read from the shared copies, for every command", async () => {
     const reader = { uid: 9503, user: "pat", env: { HOME: "/Users/pat" } };
     // The service account's own state says something only it may read.
@@ -493,7 +493,7 @@ describe("--json: one envelope per command", () => {
     expect(e.lines).toEqual(text.said);
   });
 
-  // M2: check's exit 1 is its verdict, not a failure of the command: the envelope carries every row.
+  // Check's exit 1 is its verdict, not a failure of the command: the envelope carries every row.
   test("check's lines are its rows, made from the result; a FAIL is exit 1 with every row, and the laptop shows them all", async () => {
     const r = await run(["check", "--json"], CALLERS.ci, { healthy: true });
     const e = JSON.parse(r.said[0]!);
@@ -555,7 +555,7 @@ describe("hello and the answers version", () => {
   });
 });
 
-// L6: a handler's JSON line read with a stray line among the output is v3's unreadable, never a crash.
+// A handler's JSON line read with a stray line among the output is v3's unreadable, never a crash.
 describe("a v2.x handler's JSON line", () => {
   test("one object is the answer; a stray line, two lines or none is unreadable", async () => {
     const { oneJsonLine } = await import("../src/cmdkit.ts");

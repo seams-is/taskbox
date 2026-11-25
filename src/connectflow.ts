@@ -380,7 +380,7 @@ async function newKey(d: ConnectDeps, appId: number, slug: string, oldPem: strin
   const until = since + WAIT_MS;
   let saidWhy = false;
   for (;;) {
-    // The same proof as the update's: a key for either of the box's Apps is taken (P3).
+    // The same proof as the update's: a key for either of the box's Apps is taken.
     const got = await takeDownloadedKey(d, d.cfg, dl, { again: "taskbox connect github --new-key", source: true, since });
     if ("stop" in got) return (d.say(got.stop), 1);
     if ("pem" in got) {

@@ -133,7 +133,7 @@ export interface Occupant {
   labels: string[];
   job: boolean;
   // Its VM exists: cloned, or the Linux proof's. A slot that waits for the gate has none yet, so the
-  // memory and disk checks don't count it (v2.2.0 review, finding 1).
+  // memory and disk checks don't count it.
   up?: boolean;
   // The engine's name for its VM, once its guest answers: the Linux proof tries its address (v2.2.0).
   vm?: string;
@@ -183,7 +183,7 @@ export function schedule(d: ScheduleDeps): KindChooser {
       .filter((o) => o.slot !== skip)
       .map((o) => ({ slot: o.slot, kind: o.kind, labels: o.labels, state: o.job ? "busy" : "waiting", since: o.since ?? d.ev.now(), ...(o.readyAt !== undefined ? { readySince: o.readyAt } : {}), ...(o.role === "load" ? { role: o.role } : {}) }));
   // free: only the slot asking may start a VM, so the best job never goes to a slot that is held back
-  // and sleeping (product review, finding 3).
+  // and sleeping.
   const input = (snapshot: Snapshot, skip?: number, free: number[] = []): SchedulerInput => {
     const load = d.load?.();
     return { now: d.ev.now(), slots: usable(), kinds: view(), slotStates: states(skip), free, snapshot, classes, timings, history: d.history(), ...(load?.on ? { load } : {}) };
@@ -196,7 +196,7 @@ export function schedule(d: ScheduleDeps): KindChooser {
     const snap = await d.source.read(d.ev.now());
     mode(snap);
     // One slot, and the source went unreadable while this VM waits: give way after a turn, as turns do
-    // (product review, finding 6).
+    //.
     if (!snap.known && d.slots === 1) {
       const me1 = d.occupants().find((o) => o.slot === me);
       return !!me1 && !me1.job && me1.readyAt !== undefined && d.ev.now() - me1.readyAt >= turnIdleMs;

@@ -222,7 +222,7 @@ describe("taskbox rollback-watch", () => {
   });
 });
 
-// N1: a trial's tag reaches the update, through the real argv path, as the admin (re-run through sudo)
+// A trial's tag reaches the update, through the real argv path, as the admin (re-run through sudo)
 // and as root. Root's run reaches the hop, which needs a public repo the example names none of.
 describe("taskbox update with a trial's tag", () => {
   test("the admin's update re-runs through sudo with the tag, and root's reaches the hop", async () => {

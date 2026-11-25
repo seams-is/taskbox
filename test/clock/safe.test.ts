@@ -15,7 +15,7 @@ const step = (sys: FakeSys, ms: number) => {
   sys.monoOffset -= ms;
 };
 
-describe("M-a: job ceilings", () => {
+describe("job ceilings", () => {
   function hangingGuest(sys: FakeSys, onStart: () => void) {
     sys.onSpawn = (p) => {
       if (p.args[0] === "exec")
@@ -46,12 +46,12 @@ describe("M-a: job ceilings", () => {
   }, 60_000);
 });
 
-describe("M-c: the VM-start check for missing rules", () => {
+describe("the VM-start check for missing rules", () => {
   test("rules gone after the start by mono count, whatever the wall clock says", () => {
     const g = { ok: true, detail: "", at: 0, tun: "utun99", missingAt: 1000, missingMono: 50_000 };
     // The wall clock went back: missingAt is before the start's wall time, but by mono it is after.
     expect(vmStartGuard(g, 5000, [], 40_000).rulesWentMissing).toBe(true);
-    // Either clock saying after the start is enough (review 8): here the wall says after, mono before.
+    // Either clock saying after the start is enough: here the wall says after, mono before.
     expect(vmStartGuard(g, 0, [], 60_000).rulesWentMissing).toBe(true);
     expect(vmStartGuard(g, 5000, [], 60_000).rulesWentMissing).toBe(false);
   });
@@ -63,7 +63,7 @@ describe("M-c: the VM-start check for missing rules", () => {
   });
 });
 
-describe("M-d: a drain from before a restart", () => {
+describe("a drain from before a restart", () => {
   test("is dropped only when the boot's uuid changed; a clock step leaves the owner's drain", async () => {
     const { dropDrainFromBeforeBoot } = await import("../../src/loop.ts");
     const sys = new FakeSys();
@@ -82,7 +82,7 @@ describe("M-d: a drain from before a restart", () => {
   });
 });
 
-describe("M-b: the rollback watcher's deadline in v3's tree", () => {
+describe("the rollback watcher's deadline in v3's tree", () => {
   const U = "11111111-2222-3333-4444-555555555555";
   const V = "99999999-2222-3333-4444-555555555555";
   const w = { v: 1 as const, tag: "v3.0.0-rc.2", to: "/a", back: "/b", placedAt: 1000, deadline: 1000 + 70 * 60_000, placedMono: 500, boot: U };
@@ -137,7 +137,7 @@ describe("every wall clock read in src is a known one", () => {
     expect(found).toEqual(Object.fromEntries(Object.entries(ALLOWED).map(([f, a]) => [f, a.reads])));
     expect(Object.values(ALLOWED).every((a) => a.why.length > 10)).toBe(true);
   });
-  test("it sees every shape of read the review listed", () => {
+  test("it sees every shape of read", () => {
     for (const l of ["Date.now() - t > LIMIT_MS", "if (Date.now() >= deadline)", "new Date().getTime() - t > MAX_MS", "const elapsed = d.sys.now() - startedAt;", "startedAt + LIMIT_MS < d.sys.now()", "deadline <= d.sys.now()", "this.sys.now() > w.expiresAt", "const f = Date.now;", "Date() + x", "performance.timeOrigin + 5"]) expect(reads(l)).toBe(1);
     expect(reads("performance.now() - t")).toBe(0);
     expect(reads("new Date(k.at).toISOString()")).toBe(0);

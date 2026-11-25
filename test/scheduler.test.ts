@@ -153,7 +153,7 @@ describe("scenarios", () => {
   });
 });
 
-// The v2.4.0 security review's findings.
+// More scheduler cases.
 describe("what a job can hold a VM with", () => {
   test("a job asking for a label no runner of the box has, such as windows, x64 or one out of shape, holds no VM", () => {
     const phantom = (k: string, labels: string[], odd = false) => ({ ...item(k, labels, NOW - 10 * M, "pull_request"), ...(odd ? { odd } : {}) });
