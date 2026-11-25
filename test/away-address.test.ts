@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 7 (docs/away-ready-design.md): two public-address sources, asked at
+// v2.5.0 away-ready, scenario 7: two public-address sources, asked at
 // once; every distinct address they return is blocked for every VM.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";

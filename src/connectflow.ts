@@ -1,5 +1,5 @@
 // taskbox connect github and taskbox disconnect github: the steps that talk to GitHub and change the
-// box. docs/connect-github-design.md has the design; src/connect.ts has the pure parts, and
+// box. src/connect.ts has the pure parts, and
 // src/listen.ts the listener, run as the admin.
 import { createHash, createPrivateKey, createPublicKey, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";

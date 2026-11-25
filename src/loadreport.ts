@@ -1,4 +1,4 @@
-// taskbox load report (v2.6.0, docs/load-test-design.md, What changes 6). One session, from its
+// taskbox load report. One session, from its
 // start to its end: the acceptance criteria for the real repo's jobs and the load repo's jobs apart,
 // real jobs that a load VM went ahead of and those that waited for a load job, the checklist as it
 // stood, and the source's reads.

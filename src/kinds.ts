@@ -144,7 +144,7 @@ export interface Occupant {
   role?: Role; // v2.6.0: load, for a VM of the load test
 }
 
-// The chooser for every box from v2.4.0 (docs/scheduling-design.md): it reads the job source,
+// The chooser for every box from v2.4.0: it reads the job source,
 // builds the scheduler's input from the slots and what the loop remembers, and asks decide() for
 // this slot's decision (scheduler.ts). One slot with no view of the queue keeps v2.1.0's turns.
 // claim records a slot's pick in the same step, so a slot asking at the same moment sees it.

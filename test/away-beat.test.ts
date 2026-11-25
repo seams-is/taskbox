@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 3 (docs/away-ready-design.md): the loop's heartbeat. Each phase
+// v2.5.0 away-ready, scenario 3: the loop's heartbeat. Each phase
 // carries its own deadline; a beat past it plus the grace reads Failing for every reader, after
 // Stopped, ci away and Downloading.
 import { describe, expect, test } from "bun:test";

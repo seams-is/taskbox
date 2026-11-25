@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 5 (docs/away-ready-design.md): job VMs left behind while the loop runs
+// v2.5.0 away-ready, scenario 5: job VMs left behind while the loop runs
 // are deleted on idle passes; a VM a slot or the proof records, a young one and an image never are.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";

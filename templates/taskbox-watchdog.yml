@@ -1,4 +1,4 @@
-# taskbox watchdog (docs/away-ready-design.md, "Alerts"). Made by `taskbox watchdog` from the box's
+# taskbox watchdog. Made by `taskbox watchdog` from the box's
 # own settings: don't edit the copy in your repo; change the settings and make it again. It goes in
 # .github/workflows/taskbox-watchdog.yml of the repo whose jobs your box runs.
 #

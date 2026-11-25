@@ -1,4 +1,4 @@
-// taskbox load start, load on --only, load off and load report (v2.6.0, docs/load-test-design.md).
+// taskbox load start, load on --only, load off and load report.
 // on and off are the service account's, at the box, like stop and start. report is anyone's,
 // remote too, read from the copies every user may read.
 import { readFileSync } from "node:fs";
@@ -67,7 +67,7 @@ export async function testRepoRow(c: CheckContext): Promise<{ status: "OK" | "FA
     await gh.runnerGroupId(await gh.token("runners"), repo.runnerGroup, repo.name);
     return { status: "OK", detail: `${repo.name}, in runner group ${repo.runnerGroup}, which lists it alone` };
   } catch (e) {
-    return { status: "FAIL", detail: `${(e as Error).message.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}. README, Setting up the test repo, step 3` };
+    return { status: "FAIL", detail: `${(e as Error).message.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}` };
   }
 }
 
@@ -80,7 +80,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
   const shared = !asService;
   const now = d.sys.now();
   if (!repo) {
-    d.say("taskbox.json names no test repo, so there is no load test. README, Load test, has the steps.");
+    d.say("taskbox.json names no test repo, so there is no load test.");
     return 1;
   }
   if (!["status", "on", "off", "report", "workflow"].includes(sub)) {
@@ -188,7 +188,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
   d.say(s ? `Load test session ${s.n} is on until ${hhmm(s.until)} UTC, ${s.only ? "with the box to itself" : "beside the real repo"}.` : `No load test session is on.${last ? ` The last was session ${last.n}: taskbox load report.` : ""}`);
   const blind = s ? loadBlind(f, now) : undefined;
   if (blind) d.say(`Test jobs wait: ${blind}.`);
-  if (!s && last?.why) d.say(`The box ended session ${last.n} at ${hhmm(last.endedAt ?? last.until)} UTC: ${last.why}. README, Load test, has the steps.`);
+  if (!s && last?.why) d.say(`The box ended session ${last.n} at ${hhmm(last.endedAt ?? last.until)} UTC: ${last.why}`);
   if (f.seen?.known && f.seen.load && !s && now - f.seen.at <= FRESH_MS) d.say(`${f.seen.load} test repo job${f.seen.load > 1 ? "s are" : " is"} queued on GitHub with no session on: no VM starts for them.`);
   return 0;
 }

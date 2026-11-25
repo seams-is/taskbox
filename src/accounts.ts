@@ -2,7 +2,6 @@
 // agents and laptops reach over Tailscale SSH, and the pool account, where a workspace runs. People's accounts are never made, changed or deleted.
 // Each account taskbox makes is recorded by name and user ID in /opt/taskbox-state/accounts.json,
 // root's, so remove offers to delete only those, and only while the ID still matches.
-// docs/access-model-design.md, sections 2 and 10, has the design.
 import { type Stats, chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { USER_NAME } from "./access.ts";

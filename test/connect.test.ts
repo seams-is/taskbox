@@ -1,5 +1,5 @@
 // taskbox connect github: the manifest, the listener on 127.0.0.1, and the whole flow against a fake
-// GitHub. docs/connect-github-design.md has the design.
+// GitHub.
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";

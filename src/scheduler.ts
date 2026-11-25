@@ -1,4 +1,4 @@
-// The scheduler (v2.4.0, docs/scheduling-design.md section 3): state in, decisions out. No clock,
+// The scheduler: state in, decisions out. No clock,
 // no files, no network: everything it reads is in its input, so every scenario is a table test and a
 // real day's jobs can be replayed (test/scheduler.test.ts). The loop does what it decides, and still
 // puts every start through the gate and its memory, disk and guard checks (loop.ts).
@@ -50,7 +50,7 @@ export interface SchedulerInput {
   classes: ClassRule[];
   timings: Timings;
   history: Partial<Record<Kind, KindHistory>>;
-  // v2.6.0, the load test (docs/load-test-design.md). on: the test repo is served. only: it alone,
+  // v2.6.0, the load test. on: the test repo is served. only: it alone,
   // for a while, and the real repo's jobs wait. Absent: off.
   load?: { on: boolean; only: boolean };
 }

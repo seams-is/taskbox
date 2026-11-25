@@ -92,7 +92,7 @@ export function linuxProofLine(p: string | undefined): string {
 function loopChoiceFix(c: string | undefined): string {
   if (!c?.startsWith("turns: ") && !c?.startsWith("each: ") && !c?.startsWith("follow: ")) return "";
   if (/job source is none/.test(c)) return "";
-  if (/no job source|no second App|key isn't on the box|can't read the jobs repo's Actions/.test(c)) return ". To let the box see the queue, connect a job source (README, Connect a job source)";
+  if (/no job source|no second App|key isn't on the box|can't read the jobs repo's Actions/.test(c)) return ". To let the box see the queue, connect a job source (taskbox connect github)";
   return ". It reads the queue again before every VM";
 }
 

@@ -1,4 +1,4 @@
-// taskbox job timings (v2.4.0, docs/scheduling-design.md section 4). From each job's phases, per kind,
+// taskbox job timings. From each job's phases, per kind,
 // over its last 50 jobs: the median and 90th percentile of how long a VM took to be ready, how long
 // a job waited, how long it ran and how long the cleanup took. Then each timing setting beside what
 // the numbers suggest. It suggests; the owner, or an agent's PR, changes taskbox.json. The box never

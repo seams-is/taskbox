@@ -220,7 +220,7 @@ async function firewall(c: CheckContext): Promise<Omit<Check, "name">> {
 }
 
 export const FILEVAULT_FIX = "FileVault is off. At the box, as your admin user: System Settings, Privacy & Security, FileVault, Turn On, and keep the recovery key off the box. Then run this again.";
-// v2.5.0: off passes only when the owner's restart plan is filevault-off (docs/away-ready-design.md).
+// v2.5.0: off passes only when the owner's restart plan is filevault-off.
 async function fileVault(c: CheckContext): Promise<Omit<Check, "name">> {
   const r = await c.sys.run("/usr/bin/fdesetup", ["isactive"]);
   if (r.stdout.trim() === "true") return ok("on");

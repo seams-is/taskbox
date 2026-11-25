@@ -78,7 +78,7 @@ export interface Config {
   // for each kind. Until the owner makes it, the box takes turns. From v2.4.0, sources holds it; this
   // stays for the release before, whose update reads this file, and must agree with sources.
   actionsAppId?: number;
-  // v2.4.0 (docs/scheduling-design.md): where the box reads what is waiting, how it ranks it, and the
+  // v2.4.0: where the box reads what is waiting, how it ranks it, and the
   // timings its rules use. Every value is the owner's: the code names no org, repo, App or label.
   sources?: SourceSettings[];
   // Set by loadConfig, never in a file: the keys the box's own settings set, or why they were set aside.
@@ -86,7 +86,7 @@ export interface Config {
   boxProblem?: string;
   classes?: ClassRule[];
   timings?: Partial<Timings>;
-  // v2.5.0 (docs/away-ready-design.md): how the box behaves while the owner is away. Checked by checkAway.
+  // v2.5.0: how the box behaves while the owner is away. Checked by checkAway.
   away?: Partial<AwaySettings>;
   // The program that runs the VMs (src/vm.ts). "tart", the default, is the only one allowed today.
   engine?: EngineName;
@@ -134,7 +134,7 @@ export function labelsFor(cfg: Config, kind: Kind): string[] {
 
 // v2.4.0 job sources (src/source.ts). none: the box sees no queue and follows the jobs its VMs take.
 // repos: the real repo, jobsFrom, by its name; and from v2.6.0, at most one test repo for the load
-// test (docs/load-test-design.md), with a runner group of its own that lists only it.
+// test, with a runner group of its own that lists only it.
 export interface LoadRepo {
   name: string;
   role: "load";
@@ -443,7 +443,7 @@ function checkAccounts(c: Config): void {
   if (ws) throw new Error(ws);
 }
 
-// v2.5.0 away-ready settings (docs/away-ready-design.md), each with a default. publicAddress names
+// v2.5.0 away-ready settings, each with a default. publicAddress names
 // sources taskbox knows, never URLs. restartPlan has no default: it is the owner's written choice.
 export const PUBLIC_ADDRESS_SOURCES = ["cloudflare-trace", "ipify"] as const;
 export type PublicAddressSource = (typeof PUBLIC_ADDRESS_SOURCES)[number];
@@ -505,7 +505,7 @@ export function checkAway(c: Config, warn: (line: string) => void = () => {}): v
 
 // The release's taskbox.json, with the box's own source over it when boxFile is given. A box file that
 // can't be read, or whose source fails with this release, is set aside: the release's settings are
-// used alone, and boxProblem says why for taskbox check and the update (docs/connect-github-design.md).
+// used alone, and boxProblem says why for taskbox check and the update.
 // warn hears each setting taskbox passes over: from v2.6.1 an unknown key inside away or timings is
 // read past with a warning, so a later release's taskbox.json can add one (docs/v3-design.md §5.7).
 export function loadConfig(dir: string, boxFile?: string, rootUid = 0, warn: (line: string) => void = () => {}): Config {

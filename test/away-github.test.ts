@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 2 (docs/away-ready-design.md): GitHub failures before a VM is cloned
+// v2.5.0 away-ready, scenario 2: GitHub failures before a VM is cloned
 // are classed and counted for the whole box, and read Failing after a setting's number in a row,
 // naming who acts.
 import { describe, expect, test } from "bun:test";

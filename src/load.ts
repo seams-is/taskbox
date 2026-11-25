@@ -1,4 +1,4 @@
-// The load test (v2.6.0, docs/load-test-design.md). A test repo of the owner's own sends the box
+// The load test. A test repo of the owner's own sends the box
 // short sleep jobs while a session is on. Each `taskbox load start` starts a numbered session that ends
 // at `taskbox load stop`, or by itself at most LOAD_MAX_MS later.
 // Two files, each with one writer, so neither can undo the other's change (both reviews): load.json

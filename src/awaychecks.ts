@@ -1,4 +1,4 @@
-// v2.5.0 away-ready check rows (docs/away-ready-design.md). Each is its own function, run by
+// v2.5.0 away-ready check rows. Each is its own function, run by
 // `taskbox check` (CHECK_EXTRA) and by `taskbox check --away`, never before a VM. Every row says what to do
 // and where: at the box, from away, or nothing. Rows that need ci or root show, for anyone else, the
 // loop's last recorded result, and never name a user.
@@ -102,9 +102,9 @@ export async function powerRestartRow(c: CheckContext): Promise<Row> {
   return ok(plan === "kvm" || plan === "filevault-off" ? "it starts up again after a power cut" : "it starts up again after a power cut, as far as the FileVault screen");
 }
 
-// The owner's restart plan (docs/away-ready-design.md, "FileVault restarts"). taskbox.json is the
+// The owner's restart plan. taskbox.json is the
 // owner's own settings, so setting it is a release: the agents make it, then taskbox update.
-export const PLAN_STEP = "Tell the agents your plan (docs/away-ready-design.md, FileVault restarts); they set away.restartPlan in a release. Then, as your admin user, type taskbox update";
+export const PLAN_STEP = "Tell the agents your plan; they set away.restartPlan in a release. Then, as your admin user, type taskbox update";
 export async function restartPlanRow(c: CheckContext): Promise<Row> {
   const plan = awayOf(c.cfg).restartPlan;
   if (!plan) return fail(`no restart plan is set, so a restart waits at the FileVault screen until someone is at the box. ${PLAN_STEP}`);

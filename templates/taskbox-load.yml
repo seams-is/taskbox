@@ -1,4 +1,4 @@
-# The load test's workflow (taskbox v2.6.0, docs/load-test-design.md). Made by `taskbox load
+# The load test's workflow. Made by `taskbox load
 # workflow` from the box's own settings: don't edit the copy in your test repo; change the settings
 # and make it again. It goes in .github/workflows/load.yml of your test repo, never the repo whose
 # jobs your box runs. It runs only on your box, so it uses no GitHub-hosted minutes, and only when

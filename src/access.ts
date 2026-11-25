@@ -1,5 +1,4 @@
 // taskbox.json's accounts block: every account taskbox uses, named by its role. This file is pure: no Sys, no files, no commands.
-// docs/access-model-design.md has the design.
 import { approverKeyProblem, keyChangeProblem } from "./approver.ts";
 
 // macOS's short-name shape.

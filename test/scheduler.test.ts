@@ -1,4 +1,4 @@
-// v2.4.0: the scheduler (docs/scheduling-design.md). Each scenario in docs/scheduling-scenarios.md
+// v2.4.0: the scheduler. Each scenario
 // is a table test of decide(); the 17 Nov list and the 18 Nov stall are replays through a model of
 // the box (test/sim.ts); and random loads check the rules that must always hold.
 import { describe, expect, test } from "bun:test";
@@ -57,7 +57,7 @@ describe("job sources", () => {
   });
 });
 
-// docs/scheduling-scenarios.md, scenario by scenario.
+// Scenario by scenario.
 describe("scenarios", () => {
   test("a Linux burst while ios runs, no source: a free slot goes to busy Linux, with its reason", () => {
     const d = decide(input({ slotStates: [vm(1, "macos", "busy")], history: { linux: busy("linux"), macos: {} } }));
