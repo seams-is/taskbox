@@ -94,7 +94,8 @@ describe("the registry", () => {
     const specs = [...registry(), ...added];
     expect(registryProblem(specs)).toBeUndefined();
     expect(parse(specs, ["size", "list", "--json"]).ok).toBe(true);
-  });
+    // Loading a new file runs bun's transpiler, which a full suite under load has made take seconds.
+  }, 30_000);
 
   test("refuses two commands with one path, a verb with words beside a longer path, and flags that clash", () => {
     const base: CommandSpec = { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 };
