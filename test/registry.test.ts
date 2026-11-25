@@ -197,13 +197,13 @@ describe("the command line", () => {
 
 describe("a second guard (§4.10.1)", () => {
   // launchctl print system/<label>: 0 when launchd has that job loaded, 113 when it doesn't.
-  const loaded = (current: boolean) => (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: current && args[1]!.endsWith(".guard") && !args[1]!.includes("example") ? 0 : 113, stdout: "", stderr: "" } : undefined));
+  const loaded = (current: boolean) => (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: current && args[1]!.endsWith(".guard") && !args[1]!.includes("example") ? 0 : 113, stdout: "", stderr: "" } : cmd === "/bin/launchctl" && args[0] === "bootout" ? { code: 0, stdout: "", stderr: "" } : undefined));
 
   test("exits when the guard under the current label is loaded, touching nothing, and says so in the guard's log", async () => {
     const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
     for (const xpc of [previousLabels("com.example.taskbox").guard, `${GUARD_LABEL}x`, undefined]) {
       const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", ...(xpc ? { XPC_SERVICE_NAME: xpc } : {}) } }, { setup: loaded(true) });
-      expect({ xpc, code: r.code, said: r.said, calls: r.sys.calls.map((c) => [c.cmd, ...c.args].join(" ")) }).toEqual({ xpc, code: 1, said: [`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`], calls: [`/bin/launchctl print system/${GUARD_LABEL}`] });
+      expect({ xpc, code: r.code, said: r.said, calls: r.sys.calls.map((c) => [c.cmd, ...c.args].join(" ")) }).toEqual({ xpc, code: 1, said: [`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`], calls: [`/bin/launchctl print system/${GUARD_LABEL}`, ...(xpc ? [`/bin/launchctl bootout system/${xpc}`] : [])] });
       const log = readFileSync(paths(r.root, testBox()).guardLog, "utf8");
       expect(log).toContain(`exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
     }
@@ -245,6 +245,84 @@ describe("a lone guard steps down", () => {
     expect(readFileSync(paths(r.root, testBox()).guardLog, "utf8")).toContain(`The guard under ${GUARD_LABEL} runs now: this one exits, so there is one writer.`);
   });
 });
+
+describe("the guard's label, the confirming review (L-a, L-b)", () => {
+  const OLD_PREFIX = "com.example.taskbox";
+  const root = { uid: 0, user: "root", env: { HOME: "/var/root" } };
+  const withPrefix = (p: ReturnType<typeof paths>) => {
+    const f = join(p.app, "taskbox.json");
+    writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), previousLabelPrefix: OLD_PREFIX }));
+  };
+  const cmds = (r: { sys: FakeSys }) => r.sys.calls.map((c) => [c.cmd, ...c.args].join(" "));
+
+  test("L-a: the current guard boots out the old label's guard at its start", async () => {
+    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
+    const old = previousLabels(OLD_PREFIX).guard;
+    let ticks = 0;
+    const r = await run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: GUARD_LABEL } }, { prep: withPrefix, healthy: true, guardTicks: () => ++ticks < 2, setup: (sys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && (args[0] === "print" || args[0] === "bootout") && args[1] === `system/${old}` ? { code: 0, stdout: "", stderr: "" } : undefined)) });
+    const c = cmds(r);
+    expect(c).toContain(`/bin/launchctl bootout system/${old}`);
+    // Before its first pass.
+    expect(c.indexOf(`/bin/launchctl bootout system/${old}`)).toBeLessThan(c.indexOf("/sbin/pfctl -s rules"));
+  });
+
+  test("L-a: a lone guard asks launchd before each pass, and does nothing once the current guard is loaded", async () => {
+    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
+    let current = false;
+    const setup = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" && args[1] === `system/${GUARD_LABEL}` ? { code: current ? 0 : 113, stdout: "", stderr: "" } : undefined));
+    let ticks = 0;
+    let at = -1;
+    const r = await run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: previousLabels(OLD_PREFIX).guard } }, {
+      setup,
+      healthy: true,
+      guardTicks: () => {
+        if (++ticks === 3) current = true;
+        return ticks < 50;
+      },
+    });
+    const c = cmds(r);
+    at = c.lastIndexOf(`/bin/launchctl print system/${GUARD_LABEL}`);
+    expect(r.code).toBe(1);
+    // After the print that said the current guard is loaded, no pf read, no pass, no fence.
+    expect(c.slice(at + 1).filter((x) => x.startsWith("/sbin/pfctl"))).toEqual([]);
+    // It asked on every tick, not once a minute.
+    expect(c.filter((x) => x === `/bin/launchctl print system/${GUARD_LABEL}`).length).toBeGreaterThanOrEqual(3);
+    // A lone guard runs pf and the fence only: no loop watch, no logins record, no tailscaled.
+    expect(c.some((x) => x.startsWith("/usr/bin/last") || x.includes("tailscaled"))).toBe(false);
+  });
+
+  test("L-b: a launchd guard that steps down or exits as second boots out its own label, so launchd doesn't start it again", async () => {
+    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
+    const old = previousLabels(OLD_PREFIX).guard;
+    const loaded = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && (args[0] === "print" || args[0] === "bootout") ? { code: 0, stdout: "", stderr: "" } : undefined));
+    const r = await run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: old } }, { setup: loaded });
+    expect(cmds(r)).toEqual([`/bin/launchctl print system/${GUARD_LABEL}`, `/bin/launchctl bootout system/${old}`]);
+    // By hand, with no label of its own, there is nothing to boot out.
+    const hand = await run(["guard"], root, { setup: loaded });
+    expect(cmds(hand)).toEqual([`/bin/launchctl print system/${GUARD_LABEL}`]);
+  });
+
+  test("L-b: the exit line is written once while it repeats, so it never rotates root's guard log", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { exitLine } = await import("../src/cmd/daemons.ts");
+    const f = join(mkdtempSync(join(tmpdir(), "taskbox-glog-")), "guard.log");
+    const lines: string[] = [];
+    const log = { write: (l: string) => (lines.push(l), writeFileSync(f, `${readFileSyncSafe(f)}2026-11-25T00:00:00.000Z ${l}\n`)) };
+    for (let i = 0; i < 5; i++) exitLine(f, log, "A guard under x exited.");
+    exitLine(f, log, "Something else.");
+    exitLine(f, log, "A guard under x exited.");
+    expect(lines).toEqual(["A guard under x exited.", "Something else.", "A guard under x exited."]);
+  });
+});
+
+const readFileSyncSafe = (f: string) => {
+  try {
+    return readFileSync(f, "utf8");
+  } catch {
+    return "";
+  }
+};
 
 describe("v2.6.0's old names (§2.6)", () => {
   const ROWS: [string[], string, string][] = [

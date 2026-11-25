@@ -20,6 +20,55 @@ function fileStamp(lstat: typeof import("node:fs").lstatSync, path: string): str
   }
 }
 
+// A line for root's guard log, written only when the last line there isn't the same one: a guard
+// that launchd starts and that exits again never fills the log and rotates out its real events.
+export function exitLine(file: string, log: { write(line: string): void }, line: string): void {
+  try {
+    const { closeSync, fstatSync, openSync, readSync } = require("node:fs") as typeof import("node:fs");
+    const fd = openSync(file, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const n = Math.min(size, 4096);
+      const buf = Buffer.alloc(n);
+      readSync(fd, buf, 0, n, size - n);
+      const last = buf.toString("utf8").trimEnd().split("\n").at(-1) ?? "";
+      if (last.endsWith(` ${line}`)) return;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {}
+  log.write(line);
+}
+
+// The lone guard's watch: Screen Sharing's pf rules every tick and the fence, which writes nothing.
+// Before each pass it asks launchd whether the guard under the current label is loaded, and stops
+// before acting when it is. True when it stopped for that.
+async function loneGuard(sys: import("../sys.ts").Sys, cfg: import("../config.ts").Config, p: Paths, keepGoing: () => boolean, currentLoaded: () => Promise<boolean>): Promise<boolean> {
+  const { fenceRunner, GUARD_FULL_MS, GUARD_TICK_MS, guardOnce, readGuard, rulesInPlace, tunOf, writeGuard } = await import("../guard.ts");
+  const fence = fenceRunner({ sys, cfg, p });
+  let fencing: Promise<unknown> | undefined;
+  const fenceOnce = () => {
+    fencing ??= fence()
+      .catch(() => undefined)
+      .finally(() => (fencing = undefined));
+  };
+  let last = await guardOnce(sys, cfg, readGuard(p, sys.now(), 0, false));
+  writeGuard(p, last);
+  fenceOnce();
+  let fullAt = sys.now();
+  while (keepGoing()) {
+    await sys.sleep(GUARD_TICK_MS);
+    if (await currentLoaded()) return true;
+    if (sys.now() - fullAt >= GUARD_FULL_MS || !(last.ok && (await rulesInPlace(sys, tunOf(cfg))))) {
+      last = await guardOnce(sys, cfg, last);
+      fullAt = sys.now();
+    } else last = { ...last, at: sys.now() };
+    writeGuard(p, last);
+    fenceOnce();
+  }
+  return false;
+}
+
 export const commands: CommandSpec[] = [
   {
     path: ["guard"],
@@ -32,9 +81,9 @@ export const commands: CommandSpec[] = [
         c.say("The guard runs by itself. Type taskbox check to see it.");
         return 1;
       }
-      const { GUARD_LABEL, loadConfig } = await import("../config.ts");
+      const { GUARD_LABEL, loadConfig, previousLabels } = await import("../config.ts");
       const { Log } = await import("../log.ts");
-      const { fenceRunner, guardWatch, labelProblem, workspaceRunner } = await import("../guard.ts");
+      const { guardWatch, labelProblem, workspaceRunner } = await import("../guard.ts");
       const { guardAgent } = await import("../install.ts");
       const p = c.p;
       const chown = c.chown;
@@ -43,45 +92,43 @@ export const commands: CommandSpec[] = [
       const keepGoing = c.deps.guardTicks ?? (() => true);
       const xpc = c.env.XPC_SERVICE_NAME;
       const was = xpc ? xpc.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 60) : "";
+      const launchctl = (args: string[]) => sys.run("/bin/launchctl", args, { timeoutMs: 10_000 }).catch(() => ({ code: -1 }));
+      const currentLoaded = async () => (await launchctl(["print", `system/${GUARD_LABEL}`])).code === 0;
+      // A guard launchd started under another label boots its own job out as it goes, so KeepAlive
+      // doesn't start it again every 10 s. One started by hand has no job to boot out.
+      const goOut = async () => {
+        if (xpc && /^[A-Za-z0-9._-]{1,128}$/.test(xpc) && xpc !== GUARD_LABEL) await launchctl(["bootout", `system/${xpc}`]);
+      };
       if (labelProblem(xpc) !== undefined) {
         // A second guard exits (§4.10.1): with the guard under the current label loaded, two would be
         // two writers of root's state.
-        const first = await sys.run("/bin/launchctl", ["print", `system/${GUARD_LABEL}`], { timeoutMs: 10_000 }).catch(() => ({ code: -1 }));
-        if (first.code === 0) {
-          glog.write(`A guard ${was ? `under ${was}` : "that launchd didn't start"} exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
+        if (await currentLoaded()) {
+          exitLine(p.guardLog, glog, `A guard ${was ? `under ${was}` : "that launchd didn't start"} exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
           c.say(`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`);
+          await goOut();
           return 1;
         }
         // The only guard, under an old label: an update swapped the code in and then failed to move
         // the daemons. It keeps Screen Sharing's pf rules and the fence, which writes nothing, so the
         // box is never left with no guard. It writes no workspace and doesn't put the agent back.
-        glog.write(`This guard runs as ${was || "no label"}, and none runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} runs.`);
+        exitLine(p.guardLog, glog, `This guard runs as ${was || "no label"}, and none runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} runs.`);
         const cfg = loadConfig(p.app, p.boxSettings);
-        // Once a minute it asks launchd again: when the guard under the current label runs, this one
-        // steps down, so there is one writer as soon as there can be.
-        let current = false;
-        let asking = false;
-        const stopAsking = sys.every(60_000, () => {
-          if (asking || current) return;
-          asking = true;
-          void sys
-            .run("/bin/launchctl", ["print", `system/${GUARD_LABEL}`], { timeoutMs: 10_000 })
-            .then((r) => {
-              current = r.code === 0;
-            })
-            .catch(() => undefined)
-            .finally(() => (asking = false));
-        });
-        try {
-          await guardWatch(sys, cfg, p, () => !current && keepGoing(), fenceRunner({ sys, cfg, p }));
-        } finally {
-          stopAsking();
+        if (await loneGuard(sys, cfg, p, keepGoing, currentLoaded)) {
+          exitLine(p.guardLog, glog, `The guard under ${GUARD_LABEL} runs now: this one exits, so there is one writer.`);
+          await goOut();
         }
-        if (current) glog.write(`The guard under ${GUARD_LABEL} runs now: this one exits, so there is one writer.`);
         return 1;
       }
-      // Runs until launchd stops it. launchd starts it again if it ends. The agent is put back beside
-      // the first pass, never before it, so the rules aren't held up by fdesetup.
+      // Runs until launchd stops it. launchd starts it again if it ends. An earlier install's guard,
+      // left loaded by an update that didn't finish its move, goes first, so the two never act at once.
+      if (p.previousLabelPrefix) {
+        const old = previousLabels(p.previousLabelPrefix).guard;
+        if ((await launchctl(["print", `system/${old}`])).code === 0) {
+          await launchctl(["bootout", `system/${old}`]);
+          glog.write(`Booted out the guard under ${old}, an earlier install's: this guard is the one writer.`);
+        }
+      }
+      // The agent is put back beside the first pass, never before it, so the rules aren't held up by fdesetup.
       const cfg = loadConfig(p.app, p.boxSettings);
       await Promise.all([guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog), guardWatch(sys, cfg, p, keepGoing, workspaceRunner({ sys, cfg, p, chown }, glog))]);
       return 1;
