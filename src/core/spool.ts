@@ -347,7 +347,8 @@ export function keepOutcomes(dir: string, now: number): string[] {
   }
   for (const n of names) {
     try {
-      if (now - lstatSync(join(dir, n)).mtimeMs > OUTCOME_KEEP_MS) {
+      // An hour old, or dated an hour ahead of the clock: either way, past its use.
+      if (Math.abs(now - lstatSync(join(dir, n)).mtimeMs) > OUTCOME_KEEP_MS) {
         unlinkSync(join(dir, n));
         gone.push(n.slice(0, -5));
       }

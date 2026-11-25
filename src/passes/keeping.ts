@@ -41,9 +41,9 @@ export const keepingPass: PassMaker = {
         problems.push(`the changes waiting for confirm can't be read: ${String((e as Error).message).replace(/^.*can't be read: /, "")}`);
       }
       flushEvents();
-      // Ageing is by the real clock; the newest days are always kept (events.ts, ops.ts keep*).
+      // Kept by count of days, never aged by the clock (events.ts, ops.ts keep*).
       keepEvents({ dir: s.events, owner: root }, now);
-      keepOps({ dir: s.ops, owner: root }, now);
+      keepOps({ dir: s.ops, owner: root });
       let spools: string[] = [];
       try {
         spools = readdirSync(join(s.dir, "outcomes"));

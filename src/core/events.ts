@@ -280,40 +280,43 @@ export function readEvents(sources: readonly (Source & { writer: Writer })[], f:
   return { events: f.limit !== undefined ? merged.slice(-Math.max(0, f.limit)) : merged, skipped };
 }
 
-// Keeps one writer's folder within keepDays and maxBytes, every file counted, today's parts too.
-// Age is by the real clock: a day's files go once the day is keepDays or more behind today. But the
-// files of the newest KEEP_NEWEST_DAYS days there are never aged out, whatever the clock says, so a
-// clock that jumps ahead can't empty the log. Past maxBytes the oldest go first, and the newest file,
-// the one being written, never goes. The names removed.
-export const KEEP_NEWEST_DAYS = 7;
+// Keeps one writer's folder to the newest keepDays distinct days there, and within maxBytes. Age is
+// by count, never by the clock, so no clock change can age out the history: a run of fake days can
+// only push out as many real days as it adds. Past maxBytes, days dated after today go first (a
+// clock that was ahead), then the oldest; today's files, the ones being written, never go. The clock
+// is used only to know which day is today. The names removed.
 export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBytes?: number } = {}): string[] {
   const keepDays = o.keepDays ?? KEEP_DAYS;
   const maxBytes = o.maxBytes ?? (KEEP_MB / 2) * 1024 * 1024;
-  let files: { name: string; size: number }[];
+  let files: { name: string; size: number; day: string }[];
   try {
     const st = lstatSync(f.dir);
     if (!st.isDirectory() || st.uid !== f.owner) return [];
     files = readdirSync(f.dir)
       .filter((n) => partOf(n) !== undefined)
       .sort(byTime)
-      .map((name) => ({ name, size: sizeOf(join(f.dir, name)) }));
+      .map((name) => ({ name, size: sizeOf(join(f.dir, name)), day: partOf(name)!.day }));
   } catch {
     return [];
   }
-  if (!files.length) return [];
-  const newest = new Set([...new Set(files.map((x) => partOf(x.name)!.day))].slice(-KEEP_NEWEST_DAYS));
-  const oldest = new Date(now - (keepDays - 1) * 86_400_000).toISOString().slice(0, 10);
+  const today = new Date(now).toISOString().slice(0, 10);
+  const kept = new Set([...new Set(files.map((x) => x.day))].slice(-keepDays));
   const gone: string[] = [];
-  let total = files.reduce((n, x) => n + x.size, 0);
-  for (const x of files.slice(0, -1)) {
-    const day = partOf(x.name)!.day;
-    if ((day < oldest && !newest.has(day)) || total > maxBytes) {
-      try {
-        unlinkSync(join(f.dir, x.name));
-        gone.push(x.name);
-        total -= x.size;
-      } catch {}
+  const remove = (x: { name: string; size: number }) => {
+    try {
+      unlinkSync(join(f.dir, x.name));
+      gone.push(x.name);
+      return true;
+    } catch {
+      return false;
     }
+  };
+  const left = files.filter((x) => x.day === today || kept.has(x.day) || !remove(x));
+  let total = left.reduce((n, x) => n + x.size, 0);
+  const order = [...left.filter((x) => x.day > today).reverse(), ...left.filter((x) => x.day < today)];
+  for (const x of order) {
+    if (total <= maxBytes) break;
+    if (remove(x)) total -= x.size;
   }
   return gone;
 }
@@ -347,10 +350,14 @@ export interface EventLog {
   write(d: Draft): Event;
 }
 
-// Only chatty types are limited: progress lines, and refused requests, which anyone who can write a
-// spool can make many of. An op's start and end, every state change and every
+// Only chatty types are limited: progress lines, by actor, and refused requests, which anyone who can
+// write a spool can make many of, by one cap for all. An op's start and end, every state change and every
 // security-relevant event are always written, so no flood can hide them.
-export const LIMITED = (type: string) => /\.(progress|refused)$/.test(type);
+export const LIMITED = (type: string) => /\.progress$/.test(type);
+export const REFUSED = (type: string) => /\.refused$/.test(type);
+// Refused requests have one window per writer's folder, whoever they name: a name comes from the
+// request, so a cap by name could be passed by changing it.
+export const REFUSED_PER_MINUTE = 60;
 export const WINDOWS_MAX = 1000;
 
 interface Limiter {
@@ -358,9 +365,19 @@ interface Limiter {
   clock: Pick<Clock, "now">;
   limit: number;
   windows: Map<string, { from: number; n: number; dropped: number }>;
+  refused: { from: number; n: number; dropped: number };
 }
 // One limiter per writer's folder in this process, shared by every eventLog on it.
 const limiters = new Map<string, Limiter>();
+
+function refusedSummary(l: Limiter): void {
+  const w = l.refused;
+  if (!w.dropped) return;
+  try {
+    l.put({ type: "events.dropped", actor: "taskbox", text: `${w.dropped} refused requests were dropped in the minute before, past ${REFUSED_PER_MINUTE}.` });
+  } catch {}
+  w.dropped = 0;
+}
 
 function summary(l: Limiter, actor: string, w: { dropped: number }): void {
   if (!w.dropped) return;
@@ -375,6 +392,10 @@ function summary(l: Limiter, actor: string, w: { dropped: number }): void {
 export function flushEvents(o: { all?: boolean } = {}): void {
   for (const l of limiters.values()) {
     const now = l.clock.now();
+    if (o.all || now - l.refused.from >= 60_000) {
+      refusedSummary(l);
+      if (!o.all) l.refused = { from: now, n: 0, dropped: 0 };
+    }
     for (const [actor, w] of [...l.windows]) {
       if (!o.all && now - w.from < 60_000) continue;
       summary(l, actor, w);
@@ -410,7 +431,7 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
       appendEvent(f, e);
       return e;
     };
-    l = { put, clock, limit: o.perActorPerMinute ?? PER_ACTOR_PER_MINUTE, windows: new Map() };
+    l = { put, clock, limit: o.perActorPerMinute ?? PER_ACTOR_PER_MINUTE, windows: new Map(), refused: { from: clock.now(), n: 0, dropped: 0 } };
     limiters.set(key, l);
   } else {
     l.clock = clock;
@@ -419,6 +440,23 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
   const lim = l;
   return {
     write(d) {
+      if (REFUSED(d.type)) {
+        const now = d.at ?? lim.clock.now();
+        const w = lim.refused;
+        if (now - w.from >= 60_000) {
+          refusedSummary(lim);
+          lim.refused = { from: now, n: 0, dropped: 0 };
+        }
+        const r = lim.refused;
+        if (r.n < REFUSED_PER_MINUTE) {
+          r.n++;
+          return lim.put(d);
+        }
+        // The moment the cap is passed is written at once, so a flood is on disk even if the guard
+        // ends before the minute does.
+        if (r.dropped++ === 0) lim.put({ type: "events.dropped", actor: "taskbox", text: `More than ${REFUSED_PER_MINUTE} refused requests this minute: the rest are counted, and the count is written when the minute ends.` });
+        return newEvent(writer, d, lim.clock, rand);
+      }
       if (!LIMITED(d.type)) return lim.put(d);
       const now = d.at ?? lim.clock.now();
       let w = lim.windows.get(d.actor);

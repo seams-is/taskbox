@@ -15,7 +15,7 @@ import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } fro
 import { kitFor } from "./vm.ts";
 import { removeRequests } from "./requests.ts";
 import { rows } from "./rows/index.ts";
-import { oneShotPlist, oneShotScript, psGroup, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
+import { oneShotPlist, oneShotScript, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { halfMade, readRecord, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
@@ -710,9 +710,12 @@ export async function remove(d: OpsDeps, o: { serviceUid?: number; overSsh?: boo
   done.push("left this box's runners for GitHub to drop within a day");
   // The guard, and its pf rules. With them gone, Screen Sharing reaches every network again.
   for (const label of [GUARD_LABEL, ...(old ? [old.guard] : [])]) await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
-  // Every running op's child, with all it started: none runs on as root once taskbox is gone.
-  const stopped = await stopChildren({ sys: d.sys, ops: { dir: rootStateOf(d.paths).ops, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {}, group: psGroup(d.sys) }, "taskbox is being removed").catch(() => []);
+  // Every running op's job, booted out by its label, which ends its child and what that started:
+  // launchd owns them, so no pid is signalled. A job that can't be booted out is said.
+  const notStopped: string[] = [];
+  const stopped = await stopChildren({ sys: d.sys, ops: { dir: rootStateOf(d.paths).ops, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: (l) => notStopped.push(l) }, "taskbox is being removed").catch(() => []);
   if (stopped.length) done.push(`stopped ${stopped.length} operation${stopped.length === 1 ? "" : "s"} that ${stopped.length === 1 ? "was" : "were"} running`);
+  if (notStopped.length) missed.push(`${notStopped.length} operation${notStopped.length === 1 ? "'s job" : "s' jobs"}, which launchd couldn't end`);
   // A reload LaunchDaemon an undo left, so it can't load tailscaled again after remove.
   if (await dropReloadJob(d.sys, d.paths)) done.push("removed undo's LaunchDaemon that loads tailscaled again");
   const flushed = await d.sys.run(PFCTL, ["-a", ANCHOR, "-F", "rules"]);

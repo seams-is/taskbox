@@ -132,16 +132,18 @@ describe("records", () => {
     writeFileSync(join(f.dir, `${b.id}.json`), readFileSync(join((writeOp(f, a), f.dir), `${a.id}.json`)));
     expect(readOp(f, b.id)).toMatchObject({ kind: "bad" });
   });
-  test("are kept 30 days after they end", () => {
+  test("the newest 30 days' records are kept, by count; a running op always", () => {
     const f = folder();
     const old = end(started(drain), "succeeded", T);
     writeOp(f, old);
-    // The newest 7 days' records are kept whatever their age: seven later days of them.
-    const later = Array.from({ length: 7 }, (_, i) => ({ ...end(started(drain, {}, `x${i}`), "succeeded", T + KEEP_MS + 1 + i * 86_400_000) }));
-    for (const o of later) writeOp(f, o);
-    expect(keepOps(f, T + KEEP_MS)).toEqual([]);
-    expect(keepOps(f, T + KEEP_MS + 1)).toEqual([old.id]);
-    expect(listOps(f).ops.map((o) => o.id).sort()).toEqual(later.map((o) => o.id).sort());
+    const live = started(drain, {}, "live");
+    writeOp(f, live);
+    const later = Array.from({ length: 30 }, (_, i) => end(started(drain, {}, `x${i}`), "succeeded", T + (i + 1) * 86_400_000));
+    for (const o of later.slice(0, 29)) writeOp(f, o);
+    expect(keepOps(f)).toEqual([]);
+    writeOp(f, later[29]!);
+    expect(keepOps(f)).toEqual([old.id]);
+    expect(listOps(f).ops.map((o) => o.id)).toContain(live.id);
   });
 });
 
@@ -170,7 +172,7 @@ describe("review fixes: L6 in ops", () => {
     const f = { dir: mkdtempSync(join(tmpdir(), "taskbox-ops-")), owner: uid };
     const op = end(started(drain), "succeeded", T);
     writeOp(f, op);
-    expect(keepOps(f, T + 365 * 86_400_000)).toEqual([]);
+    expect(keepOps(f)).toEqual([]);
   });
 });
 
@@ -180,8 +182,8 @@ describe("a record's handoff file", () => {
     const old = end(started(drain), "succeeded", T);
     writeOp(f, old);
     writeFileSync(join(f.dir, `${old.id}.reports`), "");
-    for (let i = 0; i < 7; i++) writeOp(f, end(started(drain, {}, `x${i}`), "succeeded", T + KEEP_MS + 1 + i * 86_400_000));
-    keepOps(f, T + KEEP_MS + 1);
+    for (let i = 0; i < 30; i++) writeOp(f, end(started(drain, {}, `x${i}`), "succeeded", T + (i + 1) * 86_400_000));
+    keepOps(f);
     expect(existsSync(join(f.dir, `${old.id}.reports`))).toBe(false);
   });
 });

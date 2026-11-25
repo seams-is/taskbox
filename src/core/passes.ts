@@ -58,6 +58,7 @@ export function makePasses(makers: readonly PassMaker[], c: PassCtx, log: (line:
 export class Passes {
   private running = new Map<string, Promise<unknown>>();
   private counts = new Map<string, number>(); // failures in a row, by pass
+  private fromAsk = new Set<string>(); // passes whose last failure came from start or next
   constructor(
     private list: readonly GuardPass[],
     private clock: Pick<Sys, "now">,
@@ -111,9 +112,13 @@ export class Passes {
   // A pass's start or next that throws counts as a failure of that pass, and it skips this turn.
   private ask(p: GuardPass, f: () => Job | undefined): Job | undefined {
     try {
-      return f();
+      const job = f();
+      // A failure from asking is cleared by a clean ask; one from a job by a job that works.
+      if (this.fromAsk.delete(p.name)) this.cleared(p.name);
+      return job;
     } catch (e) {
       this.failure(p.name, e);
+      this.fromAsk.add(p.name);
       return undefined;
     }
   }

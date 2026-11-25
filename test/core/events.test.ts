@@ -123,15 +123,14 @@ describe("the log", () => {
     writeFileSync(join(g.dir, "2026-11-23.jsonl"), `${readFileSync(join(g.dir, "2026-11-23.jsonl"), "utf8")}not json\n${loopLine}{"id":1}\n`);
     expect(readEvents([{ ...g, writer: "guard" }]).events.map((e) => e.text)).toEqual(["ok"]);
   });
-  test("keeps 30 days and a size cap, oldest first, never the file being written", () => {
+  test("keeps the newest 30 days there and a size cap, oldest first, never today's", () => {
     const dir = tmp();
-    // The newest 7 days' files are kept whatever their age (KEEP_NEWEST_DAYS); older ones go after 30 days.
-    const recent = ["2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20", "2026-11-21", "2026-11-22", "2026-11-23"];
-    for (const d of ["2026-10-01", "2026-10-30", ...recent]) writeFileSync(join(dir, `${d}.jsonl`), "x".repeat(100));
+    const days = Array.from({ length: 32 }, (_, i) => new Date(T - (31 - i) * 86_400_000).toISOString().slice(0, 10));
+    for (const d of days) writeFileSync(join(dir, `${d}.jsonl`), "x".repeat(100));
     writeFileSync(join(dir, "notes.txt"), "kept");
-    expect(keepEvents({ dir, owner: uid }, T)).toEqual(["2026-10-01.jsonl"]);
-    expect(keepEvents({ dir, owner: uid }, T, { maxBytes: 150 })).toEqual(["2026-10-30.jsonl", ...recent.slice(0, -1).map((d) => `${d}.jsonl`)]);
-    expect(readdirSync(dir).sort()).toEqual(["2026-11-23.jsonl", "notes.txt"]);
+    expect(keepEvents({ dir, owner: uid }, T)).toEqual(days.slice(0, 2).map((d) => `${d}.jsonl`));
+    expect(keepEvents({ dir, owner: uid }, T, { maxBytes: 150 })).toEqual(days.slice(2, -1).map((d) => `${d}.jsonl`));
+    expect(readdirSync(dir).sort()).toEqual([`${days.at(-1)}.jsonl`, "notes.txt"]);
   });
   test("the admins' record is root's private file, by event id", () => {
     const dir = tmp();
@@ -181,8 +180,10 @@ describe("review fixes: M3 and the lows on events", () => {
     expect(parts).toEqual(["2026-11-23.1.jsonl", "2026-11-23.2.jsonl", "2026-11-23.jsonl"]);
     for (const p of parts) expect(statSync(join(dir, p)).size).toBeLessThanOrEqual(10_000);
     expect(readEvents([{ dir, owner: uid, writer: "guard" }]).events).toHaveLength(25);
-    expect(keepEvents(f, T, { maxBytes: 10_000 })).toEqual(["2026-11-23.jsonl", "2026-11-23.1.jsonl"]);
-    expect(readdirSync(dir)).toEqual(["2026-11-23.2.jsonl"]);
+    // Today's parts, the ones being written, never go; an older day goes first under the cap.
+    writeFileSync(join(dir, "2026-11-20.jsonl"), "x".repeat(100));
+    expect(keepEvents(f, T, { maxBytes: 10_000 })).toEqual(["2026-11-20.jsonl"]);
+    expect(readdirSync(dir).sort()).toEqual(parts);
   });
   test("M3: a file events can't read is named, never passed over without a word", () => {
     const dir = tmp();
@@ -220,7 +221,7 @@ describe("review fixes: M3 and the lows on events", () => {
     expect(r.events.map((e) => e.text)).toEqual(["new"]);
     expect(r.skipped).toEqual([join(dir, "2026-11-22.jsonl")]);
   });
-  test("L6: a clock that jumps ahead doesn't age out the last 30 days of events", () => {
+  test("L6: a clock that jumps ahead ages out nothing: days are kept by count", () => {
     const dir = tmp();
     for (const d of ["2026-11-01", "2026-11-23"]) writeFileSync(join(dir, `${d}.jsonl`), "x");
     expect(keepEvents({ dir, owner: uid }, T + 365 * 86_400_000)).toEqual([]);

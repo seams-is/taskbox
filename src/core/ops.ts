@@ -245,24 +245,25 @@ export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: s
   return { ops, bad };
 }
 
-// Removes records past keeping, by the real clock. The records that ended on the newest
-// KEEP_NEWEST_DAYS days among them are never aged out, whatever the clock says, so a clock that jumps
-// ahead can't empty the history. A running op is never removed. The ids removed.
-export const KEEP_NEWEST_DAYS = 7;
-export function keepOps(f: OpFolder, now: number): string[] {
+// Keeps the records of the newest KEEP_DAYS_N distinct days they ended on, by count, never by the
+// clock, so no clock change can age out the history. A running op is never removed. The ids removed.
+export const KEEP_DAYS_N = 30;
+export function keepOps(f: OpFolder): string[] {
   const gone: string[] = [];
   const ops = listOps(f).ops;
   const dayOf = (o: Op) => new Date(o.endedAt ?? o.startedAt).toISOString().slice(0, 10);
-  const newest = new Set([...new Set(ops.map(dayOf))].sort().slice(-KEEP_NEWEST_DAYS));
-  for (const op of ops.filter((o) => expired(o, now) && !newest.has(dayOf(o)))) {
+  const kept = new Set([...new Set(ops.filter((o) => o.state !== "running").map(dayOf))].sort().slice(-KEEP_DAYS_N));
+  for (const op of ops.filter((o) => o.state !== "running" && !kept.has(dayOf(o)))) {
     try {
       unlinkSync(join(f.dir, `${op.id}.json`));
       gone.push(op.id);
     } catch {}
-    // Its child's handoff file (child.ts) goes with it.
-    try {
-      unlinkSync(join(f.dir, `${op.id}.reports`));
-    } catch {}
+    // Its child's files (child.ts) go with it.
+    for (const ext of ["reports", "progress", "lease", "log", "plist"]) {
+      try {
+        unlinkSync(join(f.dir, `${op.id}.${ext}`));
+      } catch {}
+    }
   }
   return gone;
 }

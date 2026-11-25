@@ -139,7 +139,7 @@ describe("review fixes: L2", () => {
 });
 
 describe("the ops pass", () => {
-  test("only the one writer runs it, every tick, and it ends an op whose child the last guard ran", async () => {
+  test("only the one writer runs it, every tick: it takes an op's reports to its end and boots its job out", async () => {
     const { opsPass } = await import("../../src/passes/ops.ts");
     const { begin, readOp, writeOp } = await import("../../src/core/ops.ts");
     const { reportLine, reportsPath } = await import("../../src/core/child.ts");
@@ -147,19 +147,21 @@ describe("the ops pass", () => {
     const s = rootState(root);
     mkdirSync(s.ops, { recursive: true });
     const sys = new FakeSys();
-    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "{ sec = 1700000000, usec = 0 }", stderr: "" } : cmd === "/bin/ps" ? { code: 1, stdout: "", stderr: "" } : undefined));
+    const booted: string[] = [];
+    sys.responders.push((cmd, args) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "{ sec = 1700000000, usec = 0 }", stderr: "" } : cmd === "/bin/launchctl" ? (booted.push(args.join(" ")), { code: 0, stdout: "", stderr: "" }) : undefined));
     const uid = process.getuid!();
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     expect(opsPass.make({ ...c, writer: false })).toBeUndefined();
     const b = begin([], { type: "update", phases: ["a", "b"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "taskbox" }, sys.now());
     if (b.kind !== "start") throw new Error();
-    writeOp({ dir: s.ops, owner: uid }, { ...b.op, child: { pid: 999_999, guardPid: -5, boot: "1700000000", applied: 0, events: [] } });
+    writeOp({ dir: s.ops, owner: uid }, { ...b.op, child: { label: `local.taskbox.op.${b.op.id}`, boot: "1700000000", spawnedAt: sys.now(), applied: 0, events: [] } });
     writeFileSync(reportsPath({ dir: s.ops }, b.op.id), `${reportLine({ n: 1, phase: "b", end: { state: "succeeded" } })}\n`, { mode: 0o600 });
     const pass = opsPass.make(c)!;
     expect(pass.at).toBe("after");
     await pass.next(sys.now(), false)!();
     const r = readOp({ dir: s.ops, owner: uid }, b.op.id);
     expect(r.kind === "ok" && r.value.state).toBe("succeeded");
+    expect(booted).toEqual([`bootout system/local.taskbox.op.${b.op.id}`]);
   });
 });
 
@@ -174,7 +176,7 @@ describe("review 2: the keeping pass", () => {
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     return { c, s, sys, uid };
   }
-  test("L6: a clock that jumps a year ahead, with an event written at the new time, keeps the newest 7 days", async () => {
+  test("L6: a clock that jumps a year ahead, with an event written at the new time, keeps every day by count", async () => {
     const { c, s, sys, uid } = ctx();
     const { appendEvent, newEvent } = await import("../../src/core/events.ts");
     const day = 86_400_000;
@@ -185,8 +187,8 @@ describe("review 2: the keeping pass", () => {
     appendEvent({ dir: s.events, owner: uid }, newEvent("guard", { type: "check.failed", actor: "taskbox", text: "x" }, sys));
     await pass.next(sys.now(), false)!();
     await pass.next(sys.now() + GUARD, false)!();
-    // Ageing is by the real clock now, and the newest 7 days' files always stay (review 3, M2-new).
-    expect(readdirSync(s.events)).toHaveLength(7);
+    // Days are kept by count, never aged by the clock (review 4, M2): all 11 days stay.
+    expect(readdirSync(s.events)).toHaveLength(11);
   });
   test("N7 and L9: it sweeps temporary names a crash left, and outcomes past their hour", async () => {
     const { c, s, sys, uid } = ctx();
