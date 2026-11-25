@@ -7,7 +7,7 @@
 //
 // The commands it runs are those marked shell in the registry (src/cmd/). Each line is parsed here
 // as taskbox parses it, so a word or flag a command doesn't take is refused before taskbox runs. The
-// workspace agent's commands (#47) are checked in full with workspace/agent.ts's parser too. None of
+// workspace agent's commands are checked in full with workspace/agent.ts's parser too. None of
 // them gives anyone more of the box: signed carries the owner's signed steps as base64url, so the word
 // filter below stays as strict as it is. v2.6.0's old names pass, so taskbox says what they became.
 import { type CommandSpec, parse } from "./command.ts";
@@ -59,7 +59,7 @@ export function commandFor(line: string, specs: readonly CommandSpec[] = registr
   }
   if (!p.spec.shell) return { no: here };
   if (p.spec.raw) {
-    // Its words are checked here by #47's parser, or it doesn't run: a raw command no parser here
+    // Its words are checked here by the workspace parser, or it doesn't run: a raw command no parser here
     // knows would reach taskbox unchecked.
     const verb = p.spec.agent ?? p.spec.path[0];
     if (!isAgentCommand(verb)) return { no: here };

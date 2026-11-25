@@ -133,7 +133,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["rollback", "remove", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
   { good: ["connect github", "connect github --new-key", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "disconnect"] },
   { good: ["install --bootstrap /tmp/x", "guard", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
-  // #47's release, under the workspace noun, so WP4's release list can register.
+  // The agent's release is under the workspace noun, so a release list can register.
   { good: [], bad: ["release nova-1"] },
 ];
 
@@ -147,7 +147,7 @@ describe("the command line", () => {
     const tabled = new Set(TABLE.flatMap((r) => r.good.map((l) => { const p = parseLine(l.split(" ")); return p.ok ? p.path.join(" ") : ""; })));
     const raw = registry().filter((s) => s.raw).map((s) => s.path.join(" "));
     expect(parseLine(["workspace", "end", "nova-1"]).ok).toBe(true);
-    // WP4's release list registers beside everything here.
+    // A release list registers beside everything here.
     expect(registryProblem([...registry(), { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBeUndefined();
     for (const s of registry()) if (!raw.includes(s.path.join(" "))) expect({ cmd: s.path.join(" "), tabled: tabled.has(s.path.join(" ")) }).toEqual({ cmd: s.path.join(" "), tabled: true });
   });

@@ -1,5 +1,5 @@
 // taskbox template show: a workflow made from this box's settings, to copy into the jobs repo or the
-// test repo (v2's watchdog, canary and load workflow). WP14 adds list and apply.
+// test repo (v2's watchdog, canary and load workflow).
 import type { CommandSpec } from "../command.ts";
 
 export const TEMPLATES = ["box-check", "test-job", "load"] as const;

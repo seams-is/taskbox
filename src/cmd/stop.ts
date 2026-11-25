@@ -1,5 +1,4 @@
 // taskbox stop and taskbox start: the loop, in the service account's session at the box.
-// (WP5 makes stop drain first, adds --force and --timeout, and lets the owner run both signed.)
 import type { BoxCtx, CommandSpec, Outcome } from "../command.ts";
 
 export async function stopOrStart(c: BoxCtx, which: "stop" | "start" | "drain"): Promise<Outcome> {

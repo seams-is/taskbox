@@ -1,5 +1,4 @@
-// taskbox remove: takes taskbox off the box. As root, at the box; refuses over SSH. WP1 makes it an
-// op with phases.
+// taskbox remove: takes taskbox off the box. As root, at the box; refuses over SSH.
 import type { CommandSpec } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
 

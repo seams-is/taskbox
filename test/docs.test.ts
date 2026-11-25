@@ -32,6 +32,7 @@ describe("the docs", () => {
         const text = readFileSync(f, "utf8");
         for (const [p] of text.matchAll(/\b(?:docs|templates)\/[\w-]+\.md\b/g)) if (!existsSync(join(repo, p))) seen.push(`${f}: ${p}`);
         for (const [p] of text.matchAll(/\b[\w-]*(?:design|review-wp\d\w*)\.md\b/g)) seen.push(`${f}: ${p}`);
+        if (/\bWP\d+[a-z]?\b|\bWave [A-E]\b|#47\b/.test(text)) seen.push(`${f}: a planning label`);
         if (/§\d/.test(text)) seen.push(`${f}: a § section of a doc that isn't here`);
       }
     }

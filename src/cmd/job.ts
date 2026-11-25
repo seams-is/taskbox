@@ -1,4 +1,4 @@
-// taskbox job list and taskbox job timings (v2's jobs and timings). WP6 adds show, logs and cancel.
+// taskbox job list and taskbox job timings (v2's jobs and timings).
 import type { BoxCtx, CommandSpec } from "../command.ts";
 
 async function list(c: BoxCtx, json: boolean): Promise<{ v3?: Record<string, unknown>; exit: number }> {

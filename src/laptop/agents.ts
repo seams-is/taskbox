@@ -20,7 +20,7 @@ export function boxWords(c: AgentCmd): string[] {
       return ["queue", "--as", c.agent, "--why", c.why, ...json];
     case "wait":
       return [c.cmd, c.name, ...json];
-    // The box's taskbox workspace end is #47's release.
+    // The box's taskbox workspace end is the agent's release.
     case "release":
       return ["workspace", "end", c.name, ...json];
     case "progress":

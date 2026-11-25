@@ -1,4 +1,4 @@
-// taskbox prune: leftover VMs and images that aren't the pin (v2's clean). WP4 adds old installs.
+// taskbox prune: leftover VMs and images that aren't the pin (v2's clean).
 import type { CommandSpec } from "../command.ts";
 
 export const commands: CommandSpec[] = [

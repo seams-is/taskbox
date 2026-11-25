@@ -1,6 +1,5 @@
 // taskbox connect github and taskbox disconnect github. At the box, as root
-// through sudo, never over SSH. The listener and the browser run as the admin who typed it. WP3 owns
-// this file next: the broker, --jobs, and the flow from the laptop.
+// through sudo, never over SSH. The listener and the browser run as the admin who typed it.
 import type { BoxCtx, CommandSpec } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
 

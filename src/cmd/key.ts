@@ -1,5 +1,5 @@
-// taskbox key reset approver: clears every approver key, for a lost laptop (#47's approver --reset).
-// At the box only. WP13 adds list, rotate and trust.
+// taskbox key reset approver: clears every approver key, for a lost laptop (the laptop's approver --reset).
+// At the box only.
 import type { CommandSpec } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
 
