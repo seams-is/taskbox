@@ -75,11 +75,13 @@ describe("retention by write order", () => {
     const b = begin([], update, { subject: "real", params: {}, actor: "owner" }, T);
     if (b.kind !== "start") throw new Error();
     writeOp(f, b.op);
-    for (let i = 0; i < 300; i++) {
+    // Three times max ended records, all newer: the running op is past max, and still listed. Kept
+    // small: each new record reads every one before it for its number, so the work grows as the square.
+    for (let i = 0; i < 60; i++) {
       const x = begin([], update, { subject: `f${i}`, params: {}, actor: "owner" }, T + 365 * DAY + i);
       if (x.kind === "start") writeOp(f, end(x.op, "succeeded", T + 365 * DAY + i));
     }
-    expect(listOps(f, { max: 100 }).ops.some((o) => o.id === b.op.id)).toBe(true);
+    expect(listOps(f, { max: 20 }).ops.some((o) => o.id === b.op.id)).toBe(true);
   });
 });
 
