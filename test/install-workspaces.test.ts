@@ -367,7 +367,8 @@ describe("after the yes", () => {
     return { out, d: d as InstallDeps, sys };
   }
 
-  test("the key is pinned and the pool account made, then the install goes on", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("the key is pinned and the pool account made, then the install goes on", async () => {
     const dir = new Dir();
     const { out, d, sys } = await run(dir);
     expect(out).toContain("tailscaled has no download pinned yet");

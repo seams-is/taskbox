@@ -360,7 +360,8 @@ describe("an agent step that stops the install", () => {
     expect(sys.requests.some((r) => new URL(r.url).hostname === "github.com")).toBe(false);
   };
 
-  test("agentSteps: fdesetup that doesn't take", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("agentSteps: fdesetup that doesn't take", async () => {
     const dir = new Dir();
     dir.fdesetupWorks = false;
     const r = await run(dir, (p) => {
@@ -371,7 +372,7 @@ describe("an agent step that stops the install", () => {
     untouched(r);
   });
 
-  test("makeAgent: a step that doesn't take", async () => {
+  test.serial("makeAgent: a step that doesn't take", async () => {
     const dir = new Dir();
     dir.failCreate = "IsHidden";
     const r = await run(dir);
@@ -379,7 +380,7 @@ describe("an agent step that stops the install", () => {
     untouched(r);
   });
 
-  test("a person's account named as the agent stops it before the yes", async () => {
+  test.serial("a person's account named as the agent stops it before the yes", async () => {
     const dir = new Dir();
     const r = await run(dir, () => dir.add(AGENT, { uid: 501, attrs: { UserShell: "/bin/zsh", NFSHomeDirectory: `/Users/${AGENT}` } }));
     expect((r.e as Stop).message).toMatch(/is an account taskbox didn't make\. Nothing was installed/);

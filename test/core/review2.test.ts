@@ -30,7 +30,8 @@ describe("H1, the reviewer's probes", () => {
 });
 
 describe("M1: the lock", () => {
-  test("many writers at once all land; a throw releases the lock", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("many writers at once all land; a throw releases the lock", async () => {
     const p = join(tmp(), "c.json");
     await Promise.all(Array.from({ length: 50 }, () => updateOwnedJson(p, { owner: uid, max: 1 << 16 }, (v) => v as { n: number }, () => ({ n: 0 }), async (s) => {
       await wait(Math.random() * 3);
@@ -142,7 +143,7 @@ describe("N1: the event limit", () => {
     flushEvents({ all: true });
     expect(readEvents([{ ...e, writer: "guard" }]).events.some((x) => x.type === "events.dropped" && x.text.startsWith("5 events from agent b"))).toBe(true);
   });
-  test("a window pushed out by many actors writes its count first", async () => {
+  test.serial("a window pushed out by many actors writes its count first", async () => {
     const { eventLog, readEvents } = await import("../../src/core/events.ts");
     const e = ev();
     const log = eventLog("guard", e, { now: () => T }, undefined, { perActorPerMinute: 1 });
@@ -251,7 +252,7 @@ describe("the child runner, review 2", () => {
     await stopChildren({ ...s.d, startOf: async () => "other", kill: (pid) => killed.push(pid) }, "x");
     expect(killed).toEqual([]);
   });
-  test("N4: progress goes on fd 3 only; the handoff file keeps phases, events and the end, within its cap", async () => {
+  test.serial("N4: progress goes on fd 3 only; the handoff file keeps phases, events and the end, within its cap", async () => {
     const { reporter, parseReport, REPORTS_MAX } = await import("../../src/core/child.ts");
     const { statSync } = await import("node:fs");
     const f = join(tmp(), "r");

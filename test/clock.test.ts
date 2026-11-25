@@ -40,7 +40,8 @@ function srcFiles(dir: string): string[] {
 }
 
 describe("every timer goes through the clock", () => {
-  test("src calls no timer directly outside clock.ts", () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("src calls no timer directly outside clock.ts", () => {
     const files = srcFiles(SRC);
     expect(files.length).toBeGreaterThan(50);
     const found = files

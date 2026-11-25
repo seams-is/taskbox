@@ -501,7 +501,8 @@ describe("images", () => {
     expect(JSON.parse(readFileSync(d.paths.pullLinux, "utf8")).state).toBe("ready");
   });
 
-  test("Linux VMs that keep failing pause Linux, macOS carries on, and the box reads Failing", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("Linux VMs that keep failing pause Linux, macOS carries on, and the box reads Failing", async () => {
     const sys = new FakeSys();
     guest(sys, { docker: false });
     sys.responders.push((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? { code: 0, stderr: "", stdout: JSON.stringify([{ Name: CFG.image, Source: "OCI" }, { Name: LINUX_IMAGE, Source: "OCI" }]) } : undefined));
@@ -597,7 +598,7 @@ describe("the screens", () => {
       expect(p.size).toBe(24);
     }
   });
-  test("the Linux seal sets Docker's networks, keeps the image's settings, then restarts Docker before the ready wait", () => {
+  test.serial("the Linux seal sets Docker's networks, keeps the image's settings, then restarts Docker before the ready wait", () => {
     const steps = GUESTS.linux.seal("pw");
     const i = steps.findIndex((s) => s.stdin === DOCKER_NETS_SCRIPT);
     expect(i).toBeGreaterThan(0);
@@ -615,7 +616,7 @@ describe("the screens", () => {
     expect(got).toEqual({ mtu: 1400, "default-network-opts": { bridge: { "com.docker.network.driver.mtu": "1400" } }, bip: DOCKER_BIP, "default-address-pools": DOCKER_POOLS });
     rmSync(dir, { recursive: true, force: true });
   });
-  test("Docker's settings script drops fixed-cidr, refuses a file that isn't an object or JSON, and replaces a link without writing through it", () => {
+  test.serial("Docker's settings script drops fixed-cidr, refuses a file that isn't an object or JSON, and replaces a link without writing through it", () => {
     const run = (setup: (file: string, dir: string) => void) => {
       const dir = mkdtempSync(join(tmpdir(), "tb-docker-"));
       const file = join(dir, "daemon.json");
@@ -680,7 +681,7 @@ describe("the install", () => {
     return { sys, ...installDeps(sys, "yes") };
   }
 
-  test("fetches the Linux runner by its pin when the commit has a Linux kind", async () => {
+  test.serial("fetches the Linux runner by its pin when the commit has a Linux kind", async () => {
     const { sys, d, said } = box(LCFG);
     await asRoot(() => install(d, { first: true }));
     expect(said).toContain("  runnerLinux 2.338.2: matches its pin");
@@ -689,14 +690,14 @@ describe("the install", () => {
     expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
   });
 
-  test("a Linux kind with no Linux runner pinned installs nothing", async () => {
+  test.serial("a Linux kind with no Linux runner pinned installs nothing", async () => {
     const { sys, d, root } = box(LCFG, (v) => delete v.runnerLinux);
     await expect(install(d, { first: true })).rejects.toThrow(/pins no Linux runner/);
     expect(existsSync(join(root, "opt/taskbox"))).toBe(false);
     expect(sys.requests.some((r) => new URL(r.url).hostname === "github.com")).toBe(false);
   });
 
-  test("a commit with no Linux kind fetches no Linux runner", async () => {
+  test.serial("a commit with no Linux kind fetches no Linux runner", async () => {
     const { d, said } = box(CFG);
     await asRoot(() => install(d, { first: true }));
     expect(said).toContain("  runner 2.338.2: matches its pin");
@@ -706,7 +707,7 @@ describe("the install", () => {
   });
 
   // P3: install.sh run again over a service with state keeps that state; the key goes in root's folder.
-  test("a reinstall over an existing service keeps its ~/.taskbox", async () => {
+  test.serial("a reinstall over an existing service keeps its ~/.taskbox", async () => {
     const { healthyBox, installDeps } = await import("./helpers.ts");
     const sys = new FakeSys();
     healthyBox(sys);
@@ -775,7 +776,7 @@ describe("the install", () => {
       return { d, said, out, asked };
     }
 
-    test("the source is kept in box.json from the installed settings, with the key under its App's ID", async () => {
+    test.serial("the source is kept in box.json from the installed settings, with the key under its App's ID", async () => {
       const { d, said } = await update(true);
       expect(said).toContain("  It also keeps the job source App in this box's own settings, once its key passes.");
       expect(said).toContain("  Kept the job source App example-org-old-jobs in this box's own settings.");
@@ -785,7 +786,7 @@ describe("the install", () => {
       expect(said).toContain("  The job source App's key: in place, and proved with GitHub again.");
     });
 
-    test("a source whose key fails its proof stops the update before anything changes", async () => {
+    test.serial("a source whose key fails its proof stops the update before anything changes", async () => {
       const { d, out } = await update(true, undefined, true);
       expect(out).toMatch(/^The job source App couldn't be kept in this box's own settings: that App isn't installed anywhere\. Nothing was installed\./);
       expect(existsSync(d.paths.boxSettings)).toBe(false);
@@ -795,7 +796,7 @@ describe("the install", () => {
 
     // Tart run of #34: a box installed from a release with a source has no source key until taskbox
     // connect github. Its next update said it keeps the source, took the yes, then stopped.
-    test("a release source whose key isn't on the box isn't adopted, and the update goes on", async () => {
+    test.serial("a release source whose key isn't on the box isn't adopted, and the update goes on", async () => {
       const { d, said, out } = await update(false);
       expect(said).not.toContain("  It also keeps the job source App in this box's own settings, once its key passes.");
       // It goes past the adoption to the key step: this release drops sources, and the box had no key for one. (This fake stops later, at tailscale's download.)

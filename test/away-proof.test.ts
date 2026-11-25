@@ -37,7 +37,8 @@ function runFor(sys: FakeSys, d: ReturnType<typeof linuxBox>["d"], hours: number
 }
 
 describe("a proof that couldn't run", () => {
-  test("tries again in 15 minutes, hourly after 4 in a row, and writes no result", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("tries again in 15 minutes, hourly after 4 in a row, and writes no result", async () => {
     const { sys, d } = linuxBox();
     const at: number[] = [];
     d.proveLinux = async (): Promise<ProofRun> => (at.push(sys.now()), { ok: false, detail: "the Linux guest never answered", infra: true });
@@ -65,7 +66,7 @@ describe("a proof that couldn't run", () => {
     expect(readProof(d.paths.projectState)).toBeUndefined();
   });
 
-  test("a real failure keeps the 6-hour wait, and a finished proof clears the count", async () => {
+  test.serial("a real failure keeps the 6-hour wait, and a finished proof clears the count", async () => {
     const { sys, d } = linuxBox();
     const at: number[] = [];
     d.proveLinux = async () => (at.push(sys.now()), { ok: false, detail: "the box could reach the Linux VM (answered)" });

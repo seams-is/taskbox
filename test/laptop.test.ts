@@ -689,7 +689,8 @@ describe("ssh and the real runner", () => {
     expect(argv.slice(-4)).toEqual(["taskbox-agent", "--", BOX, "workspaces --json"]);
   });
 
-  test(
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial(
     "realRun keeps at most STDOUT_MAX and STDERR_MAX of what a command prints",
     async () => {
       const r = await realRun(["/bin/sh", "-c", "head -c 3000000 /dev/zero | tr '\\0' a; head -c 500000 /dev/zero | tr '\\0' b >&2"], { env: { PATH: "/usr/bin:/bin" } });
