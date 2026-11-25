@@ -1,4 +1,4 @@
-// Slots held for workspaces (docs/workspaces-design.md 5.6). The loop reads a small view of the
+// Slots held for workspaces. The loop reads a small view of the
 // workspaces, never the full state model: only model.ts's phases come from there. A workspace holds slots from
 // the top: with n slots and h held, slots n - h + 1 to n start no VM, and the scheduler sees n - h.
 import { HOLDS, type Phase } from "./workspace/model.ts";
@@ -55,7 +55,7 @@ export const isHeld = (slot: number, n: number, h: number): boolean => h > 0 && 
 
 // Whether every held slot is empty, from the loop's state: each slot the loop found held with no VM
 // writes heldEmpty: true under slots, and drops it once it isn't held. For the guard's check that a
-// waiting Whole may go active (build plan, step 7), and all that step needs from the loop. It is the
+// waiting Whole may go active. That is all the guard needs from the loop. It is the
 // loop's word only: the guard still counts the service account's VM processes itself, since two
 // loops could write one state file. No held slots: nothing to wait for.
 export function heldSlotsEmpty(loop: { slots?: Record<string, { heldEmpty?: unknown }>; slotCount?: number }, h: number): boolean {

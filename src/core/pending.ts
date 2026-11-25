@@ -1,4 +1,4 @@
-// Lasting changes waiting for `confirm` (design §3.6), in root's pending.json, 644, the guard its
+// Lasting changes waiting for `confirm`, in root's pending.json, 644, the guard its
 // one writer. One touch on the laptop can't grant something that outlives the request: the change
 // waits here, as needs-you, until an admin at the box reads what the box itself shows and says yes.
 // Each waits at most 24 hours, then lapses.
@@ -60,7 +60,7 @@ export interface Moment {
 }
 // An item lapses at whichever comes first, so no clock step, either way, keeps one alive past its
 // 24 hours: the wall clock past its limit; the wall clock earlier than its ask (it went back); a
-// restart of the box (a pending change doesn't survive one: §3.6 says nothing that keeps it); the
+// restart of the box (a pending change doesn't survive one); the
 // monotonic clock past its limit; or a clock the box can't read now.
 const live = (p: { askedAt: number; lapsesAt: number; boot?: string; monoAt?: number }, m: Moment) => {
   if (m.mono === undefined || m.boot === undefined || p.monoAt === undefined || p.boot === undefined) return false;

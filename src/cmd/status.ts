@@ -12,7 +12,7 @@ export const commands: CommandSpec[] = [
     options: [{ name: "--state", value: "FOLDER" }],
     shell: true,
     sharedReads: true,
-    // The stream of envelopes for -w --json comes with the stream reader (§3.1); until then the two are refused together.
+    // The stream of envelopes for -w --json comes with the stream reader; until then the two are refused together.
     check: ({ opts, flags }) => (opts.state !== undefined && flags.json !== undefined ? "--state is for status -w." : flags.watch && flags.json ? "status -w doesn't take --json yet: status --json reads the box once." : undefined),
     async run(c) {
       const { loadConfig } = await import("../config.ts");

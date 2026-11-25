@@ -578,7 +578,7 @@ describe("the owner's screen", () => {
     expect(l).toContain(`  ${at(T)}  nova-1 went Active`);
   });
 
-  test("paused, done and withdrawn read in the design's words", () => {
+  test("paused, done and withdrawn read in plain words", () => {
     expect(screenLines(viewOf(paused()), BOX, T)).toContain("nova-1  Whole  Paused by you");
     const done = viewOf({ ...active(), workspaces: active().workspaces.map((w) => ({ ...w, phase: "done" as const, endedBy: "agent" as const })) });
     const l = screenLines(done, BOX, T);

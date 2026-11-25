@@ -366,7 +366,7 @@ export async function undoScreenSharing(sys: Sys, rec: AccountsRecord): Promise<
   return out;
 }
 
-// The pool account (docs/workspaces-design.md, section 5.1). One account, POOL_USER, where a
+// The pool account. One account, POOL_USER, where a
 // workspace runs: hidden, standard, no password, in its own group POOL_GROUP and in no other group
 // but those every account is in, its home its own at mode 700, the gate as its login shell, and
 // denied cron and at. taskbox makes it and its group, records both in pool.json (pin.ts), and from

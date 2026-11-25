@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 4: an image that went missing from Tart's
+// v2.5.0 away-ready: an image that went missing from Tart's
 // cache is downloaded again by the pull section; a manifest that doesn't match stays Failing.
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

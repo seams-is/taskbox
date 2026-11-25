@@ -1,4 +1,4 @@
-// An op's child as a launchd job of its own (review-wp0b-4.md). launchd owns its processes and ends
+// An op's child as a launchd job of its own. launchd owns its processes and ends
 // them on bootout; its life is a lock it holds; its reports go one way, through its handoff file.
 // No pid is read, compared or signalled.
 import { describe, expect, test } from "bun:test";

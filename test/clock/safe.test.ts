@@ -1,5 +1,5 @@
 // taskbox/v3-clock-safe: the shipped reads that could end, remove or accept something on a wall clock
-// step (review-wp0b-7.md M-a to M-d) are on the monotonic clock or the boot's own uuid now.
+// step are on the monotonic clock or the boot's own uuid now.
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";

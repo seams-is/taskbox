@@ -24,6 +24,20 @@ describe("the docs", () => {
     for (const [, p] of readme.matchAll(/((?:docs|templates)\/[\w./-]+\.(?:md|yml))/g)) expect({ p, there: existsSync(join(repo, p!)) }).toEqual({ p, there: true });
   });
 
+  test("every doc a comment, a message or a workflow names is in the repo", () => {
+    const seen: string[] = [];
+    for (const dir of ["src", "test", "templates", ".github"]) {
+      for (const f of files(join(repo, dir))) {
+        if (f.includes("/fixtures/") || f === import.meta.path) continue;
+        const text = readFileSync(f, "utf8");
+        for (const [p] of text.matchAll(/\b(?:docs|templates)\/[\w-]+\.md\b/g)) if (!existsSync(join(repo, p))) seen.push(`${f}: ${p}`);
+        for (const [p] of text.matchAll(/\b[\w-]*(?:design|review-wp\d\w*)\.md\b/g)) seen.push(`${f}: ${p}`);
+        if (/§\d/.test(text)) seen.push(`${f}: a § section of a doc that isn't here`);
+      }
+    }
+    expect(seen).toEqual([]);
+  });
+
   test("every taskbox command README and the docs name is one the box has, or help", () => {
     for (const f of [join(repo, "README.md"), join(repo, "docs/tailnet-policy.md"), join(repo, "docs/build-tailscale.md"), join(repo, "templates/README.md")]) {
       for (const [, line] of readFileSync(f, "utf8").matchAll(/`taskbox ([a-z][a-z -]*)/g)) {
@@ -37,7 +51,7 @@ describe("the docs", () => {
   });
 
   test("The key messages name GitHub's key steps one way, as GitHub's docs do", () => {
-    // connect github (connect-github design) says the key steps now; actionskey.ts says none, but
+    // connect github says the key steps now; actionskey.ts says none, but
     // never the old way either.
     for (const f of ["src/install.ts", "src/connectflow.ts", "src/actionskey.ts"]) {
       const text = readFileSync(join(repo, f), "utf8");

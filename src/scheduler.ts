@@ -156,7 +156,7 @@ export function decide(s: SchedulerInput): Decision[] {
 
   if (s.snapshot.known) {
     // Only the jobs of the repos served now: the test repo's while load is on, the real repo's unless
-    // only. Every load job ranks after every real job, whatever its class (design, What changes 3).
+    // only. Every load job ranks after every real job, whatever its class.
     const items = ranked(s.snapshot.items.filter((it) => (it.role === "load" ? !!load : !only)), s.classes)
       .map((it) => (it.role === "load" ? { ...it, rank: it.rank + LOAD_RANK } : it))
       .sort((a, b) => a.rank - b.rank || a.queuedAt - b.queuedAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));

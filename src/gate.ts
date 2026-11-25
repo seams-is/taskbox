@@ -1,5 +1,5 @@
 #!/usr/bin/env -S -i HOME=/var/empty /opt/taskbox/bin/bun --no-install --no-env-file --cwd=/ --config=/opt/taskbox/app/bunfig.run.toml
-// The workspace gate: the pool account's login shell (docs/workspaces-design.md, section 5.4).
+// The workspace gate: the pool account's login shell.
 // The line above clears the environment (env -i) and sets HOME to /var/empty before bun starts, and
 // bun reads no .env and no bunfig but taskbox's own, from /. So nothing in the account's home, and
 // nothing the caller set, runs before the gate's own code.

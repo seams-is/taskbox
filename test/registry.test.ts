@@ -1,4 +1,4 @@
-// The command registry and the command line (v3 design, §2): one file per noun in src/cmd/, every
+// The command registry and the command line: one file per noun in src/cmd/, every
 // command's flags, the global flags, exit codes, v2.6.0's renames, help, the footer, and hello's
 // version agreement. Each line runs through main on the fake box.
 import { describe, expect, test } from "bun:test";
@@ -109,7 +109,7 @@ describe("the registry", () => {
     expect(registryProblem([{ ...base, path: ["Release"] }])).toMatch(/isn't words/);
   });
 
-  test("durations and memory take the units §2.2 names", () => {
+  test("durations and memory take the units help names", () => {
     expect([duration("90s"), duration("30m"), duration("1h"), duration("2d"), duration("0")]).toEqual([90_000, 1_800_000, 3_600_000, 172_800_000, 0]);
     for (const bad of ["", "1", "1.5h", "-1m", "01m", "1w"]) expect(duration(bad)).toBeUndefined();
     expect([memory("512M"), memory("4G")]).toEqual([512, 4096]);
@@ -117,7 +117,7 @@ describe("the registry", () => {
   });
 });
 
-// Every command in §2 that this tree has, with a good line and bad ones. A bad line is exit 2.
+// Every command this tree has, with a good line and bad ones. A bad line is exit 2.
 const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["status", "status --json", "status -w", "status --watch", "status --state /tmp/x"], bad: ["status myproject", "status --force", "status -f", "status --json --json", "status --state", "status --state x --json", "status -w --json"] },
   { good: ["logs", "logs --json"], bad: ["logs -n", "logs --follow", "logs x"] },
@@ -200,7 +200,7 @@ describe("the command line", () => {
   });
 });
 
-describe("a second guard (§4.10.1)", () => {
+describe("a second guard", () => {
   // launchctl print system/<label>: 0 when launchd has that job loaded, 113 when it doesn't.
   const loaded = (current: boolean) => (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: current && args[1]!.endsWith(".guard") && !args[1]!.includes("example") ? 0 : 113, stdout: "", stderr: "" } : cmd === "/bin/launchctl" && args[0] === "bootout" ? { code: 0, stdout: "", stderr: "" } : undefined));
 
@@ -399,7 +399,7 @@ describe("a lone guard steps down only for a working current guard", () => {
   });
 });
 
-describe("v2.6.0's old names (§2.6)", () => {
+describe("v2.6.0's old names", () => {
   const ROWS: [string[], string, string][] = [
     [["watch"], "taskbox watch is now taskbox status -w.", "status -w"],
     [["watch", "--once"], "taskbox watch --once is now taskbox status.", "status"],
@@ -441,7 +441,7 @@ describe("v2.6.0's old names (§2.6)", () => {
   });
 });
 
-describe("the footer on every command (§3.1)", () => {
+describe("the footer on every command", () => {
   // L5: anyone but the service account and root gets a footer from the copies every user may read.
   test("a reader's footer is read from the shared copies, for every command", async () => {
     const reader = { uid: 9503, user: "pat", env: { HOME: "/Users/pat" } };
@@ -481,7 +481,7 @@ describe("the footer on every command (§3.1)", () => {
   });
 });
 
-describe("--json: one envelope per command (§3.1)", () => {
+describe("--json: one envelope per command", () => {
   test("job list's result is v3's fields; its lines are the text form's, footer and all", async () => {
     const r = await run(["job", "list", "--json"]);
     expect(r.code).toBe(0);
@@ -520,7 +520,7 @@ describe("--json: one envelope per command (§3.1)", () => {
   });
 });
 
-describe("hello and the answers version (§3.1)", () => {
+describe("hello and the answers version", () => {
   const hello = async (versions: string) => {
     const r = await run(["hello", "--json", "--answers", versions]);
     return { code: r.code, v: JSON.parse(r.said[0]!) };

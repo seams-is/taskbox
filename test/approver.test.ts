@@ -1,4 +1,4 @@
-// The approver key (docs/workspaces-design.md, section 5.3): its shape, its fingerprint, and what an
+// The approver key: its shape, its fingerprint, and what an
 // update does with a new one. All pure: the signature check is a verifier the test gives.
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";

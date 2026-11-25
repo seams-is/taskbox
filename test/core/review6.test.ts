@@ -1,4 +1,4 @@
-// The sixth review (review-wp0b-6.md): the clock out of every decision that deletes or kills.
+// The sixth review: the clock out of every decision that deletes or kills.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, closeSync, constants, mkdtempSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

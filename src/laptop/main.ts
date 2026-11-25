@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// taskbox on the owner's laptop, for workspaces (docs/workspaces-design.md, section 5.7). It is the
+// taskbox on the owner's laptop, for workspaces. It is the
 // repo's own code, run by Bun from a checkout: no install, no daemon. It talks to the box over
 // Tailscale SSH, and signs the owner's steps with the approver key.
 //

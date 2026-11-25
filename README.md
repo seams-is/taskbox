@@ -10,7 +10,7 @@ Every job on a box is untrusted code. A box never runs a job that holds secrets:
 2. Make a GitHub App there: Contents read-only, Self-hosted runners read and write. Install it on your copy. Its ID is `appId`.
 3. Make a runner group, limited to selected private repos, that lists the one repo whose jobs the box runs.
 4. Build tailscaled with `.github/workflows/build-tailscale.yml` ([docs](docs/build-tailscale.md)), publish it on a release of your copy, and pin it in `versions.json`.
-5. Copy `taskbox.example.json` to `taskbox.json` and fill in your values.
+5. Copy `taskbox.example.json` to `taskbox.json` and fill in your values: `org`, `jobsFrom` (the one repo), `appId` and `runnerGroup` are yours. The rest have defaults.
 6. Merge a PR and publish the first release: a tag such as `v3.0.0` on a commit on `main`.
 
 ## Set up the box
@@ -43,4 +43,4 @@ As your admin user:
 - `taskbox connect github` connects a job source. `taskbox disconnect github` undoes it.
 - `taskbox remove` takes taskbox off the box.
 
-Type `taskbox help` for all commands, and a command with `--help` for its flags. Agents log in as the agent account, whose shell runs the read commands only.
+Type `taskbox help` for all commands, and a command with `--help` for its flags. Agents log in as the agent account. Its shell runs the read commands and the workspace requests (`queue`, `wait`, `progress`) only.

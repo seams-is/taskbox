@@ -1,4 +1,4 @@
-// The eighth review (review-wp0b-8.md), the part on taskbox/v3-clock-safe: a clock read that fails is
+// The eighth review, the part on taskbox/v3-clock-safe: a clock read that fails is
 // never a reason to end, kill or allow anything.
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

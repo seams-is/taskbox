@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 8: a Linux proof that couldn't run tries
+// v2.5.0 away-ready: a Linux proof that couldn't run tries
 // again in proofRetryMinutes, hourly after 4 in a row, and writes no result; a real failure keeps the
 // 6-hour wait.
 import { describe, expect, test } from "bun:test";

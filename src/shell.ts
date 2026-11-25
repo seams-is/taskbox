@@ -69,8 +69,8 @@ export function commandFor(line: string, specs: readonly CommandSpec[] = registr
   return { args };
 }
 
-// What the shell prints for a line it refuses, and its exit: 2, a usage error (§2.4). A line that
-// asked for --json gets an error envelope (§3.1). Undefined for a line it runs.
+// What the shell prints for a line it refuses, and its exit: 2, a usage error. A line that
+// asked for --json gets an error envelope. Undefined for a line it runs.
 export function refusal(line: string, specs: readonly CommandSpec[] = registry()): { out: string; code: 2 } | undefined {
   const c = commandFor(line, specs);
   if (!("no" in c)) return undefined;

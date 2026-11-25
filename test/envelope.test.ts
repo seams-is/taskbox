@@ -1,5 +1,5 @@
-// The answers envelope, version 4, and the one schema module both sides read it with (v3 design,
-// §3.1): round trips, N and N-1, lines printable and capped, and failing closed.
+// The answers envelope, version 4, and the one schema module both sides read it with:
+// round trips, N and N-1, lines printable and capped, and failing closed.
 import { describe, expect, test } from "bun:test";
 import { checkAnswer, helloAnswer, jobsAnswer, logAnswer, statusAnswer } from "../src/answers.ts";
 import { agree, capLines, cleanLine, envelope, errorFromV3, gapError, LINES_MAX, nextOf, resultOf, versionsOf } from "../src/envelope.ts";
@@ -24,7 +24,7 @@ const V3 = {
 const COMMAND = { hello: "hello", status: "status", jobs: "job.list", log: "logs", check: "check" } as const;
 
 describe("the envelope", () => {
-  test("has every field §3.1 names, ok as exit 0, and the time to the second in UTC", () => {
+  test("has every field of the envelope, ok as exit 0, and the time to the second in UTC", () => {
     const e = envelope({ command: "drain", box: BOX, at: AT, exit: 0, changed: true, result: {}, lines: ["Drained."], next: ["taskbox resume"] });
     expect(e).toEqual({ answers: 4, command: "drain", box: BOX, at: "2026-11-23T14:02:11Z", ok: true, exit: 0, changed: true, op: null, result: {}, lines: ["Drained."], error: null, next: ["taskbox resume"], final: true });
     expect(ENVELOPE(e)).toBeUndefined();
@@ -61,7 +61,7 @@ describe("the envelope", () => {
   });
 });
 
-describe("versions: N and N-1 (§3.1)", () => {
+describe("versions: N and N-1", () => {
   test("agree takes the highest both read; a gap of two names who updates", () => {
     expect([agree([4, 3]), agree([5, 4]), agree([3]), agree([6, 5]), agree([2, 1])]).toEqual([4, 4, 3, undefined, undefined]);
     expect(gapError([6, 5]).fix).toBe("update the box");
@@ -102,7 +102,7 @@ describe("versions: N and N-1 (§3.1)", () => {
   });
 });
 
-describe("failing closed (§3.1): every one is unreachable, never a pass", () => {
+describe("failing closed: every one is unreachable, never a pass", () => {
   const good = JSON.parse(one(V3.status as never, "status"));
   const cases: [string, string, Parameters<typeof readEnvelopes>[1]?][] = [
     ["no answer", ""],

@@ -1,4 +1,4 @@
-// The third review's findings (review-wp0b-3.md), each held by a test; the reviewer's probes that fit
+// The third review's findings, each held by a test; the reviewer's probes that fit
 // are here, asserting what the code must do.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";

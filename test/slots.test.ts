@@ -351,7 +351,7 @@ describe("the loop with 2 slots", () => {
     expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).drainingSince).toBeUndefined();
   });
 
-  // Slots held for workspaces (docs/workspaces-design.md 5.6). Both slots busy at first: one runs a
+  // Slots held for workspaces. Both slots busy at first: one runs a
   // macOS job, the other's Linux VM waits for one. hold is called once that is so.
   function heldRun(d: ReturnType<typeof twoSlotDeps>["d"], sys: FakeSys, hold: () => void, after: (heldAt: number) => void) {
     const image = new Map<string, string>();
@@ -445,7 +445,7 @@ describe("the loop with 2 slots", () => {
     expect(deletes.some((x) => x.linuxUp)).toBe(true);
   });
 
-  // Build plan step 7: the real held path, from root's state file on disk, as the box wires it (cli.ts).
+  // The real held path, from root's state file on disk, as the box wires it (cli.ts).
   test.serial("an approved Whole in workspaces.json holds every slot: each ends empty, and heldEmpty is true for all of them", async () => {
     const { sys, d } = twoSlotDeps();
     mkdirSync(dirname(d.paths.workspaces), { recursive: true });

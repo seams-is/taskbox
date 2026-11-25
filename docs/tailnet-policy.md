@@ -4,7 +4,7 @@ The box signs in to your tailnet as the tagged device `tag:taskbox`. Your tailne
 
 It allows your own devices to reach the box by Tailscale SSH as the agent account, and by Screen Sharing for the accounts in `accounts.people`. Nothing reaches root, the service account or the admin users. The box reaches nothing on the tailnet.
 
-At the box, type `taskbox policy show --owner <your Tailscale login>` to print the entries for your settings. `--whole` prints a whole file. This is the whole file for `taskbox.example.json` with one person, `pat`, in `accounts.people` and `accounts.ssh`:
+At the box, type `taskbox policy show --owner <your Tailscale login>` to print the entries for your settings. `--admin <short name>` names an admin user, once for each, in place of `ADMIN`. `--whole` prints a whole file. This is the whole file for `taskbox.example.json` with one person, `pat`, in `accounts.people` and `accounts.ssh`:
 
 ```json
 {

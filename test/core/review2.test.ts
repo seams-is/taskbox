@@ -1,4 +1,4 @@
-// The confirming review's findings (review-wp0b-2.md), each held by a test; the reviewer's probes
+// The confirming review's findings, each held by a test; the reviewer's probes
 // that fit are here too.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";

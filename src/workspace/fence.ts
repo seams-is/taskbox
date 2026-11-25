@@ -1,4 +1,4 @@
-// The workspace fence, as the guard keeps it (docs/workspaces-design.md, section 5.5). The guard is
+// The workspace fence, as the guard keeps it. The guard is
 // root's. This file has the pf rules as pure text, the read of the box's own prefixes, and the
 // process steps, all through Sys so the tests fake them.
 //

@@ -1,5 +1,5 @@
 // The Claude tool's setup, as taskbox check reads it. taskbox never writes
-// Claude's files: the owner runs the steps in docs/controller.md. These read only.
+// Claude's files: the owner adds the entry and the rules, and taskbox check says how. These read only.
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { Home } from "./home.ts";

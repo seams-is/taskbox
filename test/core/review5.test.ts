@@ -1,4 +1,4 @@
-// The fifth review's findings (review-wp0b-5.md), with the reviewer's probes as what the code must do.
+// The fifth review's findings, with the reviewer's probes as what the code must do.
 import { describe, expect, test } from "bun:test";
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

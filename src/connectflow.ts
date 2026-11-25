@@ -151,7 +151,7 @@ async function uninstall(d: ConnectDeps, appId: number, pem: string): Promise<bo
   return all;
 }
 
-// Section 4a: a release's source with its key in place, kept in the box's own settings. Used by the
+// A release's source with its key in place, kept in the box's own settings. Used by the
 // update and by connect. Returns the slug, or why it wasn't adopted.
 // cfg: the settings to prove and keep, d.cfg unless --load changes the test repo.
 export async function adoptSource(d: ConnectDeps, cfg: Config = d.cfg): Promise<{ slug: string } | { why: string }> {
@@ -326,7 +326,7 @@ async function setLoad(d: ConnectDeps, load: LoadRepo | "off"): Promise<number> 
 // taskbox connect github [--new-key | --load <org/repo> --group <runner group> | --load off]
 export async function connectGithub(d: ConnectDeps, opts: { newKey?: boolean; load?: LoadRepo | "off" } = {}): Promise<number> {
   if (opts.load) return setLoad(d, opts.load);
-  // An App made before and not yet installed (connect-github design).
+  // An App made before and not yet installed.
   const pending = readPending(d.paths);
   if (pending) {
     const a = (await d.ask(`The App ${pending.slug} was made and isn't installed yet. Type finish to wait for its install, or delete to drop it here: `)).trim().toLowerCase();
@@ -371,7 +371,7 @@ export async function connectGithub(d: ConnectDeps, opts: { newKey?: boolean; lo
   return makeApp(d, u ? { appId: u.src.appId } : undefined);
 }
 
-// Section 4b: a new key for the same App, taken from Downloads as soon as it is saved.
+// A new key for the same App, taken from Downloads as soon as it is saved.
 async function newKey(d: ConnectDeps, appId: number, slug: string, oldPem: string): Promise<number> {
   const since = d.sys.now();
   d.open(slug ? appUrl(d.cfg.org, slug) : `https://github.com/organizations/${d.cfg.org}/settings/apps`);

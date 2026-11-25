@@ -555,7 +555,7 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   }
   // Undo has happened by here: what follows is reported, never thrown.
   let did = `Back to #${prev.pr} ${noControl(prev.title)}. The loop moves to it once the current job or download ends.`;
-  // v2.6.1 (docs/v3-design.md §5.7, 6): daemons of a later release, which this install doesn't know,
+  // v2.6.1: daemons of a later release, which this install doesn't know,
   // are booted out and their plists removed, so they don't run against an install that can't answer them.
   const notEnded: string[] = [];
   const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid, notEnded).catch(() => [] as string[]);
@@ -1017,7 +1017,7 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
   return { kept };
 }
 
-// taskbox key reset approver (docs/workspaces-design.md, section 5.3): clears the approver key the box
+// taskbox key reset approver: clears the approver key the box
 // trusts, for a lost laptop, at the box only, after a typed yes. Workspaces stay off until the next
 // taskbox update pins the key taskbox.json names, after its own yes.
 export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {

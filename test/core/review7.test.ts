@@ -1,4 +1,4 @@
-// The seventh review (review-wp0b-7.md), part one: what is left on #7.
+// The seventh review, part one: what is left on #7.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, closeSync, constants, mkdtempSync, openSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

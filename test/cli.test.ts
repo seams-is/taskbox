@@ -168,7 +168,7 @@ describe("an update that stops before it changes anything", () => {
     const sys = new FakeSys();
     healthyBox(sys);
     (o.gh ?? githubRoutes)(sys);
-    // The update moves the key from before into root's key folder first (connect-github design), and
+    // The update moves the key from before into root's key folder first, and
     // the test's user can't make a folder root's, so that one folder reads as root's.
     return readAsRoot((path) => path === p.actionsKeyDir, () => run(["update"], CALLERS["root via sudo"], { root, sys }));
   }

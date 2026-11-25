@@ -1,4 +1,4 @@
-// The laptop against a box one answers version behind (§3.1, N-1): a box rolled back to v2.6.1.
+// The laptop against a box one answers version behind: a box rolled back to v2.6.1.
 // The box here is v2.6.1's own agent shell, verbatim (fixtures/v2.6.1-shell.ts), with its hello's
 // rule (any word after hello is a usage error) and its version 3 answers. Also the reads' own checks:
 // the install ID on every read, no v3 answer after hello agreed 4, and the box's words kept apart.

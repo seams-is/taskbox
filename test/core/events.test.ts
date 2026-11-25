@@ -39,7 +39,7 @@ describe("ids", () => {
 
 describe("an event", () => {
   const e = () => newEvent("guard", { type: "drain.started", actor: "owner (signed, key SHA256:abc)", text: "The owner started a drain.", subject: "box" }, clock(T), rand);
-  test("has the shape of §3.2, one line under 4 KB", () => {
+  test("is one line under 4 KB, in its fixed shape", () => {
     const line = eventLine(e());
     expect(line.endsWith("\n")).toBe(true);
     expect(line.indexOf("\n")).toBe(line.length - 1);

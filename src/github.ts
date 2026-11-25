@@ -34,7 +34,7 @@ export interface Head {
 }
 
 // A release is a version tag on a commit on main, published on GitHub with notes. From v2.6.1 a
-// trial's tag, vX.Y.Z-rc.N, is one too (docs/v3-design.md §5.7).
+// trial's tag, vX.Y.Z-rc.N, is one too.
 // No leading zeros, as semver has it (rule 2), so two tags never name one version.
 export const RELEASE_TAG = /^v(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-rc\.([1-9]\d{0,3}))?$/;
 export interface Release {

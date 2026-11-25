@@ -1,4 +1,4 @@
-// The box's one history (design §3.2). Two writers, each with its own folder of one file a day:
+// The box's one history. Two writers, each with its own folder of one file a day:
 // root's guard writes /opt/taskbox-state/events/, the loop writes <service state>/events/. Each line
 // is one JSON object, written by one write() with O_APPEND, under 4 KB, so lines from one writer never
 // tear. `taskbox events` merges both folders by id, which is a ULID, so the merge is in time order.

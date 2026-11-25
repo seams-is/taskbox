@@ -1,4 +1,4 @@
-// The fourth review's findings (review-wp0b-4.md) outside the child runner (job.test.ts holds those),
+// The fourth review's findings outside the child runner (job.test.ts holds those),
 // with the reviewer's probes turned into what the code must do.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";

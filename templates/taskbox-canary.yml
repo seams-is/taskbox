@@ -1,4 +1,4 @@
-# taskbox canary. Made by `taskbox canary` from the box's own
+# taskbox canary. Made by `taskbox template show test-job` from the box's own
 # settings: don't edit the copy in your repo; change the settings and make it again. It goes in
 # .github/workflows/taskbox-canary.yml of the repo whose jobs your box runs, beside the watchdog.
 #

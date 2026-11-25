@@ -1,4 +1,4 @@
-// The owner's approver keys the box trusts (design §4.10.3), pinned in root's approvers.json, 644,
+// The owner's approver keys the box trusts, pinned in root's approvers.json, 644,
 // the guard its one writer. Not in settings, so no PR can move them. Up to 3 keys, each with its
 // fingerprint, when and how it was pinned, and the generation it came in. Every change moves the
 // generation on. A key cleared at the box (`key reset approver`) stays out for good.

@@ -1,4 +1,4 @@
-// The eighth review (review-wp0b-8.md), the part on #7.
+// The eighth review, the part on #7.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

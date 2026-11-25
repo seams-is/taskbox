@@ -1,5 +1,5 @@
-// tailscaled's socket, kept out of every account's reach but root's and the service account's
-// (docs/workspaces-design.md, section 5.5). tailscaled makes its socket mode 666 each time it starts,
+// tailscaled's socket, kept out of every account's reach but root's and the service account's.
+// tailscaled makes its socket mode 666 each time it starts,
 // so the socket's own mode can't be the control. Its folder is: root's, mode 700, with one access
 // entry, for the service account, to pass through. The socket gets mode 600 and one entry for the
 // service account to read and write, as a second wall.

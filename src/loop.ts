@@ -1636,7 +1636,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     showDrain(d, c.box);
     showHold(d, c.box);
     // A slot here holds no VM. Held and empty, from this pass's wait, for the guard's check that a
-    // waiting Whole may go active (heldSlotsEmpty, held.ts, build plan step 7). It is all step 7
+    // waiting Whole may go active (heldSlotsEmpty, held.ts). That is all the guard
     // needs from the loop. A held slot starts no VM, so the mark stays true until the hold ends.
     // Written on a change only.
     // A deliberate guard: a slot reaches here only with no occupant, and the mark checks it anyway,

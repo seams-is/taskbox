@@ -1,4 +1,4 @@
-// The agent account's workspace commands (docs/workspaces-design.md, sections 3 and 5.2): queue,
+// The agent account's workspace commands: queue,
 // wait, progress, release, deny and signed. They run as the agent account, through its restricted
 // shell (shell.ts) and then taskbox itself.
 //

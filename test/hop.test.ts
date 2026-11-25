@@ -1,4 +1,4 @@
-// v2.6.1, the bridge to v3 (docs/v3-design.md §5.7): trial tags and their order, keys inside away and
+// v2.6.1, the bridge to v3: trial tags and their order, keys inside away and
 // timings passed over, v2 releases read from releaseRepo, a renamed repo's redirect followed, and the
 // hop itself: a signed public release checked before the yes, with a rollback watcher placed from
 // the install before the swap, and undo booting out daemons the install gone back to doesn't know.
@@ -22,7 +22,7 @@ import { asRoot, CFG, fakeLaunchd, fakeTailscale, healthyBox, installDeps, PEM, 
 const sha256 = (b: string | Uint8Array) => createHash("sha256").update(b).digest("hex");
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
 
-describe("trial tags (§5.7, 1 and 2)", () => {
+describe("trial tags", () => {
   test("vX.Y.Z-rc.N is a release tag, and semver orders a trial before its release", () => {
     for (const t of ["v3.0.0-rc.1", "v2.6.1", "v10.0.0-rc.12"]) expect(RELEASE_TAG.test(t)).toBe(true);
     for (const t of ["v3.0.0-rc", "v3.0.0-beta.1", "v3.0.0-rc.1.2", "3.0.0", "v3.0"]) expect(RELEASE_TAG.test(t)).toBe(false);
@@ -52,7 +52,7 @@ describe("trial tags (§5.7, 1 and 2)", () => {
   });
 });
 
-describe("the release repo (§5.7, 7)", () => {
+describe("the release repo", () => {
   test("v2 releases, tags and tarballs come from releaseRepo, and the token names it", async () => {
     const sys = new FakeSys();
     sys.routes.push((method, url) => {
@@ -155,7 +155,7 @@ function statementFor(tree: string, over: Partial<Statement> = {}): Statement {
 // Each test here runs one at a time under bun test --concurrent: it runs real tar, git, ssh-keygen
 // or Python, or two installs, all of which block the one thread, so tests started together would
 // share their time limit.
-describe("the statement (§5.7, 4)", () => {
+describe("the statement", () => {
   test.serial("is read strictly: its fields, their shapes, one line", () => {
     const st = statementFor("e".repeat(40));
     const text = `${JSON.stringify(st)}\n`;
@@ -429,7 +429,7 @@ async function hopBox(o: { statement?: Partial<Statement>; flags?: number; verif
 // Each test here runs one at a time under bun test --concurrent: it runs real tar, git, ssh-keygen
 // or Python, or two installs, all of which block the one thread, so tests started together would
 // share their time limit.
-describe("the hop to v3 (§5.7, 4 and 5)", () => {
+describe("the hop to v3", () => {
   test.serial("verified against the pin first, then the tarball and its tree; the key shown before the yes; a rollback watcher before the swap", async () => {
     const { d, said, out, before, loaded, verified, boots } = await hopBox();
     expect(out).toBe("installed");
@@ -526,7 +526,7 @@ describe("the hop to v3 (§5.7, 4 and 5)", () => {
 // Each test here runs one at a time under bun test --concurrent: it runs real tar, git, ssh-keygen
 // or Python, or two installs, all of which block the one thread, so tests started together would
 // share their time limit.
-describe("the rollback watcher and undo (§5.7, 5 and 6)", () => {
+describe("the rollback watcher and undo", () => {
   const opsOf = (h: Awaited<ReturnType<typeof hopBox>>) => ({ sys: h.sys, paths: h.d.paths, uid: 0, serviceUid: 502, rootUid: process.getuid!(), say: () => {}, ask: async () => "no" });
 
   test.serial("before its deadline it does nothing; past it, unproved, it takes the box back and removes itself", async () => {
