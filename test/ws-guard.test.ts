@@ -108,8 +108,9 @@ function fakeProof(fail: { nobody?: boolean; poolReaches?: boolean; poolExit0?: 
     async listen(host) {
       if (fail.listen) throw new Error("address in use");
       const seen = new Set<string>();
-      listeners.push({ host, seen });
-      return { port: 4000 + listeners.length, got: (x) => seen.has(x), close: () => undefined };
+      const l: (typeof listeners)[number] = { host, seen };
+      listeners.push(l);
+      return { port: 4000 + listeners.length, got: (x) => seen.has(x), close: () => void (l.closed = true) };
     },
     async runAs(user, args) {
       runs.push([user, ...args]);
@@ -117,6 +118,8 @@ function fakeProof(fail: { nobody?: boolean; poolReaches?: boolean; poolExit0?: 
       const l = listeners.findLast((x) => x.host === host);
       if (kind === "tcp" || kind === "udp") {
         if (user === "nobody") {
+          // A try at a listener the guard closed (the runtime check) is refused.
+          if (l?.closed) return BLOCKED;
           if (fail.nobody || (fail.v6Control && host!.includes(":"))) return 1;
           l?.seen.add(token!);
           return 0;
@@ -127,7 +130,7 @@ function fakeProof(fail: { nobody?: boolean; poolReaches?: boolean; poolExit0?: 
       return (kind === "tcp-open" && fail.internet === "tcp") || (kind === "dns" && fail.internet === "udp") ? 1 : 0;
     },
   };
-  const listeners: { host: string; seen: Set<string> }[] = [];
+  const listeners: { host: string; seen: Set<string>; closed?: boolean }[] = [];
   return { deps, runs, listeners };
 }
 
@@ -1028,15 +1031,18 @@ describe("the probe's run, as the box makes it", () => {
   test("sudo as the user, env -i HOME=/var/empty, taskbox's own bun and probe, no .env, taskbox's bunfig, from /", async () => {
     const b = wsBox();
     const runs: string[][] = [];
+    const stdins: unknown[] = [];
     const run = b.sys.run;
     b.sys.run = async (cmd, args, opts) => {
-      if (cmd === "/usr/bin/sudo") runs.push(args);
+      if (cmd === "/usr/bin/sudo") runs.push(args), stdins.push(opts?.stdin);
       return run(cmd, args, opts);
     };
     // The probe, as the pool account: it reached what it was asked to.
     b.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/sudo" && args.at(-5)?.endsWith("/src/workspace/probe.ts") ? { code: 0, stdout: "", stderr: "" } : undefined));
     expect(await realProbe(b.d).runAs("taskbox-ws1", ["tcp", "192.168.1.20", "4000", N(1)])).toBe(0);
-    expect(runs).toEqual([["-n", "-u", "taskbox-ws1", "--", "/usr/bin/env", "-i", "HOME=/var/empty", "PATH=/usr/bin:/bin", b.p.bun, "--no-install", "--no-env-file", "--cwd=/", `--config=${b.p.app}/bunfig.run.toml`, `${b.p.app}/src/workspace/probe.ts`, "tcp", "192.168.1.20", "4000", N(1)]]);
+    expect(runs).toEqual([["-n", "-u", "taskbox-ws1", "--", "/usr/bin/env", "-i", "HOME=/var/empty", "PATH=/usr/bin:/bin", b.p.bun, "--no-install", "--no-env-file", "--cwd=/", `--config=${b.p.app}/bunfig.run.toml`, `${b.p.app}/src/workspace/probe.ts`, "tcp", "192.168.1.20", "4000", "-"]]);
+    // The token goes on stdin, so no other account reads it from ps and sends it first.
+    expect(stdins).toEqual([`${N(1)}\n`]);
   });
 });
 
