@@ -40,13 +40,24 @@ export function exitLine(file: string, log: { write(line: string): void }, line:
   log.write(line);
 }
 
+// The guard record's file, by its inode: each pass writes a new file and renames it into place
+// (guard.ts writeGuard), so a new inode is a new pass. No clock is read, so no wall clock step can
+// make an old pass look new. -1 when there is none.
+function recordFile(p: Paths): number {
+  try {
+    return (require("node:fs") as typeof import("node:fs")).lstatSync(p.guardState).ino;
+  } catch {
+    return -1;
+  }
+}
+
 // Whether the guard under the current label works, as a lone guard can prove it: launchd shows it
 // running with a pid, and with that same pid still running it has written a pass of its own (the
 // guard record, which only it writes: a lone guard writes none) since this guard first saw that pid.
 // Loaded alone proves nothing: a guard whose code crashes on start is loaded too.
 // running: whether the last look found it running with a pid, proof or not.
 export function currentProof(sys: import("../sys.ts").Sys, p: Paths, label: string, rootUid = 0): { works: () => Promise<boolean>; running: () => boolean } {
-  let seen: { pid: number; since: number } | undefined;
+  let seen: { pid: number; file: number } | undefined;
   const works = async () => {
     const { readGuard } = await import("../guard.ts");
     const r = await sys.run("/bin/launchctl", ["print", `system/${label}`], { timeoutMs: 10_000 }).catch(() => ({ code: -1, stdout: "" }));
@@ -57,11 +68,11 @@ export function currentProof(sys: import("../sys.ts").Sys, p: Paths, label: stri
       return false;
     }
     if (seen?.pid !== pid) {
-      seen = { pid, since: sys.now() };
+      seen = { pid, file: recordFile(p) };
       return false;
     }
-    const g = readGuard(p, sys.now(), rootUid, false);
-    return g !== undefined && g.at > seen.since;
+    // A record root wrote, of the right shape (freshness isn't asked: no clock), in a new file.
+    return recordFile(p) !== seen.file && recordFile(p) !== -1 && readGuard(p, 0, rootUid, false) !== undefined;
   };
   return { works, running: () => seen !== undefined };
 }
@@ -72,6 +83,8 @@ export function currentProof(sys: import("../sys.ts").Sys, p: Paths, label: stri
 // and stops before acting when it does. True when it stopped for that.
 async function loneGuard(sys: import("../sys.ts").Sys, cfg: import("../config.ts").Config, p: Paths, keepGoing: () => boolean, works: () => Promise<boolean>): Promise<boolean> {
   const { fenceRunner, GUARD_FULL_MS, GUARD_TICK_MS, guardOnce, readGuard, rulesInPlace, tunOf } = await import("../guard.ts");
+  // A full pass every minute, by count of 2 s passes, so no wall clock step holds it off.
+  const FULL_EVERY = Math.round(GUARD_FULL_MS / GUARD_TICK_MS);
   const fence = fenceRunner({ sys, cfg, p });
   let fencing: Promise<unknown> | undefined;
   const fenceOnce = () => {
@@ -79,16 +92,16 @@ async function loneGuard(sys: import("../sys.ts").Sys, cfg: import("../config.ts
       .catch(() => undefined)
       .finally(() => (fencing = undefined));
   };
-  let last = await guardOnce(sys, cfg, readGuard(p, sys.now(), 0, false));
+  let last = await guardOnce(sys, cfg, readGuard(p, 0, 0, false));
   fenceOnce();
-  let fullAt = sys.now();
+  let sinceFull = 0;
   while (keepGoing()) {
     await sys.sleep(GUARD_TICK_MS);
     if (await works()) return true;
-    if (sys.now() - fullAt >= GUARD_FULL_MS || !(last.ok && (await rulesInPlace(sys, tunOf(cfg))))) {
+    if (++sinceFull >= FULL_EVERY || !(last.ok && (await rulesInPlace(sys, tunOf(cfg))))) {
       last = await guardOnce(sys, cfg, last);
-      fullAt = sys.now();
-    } else last = { ...last, at: sys.now() };
+      sinceFull = 0;
+    }
     fenceOnce();
   }
   return false;
@@ -159,7 +172,8 @@ export const commands: CommandSpec[] = [
       // Runs until launchd stops it. launchd starts it again if it ends. The agent is put back beside
       // the first pass, never before it, so the rules aren't held up by fdesetup.
       const cfg = loadConfig(p.app, p.boxSettings);
-      const started = sys.now();
+      // The record's file before this guard's first pass: a new one is this guard's own pass.
+      const before = recordFile(p);
       // An earlier install's guard, left loaded by an update that didn't finish its move, goes once this
       // guard has written a pass of its own: a guard that crashes before that never leaves the box with none.
       const retireOld = async () => {
@@ -168,8 +182,7 @@ export const commands: CommandSpec[] = [
         const old = previousLabels(p.previousLabelPrefix).guard;
         for (let i = 0; i < 30 && keepGoing(); i++) {
           await sys.sleep(GUARD_TICK_MS);
-          const g = readGuard(p, sys.now(), c.ops.rootUid ?? 0, false);
-          if (!g || g.at < started) continue;
+          if (recordFile(p) === before || readGuard(p, 0, c.ops.rootUid ?? 0, false) === undefined) continue;
           if ((await launchctl(["print", `system/${old}`])).code === 0) {
             await launchctl(["bootout", `system/${old}`]);
             glog.write(`Booted out the guard under ${old}, an earlier install's: this guard is the one writer.`);

@@ -2,7 +2,7 @@
 // command's flags, the global flags, exit codes, v2.6.0's renames, help, the footer, and hello's
 // version agreement. Each line runs through main on the fake box.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliDeps, main } from "../src/cli.ts";
 import { type CommandSpec, duration, EXIT, memory, parse } from "../src/command.ts";
@@ -289,7 +289,7 @@ const readFileSyncSafe = (f: string) => {
 // guard record, so check fails toward an alarm while it is all that runs.
 describe("a lone guard steps down only for a working current guard", () => {
   const root = { uid: 0, user: "root", env: { HOME: "/var/root" } };
-  type Look = { running: boolean; pid?: number; pass?: boolean };
+  type Look = { running: boolean; pid?: number; pass?: boolean; ahead?: number };
   async function lone(looks: (n: number) => Look, ticks = 12) {
     const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
     const old = previousLabels("com.example.taskbox").guard;
@@ -302,7 +302,11 @@ describe("a lone guard steps down only for a working current guard", () => {
         if (args[0] !== "print" || args[1] !== `system/${GUARD_LABEL}`) return undefined;
         const l = looks(++n);
         // The current guard's own pass, written as it would write it.
-        if (l.pass && guardFile) writeFileSync(guardFile, JSON.stringify({ ok: true, detail: "rules in place", at: sys.now(), tun: "utun99" }), { mode: 0o644 });
+        if (l.pass && guardFile) {
+          // As writeGuard does: a new file renamed into place, so each pass is a new file.
+          writeFileSync(`${guardFile}.new`, JSON.stringify({ ok: true, detail: "rules in place", at: sys.now() + (l.ahead ?? 0), tun: "utun99" }), { mode: 0o644 });
+          renameSync(`${guardFile}.new`, guardFile);
+        }
         return { code: 0, stdout: `system/${GUARD_LABEL} = {\n\tstate = ${l.running ? "running" : "waiting"}\n${l.pid ? `\tpid = ${l.pid}\n` : ""}}\n`, stderr: "" };
       });
     let t = 0;
@@ -352,6 +356,13 @@ describe("a lone guard steps down only for a working current guard", () => {
 
   test("a pass from a new pid each time doesn't count: the pass must come from the pid it saw", async () => {
     const x = await lone((n) => ({ running: true, pid: 900 + n, pass: true }));
+    expect(x.bootedOut).toBe(false);
+  });
+
+  // #10's rule: no wall clock step decides a step-down. A pass written before this guard saw the pid,
+  // with a time ahead of it (the wall clock stepped back since), is no proof.
+  test("a pass from before it looked never counts, whatever time it carries", async () => {
+    const x = await lone((n) => ({ running: true, pid: 900, pass: n === 1, ahead: 3_600_000 }));
     expect(x.bootedOut).toBe(false);
   });
 
