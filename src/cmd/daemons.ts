@@ -40,11 +40,38 @@ export function exitLine(file: string, log: { write(line: string): void }, line:
   log.write(line);
 }
 
+// Whether the guard under the current label works, as a lone guard can prove it: launchd shows it
+// running with a pid, and with that same pid still running it has written a pass of its own (the
+// guard record, which only it writes: a lone guard writes none) since this guard first saw that pid.
+// Loaded alone proves nothing: a guard whose code crashes on start is loaded too.
+// running: whether the last look found it running with a pid, proof or not.
+export function currentProof(sys: import("../sys.ts").Sys, p: Paths, label: string, rootUid = 0): { works: () => Promise<boolean>; running: () => boolean } {
+  let seen: { pid: number; since: number } | undefined;
+  const works = async () => {
+    const { readGuard } = await import("../guard.ts");
+    const r = await sys.run("/bin/launchctl", ["print", `system/${label}`], { timeoutMs: 10_000 }).catch(() => ({ code: -1, stdout: "" }));
+    const running = r.code === 0 && /^\s*state = running\s*$/m.test(r.stdout);
+    const pid = Number(/^\s*pid = (\d{1,7})\s*$/m.exec(r.stdout)?.[1]);
+    if (!running || !Number.isInteger(pid) || pid <= 0) {
+      seen = undefined;
+      return false;
+    }
+    if (seen?.pid !== pid) {
+      seen = { pid, since: sys.now() };
+      return false;
+    }
+    const g = readGuard(p, sys.now(), rootUid, false);
+    return g !== undefined && g.at > seen.since;
+  };
+  return { works, running: () => seen !== undefined };
+}
+
 // The lone guard's watch: Screen Sharing's pf rules every tick and the fence, which writes nothing.
-// Before each pass it asks launchd whether the guard under the current label is loaded, and stops
-// before acting when it is. True when it stopped for that.
-async function loneGuard(sys: import("../sys.ts").Sys, cfg: import("../config.ts").Config, p: Paths, keepGoing: () => boolean, currentLoaded: () => Promise<boolean>): Promise<boolean> {
-  const { fenceRunner, GUARD_FULL_MS, GUARD_TICK_MS, guardOnce, readGuard, rulesInPlace, tunOf, writeGuard } = await import("../guard.ts");
+// It writes no guard record, so check's Screen Sharing guard row fails while it is all that runs, and
+// a fresh record proves the current guard. Before each pass it asks whether the current guard works,
+// and stops before acting when it does. True when it stopped for that.
+async function loneGuard(sys: import("../sys.ts").Sys, cfg: import("../config.ts").Config, p: Paths, keepGoing: () => boolean, works: () => Promise<boolean>): Promise<boolean> {
+  const { fenceRunner, GUARD_FULL_MS, GUARD_TICK_MS, guardOnce, readGuard, rulesInPlace, tunOf } = await import("../guard.ts");
   const fence = fenceRunner({ sys, cfg, p });
   let fencing: Promise<unknown> | undefined;
   const fenceOnce = () => {
@@ -53,21 +80,23 @@ async function loneGuard(sys: import("../sys.ts").Sys, cfg: import("../config.ts
       .finally(() => (fencing = undefined));
   };
   let last = await guardOnce(sys, cfg, readGuard(p, sys.now(), 0, false));
-  writeGuard(p, last);
   fenceOnce();
   let fullAt = sys.now();
   while (keepGoing()) {
     await sys.sleep(GUARD_TICK_MS);
-    if (await currentLoaded()) return true;
+    if (await works()) return true;
     if (sys.now() - fullAt >= GUARD_FULL_MS || !(last.ok && (await rulesInPlace(sys, tunOf(cfg))))) {
       last = await guardOnce(sys, cfg, last);
       fullAt = sys.now();
     } else last = { ...last, at: sys.now() };
-    writeGuard(p, last);
     fenceOnce();
   }
   return false;
 }
+
+// How long a guard under another label waits, acting on nothing, for the current guard to prove itself
+// before it acts as the lone guard: a few of the current guard's 2 s passes.
+export const PROOF_WAIT_TICKS = 5;
 
 export const commands: CommandSpec[] = [
   {
@@ -93,44 +122,62 @@ export const commands: CommandSpec[] = [
       const xpc = c.env.XPC_SERVICE_NAME;
       const was = xpc ? xpc.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 60) : "";
       const launchctl = (args: string[]) => sys.run("/bin/launchctl", args, { timeoutMs: 10_000 }).catch(() => ({ code: -1 }));
-      const currentLoaded = async () => (await launchctl(["print", `system/${GUARD_LABEL}`])).code === 0;
       // A guard launchd started under another label boots its own job out as it goes, so KeepAlive
       // doesn't start it again every 10 s. One started by hand has no job to boot out.
       const goOut = async () => {
         if (xpc && /^[A-Za-z0-9._-]{1,128}$/.test(xpc) && xpc !== GUARD_LABEL) await launchctl(["bootout", `system/${xpc}`]);
       };
       if (labelProblem(xpc) !== undefined) {
-        // A second guard exits (§4.10.1): with the guard under the current label loaded, two would be
-        // two writers of root's state.
-        if (await currentLoaded()) {
-          exitLine(p.guardLog, glog, `A guard ${was ? `under ${was}` : "that launchd didn't start"} exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
-          c.say(`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`);
-          await goOut();
-          return 1;
+        const proof = currentProof(sys, p, GUARD_LABEL, c.ops.rootUid ?? 0);
+        const works = proof.works;
+        // A second guard exits (§4.10.1), once the guard under the current label is proven to work.
+        // It waits a few passes for that, acting on nothing; with no proof it acts as the lone guard.
+        const { GUARD_TICK_MS } = await import("../guard.ts");
+        for (let i = 0; i < PROOF_WAIT_TICKS && keepGoing(); i++) {
+          if (await works()) {
+            exitLine(p.guardLog, glog, `A guard ${was ? `under ${was}` : "that launchd didn't start"} exited: the guard under ${GUARD_LABEL} works, so there is one writer.`);
+            c.say(`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`);
+            await goOut();
+            return 1;
+          }
+          // Nothing running under the current label: no reason to wait.
+          if (!proof.running()) break;
+          await sys.sleep(GUARD_TICK_MS);
         }
-        // The only guard, under an old label: an update swapped the code in and then failed to move
-        // the daemons. It keeps Screen Sharing's pf rules and the fence, which writes nothing, so the
-        // box is never left with no guard. It writes no workspace and doesn't put the agent back.
-        exitLine(p.guardLog, glog, `This guard runs as ${was || "no label"}, and none runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} runs.`);
+        // The only working guard, under an old label: an update swapped the code in and then failed
+        // to move the daemons, or the current guard crashes. It keeps Screen Sharing's pf rules and
+        // the fence, which writes nothing, so the box is never left with no guard. It writes no
+        // workspace, no guard record, and doesn't put the agent back.
+        exitLine(p.guardLog, glog, `This guard runs as ${was || "no label"}, and no working guard runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} works.`);
         const cfg = loadConfig(p.app, p.boxSettings);
-        if (await loneGuard(sys, cfg, p, keepGoing, currentLoaded)) {
-          exitLine(p.guardLog, glog, `The guard under ${GUARD_LABEL} runs now: this one exits, so there is one writer.`);
+        if (await loneGuard(sys, cfg, p, keepGoing, works)) {
+          exitLine(p.guardLog, glog, `The guard under ${GUARD_LABEL} works now: this one exits, so there is one writer.`);
           await goOut();
         }
         return 1;
       }
-      // Runs until launchd stops it. launchd starts it again if it ends. An earlier install's guard,
-      // left loaded by an update that didn't finish its move, goes first, so the two never act at once.
-      if (p.previousLabelPrefix) {
-        const old = previousLabels(p.previousLabelPrefix).guard;
-        if ((await launchctl(["print", `system/${old}`])).code === 0) {
-          await launchctl(["bootout", `system/${old}`]);
-          glog.write(`Booted out the guard under ${old}, an earlier install's: this guard is the one writer.`);
-        }
-      }
-      // The agent is put back beside the first pass, never before it, so the rules aren't held up by fdesetup.
+      // Runs until launchd stops it. launchd starts it again if it ends. The agent is put back beside
+      // the first pass, never before it, so the rules aren't held up by fdesetup.
       const cfg = loadConfig(p.app, p.boxSettings);
-      await Promise.all([guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog), guardWatch(sys, cfg, p, keepGoing, workspaceRunner({ sys, cfg, p, chown }, glog))]);
+      const started = sys.now();
+      // An earlier install's guard, left loaded by an update that didn't finish its move, goes once this
+      // guard has written a pass of its own: a guard that crashes before that never leaves the box with none.
+      const retireOld = async () => {
+        if (!p.previousLabelPrefix) return;
+        const { GUARD_TICK_MS, readGuard } = await import("../guard.ts");
+        const old = previousLabels(p.previousLabelPrefix).guard;
+        for (let i = 0; i < 30 && keepGoing(); i++) {
+          await sys.sleep(GUARD_TICK_MS);
+          const g = readGuard(p, sys.now(), c.ops.rootUid ?? 0, false);
+          if (!g || g.at < started) continue;
+          if ((await launchctl(["print", `system/${old}`])).code === 0) {
+            await launchctl(["bootout", `system/${old}`]);
+            glog.write(`Booted out the guard under ${old}, an earlier install's: this guard is the one writer.`);
+          }
+          return;
+        }
+      };
+      await Promise.all([guardAgent({ sys, paths: p, chown }, cfg.accounts.agent, glog), guardWatch(sys, cfg, p, keepGoing, workspaceRunner({ sys, cfg, p, chown }, glog)), retireOld()]);
       return 1;
     },
   },

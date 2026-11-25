@@ -13,7 +13,7 @@ import { readEnvelopes } from "../src/schema.ts";
 import { readAnswer } from "../src/laptop/schema.ts";
 import { boxChecksBody } from "../src/laptop/screens.ts";
 import { FakeSys } from "./fake.ts";
-import { fakeLaunchd, healthyBox, quietBox, tempRoot, testBox } from "./helpers.ts";
+import { fakeLaunchd, healthyBox, quietBox, readAsRoot, tempRoot, testBox } from "./helpers.ts";
 
 // The service account is the test's own user, so the state folder it reads is its own.
 const CI = process.getuid!();
@@ -199,23 +199,13 @@ describe("a second guard (§4.10.1)", () => {
   // launchctl print system/<label>: 0 when launchd has that job loaded, 113 when it doesn't.
   const loaded = (current: boolean) => (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: current && args[1]!.endsWith(".guard") && !args[1]!.includes("example") ? 0 : 113, stdout: "", stderr: "" } : cmd === "/bin/launchctl" && args[0] === "bootout" ? { code: 0, stdout: "", stderr: "" } : undefined));
 
-  test("exits when the guard under the current label is loaded, touching nothing, and says so in the guard's log", async () => {
-    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
-    for (const xpc of [previousLabels("com.example.taskbox").guard, `${GUARD_LABEL}x`, undefined]) {
-      const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", ...(xpc ? { XPC_SERVICE_NAME: xpc } : {}) } }, { setup: loaded(true) });
-      expect({ xpc, code: r.code, said: r.said, calls: r.sys.calls.map((c) => [c.cmd, ...c.args].join(" ")) }).toEqual({ xpc, code: 1, said: [`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`], calls: [`/bin/launchctl print system/${GUARD_LABEL}`, ...(xpc ? [`/bin/launchctl bootout system/${xpc}`] : [])] });
-      const log = readFileSync(paths(r.root, testBox()).guardLog, "utf8");
-      expect(log).toContain(`exited: the guard runs only as ${GUARD_LABEL}, so there is one writer.`);
-    }
-  });
-
   // M1: an update swaps the code in, then retiring the old daemons fails and puts them back. The
   // old-label guard now runs this code with no guard under the current label: it is the only guard.
   test("a lone guard under an old label, after a failed update, keeps Screen Sharing's pf rules and the fence, and warns", async () => {
     const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
     const old = previousLabels("com.example.taskbox").guard;
     let ticks = 0;
-    const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", XPC_SERVICE_NAME: old } }, { setup: loaded(false), healthy: true, guardTicks: () => ++ticks < 3 });
+    const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", XPC_SERVICE_NAME: old } }, { setup: loaded(false), healthy: true, guardTicks: () => ++ticks < 5 });
     const calls = r.sys.calls.map((c) => [c.cmd, ...c.args].join(" "));
     expect(r.said).toEqual([]);
     expect(calls).toContain(`/bin/launchctl print system/${GUARD_LABEL}`);
@@ -224,25 +214,9 @@ describe("a second guard (§4.10.1)", () => {
     expect(calls).toContain("/sbin/pfctl -a com.apple/240.taskbox-ws -s rules");
     const p = paths(r.root, testBox());
     const log = readFileSync(p.guardLog, "utf8");
-    expect(log).toContain(`This guard runs as ${old}, and none runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} runs.`);
+    expect(log).toContain(`This guard runs as ${old}, and no working guard runs as ${GUARD_LABEL}: it keeps Screen Sharing's rules and the fence, and writes no workspace, until the guard under ${GUARD_LABEL} works.`);
     // No workspace state written, and the agent not put back: those are the current guard's.
     expect(existsSync(p.workspaces)).toBe(false);
-  });
-});
-
-describe("a lone guard steps down", () => {
-  test("once launchd has the guard under the current label, the lone one exits with its line", async () => {
-    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
-    let prints = 0;
-    // The current guard isn't loaded at the start, and is by the second look, a minute on.
-    const setup = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: ++prints > 1 ? 0 : 113, stdout: "", stderr: "" } : undefined));
-    let ticks = 0;
-    const r = await run(["guard"], { uid: 0, user: "root", env: { HOME: "/var/root", XPC_SERVICE_NAME: previousLabels("com.example.taskbox").guard } }, { setup, healthy: true, guardTicks: () => ++ticks < 200 });
-    expect(r.code).toBe(1);
-    expect(prints).toBe(2);
-    // It stopped well before the test's own limit of ticks.
-    expect(ticks).toBeLessThan(200);
-    expect(readFileSync(paths(r.root, testBox()).guardLog, "utf8")).toContain(`The guard under ${GUARD_LABEL} runs now: this one exits, so there is one writer.`);
   });
 });
 
@@ -255,51 +229,37 @@ describe("the guard's label, the confirming review (L-a, L-b)", () => {
   };
   const cmds = (r: { sys: FakeSys }) => r.sys.calls.map((c) => [c.cmd, ...c.args].join(" "));
 
-  test("L-a: the current guard boots out the old label's guard at its start", async () => {
+  test("L-a: the current guard boots out the old label's guard once it has written a pass of its own", async () => {
     const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
     const old = previousLabels(OLD_PREFIX).guard;
     let ticks = 0;
-    const r = await run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: GUARD_LABEL } }, { prep: withPrefix, healthy: true, guardTicks: () => ++ticks < 2, setup: (sys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && (args[0] === "print" || args[0] === "bootout") && args[1] === `system/${old}` ? { code: 0, stdout: "", stderr: "" } : undefined)) });
+    let guardFile = "";
+    const r = await readAsRoot(
+      (path) => path === guardFile,
+      () =>
+        run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: GUARD_LABEL } }, {
+          prep: (p) => {
+            withPrefix(p);
+            guardFile = p.guardState;
+          },
+          healthy: true,
+          guardTicks: () => ++ticks < 4,
+          setup: (sys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && (args[0] === "print" || args[0] === "bootout") && args[1] === `system/${old}` ? { code: 0, stdout: "", stderr: "" } : undefined)),
+        }),
+    );
     const c = cmds(r);
     expect(c).toContain(`/bin/launchctl bootout system/${old}`);
-    // Before its first pass.
-    expect(c.indexOf(`/bin/launchctl bootout system/${old}`)).toBeLessThan(c.indexOf("/sbin/pfctl -s rules"));
+    // After its own first pass, never before it.
+    expect(c.indexOf(`/bin/launchctl bootout system/${old}`)).toBeGreaterThan(c.indexOf("/sbin/pfctl -s rules"));
   });
 
-  test("L-a: a lone guard asks launchd before each pass, and does nothing once the current guard is loaded", async () => {
-    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
-    let current = false;
-    const setup = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" && args[1] === `system/${GUARD_LABEL}` ? { code: current ? 0 : 113, stdout: "", stderr: "" } : undefined));
-    let ticks = 0;
-    let at = -1;
-    const r = await run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: previousLabels(OLD_PREFIX).guard } }, {
-      setup,
-      healthy: true,
-      guardTicks: () => {
-        if (++ticks === 3) current = true;
-        return ticks < 50;
-      },
-    });
-    const c = cmds(r);
-    at = c.lastIndexOf(`/bin/launchctl print system/${GUARD_LABEL}`);
-    expect(r.code).toBe(1);
-    // After the print that said the current guard is loaded, no pf read, no pass, no fence.
-    expect(c.slice(at + 1).filter((x) => x.startsWith("/sbin/pfctl"))).toEqual([]);
-    // It asked on every tick, not once a minute.
-    expect(c.filter((x) => x === `/bin/launchctl print system/${GUARD_LABEL}`).length).toBeGreaterThanOrEqual(3);
-    // A lone guard runs pf and the fence only: no loop watch, no logins record, no tailscaled.
-    expect(c.some((x) => x.startsWith("/usr/bin/last") || x.includes("tailscaled"))).toBe(false);
-  });
-
-  test("L-b: a launchd guard that steps down or exits as second boots out its own label, so launchd doesn't start it again", async () => {
+  test("L-a: a current guard that never writes a pass never boots the old one out", async () => {
     const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
     const old = previousLabels(OLD_PREFIX).guard;
-    const loaded = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && (args[0] === "print" || args[0] === "bootout") ? { code: 0, stdout: "", stderr: "" } : undefined));
-    const r = await run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: old } }, { setup: loaded });
-    expect(cmds(r)).toEqual([`/bin/launchctl print system/${GUARD_LABEL}`, `/bin/launchctl bootout system/${old}`]);
-    // By hand, with no label of its own, there is nothing to boot out.
-    const hand = await run(["guard"], root, { setup: loaded });
-    expect(cmds(hand)).toEqual([`/bin/launchctl print system/${GUARD_LABEL}`]);
+    let ticks = 0;
+    // Its record can't be read as root's here, so it reads as no pass of its own.
+    const r = await run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: GUARD_LABEL } }, { prep: withPrefix, healthy: true, guardTicks: () => ++ticks < 6, setup: (sys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[1] === `system/${old}` ? { code: 0, stdout: "", stderr: "" } : undefined)) });
+    expect(cmds(r)).not.toContain(`/bin/launchctl bootout system/${old}`);
   });
 
   test("L-b: the exit line is written once while it repeats, so it never rotates root's guard log", async () => {
@@ -323,6 +283,105 @@ const readFileSyncSafe = (f: string) => {
     return "";
   }
 };
+
+// A lone guard steps down only when the current guard is proven to work: launchd shows it running with
+// one pid, and it has written its own pass since this guard began to look. The lone guard writes no
+// guard record, so check fails toward an alarm while it is all that runs.
+describe("a lone guard steps down only for a working current guard", () => {
+  const root = { uid: 0, user: "root", env: { HOME: "/var/root" } };
+  type Look = { running: boolean; pid?: number; pass?: boolean };
+  async function lone(looks: (n: number) => Look, ticks = 12) {
+    const { GUARD_LABEL, previousLabels } = await import("../src/config.ts");
+    const old = previousLabels("com.example.taskbox").guard;
+    let n = 0;
+    let guardFile = "";
+    const setup = (sys: FakeSys) =>
+      sys.responders.unshift((cmd, args) => {
+        if (cmd !== "/bin/launchctl") return undefined;
+        if (args[0] === "bootout") return { code: 0, stdout: "", stderr: "" };
+        if (args[0] !== "print" || args[1] !== `system/${GUARD_LABEL}`) return undefined;
+        const l = looks(++n);
+        // The current guard's own pass, written as it would write it.
+        if (l.pass && guardFile) writeFileSync(guardFile, JSON.stringify({ ok: true, detail: "rules in place", at: sys.now(), tun: "utun99" }), { mode: 0o644 });
+        return { code: 0, stdout: `system/${GUARD_LABEL} = {\n\tstate = ${l.running ? "running" : "waiting"}\n${l.pid ? `\tpid = ${l.pid}\n` : ""}}\n`, stderr: "" };
+      });
+    let t = 0;
+    const r = await readAsRoot(
+      (path) => path === guardFile,
+      () =>
+        run(["guard"], { ...root, env: { ...root.env, XPC_SERVICE_NAME: old } }, {
+          setup,
+          healthy: true,
+          prep: (p) => void (guardFile = p.guardState),
+          guardTicks: () => ++t < ticks,
+        }),
+    );
+    const calls = r.sys.calls.map((c) => [c.cmd, ...c.args].join(" "));
+    return { r, calls, old, bootedOut: calls.includes(`/bin/launchctl bootout system/${old}`), passes: calls.filter((c) => c === "/sbin/pfctl -s rules").length, ticks: t };
+  }
+
+  test("a second guard, with the current one working, exits before it acts, boots its own job out, and says so", async () => {
+    const { GUARD_LABEL } = await import("../src/config.ts");
+    const x = await lone((n) => ({ running: true, pid: 900, pass: n >= 2 }));
+    expect([x.r.code, x.r.said, x.bootedOut]).toEqual([1, [`The guard runs only as ${GUARD_LABEL}, started by launchd. This one exits.`], true]);
+    expect(x.calls.filter((c) => c.startsWith("/sbin/pfctl"))).toEqual([]);
+    expect(readFileSync(paths(x.r.root, testBox()).guardLog, "utf8")).toContain(`exited: the guard under ${GUARD_LABEL} works, so there is one writer.`);
+  });
+
+  test("loaded but not running: it keeps acting, asks before every pass, runs pf and the fence only, and doesn't boot itself out", async () => {
+    const { GUARD_LABEL } = await import("../src/config.ts");
+    const x = await lone(() => ({ running: false }));
+    expect([x.bootedOut, x.ticks]).toEqual([false, 12]);
+    expect(x.passes).toBeGreaterThanOrEqual(10);
+    expect(x.calls.filter((c) => c === `/bin/launchctl print system/${GUARD_LABEL}`).length).toBeGreaterThanOrEqual(11);
+    expect(x.calls).toContain("/sbin/pfctl -a com.apple/240.taskbox-ws -s rules");
+    expect(x.calls.some((c) => c.startsWith("/usr/bin/last") || c.includes("tailscaled"))).toBe(false);
+  });
+
+  test("running, but no pass of its own: after a short wait it acts, and keeps acting", async () => {
+    const { PROOF_WAIT_TICKS } = await import("../src/cmd/daemons.ts");
+    const x = await lone(() => ({ running: true, pid: 900 }));
+    expect([x.bootedOut, x.ticks]).toEqual([false, 12]);
+    expect(x.passes).toBeGreaterThanOrEqual(12 - PROOF_WAIT_TICKS - 1);
+  });
+
+  test("crash-looping, a new pid each look and no pass: it keeps acting", async () => {
+    const x = await lone((n) => ({ running: n % 2 === 0, pid: 900 + n }));
+    expect([x.bootedOut, x.ticks]).toEqual([false, 12]);
+  });
+
+  test("a pass from a new pid each time doesn't count: the pass must come from the pid it saw", async () => {
+    const x = await lone((n) => ({ running: true, pid: 900 + n, pass: true }));
+    expect(x.bootedOut).toBe(false);
+  });
+
+  test("running with one pid, and its own pass since: a lone guard steps down, boots itself out, and acts no more", async () => {
+    // It isn't running at first, so the old guard acts; then it runs, and passes.
+    const x = await lone((n) => ({ running: n >= 4, pid: 900, pass: n >= 6 }));
+    expect(x.passes).toBeGreaterThan(0);
+    expect(x.bootedOut).toBe(true);
+    expect(x.ticks).toBeLessThan(12);
+    const at = x.calls.indexOf(`/bin/launchctl bootout system/${x.old}`);
+    expect(x.calls.slice(at).filter((c) => c.startsWith("/sbin/pfctl"))).toEqual([]);
+  });
+
+  test("started by hand, with no job of its own, it boots nothing out", async () => {
+    const { GUARD_LABEL } = await import("../src/config.ts");
+    let n = 0;
+    const r = await run(["guard"], root, { setup: (sys) => sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" && ++n ? { code: 113, stdout: "", stderr: "" } : undefined)), healthy: true, guardTicks: (() => { let t = 0; return () => ++t < 3; })() });
+    expect(r.sys.calls.some((c) => c.args[0] === "bootout")).toBe(false);
+    expect(r.sys.calls.filter((c) => c.cmd === "/bin/launchctl").every((c) => c.args.join(" ") === `print system/${GUARD_LABEL}`)).toBe(true);
+  });
+
+  test("the lone guard writes no guard record, so check's Screen Sharing guard row fails", async () => {
+    const x = await lone(() => ({ running: false }), 4);
+    const p = paths(x.r.root, testBox());
+    expect(existsSync(p.guardState)).toBe(false);
+    const { guardRow } = await import("../src/checks.ts");
+    const row = await guardRow({ sys: x.r.sys, cfg: {} as never, paths: p, uid: 0, serviceUid: CI });
+    expect(row.status).toBe("FAIL");
+  });
+});
 
 describe("v2.6.0's old names (§2.6)", () => {
   const ROWS: [string[], string, string][] = [
