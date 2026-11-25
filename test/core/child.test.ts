@@ -7,6 +7,8 @@ import { eventLog, readEvents } from "../../src/core/events.ts";
 import { begin, type Op, type OpType, readOp } from "../../src/core/ops.ts";
 import { RELOAD_JOB } from "../../src/ops.ts";
 import { FakeSys } from "../fake.ts";
+import { CHILD_BUN } from "../../src/core/child.ts";
+const APP = "/opt/taskbox/app/src/cli.ts";
 
 const uid = process.getuid!();
 const update: OpType = { type: "update", phases: ["downloading", "verifying", "installing", "proving"], pointOfNoReturn: "installing", onBoot: () => "fail" };
@@ -17,7 +19,7 @@ function setup() {
   const ops = { dir: root, owner: uid };
   const evDir = { dir: join(root, "events"), owner: uid };
   const lines: string[] = [];
-  const d = { sys, ops, events: eventLog("guard", evDir, sys), log: (l: string) => lines.push(l) };
+  const d = { sys, ops, events: eventLog("guard", evDir, sys), log: (l: string) => lines.push(l), boot: "boot-1" };
   const b = begin([], update, { subject: "box", params: { to: "3.0.1" }, actor: "owner (signed, key SHA256:abc)" }, sys.now());
   if (b.kind !== "start") throw new Error();
   return { sys, d, op: b.op, lines, events: () => readEvents([{ ...evDir, writer: "guard" }]).events };
@@ -38,8 +40,8 @@ describe("the child runner", () => {
   test("the guard writes the record and events from the child's reports, and the child never does", async () => {
     const s = setup();
     const children = new Children(s.d);
-    const r = children.start(s.op, "/opt/taskbox/bin/taskbox", ["op", "run", s.op.id], { events: ["update.verified"] });
-    expect(children.start(s.op, "/x", [])).toBe(r);
+    const r = children.start(s.op, CHILD_BUN, [APP, "op", "run", s.op.id], { events: ["update.verified"] });
+    expect(children.start(s.op, CHILD_BUN, [APP])).toBe(r);
     const p = s.sys.spawned.at(-1)!;
     // Its own process group, so the guard's bootout doesn't end it.
     expect(p.opts.group).toBe(true);
@@ -58,7 +60,7 @@ describe("the child runner", () => {
   });
   test("a child that exits without ending its op fails it, with its exit code", async () => {
     const s = setup();
-    const r = new Children(s.d).start(s.op, "/x", []);
+    const r = new Children(s.d).start(s.op, CHILD_BUN, [APP]);
     s.sys.spawned.at(-1)!.exit(3);
     expect(await r.done).toMatchObject({ state: "failed", why: "its process ended with exit 3 before it finished" });
   });
@@ -113,7 +115,7 @@ describe("review fixes: H1 in reports", () => {
 describe("review fixes: M2", () => {
   test("a report line on stdout or stderr is only a log line: reports come on their own channel", async () => {
     const s = setup();
-    const r = new Children(s.d).start(s.op, "/x", []);
+    const r = new Children(s.d).start(s.op, CHILD_BUN, [APP]);
     const p = s.sys.spawned.at(-1)!;
     p.opts.onLine!(reportLine({ end: { state: "succeeded" } }));
     p.opts.onLine!(`progress\r${reportLine({ phase: "proving" })}`);
@@ -165,7 +167,7 @@ describe("an op whose guard was reloaded", () => {
   // The op as the first guard left it: its child started, two reports applied, then the guard gone.
   function orphan(o: { boot?: string } = {}) {
     const s = setup();
-    const r = runChild({ ...s.d, pid: 111, boot: "boot-1" }, s.op, "/x", [], { events: ["update."] });
+    const r = runChild({ ...s.d, pid: 111, boot: "boot-1" }, s.op, CHILD_BUN, [APP], { events: ["update."] });
     const p = s.sys.spawned.at(-1)!;
     expect(p.opts.env).toMatchObject({ TASKBOX_OP: s.op.id, TASKBOX_OP_REPORTS: reportsPath(s.d.ops, s.op.id) });
     const rep = reporter({ op: s.op.id, reports: reportsPath(s.d.ops, s.op.id), fd: -1 });
@@ -178,61 +180,61 @@ describe("an op whose guard was reloaded", () => {
     return { ...s, rep, boot: o.boot ?? "boot-1" };
   }
   const adopt = (s: ReturnType<typeof orphan>, alive: boolean, boot = s.boot) => adoptOrphans({ ...s.d, pid: 222, boot, alive: () => alive, types });
-  test("the runner records the child, and the reports it applied", () => {
+  test("the runner records the child, and the reports it applied", async () => {
     const s = orphan();
     const rec = readOp(s.d.ops, s.op.id);
     expect(rec.kind === "ok" && rec.value.child).toMatchObject({ guardPid: 111, boot: "boot-1", applied: 2, events: ["update."] });
   });
-  test("the next guard takes the reports the child wrote after, once each, to its end", () => {
+  test("the next guard takes the reports the child wrote after, once each, to its end", async () => {
     const s = orphan();
     s.rep.send({ phase: "installing" });
     s.rep.send({ end: { state: "succeeded", result: { installed: "3.0.1" } } });
-    const changed = adopt(s, false);
+    const changed = await adopt(s, false);
     expect(changed.map((o) => o.state)).toEqual(["succeeded"]);
     const rec = readOp(s.d.ops, s.op.id);
     expect(rec.kind === "ok" && rec.value).toMatchObject({ state: "succeeded", phase: "installing", result: { installed: "3.0.1" } });
     // Each event once: the first guard's verified, then the next guard's progress and end.
     expect(s.events().map((e) => e.type)).toEqual(["op.progress", "update.verified", "op.progress", "op.succeeded"]);
-    expect(adopt(s, false)).toEqual([]);
+    expect(await adopt(s, false)).toEqual([]);
   });
-  test("a child still running keeps its op running, and is followed on later passes", () => {
+  test("a child still running keeps its op running, and is followed on later passes", async () => {
     const s = orphan();
     s.rep.send({ phase: "installing" });
-    adopt(s, true);
+    await adopt(s, true);
     let rec = readOp(s.d.ops, s.op.id);
     expect(rec.kind === "ok" && [rec.value.state, rec.value.phase]).toEqual(["running", "installing"]);
     s.rep.send({ end: { state: "failed", why: "the proof failed" } });
-    adopt(s, true);
+    await adopt(s, true);
     rec = readOp(s.d.ops, s.op.id);
     expect(rec.kind === "ok" && rec.value).toMatchObject({ state: "failed", why: "the proof failed" });
   });
-  test("a child that ended without its end fails the op", () => {
+  test("a child that ended without its end fails the op", async () => {
     const s = orphan();
-    expect(adopt(s, false)[0]).toMatchObject({ state: "failed", why: "its process ended before it finished" });
+    expect((await adopt(s, false))[0]).toMatchObject({ state: "failed", why: "its process ended before it finished" });
   });
-  test("after a restart of the box, a running op is failed: the box restarted", () => {
+  test("after a restart of the box, a running op is failed: the box restarted", async () => {
     const s = orphan();
     s.rep.send({ phase: "installing" });
-    expect(adopt(s, false, "boot-2")[0]).toMatchObject({ state: "failed", why: "the box restarted" });
+    expect((await adopt(s, false, "boot-2"))[0]).toMatchObject({ state: "failed", why: "the box restarted" });
   });
-  test("after a restart, a type that resumes keeps its op for its own package to carry on", () => {
+  test("after a restart, a type that resumes keeps its op for its own package to carry on", async () => {
     const s = orphan();
-    const changed = adoptOrphans({ ...s.d, pid: 222, boot: "boot-2", alive: () => false, types: [{ ...update, onBoot: () => "resume" }] });
+    const changed = await adoptOrphans({ ...s.d, pid: 222, boot: "boot-2", alive: () => false, types: [{ ...update, onBoot: () => "resume" }] });
     expect(changed).toEqual([]);
     const rec = readOp(s.d.ops, s.op.id);
     expect(rec.kind === "ok" && rec.value.state).toBe("running");
   });
-  test("the guard that runs the child never adopts it", () => {
+  test("the guard that runs the child never adopts it", async () => {
     const s = orphan();
-    expect(adoptOrphans({ ...s.d, pid: 111, boot: "boot-1", alive: () => false, types })).toEqual([]);
+    expect(await adoptOrphans({ ...s.d, pid: 111, boot: "boot-1", alive: () => false, types })).toEqual([]);
   });
-  test("a report written twice, or a forged line in the handoff file, isn't applied", () => {
+  test("a report written twice, or a forged line in the handoff file, isn't applied", async () => {
     const s = orphan();
     const path = reportsPath(s.d.ops, s.op.id);
     writeFileSync(path, `${readFileSync(path, "utf8")}not a report\n${reportLine({ n: 2, end: { state: "succeeded" } })}\n`);
-    expect(adopt(s, false)[0]).toMatchObject({ state: "failed" });
+    expect((await adopt(s, false))[0]).toMatchObject({ state: "failed" });
   });
-  test("the child's side writes the handoff file first, numbered, even with no fd 3", () => {
+  test("the child's side writes the handoff file first, numbered, even with no fd 3", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-handoff-"));
     const rep = reporter({ op: "op_01JD8Q4AAAAAAAAAAAAAAAAAAA", reports: join(dir, "r"), fd: -1 });
     expect(rep.send({ phase: "a" })).toBe(false);

@@ -6,7 +6,7 @@
 // Every account on the box can read events, so nothing that would harm the box if read goes in one:
 // no key, token, JWT, login URL or code. eventLine refuses text or data shaped like one.
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Clock } from "../clock.ts";
 import { readUpTo } from "../workspace/read.ts";
 import { idOf, isId, monotonic, type Rand, realRand } from "./ids.ts";
@@ -348,34 +348,84 @@ export function appendAdmin(path: string, e: { id: string; name: string }, chown
 export interface EventLog {
   write(d: Draft): Event;
 }
-// Its ids keep their order within a millisecond. One actor writes at most perActorPerMinute events a
-// minute; past it they are counted, and the actor's next write after the minute is preceded by one
-// events.dropped saying how many went.
+
+// Only chatty types are limited: progress lines. An op's start and end, every state change and every
+// security-relevant event are always written, so no flood can hide them.
+export const LIMITED = (type: string) => /\.progress$/.test(type);
+export const WINDOWS_MAX = 1000;
+
+interface Limiter {
+  put: (d: Draft) => Event;
+  clock: Pick<Clock, "now">;
+  limit: number;
+  windows: Map<string, { from: number; n: number; dropped: number }>;
+}
+// One limiter per writer's folder in this process, shared by every eventLog on it.
+const limiters = new Map<string, Limiter>();
+
+function summary(l: Limiter, actor: string, w: { dropped: number }): void {
+  if (!w.dropped) return;
+  try {
+    l.put({ type: "events.dropped", actor: "taskbox", text: `${w.dropped} events from ${actor} were dropped in the minute before.`.slice(0, TEXT_MAX) });
+  } catch {}
+  w.dropped = 0;
+}
+
+// Writes the count of every window whose minute is over (or every window, with all), so a count is
+// never left unsaid: the keeping pass calls this every full pass, and the guard before it exits.
+export function flushEvents(o: { all?: boolean } = {}): void {
+  for (const l of limiters.values()) {
+    const now = l.clock.now();
+    for (const [actor, w] of [...l.windows]) {
+      if (!o.all && now - w.from < 60_000) continue;
+      summary(l, actor, w);
+      l.windows.delete(actor);
+    }
+  }
+}
+
+// Its ids keep their order within a millisecond. One actor writes at most perActorPerMinute progress
+// events a minute; past it they are counted, and one events.dropped says how many went, when the
+// minute ends (flushEvents), when its window is pushed out, or at the actor's next write after it.
 export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, rand: Rand = realRand, o: { perActorPerMinute?: number } = {}): EventLog {
-  const next = monotonic(rand);
-  const limit = o.perActorPerMinute ?? PER_ACTOR_PER_MINUTE;
-  const windows = new Map<string, { from: number; n: number; dropped: number }>();
-  const put = (d: Draft) => {
-    const e = newEvent(writer, d, clock, rand, next);
-    appendEvent(f, e);
-    return e;
-  };
+  const key = `${writer} ${resolve(f.dir)}`;
+  let l = limiters.get(key);
+  if (!l) {
+    const next = monotonic(rand);
+    const put = (d: Draft) => {
+      const e = newEvent(writer, d, l!.clock, rand, next);
+      appendEvent(f, e);
+      return e;
+    };
+    l = { put, clock, limit: o.perActorPerMinute ?? PER_ACTOR_PER_MINUTE, windows: new Map() };
+    limiters.set(key, l);
+  } else {
+    l.clock = clock;
+    if (o.perActorPerMinute !== undefined) l.limit = o.perActorPerMinute;
+  }
+  const lim = l;
   return {
     write(d) {
-      const now = d.at ?? clock.now();
-      let w = windows.get(d.actor);
+      if (!LIMITED(d.type)) return lim.put(d);
+      const now = d.at ?? lim.clock.now();
+      let w = lim.windows.get(d.actor);
       if (!w || now - w.from >= 60_000) {
-        if (w?.dropped) put({ type: "events.dropped", actor: "taskbox", text: `${w.dropped} events from ${d.actor} were dropped in the minute before.`.slice(0, TEXT_MAX) });
+        if (w) summary(lim, d.actor, w);
         w = { from: now, n: 0, dropped: 0 };
-        windows.set(d.actor, w);
-        if (windows.size > 1000) windows.delete(windows.keys().next().value!);
+        lim.windows.delete(d.actor);
+        lim.windows.set(d.actor, w);
+        while (lim.windows.size > WINDOWS_MAX) {
+          const [oldest, ow] = lim.windows.entries().next().value!;
+          summary(lim, oldest, ow);
+          lim.windows.delete(oldest);
+        }
       }
-      if (w.n >= limit) {
+      if (w.n >= lim.limit) {
         w.dropped++;
-        return newEvent(writer, d, clock, rand, next);
+        return newEvent(writer, d, lim.clock, rand);
       }
       w.n++;
-      return put(d);
+      return lim.put(d);
     },
   };
 }

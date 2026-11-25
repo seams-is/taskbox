@@ -10,6 +10,8 @@ import type { Sys } from "./sys.ts";
 import { linkTarget } from "./layout.ts";
 import { vmStarting } from "./loopwatch.ts";
 import { makePasses, type PassMaker, Passes } from "./core/passes.ts";
+import { eventLog, flushEvents } from "./core/events.ts";
+import { rootStateOf } from "./core/paths.ts";
 import { passMakers } from "./passes/index.ts";
 import { Log } from "./log.ts";
 import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
@@ -79,6 +81,7 @@ export interface GuardRecord {
   // The boot, by kern.boottime's seconds, in which this guard has had the rules in place. Rules found
   // gone after that went missing; at a boot's first pass they were never there (v2.1.1).
   inPlaceBoot?: number;
+  passes?: string[]; // guard passes left out or failing (core/passes.ts), for the "Guard passes" row
 }
 
 // The boot's start, in seconds, from kern.boottime ("{ sec = 1700000000, usec = 0 } ..."), or undefined.
@@ -223,13 +226,36 @@ export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () 
   const writer = labelProblem(process.env.XPC_SERVICE_NAME) === undefined;
   const ctx = { sys, cfg, p, log, writer, ...(ws ? { ws } : {}) };
   const say = (l: string) => log.write(l);
-  const passes = new Passes(makePasses(makers, ctx, say), sys, say);
+  // Each pass problem once, as a guard.pass-failed event, by the one writer only.
+  const told = new Set<string>();
+  const events = writer ? eventLog("guard", { dir: rootStateOf(p).events, owner: 0 }, sys) : undefined;
+  const tellPasses = (ps: Passes) => {
+    for (const why of ps.problems()) {
+      if (told.has(why)) continue;
+      told.add(why);
+      try {
+        events?.write({ type: "guard.pass-failed", actor: "taskbox", text: why });
+      } catch {}
+    }
+  };
+  const problems = new Map<string, string>();
+  const passes = new Passes(makePasses(makers, ctx, say, problems), sys, say, problems);
   // First, before the rules: after a restart, the pool's processes stop before anything else.
+  try {
+    await watchWith(sys, cfg, p, keepGoing, passes, tellPasses);
+  } finally {
+    // Every event count the limiter holds is written before this guard ends (core/events.ts).
+    flushEvents({ all: true });
+  }
+}
+
+async function watchWith(sys: Sys, cfg: Config, p: Paths, keepGoing: () => boolean, passes: Passes, tellPasses: (ps: Passes) => void): Promise<void> {
   passes.begin("before");
   // The record from before a restart of the guard, however old: its boot says whether the rules
   // were in place earlier in this boot.
   let last = await guardOnce(sys, cfg, readGuard(p, sys.now(), 0, false));
-  writeGuard(p, last);
+  writeGuard(p, withPasses(last, passes));
+  tellPasses(passes);
   passes.begin("after");
   let fullAt = sys.now();
   while (keepGoing()) {
@@ -239,7 +265,8 @@ export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () 
       last = await guardOnce(sys, cfg, last);
       fullAt = sys.now();
     } else last = { ...last, at: sys.now() };
-    writeGuard(p, last);
+    writeGuard(p, withPasses(last, passes));
+    tellPasses(passes);
     // Never awaited: each pass runs one at a time beside the tick (core/passes.ts).
     passes.tick();
   }
@@ -351,6 +378,13 @@ export function settler(sys: Sys, p: Paths, log: Pick<Log, "write">): () => Prom
       log.write(`Softnet wasn't moved to its own folder yet: ${(e as Error).message}`);
     }
   };
+}
+
+// The record with the passes' problems now, or without the field when there are none.
+function withPasses(r: GuardRecord, passes: Passes): GuardRecord {
+  const { passes: _, ...rest } = r;
+  const now = passes.problems();
+  return now.length ? { ...rest, passes: now.map((l) => l.replace(/[^\x20-\x7e]/g, " ").slice(0, 200)).slice(0, 20) } : rest;
 }
 
 export function writeGuard(p: Paths, r: GuardRecord): void {

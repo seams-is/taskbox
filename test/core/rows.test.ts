@@ -13,8 +13,11 @@ const ctx = (load = false) => ({ cfg: { ...CFG, ...(load ? { sources: [{ type: "
 describe("the check-row registry", () => {
   test("each place holds v2's rows in v2's order", () => {
     expect(names(rows("prestart"))).toEqual(names(PRESTART));
-    expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...names(CHECK_EXTRA), SECOND_KEY_ROW]);
-    expect(names(rows("away", ctx()))).toEqual([...names(AWAY_ONLY), ...names(PRESTART), ...names(CHECK_EXTRA)]);
+    // v3 adds one row, "Guard passes", after the Screen Sharing guard's (rows/guard.ts).
+    const extra = names(CHECK_EXTRA);
+    extra.splice(extra.indexOf("Screen Sharing guard") + 1, 0, "Guard passes");
+    expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...extra, SECOND_KEY_ROW]);
+    expect(names(rows("away", ctx()))).toEqual([...names(AWAY_ONLY), ...names(PRESTART), ...extra]);
     expect(names(rows("preflight"))).toEqual(names(INSTALL_PREFLIGHT));
   });
   test("the test repo's row shows only with a load repo", () => {

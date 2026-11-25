@@ -39,14 +39,17 @@ export interface PassMaker {
 
 // The passes the makers give. A maker that throws leaves its pass out, and says so, so one bad pass
 // never stops the guard before its first pf pass.
-export function makePasses(makers: readonly PassMaker[], c: PassCtx, log: (line: string) => void): GuardPass[] {
+// problems: what failed, by pass name, for the guard's record and the "Guard passes" check row.
+export function makePasses(makers: readonly PassMaker[], c: PassCtx, log: (line: string) => void, problems: Map<string, string> = new Map()): GuardPass[] {
   const out: GuardPass[] = [];
   for (const m of makers) {
     try {
       const p = m.make(c);
       if (p) out.push(p);
     } catch (e) {
-      log(`the ${m.name} pass couldn't start: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
+      const why = `the ${m.name} pass couldn't start: ${String((e as Error)?.message ?? e).slice(0, 120)}`;
+      log(why);
+      problems.set(m.name, why);
     }
   }
   return out;
@@ -58,6 +61,7 @@ export class Passes {
     private list: readonly GuardPass[],
     private clock: Pick<Sys, "now">,
     private log: (line: string) => void = () => {},
+    private failed: Map<string, string> = new Map(),
   ) {
     const names = list.map((p) => p.name);
     if (new Set(names).size !== names.length) throw new Error("two guard passes share a name");
@@ -84,13 +88,22 @@ export class Passes {
     for (const p of this.list) this.run(p, this.ask(p, () => p.next(now, this.running.has(p.name))));
   }
   // A pass's start or next that throws is logged, and that pass skips this turn; the others run.
+  // A pass's failure is said once, kept while it lasts, and cleared once the pass asks again cleanly.
   private ask(p: GuardPass, f: () => Job | undefined): Job | undefined {
     try {
-      return f();
+      const job = f();
+      if (this.failed.get(p.name)?.startsWith(`the ${p.name} pass failed`)) this.failed.delete(p.name);
+      return job;
     } catch (e) {
-      this.log(`the ${p.name} pass failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
+      const why = `the ${p.name} pass failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`;
+      if (this.failed.get(p.name) !== why) this.log(why);
+      this.failed.set(p.name, why);
       return undefined;
     }
+  }
+  // What is wrong with the passes now: one line each, for the guard's record.
+  problems(): string[] {
+    return [...this.failed.values()];
   }
   // For tests and a clean stop: every pass running now, ended.
   async settle(): Promise<void> {

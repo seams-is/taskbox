@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { looksSecret } from "./events.ts";
 import { canonical } from "./statement.ts";
 import { idOf, isId, type Rand, realRand } from "./ids.ts";
-import { isObj, plain, readOwnedJson, type Read, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
+import { isObj, plain, readOwnedJson, type Read, time, updateOwnedJson, type WriteRules } from "./rootfile.ts";
 
 export const PENDING_V = 1;
 export const LAPSE_MS = 24 * 3600_000;
@@ -134,9 +134,16 @@ export function readPending(path: string, rootUid = 0): Read<PendingState> {
   return readOwnedJson(path, { owner: rootUid, max: PENDING_MAX_BYTES }, parsePending);
 }
 
-export function writePending(path: string, s: PendingState, w: Omit<WriteRules, "mode">): void {
-  const text = `${JSON.stringify(s)}\n`;
-  const back = parsePending(JSON.parse(text));
-  if (typeof back === "string") throw new Error(`the pending changes would not read back: ${back}`);
-  writeOwnedText(path, text, { ...w, mode: 0o644 });
+// The one way to change pending.json: read, change and write under the file's lock, so a lapse and a
+// confirm at the same time never undo each other.
+export function updatePending<O>(path: string, o: { rootUid?: number; chown?: WriteRules["chown"] }, change: (s: PendingState) => Promise<{ state: PendingState; out: O }> | { state: PendingState; out: O }): Promise<O> {
+  const owner = o.rootUid ?? 0;
+  return updateOwnedJson(path, { owner, max: PENDING_MAX_BYTES }, parsePending, noPending, async (s) => {
+    const r = await change(s);
+    if (r.state !== s) {
+      const back = parsePending(JSON.parse(JSON.stringify(r.state)));
+      if (typeof back === "string") throw new Error(`the pending changes would not read back: ${back}`);
+    }
+    return r;
+  }, { mode: 0o644, owner, ...(o.chown ? { chown: o.chown } : {}) });
 }

@@ -192,12 +192,12 @@ describe("review fixes: M3 and the lows on events", () => {
     const dir = join(tmp(), "e");
     const t = { now: T };
     const log = eventLog("guard", { dir, owner: uid }, { now: () => t.now }, rand);
-    for (let i = 0; i < 100; i++) log.write({ type: "workspace.denied", actor: "agent nova", text: "refused" });
+    for (let i = 0; i < 100; i++) log.write({ type: "op.progress", actor: "agent nova", text: "refused" });
     log.write({ type: "guard.started", actor: "taskbox", text: "other actors still write" });
     t.now += 61_000;
-    log.write({ type: "workspace.denied", actor: "agent nova", text: "refused" });
+    log.write({ type: "op.progress", actor: "agent nova", text: "refused" });
     const ev = readEvents([{ dir, owner: uid, writer: "guard" }]).events;
-    expect(ev.filter((e) => e.actor === "agent nova" && e.type === "workspace.denied")).toHaveLength(61);
+    expect(ev.filter((e) => e.actor === "agent nova" && e.type === "op.progress")).toHaveLength(61);
     expect(ev.find((e) => e.type === "events.dropped")).toMatchObject({ actor: "taskbox", text: "40 events from agent nova were dropped in the minute before." });
   });
   test("L4: the loop can't shadow a guard event by copying its id", () => {

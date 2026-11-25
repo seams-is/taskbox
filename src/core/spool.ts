@@ -10,12 +10,12 @@
 // - root never creates, renames into or changes anything in a spool.
 // A request carries its id, kind and time, and is good for 2 minutes either side of root's clock. Its
 // outcome is recorded by id (outcomes), which the asking command waits for about 2 s.
-import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readdirSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Clock } from "../clock.ts";
 import { readUpTo } from "../workspace/read.ts";
 import { isId, type Rand, realRand, idOf } from "./ids.ts";
-import { isObj, plain, readOwnedJson, type Read, safeParse, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
+import { isObj, plain, readOwnedJson, readOwnedText, type Read, safeParse, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
 
 export const REQUEST_MAX = 4096;
 export const REQUEST_FOR_MS = 2 * 60_000;
@@ -288,8 +288,9 @@ export function writeSpoolFile(dir: string, kind: string, body: Record<string, u
   return { id, file };
 }
 
-// Each request's outcome, by id, in root's outcomes.json, 644: what the asking command reads.
-export const OUTCOMES_MAX = 200;
+// Each request's outcome, one file per request: <outcomes folder>/<rq id>.json, root's at 644, in a
+// folder of the spool's own, root's at 711. Nobody can list the folder, so only who knows a request's
+// id (its asker: 80 random bits) reads its outcome, and no spool's junk can push out another's.
 export interface Outcome {
   id: string;
   at: number;
@@ -297,23 +298,53 @@ export interface Outcome {
   said: string;
   op?: string;
 }
-export interface Outcomes {
-  v: 1;
-  outcomes: Outcome[];
+export const OUTCOME_KEEP_MS = 60 * 60_000;
+const outcomeFile = (dir: string, id: string) => {
+  if (!isId("rq", id)) throw new Error("not a request's id");
+  return join(dir, `${id}.json`);
+};
+function outcomeProblem(o: unknown): string | undefined {
+  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) ? undefined : "it isn't an outcome taskbox reads";
 }
-export const noOutcomes = (): Outcomes => ({ v: 1, outcomes: [] });
-export function parseOutcomes(v: unknown): Outcomes | string {
-  if (!isObj(v) || v.v !== 1 || !Array.isArray(v.outcomes) || v.outcomes.length > OUTCOMES_MAX) return "it isn't an outcomes file taskbox reads";
-  for (const o of v.outcomes) if (!isObj(o) || !isId("rq", o.id) || !time(o.at) || typeof o.ok !== "boolean" || !plain(o.said, 240) || (o.op !== undefined && !isId("op", o.op))) return "an outcome isn't one taskbox reads";
-  return v as unknown as Outcomes;
+// Records an outcome once: a request's first outcome stands. False when one was there.
+export function recordOutcome(dir: string, o: Outcome, w: Omit<WriteRules, "mode"> = {}): boolean {
+  const path = outcomeFile(dir, o.id);
+  try {
+    const st = lstatSync(dir);
+    if (!st.isDirectory() || st.uid !== (w.owner ?? 0) || (st.mode & 0o7777) !== 0o711) throw new Error(`${dir} isn't root's at 711`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    // The outcomes folder itself, root's at 755, made once.
+    mkdirSync(dirname(dir), { recursive: true, mode: 0o755 });
+    mkdirSync(dir, { mode: 0o711 });
+    w.chown?.(dir, w.owner ?? 0, 0);
+    chmodSync(dir, 0o711);
+  }
+  if (readOwnedText(path, { owner: w.owner ?? 0, max: 4096 }).kind !== "missing") return false;
+  const out = { ...o, said: o.said.replace(/[^\x20-\x7e]/g, " ").slice(0, 240) };
+  if (outcomeProblem(out)) throw new Error("that outcome isn't one taskbox writes");
+  writeOwnedText(path, `${JSON.stringify(out)}\n`, { ...w, mode: 0o644 });
+  return true;
 }
-// Records an outcome once; the newest OUTCOMES_MAX are kept.
-export function recordOutcome(s: Outcomes, o: Outcome): Outcomes {
-  if (s.outcomes.some((x) => x.id === o.id)) return s;
-  return { v: 1, outcomes: [...s.outcomes, { ...o, said: o.said.replace(/[^\x20-\x7e]/g, " ").slice(0, 240) }].slice(-OUTCOMES_MAX) };
+export function readOutcome(dir: string, id: string, rootUid = 0): Read<Outcome> {
+  return readOwnedJson(outcomeFile(dir, id), { owner: rootUid, max: 4096 }, (v) => outcomeProblem(v) ?? (v as Outcome));
 }
-export const outcomeOf = (s: Outcomes, id: string) => s.outcomes.find((o) => o.id === id);
-export const readOutcomes = (path: string, rootUid = 0): Read<Outcomes> => readOwnedJson(path, { owner: rootUid, max: 128 * 1024 }, parseOutcomes);
-export function writeOutcomes(path: string, s: Outcomes, w: Omit<WriteRules, "mode">): void {
-  writeOwnedText(path, `${JSON.stringify(s)}\n`, { ...w, mode: 0o644 });
+// Outcomes past OUTCOME_KEEP_MS go: the asker waits about 2 s. The ids removed.
+export function keepOutcomes(dir: string, now: number): string[] {
+  const gone: string[] = [];
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => /^rq_[0-9A-HJKMNP-TV-Z]{26}\.json$/.test(n));
+  } catch {
+    return gone;
+  }
+  for (const n of names) {
+    try {
+      if (now - lstatSync(join(dir, n)).mtimeMs > OUTCOME_KEEP_MS) {
+        unlinkSync(join(dir, n));
+        gone.push(n.slice(0, -5));
+      }
+    } catch {}
+  }
+  return gone;
 }

@@ -8,7 +8,7 @@ export interface RootState {
   approvers: string; // root's, 644: the pinned approver keys (approvers.ts)
   nonces: string; // root's, 644: one nonce per subject (nonces.ts)
   pending: string; // root's, 644: lasting changes waiting for confirm (pending.ts)
-  outcomes: (spool: string) => string; // root's, 644: each spool's requests' outcomes by id, one file per spool (spool.ts)
+  outcomes: (spool: string) => string; // root's folder at 711 per spool, one 644 file per request's outcome (spool.ts)
   ops: string; // root's ops, one file each (ops.ts)
   events: string; // root's event log, one file a day (events.ts)
   admins: string; // root's, 600: which admin did what, by event id (events.ts)
@@ -29,7 +29,7 @@ export function rootStateIn(dir: string): RootState {
     pending: join(dir, "pending.json"),
     outcomes: (spool: string) => {
       if (!/^(agent|service|pool-[1-9][0-9]?)$/.test(spool)) throw new Error("not a spool's name");
-      return join(dir, `outcomes-${spool}.json`);
+      return join(dir, "outcomes", spool);
     },
     ops: join(dir, "ops"),
     events: join(dir, "events"),

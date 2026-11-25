@@ -6,9 +6,10 @@
 // - a write goes to a new name made with O_EXCL and no link followed, is flushed, given its owner
 //   and mode, renamed into place, and the folder flushed, so a power cut leaves the old file or the
 //   new one, never a torn one.
-import { chmodSync, closeSync, constants, fstatSync, fsyncSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, renameSync, rmSync, unlinkSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { readUpTo } from "../workspace/read.ts";
 
 export type FileText = { kind: "missing" } | { kind: "ok"; text: string } | { kind: "bad"; why: string };
@@ -89,22 +90,52 @@ export function safeParse(text: string): unknown {
 }
 export const badKey = (k: string) => BAD_KEYS.has(k);
 
-// One lock per path in this process: root's state files have one writer process, the guard, whose
+// One lock per file in this process: root's state files have one writer process, the guard, whose
 // passes run beside each other. Each read, change and write of one file holds the lock throughout.
+// The key is the resolved path, so two spellings of one file share it. A change that asks for the
+// lock it already holds throws, rather than waiting for itself for ever.
 const locks = new Map<string, Promise<unknown>>();
+const held = new AsyncLocalStorage<ReadonlySet<string>>();
 export async function withLock<T>(path: string, f: () => Promise<T> | T): Promise<T> {
-  const before = locks.get(path) ?? Promise.resolve();
+  const key = resolve(path);
+  const mine = held.getStore() ?? new Set<string>();
+  if (mine.has(key)) throw new Error(`the lock on ${key} is held already by this change`);
+  const before = locks.get(key) ?? Promise.resolve();
   let release!: () => void;
-  const mine = new Promise<void>((r) => (release = r));
-  const chain = before.then(() => mine);
-  locks.set(path, chain);
+  const gate = new Promise<void>((r) => (release = r));
+  const chain = before.then(() => gate);
+  locks.set(key, chain);
   try {
     await before.catch(() => undefined);
-    return await f();
+    return await held.run(new Set([...mine, key]), async () => await f());
   } finally {
     release();
-    if (locks.get(path) === chain) locks.delete(path);
+    if (locks.get(key) === chain) locks.delete(key);
   }
+}
+
+// Temporary names a write left behind when its process ended between the create and the rename:
+// <file>.new.<pid>.<16 hex>, removed once that pid isn't a live process. The names removed.
+const TEMP = /\.new\.(\d+)\.[0-9a-f]{16}$/;
+export function sweepTemps(dir: string, alive: (pid: number) => boolean): string[] {
+  const gone: string[] = [];
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return gone;
+  }
+  for (const n of names) {
+    const m = TEMP.exec(n);
+    if (!m || alive(Number(m[1]))) continue;
+    try {
+      const st = lstatSync(join(dir, n));
+      if (!st.isFile() && !st.isSymbolicLink()) continue;
+      unlinkSync(join(dir, n));
+      gone.push(n);
+    } catch {}
+  }
+  return gone.sort();
 }
 
 // Reads a JSON state file, changes it, and writes it back, under the file's lock. A file that is

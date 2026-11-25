@@ -7,7 +7,7 @@
 // LaunchDaemon of launchd's own (oneShot below). launchd ends a job's whole process group on bootout,
 // so a reload run from the child would end the child that asked for it, and leave the daemon unloaded.
 // v2's undo already reloads tailscaled this way (ops.ts restartServices); v3 makes it the one way.
-import { closeSync, constants, lstatSync, openSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Sys } from "../sys.ts";
 import type { EventLog } from "./events.ts";
@@ -46,19 +46,30 @@ export const REPORTS_MAX = 1024 * 1024;
 // The child's side. send() numbers the report, appends it to the handoff file, then writes it on fd 3.
 // It says false once nobody reads fd 3, as after its guard was reloaded (seen in a Tart guest: EPIPE);
 // the report is in the handoff file all the same.
+// A report with progress alone goes on fd 3 only, unnumbered: losing one costs nothing. Phases, events
+// and the end are numbered and kept in the handoff file, which stays within REPORTS_MAX: past
+// KEEP_MAX only the end is kept, so the next guard can always read it.
+export const KEEP_MAX = REPORTS_MAX - 8 * 1024;
 export function reporter(o: { op: string; reports: string; fd?: number }) {
   let n = 0;
   let pipe = true;
+  let size = 0;
   const fd = o.fd ?? REPORT_FD;
   return {
     send(r: Report): boolean {
-      const line = `${reportLine({ ...r, n: ++n })}\n`;
-      const h = openSync(o.reports, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-      try {
-        writeSync(h, line);
-      } finally {
-        closeSync(h);
-      }
+      const progressOnly = Object.keys(r).every((k) => k === "progress");
+      const keep = !progressOnly && (r.end !== undefined || size < KEEP_MAX);
+      const line = `${reportLine(keep ? { ...r, n: ++n } : r)}\n`;
+      if (keep && size + Buffer.byteLength(line) <= (r.end ? REPORTS_MAX : KEEP_MAX)) {
+        const h = openSync(o.reports, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+        try {
+          size = fstatSync(h).size;
+          writeSync(h, line);
+          size += Buffer.byteLength(line);
+        } finally {
+          closeSync(h);
+        }
+      } else if (keep) n--;
       if (!pipe || fd < 0) return (pipe = false);
       try {
         writeSync(fd, line);
@@ -110,20 +121,39 @@ export interface ChildDeps {
   events: EventLog;
   log: (line: string) => void;
   pid?: number; // this guard's pid, process.pid by default
-  boot?: string; // this boot, kern.boottime's seconds, so the next guard can tell a restart
+  boot: string; // this boot, kern.boottime's seconds, so the next guard can tell a restart
+  startOf?: (pid: number) => Promise<string | undefined>; // a process's start time (psStart), so a reused pid isn't taken for the child
 }
+
+// The one program an op's child may be: taskbox's own Bun, running a file of taskbox's app. Bun hands
+// a program it starts only fds 0 to 2, so fd 3 reaches the child and nothing the child runs. A shell
+// or any other program would pass fd 3 on to what it execs (dup2 clears close-on-exec), and Bun has
+// no way to set close-on-exec on an fd it was given, so nothing else is run with fd 3.
+export const CHILD_BUN = "/opt/taskbox/bin/bun";
+const APP_FILE = /^\/opt\/taskbox\/app\/src\/[a-z0-9/_-]+\.ts$/;
+
+// A process's start time, by ps, or undefined when it isn't running.
+export const psStart =
+  (sys: Pick<Sys, "run">) =>
+  async (pid: number): Promise<string | undefined> => {
+    if (!Number.isSafeInteger(pid) || pid <= 1) return undefined;
+    const r = await sys.run("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeoutMs: 5_000 }).catch(() => undefined);
+    const t = r?.code === 0 ? r.stdout.trim() : "";
+    return t ? t.slice(0, 64) : undefined;
+  };
 
 // What the op's record keeps of its child, so the next guard can follow it.
 export interface ChildInfo {
   pid: number;
   guardPid: number;
   boot?: string;
+  started?: string; // its start time, by ps
   applied: number; // the number of the last report applied
   events: string[];
 }
 const childOf = (op: Op): ChildInfo | undefined => {
   const c = op.child;
-  if (!isObj(c) || !Number.isSafeInteger(c.pid) || !Number.isSafeInteger(c.guardPid) || !Number.isSafeInteger(c.applied) || (c.boot !== undefined && typeof c.boot !== "string") || !Array.isArray(c.events) || !c.events.every((e) => typeof e === "string")) return undefined;
+  if (!isObj(c) || !Number.isSafeInteger(c.pid) || !Number.isSafeInteger(c.guardPid) || !Number.isSafeInteger(c.applied) || (c.boot !== undefined && typeof c.boot !== "string") || (c.started !== undefined && typeof c.started !== "string") || !Array.isArray(c.events) || !c.events.every((e) => typeof e === "string")) return undefined;
   return c as unknown as ChildInfo;
 };
 
@@ -174,7 +204,9 @@ export interface Running {
 // process group of its own: launchd ends the guard's whole process group when the guard is booted
 // out, and a child left in it ends with it (seen in a Tart guest: SIGTERM, then gone).
 // Reports come only on the child's own channel (REPORT_FD); its output goes to the log as text.
-export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Running {
+export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[]; bun?: string } = {}): Running {
+  if (cmd !== (o.bun ?? CHILD_BUN) || !APP_FILE.test(args[0] ?? "")) throw new Error("an op's child is taskbox's own Bun running a file of taskbox's app, and nothing else");
+  if (!d.boot) throw new Error("an op's child needs this boot's time, so a later guard can tell a restart");
   let cur = op;
   const events = [...(o.events ?? [])];
   const p = d.sys.spawn(cmd, args, {
@@ -190,9 +222,19 @@ export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: {
     },
   });
   // The record names its child and this guard, so a guard after this one can follow it.
-  const child: ChildInfo = { pid: p.pid ?? 0, guardPid: d.pid ?? process.pid, ...(d.boot ? { boot: d.boot } : {}), applied: 0, events };
+  const child: ChildInfo = { pid: p.pid ?? 0, guardPid: d.pid ?? process.pid, boot: d.boot, applied: 0, events };
   cur = { ...cur, child };
   writeOp(d.ops, cur);
+  // Its start time, once ps has said it, so a pid used again later is never taken for this child.
+  if (d.startOf && p.pid) {
+    void d.startOf(p.pid).then((started) => {
+      const c = childOf(cur);
+      if (started && c && cur.state === "running") {
+        cur = { ...cur, child: { ...c, started } };
+        writeOp(d.ops, cur);
+      }
+    });
+  }
   const done = (p.done ?? p.exited).then(
     (code) => {
       if (cur.state === "running") cur = applyReport(d, cur, { end: { state: "failed", why: `its process ended with exit ${code} before it finished` } });
@@ -208,10 +250,19 @@ export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: {
 
 export interface AdoptDeps extends Pick<ChildDeps, "sys" | "ops" | "events" | "log"> {
   pid: number; // this guard's
-  boot?: string; // this boot; unread, a restart isn't judged
-  alive: (pid: number) => boolean;
+  boot: string; // this boot; without it, nothing is adopted
+  alive: (c: ChildInfo) => boolean | Promise<boolean>; // aliveBy(psStart(sys)) on the box
   types?: readonly OpType[]; // to ask a type what a restart does to its op
+  said?: Set<string>; // what was logged already, so a file that can't be read is said once
 }
+
+// A child is alive when its pid runs and, once its start time was read, still with that start time.
+export const aliveBy =
+  (startOf: (pid: number) => Promise<string | undefined>) =>
+  async (c: ChildInfo): Promise<boolean> => {
+    const now = await startOf(c.pid);
+    return now !== undefined && (c.started === undefined || c.started === now);
+  };
 
 // The next guard's half (design §3.3, §4.10.1): every running op whose child another guard started.
 // - After a restart of the box, the op fails, "the box restarted", unless its type resumes it, in
@@ -219,19 +270,20 @@ export interface AdoptDeps extends Pick<ChildDeps, "sys" | "ops" | "events" | "l
 // - Otherwise the reports the child wrote since the last one applied are taken from its handoff file,
 //   once each, in order. A child that is gone without its end fails its op.
 // The ops that ended here.
-export function adoptOrphans(d: AdoptDeps): Op[] {
+export async function adoptOrphans(d: AdoptDeps): Promise<Op[]> {
+  if (!d.boot) throw new Error("ops are adopted only once this boot's time is read");
   const ended: Op[] = [];
   for (const op of listOps(d.ops).ops) {
     const c = childOf(op);
     if (op.state !== "running" || !c || c.guardPid === d.pid) continue;
     let cur = op;
-    if (d.boot !== undefined && c.boot !== undefined && c.boot !== d.boot) {
+    if (c.boot !== d.boot) {
       const t = d.types?.find((x) => x.type === op.type);
       if (t?.onBoot(op) === "resume") continue;
       cur = applyReport(d, cur, { end: { state: "failed", why: "the box restarted" } });
     } else {
       // Read whether it lives first: an end it wrote before it exited is in the file read after.
-      const alive = d.alive(c.pid);
+      const alive = await d.alive(c);
       const f = readOwnedText(reportsPath(d.ops, op.id), { owner: d.ops.owner, max: REPORTS_MAX });
       if (f.kind === "ok") {
         for (const line of f.text.split("\n")) {
@@ -242,12 +294,37 @@ export function adoptOrphans(d: AdoptDeps): Op[] {
           cur = applyReport(d, cur, r, c.events);
           if (cur.state !== "running") break;
         }
-      } else if (f.kind === "bad") d.log(`${op.id}: its child's reports can't be read: ${f.why}`);
+      } else if (f.kind === "bad") {
+        const key = `${op.id} ${f.why}`;
+        if (!d.said?.has(key)) d.log(`${op.id}: its child's reports can't be read: ${f.why}`);
+        d.said?.add(key);
+      }
       if (cur.state === "running" && !alive) cur = applyReport(d, cur, { end: { state: "failed", why: "its process ended before it finished" } });
     }
     if (cur.state !== "running") ended.push(cur);
   }
   return ended;
+}
+
+// Ends every running op's child, by its process group, and cancels its op with why: what remove
+// does first, so no child of taskbox's runs on after it. A child whose start time isn't its own (a
+// pid used again) is left alone. The ops cancelled.
+export async function stopChildren(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log"> & { startOf: (pid: number) => Promise<string | undefined>; kill?: (pid: number) => void }, why: string): Promise<Op[]> {
+  const kill = d.kill ?? ((pid: number) => process.kill(pid, "SIGKILL"));
+  const out: Op[] = [];
+  for (const op of listOps(d.ops).ops) {
+    const c = childOf(op);
+    if (op.state !== "running" || !c) continue;
+    if (await aliveBy(d.startOf)(c)) {
+      try {
+        kill(-c.pid);
+      } catch (e) {
+        d.log(`${op.id}: its child's group couldn't be ended: ${(e as Error).message.slice(0, 80)}`);
+      }
+    }
+    out.push(applyReport(d, op, { end: { state: "cancelled", why } }));
+  }
+  return out;
 }
 
 // Whether a pid is a live process, by signal 0. EPERM is a live process of another user.

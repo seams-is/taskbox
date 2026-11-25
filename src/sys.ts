@@ -128,7 +128,17 @@ export function realSys(home: string): Sys {
       const streams = [read(p.stdout as ReadableStream<Uint8Array>, opts.onLine, true), read(p.stderr as ReadableStream<Uint8Array>, opts.onLine, true)];
       if (opts.onReport) streams.push(read(Bun.file(p.stdio[3] as number).stream(), opts.onReport, false));
       const drained = Promise.all(streams);
-      return { exited: p.exited, done: Promise.all([p.exited, drained]).then(([c]) => c), kill: () => p.kill(9), pid: p.pid };
+      // A child that leads its own group is ended with its group, so what it started ends with it.
+      const kill = () => {
+        if (opts.group) {
+          try {
+            process.kill(-p.pid, "SIGKILL");
+            return;
+          } catch {}
+        }
+        p.kill(9);
+      };
+      return { exited: p.exited, done: Promise.all([p.exited, drained]).then(([c]) => c), kill, pid: p.pid };
     },
     fetch(url, init) {
       assertNotTest();

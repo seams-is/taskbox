@@ -9,7 +9,7 @@
 // - remove: a signed request by another pinned key, at once (narrowing), with no ban;
 // - reset: an admin at the box, after a typed yes.
 import { approverKeyProblem, fingerprint, type Pin } from "../approver.ts";
-import { isObj, readOwnedJson, type Read, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
+import { isObj, readOwnedJson, type Read, time, updateOwnedJson, type WriteRules } from "./rootfile.ts";
 
 export const APPROVERS_V = 1;
 export const KEYS_MAX = 3;
@@ -135,9 +135,15 @@ export function readApprovers(path: string, rootUid = 0): Read<Approvers> {
   return readOwnedJson(path, { owner: rootUid, max: APPROVERS_MAX_BYTES }, parseApprovers);
 }
 
-export function writeApprovers(path: string, s: Approvers, w: Omit<WriteRules, "mode">): void {
-  const text = `${JSON.stringify(s)}\n`;
-  const back = parseApprovers(JSON.parse(text));
-  if (typeof back === "string") throw new Error(`the approvers would not read back: ${back}`);
-  writeOwnedText(path, text, { ...w, mode: 0o644 });
+// The one way to change approvers.json: one of the changes above, under the file's lock. A change that
+// is refused writes nothing.
+export function updateApprovers(path: string, o: { rootUid?: number; chown?: WriteRules["chown"] }, change: (s: Approvers) => Change): Promise<Change> {
+  const owner = o.rootUid ?? 0;
+  return updateOwnedJson<Approvers, Change>(path, { owner, max: APPROVERS_MAX_BYTES }, parseApprovers, noApprovers, (s) => {
+    const c = change(s);
+    if (!c.ok) return { state: s, out: c };
+    const back = parseApprovers(JSON.parse(JSON.stringify(c.state)));
+    if (typeof back === "string") throw new Error(`the approvers would not read back: ${back}`);
+    return { state: c.state, out: c };
+  }, { mode: 0o644, owner, ...(o.chown ? { chown: o.chown } : {}) });
 }

@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { drainSpool, newSpoolMemory, noOutcomes, orderBy, outcomeOf, readRequest, recordOutcome, type SpoolFile, type SpoolReport, spoolProblem, writeSpoolFile, OUTCOMES_MAX } from "../../src/core/spool.ts";
+import { drainSpool, keepOutcomes, newSpoolMemory, orderBy, readOutcome, readRequest, recordOutcome, type SpoolFile, type SpoolReport, spoolProblem, writeSpoolFile } from "../../src/core/spool.ts";
 
 const uid = process.getuid!();
 const T = 1_800_000_000_000;
@@ -175,14 +175,16 @@ describe("a request", () => {
     expect(readRequest("rq_x.unknown.json", f(JSON.stringify(good)), { owner: uid, now: T, kinds }).ok).toBe(false);
     expect(readRequest(name, { ...f("x"), bytes: new Uint8Array([0xff]) }, { owner: uid, now: T, kinds })).toMatchObject({ why: "the request isn't UTF-8" });
   });
-  test("its outcome is kept once, by id, the newest 200", () => {
-    let s = noOutcomes();
-    s = recordOutcome(s, { id: good.id, at: T, ok: true, said: "Drained." });
-    s = recordOutcome(s, { id: good.id, at: T, ok: false, said: "again" });
-    expect(outcomeOf(s, good.id)).toMatchObject({ ok: true, said: "Drained." });
-    for (let i = 0; i < OUTCOMES_MAX + 5; i++) s = recordOutcome(s, { id: `rq_${String(i).padStart(26, "0")}`, at: T, ok: true, said: "x" });
-    expect(s.outcomes).toHaveLength(OUTCOMES_MAX);
-    expect(outcomeOf(s, good.id)).toBeUndefined();
+  test("its outcome is kept once, by id, in a folder nobody lists, for an hour (L9)", () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "taskbox-out-")), "agent");
+    expect(recordOutcome(dir, { id: good.id, at: T, ok: true, said: "Drained." }, { owner: uid })).toBe(true);
+    expect(recordOutcome(dir, { id: good.id, at: T, ok: false, said: "again" }, { owner: uid })).toBe(false);
+    expect(readOutcome(dir, good.id, uid)).toMatchObject({ kind: "ok", value: { ok: true, said: "Drained." } });
+    expect(require("node:fs").statSync(dir).mode & 0o7777).toBe(0o711);
+    expect(keepOutcomes(dir, Date.now())).toEqual([]);
+    expect(keepOutcomes(dir, Date.now() + 2 * 3600_000)).toEqual([good.id]);
+    expect(readOutcome(dir, good.id, uid).kind).toBe("missing");
+    expect(() => readOutcome(dir, "../x", uid)).toThrow();
   });
 });
 

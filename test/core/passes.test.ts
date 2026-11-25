@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readEvents } from "../../src/core/events.ts";
 import { everyPass, type GuardPass, Passes, type PassCtx } from "../../src/core/passes.ts";
 import { rootState } from "../../src/core/paths.ts";
-import { LAPSE_MS, noPending, raise, readPending, writePending } from "../../src/core/pending.ts";
+import { LAPSE_MS, noPending, raise, readPending, updatePending } from "../../src/core/pending.ts";
 import { passMakers } from "../../src/passes/index.ts";
 import { keepingPass } from "../../src/passes/keeping.ts";
 import { FakeSys } from "../fake.ts";
@@ -88,7 +88,7 @@ describe("the keeping pass", () => {
     const uid = process.getuid!();
     const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["Move to beta."], actor: "owner (signed, key SHA256:x)", payload: { to: "beta" } }, sys.now() - LAPSE_MS);
     if (!r.ok) throw new Error();
-    writePending(s.pending, r.state, {});
+    await updatePending(s.pending, { rootUid: uid }, () => ({ state: r.state, out: undefined }));
     const pass = keepingPass.make({ ...c, rootUid: uid })!;
     await pass.start!(sys.now())!();
     expect(readPending(s.pending, uid)).toEqual({ kind: "ok", value: noPending() });
@@ -145,7 +145,7 @@ describe("the ops pass", () => {
     const s = rootState(root);
     mkdirSync(s.ops, { recursive: true });
     const sys = new FakeSys();
-    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "{ sec = 1700000000, usec = 0 }", stderr: "" } : undefined));
+    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "{ sec = 1700000000, usec = 0 }", stderr: "" } : cmd === "/bin/ps" ? { code: 1, stdout: "", stderr: "" } : undefined));
     const uid = process.getuid!();
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     expect(opsPass.make({ ...c, writer: false })).toBeUndefined();
@@ -160,3 +160,53 @@ describe("the ops pass", () => {
     expect(r.kind === "ok" && r.value.state).toBe("succeeded");
   });
 });
+
+describe("review 2: the keeping pass", () => {
+  function ctx() {
+    const root = mkdtempSync(join(tmpdir(), "taskbox-keeping2-"));
+    const s = rootState(root);
+    mkdirSync(s.events, { recursive: true });
+    mkdirSync(s.ops, { recursive: true });
+    const sys = new FakeSys();
+    const uid = process.getuid!();
+    const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
+    return { c, s, sys, uid };
+  }
+  test("L6: a clock that jumps a year ahead, with an event written at the new time, ages nothing out", async () => {
+    const { c, s, sys, uid } = ctx();
+    const { appendEvent, newEvent } = await import("../../src/core/events.ts");
+    const day = 86_400_000;
+    for (let d = 0; d < 10; d++) appendEvent({ dir: s.events, owner: uid }, newEvent("guard", { type: "check.failed", actor: "taskbox", text: "x" }, { now: () => sys.now() - d * day }));
+    const pass = keepingPass.make(c)!;
+    await pass.start!(sys.now())!();
+    sys.clock += 365 * day;
+    appendEvent({ dir: s.events, owner: uid }, newEvent("guard", { type: "check.failed", actor: "taskbox", text: "x" }, sys));
+    await pass.next(sys.now(), false)!();
+    await pass.next(sys.now() + GUARD, false)!();
+    expect(readdirSync(s.events)).toHaveLength(11);
+  });
+  test("N7 and L9: it sweeps temporary names a crash left, and outcomes past their hour", async () => {
+    const { c, s, sys, uid } = ctx();
+    const { recordOutcome } = await import("../../src/core/spool.ts");
+    writeFileSync(join(s.dir, "nonces.json.new.999999.0123456789abcdef"), "half");
+    writeFileSync(join(s.ops, "op_x.json.new.999999.0123456789abcdef"), "half");
+    recordOutcome(s.outcomes("agent"), { id: "rq_01JD8Q4AAAAAAAAAAAAAAAAAAA", at: sys.now(), ok: true, said: "ok" }, { owner: uid });
+    const pass = keepingPass.make(c)!;
+    sys.clock = Date.now() + 2 * 3600_000;
+    await pass.start!(sys.now())!();
+    expect(readdirSync(s.dir).filter((n) => n.includes(".new."))).toEqual([]);
+    expect(readdirSync(s.ops).filter((n) => n.includes(".new."))).toEqual([]);
+    expect(readdirSync(s.outcomes("agent"))).toEqual([]);
+  });
+  test("N1: it writes the dropped counts whose minute is over", async () => {
+    const { c, s, sys, uid } = ctx();
+    const { eventLog } = await import("../../src/core/events.ts");
+    const log = eventLog("guard", { dir: s.events, owner: uid }, sys);
+    for (let i = 0; i < 61; i++) log.write({ type: "op.progress", actor: "agent z", text: "p" });
+    const pass = keepingPass.make(c)!;
+    sys.clock += 61_000;
+    await pass.start!(sys.now())!();
+    expect(readEvents([{ dir: s.events, owner: uid, writer: "guard" }]).events.some((e) => e.type === "events.dropped")).toBe(true);
+  });
+});
+const GUARD = 60_000;

@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addKey, findKey, fromPin, noApprovers, parseApprovers, pinnedKeys, readApprovers, removeKey, replaceKey, resetKeys, trustFirst, writeApprovers } from "../../src/core/approvers.ts";
-import { currentNonce, dropNonce, emptyNonces, nonceFor, readNonces, rotateNonce, SUBJECTS_MAX, writeNonces } from "../../src/core/nonces.ts";
-import { answer, drop, LAPSE_MS, lapse, noPending, PENDING_MAX, readPending, raise, waiting, writePending } from "../../src/core/pending.ts";
+import { addKey, findKey, fromPin, noApprovers, parseApprovers, pinnedKeys, readApprovers, removeKey, replaceKey, resetKeys, trustFirst, updateApprovers } from "../../src/core/approvers.ts";
+import { currentNonce, emptyNonces, type Nonces, readNonces, rotated as rotateNonce, SUBJECTS_MAX, updateNonces, withNonce as nonceFor, withoutSubject as dropNonce } from "../../src/core/nonces.ts";
+import { answer, drop, LAPSE_MS, lapse, noPending, PENDING_MAX, readPending, raise, updatePending, waiting } from "../../src/core/pending.ts";
 import { readOwnedText, writeOwnedText } from "../../src/core/rootfile.ts";
 import { fingerprint } from "../../src/approver.ts";
 import { keyPair } from "../sshsig.ts";
@@ -74,10 +74,10 @@ describe("nonces", () => {
     expect(currentNonce(s, "nova-1")).toBeUndefined();
     expect(currentNonce(dropNonce(s, "nova-5"), "nova-5")).toBeUndefined();
   });
-  test("round trip through root's file at 644; a bad file reads as bad", () => {
+  test("round trip through root's file at 644; a bad file reads as bad", async () => {
     const p = join(tmp(), "nonces.json");
     const s = nonceFor(emptyNonces(), "box", T, nonce).state;
-    writeNonces(p, s, {});
+    await updateNonces(p, { rootUid: uid }, () => ({ state: s, out: undefined }));
     expect(statSync(p).mode & 0o777).toBe(0o644);
     expect(readNonces(p, uid)).toEqual({ kind: "ok", value: s });
     writeFileSync(p, JSON.stringify({ v: 1, subjects: { box: { nonce: "short", at: T } } }));
@@ -140,9 +140,9 @@ describe("approvers", () => {
     expect(fromPin({ state: "bad" }, T)).toBeUndefined();
     expect(fromPin({ state: "none" }, T)).toEqual(noApprovers());
   });
-  test("the file is root's at 644; a planted key with a wrong fingerprint, or one pinned twice, reads as bad", () => {
+  test("the file is root's at 644; a planted key with a wrong fingerprint, or one pinned twice, reads as bad", async () => {
     const p = join(tmp(), "approvers.json");
-    writeApprovers(p, first(), {});
+    await updateApprovers(p, { rootUid: uid }, () => ({ ok: true, state: first(), said: "" }));
     expect(readApprovers(p, uid)).toEqual({ kind: "ok", value: first() });
     const s = first();
     expect(typeof parseApprovers({ ...s, keys: [{ ...s.keys[0], fingerprint: fingerprint(b) }] })).toBe("string");
@@ -195,11 +195,11 @@ describe("the pending store for confirm", () => {
     const long = raise(noPending(), { ...ask, shows: ["x".repeat(500)] }, T);
     expect(long.ok && long.item.shows[0]!.length).toBe(120);
   });
-  test("round trip; an edited payload no longer matches its digest and reads as bad", () => {
+  test("round trip; an edited payload no longer matches its digest and reads as bad", async () => {
     const p = join(tmp(), "pending.json");
     const r = raise(noPending(), ask, T);
     if (!r.ok) throw new Error();
-    writePending(p, r.state, {});
+    await updatePending(p, { rootUid: uid }, () => ({ state: r.state, out: undefined }));
     expect(readPending(p, uid)).toEqual({ kind: "ok", value: r.state });
     const v = JSON.parse(readFileSync(p, "utf8"));
     v.items[0].payload.key = "swapped";
@@ -288,7 +288,7 @@ describe("review fixes: L1 and M1, a signed request consumed once", () => {
     const k = keyPair();
     const p = join(tmp(), "nonces.json");
     const s = nonceFor(emptyNonces(), "box", T, nonce);
-    writeNonces(p, s.state, {});
+    await updateNonces(p, { rootUid: uid }, () => ({ state: s.state, out: undefined }));
     const now = Date.UTC(2026, 10, 23, 14, 2, 0);
     const st = statementFor({ box: "0".repeat(32), action: "drain", args: {}, subject: "box", nonce: s.nonce, now });
     const word = signedWord(st, sshsig(k, new TextEncoder().encode(statementText(st)), { namespace: CONTROL_NS }));
