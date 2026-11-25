@@ -3,10 +3,19 @@
 // - it listens on the box's own LAN address, TCP and UDP, on its IPv6 address and its Tailscale
 //   address when it has them;
 // - the probe run as nobody must reach the listener, so the listener is reachable at all;
+// - first, the runtime check: nobody's UDP try at a loopback port the guard has closed must
+//   exit BLOCKED. That proves taskbox's bun reports a refused UDP try (Bun 1.4.4 does, 1.3.13
+//   doesn't). On a bun that doesn't, the proof fails here, and no UDP exit counts as refused;
 // - the same probe run as the pool account must be refused: it must exit BLOCKED, which it gives only
-//   for ECONNREFUSED or EHOSTUNREACH (what pf's block return gives), or for a TCP connect that
-//   never opened within its time (timeoutCode), and the listener must not have seen it. Any other
-//   failure is a failed proof, never a pass;
+//   for ECONNREFUSED, or for a TCP connect that never opened within its time (timeoutCode), and the
+//   listener must not have seen it. Any other failure, EHOSTUNREACH included, is a failed proof,
+//   never a pass. pf gives no EHOSTUNREACH (the Tart run); at the box's own address it means routing
+//   trouble;
+// - the control as nobody must reach the listener again after the pool's try, with a new token. A
+//   refusal alone can't be told from a closed port: pf's block return out answers a UDP packet with
+//   an ICMP port unreachable, the same as a port with nothing bound (seen in a Tart run on macOS 27.2,
+//   where the send itself succeeds). With the listener proved there before and after, what turned the
+//   pool away stood in front of it and matched by user, and that is the fence;
 // - the probe run as the pool account must reach the internet, TCP and UDP, so the fence leaves it
 //   open; over IPv6 too when the box has a global IPv6 address.
 // Each probe is taskbox's own code, this file, run by taskbox's bun with env -i HOME=/var/empty, from
@@ -19,10 +28,11 @@ import { type Clock, realClock } from "../clock.ts";
 
 export const PROBE_TIMEOUT_MS = 3_000;
 // The probe's exit codes: 0 reached and answered; BLOCKED refused by the network; 1 any other
-// failure, such as a timeout; 2 words it doesn't take.
+// failure, such as a timeout; 2 words it doesn't take. A UDP refusal is the ICMP unreachable the
+// runtime reports on the connected socket as ECONNREFUSED. Bun 1.4.4, the box's pin, reports it.
+// Bun 1.3.13 reports nothing, so there a refused UDP try is silence and exits 1, and the proof fails.
 export const BLOCKED = 3;
-const REFUSED = ["ECONNREFUSED", "EHOSTUNREACH"];
-export const failCode = (e: unknown) => (REFUSED.includes(String((e as NodeJS.ErrnoException)?.code)) ? BLOCKED : 1);
+export const failCode = (e: unknown) => ((e as NodeJS.ErrnoException)?.code === "ECONNREFUSED" ? BLOCKED : 1);
 // The code when the probe's time runs out. On macOS 27.2, pf's block return out for a user match
 // sends a TCP connect no RST and no error: it hangs (seen in the Tart run). So a TCP try at the
 // guard's listener that never connected is BLOCKED. That is sound only beside the control: proveFence
@@ -56,6 +66,16 @@ export type Proof = { ok: true } | { ok: false; why: string };
 // The proof, for one pool account. lan: the box's own addresses (fence.ts lanAddresses).
 export async function proveFence(d: ProbeDeps, o: { user: string; lan: { v4?: string; v6?: string; ts?: string; v6global?: boolean } }): Promise<Proof> {
   if (!o.lan.v4) return { ok: false, why: "the box has no LAN address to prove the fence on" };
+  const noIcmp = { ok: false as const, why: "taskbox's bun doesn't report a refused UDP try, so the fence can't be proved over UDP" };
+  let check: Listener;
+  try {
+    check = await d.listen("127.0.0.1", "udp");
+  } catch (e) {
+    return { ok: false, why: `the guard couldn't listen on 127.0.0.1 for UDP: ${String((e as Error).message ?? e).slice(0, 80)}` };
+  }
+  const port = check.port;
+  check.close();
+  if ((await d.runAs("nobody", ["udp", "127.0.0.1", String(port), d.token()])) !== BLOCKED) return noIcmp;
   const hosts: [string, string][] = [["IPv4", o.lan.v4]];
   if (o.lan.v6) hosts.push(["IPv6", o.lan.v6]);
   if (o.lan.ts) hosts.push(["Tailscale", o.lan.ts]);
@@ -75,6 +95,9 @@ export async function proveFence(d: ProbeDeps, o: { user: string; lan: { v4?: st
         const p = await d.runAs(o.user, [proto, host, String(l.port), pool]);
         if (p === 0 || l.got(pool)) return { ok: false, why: `${o.user} reached the box's own ${fam} address over ${proto.toUpperCase()}, so the fence isn't holding` };
         if (p !== BLOCKED) return { ok: false, why: `${o.user}'s try at the box's own ${fam} address over ${proto.toUpperCase()} wasn't refused (exit ${p}), so the fence isn't proved` };
+        const again = d.token();
+        const c2 = await d.runAs("nobody", [proto, host, String(l.port), again]);
+        if (c2 !== 0 || !l.got(again)) return { ok: false, why: `the control didn't reach the box's own ${fam} address over ${proto.toUpperCase()} again after ${o.user}'s try, so its refusal can't be told from a closed port` };
       } finally {
         l.close();
       }
@@ -135,7 +158,14 @@ export function realListen(host: string, proto: Proto, clock: Clock = realClock)
         s.send("ok\n", from.port, from.address);
       }
     });
-    s.bind({ address: host, port: 0, exclusive: true }, () => resolve({ port: s.address().port, got, close: () => s.close() }));
+    // close may come twice, and a UDP socket throws on a second close.
+    let open = true;
+    const close = () => {
+      if (open) s.close();
+      open = false;
+    };
+    s.on("close", () => (open = false));
+    s.bind({ address: host, port: 0, exclusive: true }, () => resolve({ port: s.address().port, got, close }));
   });
 }
 
@@ -190,4 +220,10 @@ export async function probe(args: readonly string[], timeoutMs = PROBE_TIMEOUT_M
   });
 }
 
-if (import.meta.main) process.exit(await probe(process.argv.slice(2)));
+// The words as run: a token of "-" is read from stdin, so it isn't in argv for ps to show.
+export const probeArgs = (args: readonly string[], stdin: string): string[] => (args[3] === "-" ? [...args.slice(0, 3), stdin.trim()] : [...args]);
+
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  process.exit(await probe(probeArgs(args, args[3] === "-" ? await Bun.stdin.text() : "")));
+}

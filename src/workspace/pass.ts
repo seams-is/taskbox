@@ -344,8 +344,9 @@ export function realProbe(d: WsDeps): ProbeDeps {
     listen: realListen,
     // taskbox's own bun and probe, as the user, with env -i HOME=/var/empty, from /, with no .env
     // and taskbox's own bunfig: nothing in the account's home runs.
+    // The token goes on stdin, so another account can't read it from ps and send it first.
     runAs: async (user, args) =>
-      (await d.sys.run("/usr/bin/sudo", ["-n", "-u", user, "--", "/usr/bin/env", "-i", "HOME=/var/empty", "PATH=/usr/bin:/bin", d.p.bun, "--no-install", "--no-env-file", "--cwd=/", `--config=${join(d.p.app, "bunfig.run.toml")}`, join(d.p.app, "src/workspace/probe.ts"), ...args], { timeoutMs: 15_000 }).catch(() => ({ code: 1 }))).code,
+      (await d.sys.run("/usr/bin/sudo", ["-n", "-u", user, "--", "/usr/bin/env", "-i", "HOME=/var/empty", "PATH=/usr/bin:/bin", d.p.bun, "--no-install", "--no-env-file", "--cwd=/", `--config=${join(d.p.app, "bunfig.run.toml")}`, join(d.p.app, "src/workspace/probe.ts"), ...args.slice(0, 3), "-"], { timeoutMs: 15_000, stdin: `${args[3] ?? ""}\n` }).catch(() => ({ code: 1 }))).code,
     token: () => randomBytes(16).toString("hex"),
   };
 }
@@ -475,7 +476,7 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
         } catch {
           proof = { ok: false as const, why: "the proof couldn't run" };
         }
-        s = { ...s, proof: { user: head.user, at: now, ok: proof.ok, why: proof.ok ? "proved: the LAN and the tailnet refused it, and the internet answered" : proof.why } };
+        s = { ...s, proof: { user: head.user, at: now, ok: proof.ok, why: proof.ok ? "proved: the box's own addresses refused it, and the internet answered" : proof.why } };
         if (proof.ok) {
           s = advance(s, { ...box, ready: [head.user] }, ctx.nonce);
           r.did.push(`${head.name} went Active`);
