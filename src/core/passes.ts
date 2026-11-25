@@ -57,6 +57,8 @@ export function makePasses(makers: readonly PassMaker[], c: PassCtx, log: (line:
 
 export class Passes {
   private running = new Map<string, Promise<unknown>>();
+  private counts = new Map<string, number>(); // failures in a row, by pass
+  private fromAsk = new Set<string>(); // passes whose last failure came from start or next
   constructor(
     private list: readonly GuardPass[],
     private clock: Pick<Sys, "now">,
@@ -68,16 +70,35 @@ export class Passes {
   }
   private run(p: GuardPass, job: Job | undefined): void {
     if (!job || this.running.has(p.name)) return;
+    // A job that rejects or throws is a failure like any other: logged once, counted, kept in
+    // problems() until a job of that pass works again.
+    let promise: Promise<unknown>;
     try {
-      this.running.set(
-        p.name,
-        Promise.resolve(job())
-          .catch(() => undefined)
-          .finally(() => this.running.delete(p.name)),
-      );
-    } catch {
-      this.running.delete(p.name);
+      promise = Promise.resolve(job());
+    } catch (e) {
+      promise = Promise.reject(e);
     }
+    this.running.set(
+      p.name,
+      promise
+        .then(
+          () => this.cleared(p.name),
+          (e) => this.failure(p.name, e),
+        )
+        .finally(() => this.running.delete(p.name)),
+    );
+  }
+  private failure(name: string, e: unknown): void {
+    const why = String((e as Error)?.message ?? e).replace(/[^\x20-\x7e]/g, " ").slice(0, 120);
+    const was = this.counts.get(name) ?? 0;
+    if (!was) this.log(`the ${name} pass failed: ${why}`);
+    this.counts.set(name, was + 1);
+    this.failed.set(name, `the ${name} pass failed${was ? ` ${was + 1} times` : ""}: ${why}`);
+  }
+  private cleared(name: string): void {
+    if (!this.counts.has(name)) return;
+    this.counts.delete(name);
+    this.failed.delete(name);
   }
   // The passes that start at this stage.
   begin(stage: "before" | "after"): void {
@@ -88,22 +109,26 @@ export class Passes {
     for (const p of this.list) this.run(p, this.ask(p, () => p.next(now, this.running.has(p.name))));
   }
   // A pass's start or next that throws is logged, and that pass skips this turn; the others run.
-  // A pass's failure is said once, kept while it lasts, and cleared once the pass asks again cleanly.
+  // A pass's start or next that throws counts as a failure of that pass, and it skips this turn.
   private ask(p: GuardPass, f: () => Job | undefined): Job | undefined {
     try {
       const job = f();
-      if (this.failed.get(p.name)?.startsWith(`the ${p.name} pass failed`)) this.failed.delete(p.name);
+      // A failure from asking is cleared by a clean ask; one from a job by a job that works.
+      if (this.fromAsk.delete(p.name)) this.cleared(p.name);
       return job;
     } catch (e) {
-      const why = `the ${p.name} pass failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`;
-      if (this.failed.get(p.name) !== why) this.log(why);
-      this.failed.set(p.name, why);
+      this.failure(p.name, e);
+      this.fromAsk.add(p.name);
       return undefined;
     }
   }
   // What is wrong with the passes now: one line each, for the guard's record.
   problems(): string[] {
     return [...this.failed.values()];
+  }
+  // The same, by pass name, so a problem is told once per pass, whatever its line says each time.
+  problemsByPass(): Map<string, string> {
+    return new Map(this.failed);
   }
   // For tests and a clean stop: every pass running now, ended.
   async settle(): Promise<void> {

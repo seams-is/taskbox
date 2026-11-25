@@ -88,6 +88,7 @@ export function opProblem(v: unknown): string | undefined {
   if (v.result !== null && !isObj(v.result)) return "its result isn't an object";
   if (v.why !== undefined && !plain(v.why, 240)) return "its why isn't a short line";
   if ((v.state === "running") !== (v.endedAt === null)) return "its state and end time disagree";
+  if (v.seq !== undefined && !(Number.isSafeInteger(v.seq) && (v.seq as number) >= 0)) return "its place in write order isn't one taskbox reads";
   return undefined;
 }
 
@@ -209,7 +210,14 @@ export interface OpFolder {
 }
 const FILE = /^(op_[0-9A-HJKMNP-TV-Z]{26})\.json$/;
 
+// A record gets its place in write order the first time it is written: seq, one more than any record
+// there. Retention and listing order go by seq, never by the clock.
 export function writeOp(f: OpFolder, op: Op): void {
+  if (!Number.isSafeInteger(op.seq)) {
+    const was = readOp(f, op.id);
+    const seq = was.kind === "ok" && Number.isSafeInteger(was.value.seq) ? (was.value.seq as number) : Math.max(0, ...allOps(f).ops.map(order)) + 1;
+    op = { ...op, seq };
+  }
   const why = opProblem(op);
   if (why) throw new Error(`the op wasn't written: ${why}`);
   const text = `${JSON.stringify(op)}\n`;
@@ -224,8 +232,13 @@ export function readOp(f: Pick<OpFolder, "dir" | "owner">, id: string): Read<Op>
   return r;
 }
 
-// Every record that reads, newest first. One that doesn't read is passed over and named.
-export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: string[] } {
+const order = (x: Op) => (Number.isSafeInteger(x.seq) ? (x.seq as number) : 0);
+// Newest by write order first; a record with no seq (an older release's) is oldest, then by id.
+const newestFirst = (a: Op, b: Op) => order(b) - order(a) || (a.id < b.id ? 1 : -1);
+// Every record is read: a cut in the folder's own order could hide a running op. keepOps keeps the
+// folder at OPS_KEEP records and OPS_MAX_BYTES, so the read stays small while keeping works.
+
+function allOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: string[] } {
   let names: string[];
   try {
     const st = lstatSync(f.dir);
@@ -236,31 +249,62 @@ export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: s
   }
   const ops: Op[] = [];
   const bad: string[] = [];
-  for (const n of names.slice(0, 5_000)) {
+  for (const n of names) {
     const r = readOp(f, FILE.exec(n)![1]!);
     if (r.kind === "ok") ops.push(r.value);
     else bad.push(n);
   }
-  ops.sort((a, b) => (a.id < b.id ? 1 : -1));
-  return { ops, bad };
+  return { ops: ops.sort(newestFirst), bad };
 }
 
-// Removes records past keeping. Age is counted from the newest record's time when the clock is past
-// it, so a clock that jumps ahead never ages out the days kept. The ids removed.
-export function keepOps(f: OpFolder, now: number): string[] {
+// Every running op, then the newest max other records by write order. One that doesn't read is
+// passed over and named.
+export function listOps(f: Pick<OpFolder, "dir" | "owner">, o: { max?: number } = {}): { ops: Op[]; bad: string[] } {
+  const { ops, bad } = allOps(f);
+  const running = ops.filter((x) => x.state === "running");
+  const rest = ops.filter((x) => x.state !== "running").slice(0, o.max ?? 5_000);
+  return { ops: [...running, ...rest].sort(newestFirst), bad };
+}
+
+// Keeps the newest OPS_KEEP ended records by write order, and the folder within maxBytes, removing
+// the records written first. Nothing about it reads the clock, so no clock step, either way, removes a
+// record sooner. Never removed: a running op, or one whose child's job is still loaded (child.ts
+// settles it first). A removed record's child files go with it. The ids removed.
+export const OPS_KEEP = 1_000;
+export const OPS_MAX_BYTES = 256 * 1024 * 1024;
+const CHILD_FILES = ["reports", "progress", "lease", "log", "plist"];
+export function keepOps(f: OpFolder, o: { maxBytes?: number; keep?: number } = {}): string[] {
   const gone: string[] = [];
-  const ops = listOps(f).ops;
-  const newest = Math.max(0, ...ops.map((o) => o.endedAt ?? o.startedAt));
-  const ref = ops.length ? Math.min(now, newest) : now;
-  for (const op of ops.filter((o) => expired(o, ref))) {
+  const ops = allOps(f).ops;
+  const loaded = (x: Op) => isObj(x.child) && x.child.done !== true;
+  const ended = ops.filter((x) => x.state !== "running");
+  const removable = ended.filter((x) => !loaded(x));
+  const sizeOf = (x: Op) => [x.id + ".json", ...CHILD_FILES.map((e) => `${x.id}.${e}`)].reduce((n, name) => {
     try {
-      unlinkSync(join(f.dir, `${op.id}.json`));
-      gone.push(op.id);
-    } catch {}
-    // Its child's handoff file (child.ts) goes with it.
+      return n + lstatSync(join(f.dir, name)).size;
+    } catch {
+      return n;
+    }
+  }, 0);
+  const drop = (x: Op) => {
     try {
-      unlinkSync(join(f.dir, `${op.id}.reports`));
+      unlinkSync(join(f.dir, `${x.id}.json`));
+      gone.push(x.id);
     } catch {}
+    for (const ext of CHILD_FILES) {
+      try {
+        unlinkSync(join(f.dir, `${x.id}.${ext}`));
+      } catch {}
+    }
+  };
+  const keep = new Set(ended.slice(0, o.keep ?? OPS_KEEP).map((x) => x.id));
+  for (const x of removable.filter((y) => !keep.has(y.id))) drop(x);
+  let total = ops.filter((x) => !gone.includes(x.id)).reduce((n, x) => n + sizeOf(x), 0);
+  for (const x of [...removable].reverse()) {
+    if (total <= (o.maxBytes ?? OPS_MAX_BYTES)) break;
+    if (gone.includes(x.id)) continue;
+    total -= sizeOf(x);
+    drop(x);
   }
   return gone;
 }

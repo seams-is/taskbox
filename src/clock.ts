@@ -29,3 +29,9 @@ export const realClock: Clock = {
   },
   timeout: (ms) => AbortSignal.timeout(ms),
 };
+
+// Waits ms without returning to the event loop: for a few milliseconds in code that must stay
+// synchronous, such as a child taking its lease (core/child.ts).
+export function waitSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}

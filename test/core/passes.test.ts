@@ -75,6 +75,8 @@ describe("the keeping pass", () => {
     const s = rootState(root);
     mkdirSync(s.dir, { recursive: true });
     const sys = new FakeSys();
+    // The keeping pass asks for the boot and the monotonic clock; unread here, so the wall rules apply.
+    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 1, stdout: "", stderr: "" } : undefined));
     const lines: string[] = [];
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: (l: string) => lines.push(l) }, writer } as unknown as PassCtx;
     return { c, s, sys, lines };
@@ -86,7 +88,10 @@ describe("the keeping pass", () => {
   test("a change past its 24 hours lapses, with a confirm.lapsed event", async () => {
     const { c, s, sys } = ctx(true);
     const uid = process.getuid!();
-    const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["Move to beta."], actor: "owner (signed, key SHA256:x)", payload: { to: "beta" } }, sys.now() - LAPSE_MS);
+
+// A moment for the pending store: the wall clock, a monotonic clock that keeps pace with it, one boot.
+const mo = (wall: number) => ({ wall, mono: wall - 1_700_000_000_000, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" });
+    const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["Move to beta."], actor: "owner (signed, key SHA256:x)", payload: { to: "beta" } }, mo(sys.now() - LAPSE_MS));
     if (!r.ok) throw new Error();
     await updatePending(s.pending, { rootUid: uid }, () => ({ state: r.state, out: undefined }));
     const pass = keepingPass.make({ ...c, rootUid: uid })!;
@@ -125,7 +130,9 @@ describe("review fixes: L2", () => {
     p.tick();
     await p.settle();
     expect(order).toEqual(["good"]);
-    expect(lines).toEqual(["the bad pass failed: start", "the bad pass failed: next"]);
+    // Said once; the second failure is counted (review 3).
+    expect(lines).toEqual(["the bad pass failed: start"]);
+    expect(p.problems()).toEqual(["the bad pass failed 2 times: next"]);
   });
   test("a maker that throws leaves its pass out", async () => {
     const { makePasses } = await import("../../src/core/passes.ts");
@@ -137,7 +144,7 @@ describe("review fixes: L2", () => {
 });
 
 describe("the ops pass", () => {
-  test("only the one writer runs it, every tick, and it ends an op whose child the last guard ran", async () => {
+  test("only the one writer runs it, every tick: it takes an op's reports to its end and boots its job out", async () => {
     const { opsPass } = await import("../../src/passes/ops.ts");
     const { begin, readOp, writeOp } = await import("../../src/core/ops.ts");
     const { reportLine, reportsPath } = await import("../../src/core/child.ts");
@@ -145,19 +152,21 @@ describe("the ops pass", () => {
     const s = rootState(root);
     mkdirSync(s.ops, { recursive: true });
     const sys = new FakeSys();
-    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "{ sec = 1700000000, usec = 0 }", stderr: "" } : cmd === "/bin/ps" ? { code: 1, stdout: "", stderr: "" } : undefined));
+    const booted: string[] = [];
+    sys.responders.push((cmd, args) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE\n", stderr: "" } : cmd === "/bin/launchctl" ? (booted.push(args.join(" ")), { code: 0, stdout: "", stderr: "" }) : undefined));
     const uid = process.getuid!();
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     expect(opsPass.make({ ...c, writer: false })).toBeUndefined();
     const b = begin([], { type: "update", phases: ["a", "b"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "taskbox" }, sys.now());
     if (b.kind !== "start") throw new Error();
-    writeOp({ dir: s.ops, owner: uid }, { ...b.op, child: { pid: 999_999, guardPid: -5, boot: "1700000000", applied: 0, events: [] } });
+    writeOp({ dir: s.ops, owner: uid }, { ...b.op, child: { label: `local.taskbox.op.${b.op.id}`, boot: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", spawnedAt: sys.now(), applied: 0, events: [] } });
     writeFileSync(reportsPath({ dir: s.ops }, b.op.id), `${reportLine({ n: 1, phase: "b", end: { state: "succeeded" } })}\n`, { mode: 0o600 });
     const pass = opsPass.make(c)!;
     expect(pass.at).toBe("after");
     await pass.next(sys.now(), false)!();
     const r = readOp({ dir: s.ops, owner: uid }, b.op.id);
     expect(r.kind === "ok" && r.value.state).toBe("succeeded");
+    expect(booted).toEqual([`bootout system/local.taskbox.op.${b.op.id}`]);
   });
 });
 
@@ -168,23 +177,12 @@ describe("review 2: the keeping pass", () => {
     mkdirSync(s.events, { recursive: true });
     mkdirSync(s.ops, { recursive: true });
     const sys = new FakeSys();
+    // The keeping pass asks for the boot and the monotonic clock; unread here, so the wall rules apply.
+    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 1, stdout: "", stderr: "" } : undefined));
     const uid = process.getuid!();
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     return { c, s, sys, uid };
   }
-  test("L6: a clock that jumps a year ahead, with an event written at the new time, ages nothing out", async () => {
-    const { c, s, sys, uid } = ctx();
-    const { appendEvent, newEvent } = await import("../../src/core/events.ts");
-    const day = 86_400_000;
-    for (let d = 0; d < 10; d++) appendEvent({ dir: s.events, owner: uid }, newEvent("guard", { type: "check.failed", actor: "taskbox", text: "x" }, { now: () => sys.now() - d * day }));
-    const pass = keepingPass.make(c)!;
-    await pass.start!(sys.now())!();
-    sys.clock += 365 * day;
-    appendEvent({ dir: s.events, owner: uid }, newEvent("guard", { type: "check.failed", actor: "taskbox", text: "x" }, sys));
-    await pass.next(sys.now(), false)!();
-    await pass.next(sys.now() + GUARD, false)!();
-    expect(readdirSync(s.events)).toHaveLength(11);
-  });
   test("N7 and L9: it sweeps temporary names a crash left, and outcomes past their hour", async () => {
     const { c, s, sys, uid } = ctx();
     const { recordOutcome } = await import("../../src/core/spool.ts");

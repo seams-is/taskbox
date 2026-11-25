@@ -15,7 +15,7 @@ import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } fro
 import { kitFor } from "./vm.ts";
 import { removeRequests } from "./requests.ts";
 import { rows } from "./rows/index.ts";
-import { oneShotPlist, oneShotScript, psStart, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
+import { endOpJobs, oneShotPlist, oneShotScript, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { halfMade, readRecord, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
@@ -535,6 +535,13 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
     for (const l of footer(await stateNow(d), "Nothing changed.", "Nothing to do: agents fix it.")) d.say(l);
     return 1;
   }
+  // Every op job first: its child runs this release's code, which the swap takes away (core/child.ts).
+  const opsDir = rootStateOf(d.paths).ops;
+  if (existsSync(opsDir)) {
+    const ended = await endOpJobs({ sys: d.sys, ops: { dir: opsDir, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {} }, "undone").catch(() => ({ cancelled: [], missed: ["the op jobs couldn't be read"] }));
+    if (ended.cancelled.length) d.say(`  Stopped ${ended.cancelled.length} operation${ended.cancelled.length === 1 ? "" : "s"} that ${ended.cancelled.length === 1 ? "was" : "were"} running.`);
+    for (const m of ended.missed) d.say(`  ${noControl(m).slice(0, 160)}`);
+  }
   // One rename moves /opt/taskbox to the kept install. Then the kept link moves to the newer one,
   // so undo can be undone. Stopping between the two leaves both links on the same install, which
   // runs.
@@ -550,7 +557,9 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   let did = `Back to #${prev.pr} ${noControl(prev.title)}. The loop moves to it once the current job or download ends.`;
   // v2.6.1 (docs/v3-design.md §5.7, 6): daemons of a later release, which this install doesn't know,
   // are booted out and their plists removed, so they don't run against an install that can't answer them.
-  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid).catch(() => [] as string[]);
+  const notEnded: string[] = [];
+  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid, notEnded).catch(() => [] as string[]);
+  for (const m of notEnded) d.say(`  An op job couldn't be ended: ${noControl(m).slice(0, 120)}.`);
   if (gone.length) did += ` Stopped ${gone.join(", ")}, which this install doesn't run.`;
   // Back across the label move: the kept code knows only the old labels (install.ts, labelsBack).
   const back = d.paths.previousLabelPrefix ? await labelsBack({ ...d, sys: d.sys }, d.paths.previousLabelPrefix).catch((e: Error) => `The services' names weren't put back: ${noControl(e.message).slice(0, 80)}. Type taskbox update.`) : undefined;
@@ -710,9 +719,12 @@ export async function remove(d: OpsDeps, o: { serviceUid?: number; overSsh?: boo
   done.push("left this box's runners for GitHub to drop within a day");
   // The guard, and its pf rules. With them gone, Screen Sharing reaches every network again.
   for (const label of [GUARD_LABEL, ...(old ? [old.guard] : [])]) await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
-  // Every running op's child, with all it started: none runs on as root once taskbox is gone.
-  const stopped = await stopChildren({ sys: d.sys, ops: { dir: rootStateOf(d.paths).ops, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {}, startOf: psStart(d.sys) }, "taskbox is being removed").catch(() => []);
+  // Every running op's job, booted out by its label, which ends its child and what that started:
+  // launchd owns them, so no pid is signalled. A job that can't be booted out is said.
+  const notStopped: string[] = [];
+  const stopped = await stopChildren({ sys: d.sys, ops: { dir: rootStateOf(d.paths).ops, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: (l) => notStopped.push(l) }, "taskbox is being removed").catch(() => []);
   if (stopped.length) done.push(`stopped ${stopped.length} operation${stopped.length === 1 ? "" : "s"} that ${stopped.length === 1 ? "was" : "were"} running`);
+  if (notStopped.length) missed.push(`${notStopped.length} operation${notStopped.length === 1 ? "'s job" : "s' jobs"}, which launchd couldn't end`);
   // A reload LaunchDaemon an undo left, so it can't load tailscaled again after remove.
   if (await dropReloadJob(d.sys, d.paths)) done.push("removed undo's LaunchDaemon that loads tailscaled again");
   const flushed = await d.sys.run(PFCTL, ["-a", ANCHOR, "-F", "rules"]);

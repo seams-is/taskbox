@@ -7,9 +7,9 @@
 //   and mode, renamed into place, and the folder flushed, so a power cut leaves the old file or the
 //   new one, never a torn one.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, renameSync, rmSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { readUpTo } from "../workspace/read.ts";
 
 export type FileText = { kind: "missing" } | { kind: "ok"; text: string } | { kind: "bad"; why: string };
@@ -92,23 +92,36 @@ export const badKey = (k: string) => BAD_KEYS.has(k);
 
 // One lock per file in this process: root's state files have one writer process, the guard, whose
 // passes run beside each other. Each read, change and write of one file holds the lock throughout.
-// The key is the resolved path, so two spellings of one file share it. A change that asks for the
-// lock it already holds throws, rather than waiting for itself for ever.
+// - The key is the file's real folder and its name, so every spelling of one file, links included,
+//   shares it.
+// - One lock at a time: a change that asks for any lock while it holds one throws. So no change can
+//   wait for itself, and no two can wait for each other.
+// - "While it holds one" ends when its lock is let go: work it started that asks later isn't refused.
 const locks = new Map<string, Promise<unknown>>();
-const held = new AsyncLocalStorage<ReadonlySet<string>>();
+const held = new AsyncLocalStorage<{ key: string; released: boolean }>();
+const lockKey = (path: string) => {
+  const abs = resolve(path);
+  try {
+    return join(realpathSync(dirname(abs)), basename(abs));
+  } catch {
+    return abs;
+  }
+};
 export async function withLock<T>(path: string, f: () => Promise<T> | T): Promise<T> {
-  const key = resolve(path);
-  const mine = held.getStore() ?? new Set<string>();
-  if (mine.has(key)) throw new Error(`the lock on ${key} is held already by this change`);
+  const key = lockKey(path);
+  const mine = held.getStore();
+  if (mine && !mine.released) throw new Error(`one lock at a time: ${mine.key} is held by this change, so ${key} can't be taken`);
   const before = locks.get(key) ?? Promise.resolve();
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   const chain = before.then(() => gate);
   locks.set(key, chain);
+  const token = { key, released: false };
   try {
     await before.catch(() => undefined);
-    return await held.run(new Set([...mine, key]), async () => await f());
+    return await held.run(token, async () => await f());
   } finally {
+    token.released = true;
     release();
     if (locks.get(key) === chain) locks.delete(key);
   }

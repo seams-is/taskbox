@@ -42,7 +42,7 @@ describe("M1: the lock", () => {
   });
   test("N8: a nested lock on one file throws, rather than waiting for ever", async () => {
     const p = join(tmp(), "c.json");
-    await expect(withLock(p, () => withLock(p, () => "inner"))).rejects.toThrow("already");
+    await expect(withLock(p, () => withLock(p, () => "inner"))).rejects.toThrow("one lock at a time");
   });
   test("N8: two spellings of one file share one lock", async () => {
     const d = tmp();
@@ -184,100 +184,6 @@ describe("N1: the guard's exit", () => {
   });
 });
 
-describe("the child runner, review 2", () => {
-  async function setup() {
-    const { FakeSys } = await import("../fake.ts");
-    const { eventLog } = await import("../../src/core/events.ts");
-    const { begin } = await import("../../src/core/ops.ts");
-    const sys = new FakeSys();
-    const ops = { dir: tmp(), owner: uid };
-    const lines: string[] = [];
-    const d = { sys, ops, events: eventLog("guard", { dir: join(ops.dir, "ev"), owner: uid }, sys), log: (l: string) => lines.push(l), boot: "b1", pid: 111 };
-    const b = begin([], { type: "update", phases: ["a", "b", "c"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "owner" }, sys.now());
-    if (b.kind !== "start") throw new Error();
-    return { sys, ops, lines, d, op: b.op };
-  }
-  test("N3: only taskbox's own Bun runs as an op's child: a shell or a script is refused", async () => {
-    const { runChild, CHILD_BUN } = await import("../../src/core/child.ts");
-    const s = await setup();
-    for (const cmd of ["/bin/sh", "/opt/taskbox/bin/taskbox", "/tmp/bun"]) expect(() => runChild(s.d, s.op, cmd, ["-c", "x"])).toThrow("taskbox's own Bun");
-    expect(() => runChild(s.d, s.op, CHILD_BUN, ["/opt/taskbox/app/src/cli.ts", "op", "run"])).not.toThrow();
-    expect(() => runChild(s.d, s.op, CHILD_BUN, ["-e", "x"])).toThrow("taskbox's own Bun");
-  });
-  test("N5: a child's runner needs the boot, and records the child's start time", async () => {
-    const { runChild, CHILD_BUN } = await import("../../src/core/child.ts");
-    const { readOp } = await import("../../src/core/ops.ts");
-    const s = await setup();
-    expect(() => runChild({ ...s.d, boot: "" }, s.op, CHILD_BUN, ["/opt/taskbox/app/src/cli.ts"])).toThrow("boot");
-    runChild({ ...s.d, startOf: async () => "Wed Nov 25 10:00:00 2026" }, s.op, CHILD_BUN, ["/opt/taskbox/app/src/cli.ts"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    const r = readOp(s.ops, s.op.id);
-    expect(r.kind === "ok" && r.value.child).toMatchObject({ started: "Wed Nov 25 10:00:00 2026", boot: "b1" });
-  });
-  test("N5: a reused pid isn't the child: its start time differs, so the op fails", async () => {
-    const { aliveBy, adoptOrphans } = await import("../../src/core/child.ts");
-    const { writeOp } = await import("../../src/core/ops.ts");
-    const s = await setup();
-    writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [], started: "Wed Nov 25 10:00:00 2026" } });
-    const ended = await adoptOrphans({ ...s.d, pid: 222, alive: aliveBy(async () => "Wed Nov 25 11:30:00 2026") });
-    expect(ended[0]).toMatchObject({ state: "failed", why: "its process ended before it finished" });
-  });
-  test("N5: no adoption without the boot, so a restart is never mistaken for a live child", async () => {
-    const { adoptOrphans } = await import("../../src/core/child.ts");
-    const { writeOp } = await import("../../src/core/ops.ts");
-    const s = await setup();
-    writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [] } });
-    await expect(adoptOrphans({ ...s.d, pid: 222, boot: "", alive: () => true })).rejects.toThrow("boot");
-  });
-  test("N2 and N5: a running op's child is ended by its group, adopted or not, and its op cancelled", async () => {
-    const { stopChildren } = await import("../../src/core/child.ts");
-    const { readOp, writeOp } = await import("../../src/core/ops.ts");
-    const s = await setup();
-    writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [], started: "S" } });
-    const killed: number[] = [];
-    const stopped = await stopChildren({ ...s.d, startOf: async () => "S", kill: (pid) => killed.push(pid) }, "the box is being removed");
-    expect(killed).toEqual([-4242]);
-    expect(stopped.map((o) => o.state)).toEqual(["cancelled"]);
-    const r = readOp(s.ops, s.op.id);
-    expect(r.kind === "ok" && r.value.why).toBe("the box is being removed");
-  });
-  test("N2: a pid whose start time isn't the child's is never killed", async () => {
-    const { stopChildren } = await import("../../src/core/child.ts");
-    const { writeOp } = await import("../../src/core/ops.ts");
-    const s = await setup();
-    writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [], started: "S" } });
-    const killed: number[] = [];
-    await stopChildren({ ...s.d, startOf: async () => "other", kill: (pid) => killed.push(pid) }, "x");
-    expect(killed).toEqual([]);
-  });
-  test("N4: progress goes on fd 3 only; the handoff file keeps phases, events and the end, within its cap", async () => {
-    const { reporter, parseReport, REPORTS_MAX } = await import("../../src/core/child.ts");
-    const { statSync } = await import("node:fs");
-    const f = join(tmp(), "r");
-    const rep = reporter({ op: "op_01JD8Q4AAAAAAAAAAAAAAAAAAA", reports: f, fd: -1 });
-    for (let i = 0; i < 20_000; i++) rep.send({ progress: { done: i, of: 20_000, text: "x".repeat(100) } });
-    for (let i = 0; i < 20_000; i++) rep.send({ event: { type: "update.step", text: "y".repeat(200) } });
-    rep.send({ end: { state: "succeeded" } });
-    expect(statSync(f).size).toBeLessThanOrEqual(REPORTS_MAX);
-    const lines = readFileSync(f, "utf8").trim().split("\n").map((l) => parseReport(l)!);
-    expect(lines.every((r) => r.n !== undefined && r.progress === undefined)).toBe(true);
-    expect(lines.at(-1)).toMatchObject({ end: { state: "succeeded" } });
-    expect(lines.map((r) => r.n)).toEqual(lines.map((_, i) => i + 1));
-  });
-  test("N4: a handoff file that can't be read is said once, not every tick", async () => {
-    const { adoptOrphans, reportsPath } = await import("../../src/core/child.ts");
-    const { writeOp } = await import("../../src/core/ops.ts");
-    const s = await setup();
-    writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [] } });
-    writeFileSync(reportsPath(s.ops, s.op.id), "x");
-    chmodSync(reportsPath(s.ops, s.op.id), 0o666);
-    const said = new Set<string>();
-    for (let i = 0; i < 3; i++) await adoptOrphans({ ...s.d, pid: 222, alive: () => true, said });
-    expect(s.lines.filter((l) => l.includes("can't be read"))).toHaveLength(1);
-  });
-});
-
 describe("N6: a pass that fails is seen", () => {
   test("a maker that throws, or a pass that throws, shows in the passes' problems, said once", async () => {
     const { makePasses, Passes } = await import("../../src/core/passes.ts");
@@ -288,7 +194,7 @@ describe("N6: a pass that fails is seen", () => {
     p.tick();
     p.tick();
     p.tick();
-    expect(p.problems()).toEqual(["the logins pass couldn't start: no keeper", "the bad pass failed: each tick"]);
+    expect(p.problems()).toEqual(["the logins pass couldn't start: no keeper", "the bad pass failed 3 times: each tick"]);
     expect(lines).toEqual(["the logins pass couldn't start: no keeper", "the bad pass failed: each tick"]);
   });
   test("the guard's record carries them, and a check row fails on them", async () => {

@@ -181,7 +181,8 @@ describe("a request", () => {
     expect(recordOutcome(dir, { id: good.id, at: T, ok: false, said: "again" }, { owner: uid })).toBe(false);
     expect(readOutcome(dir, good.id, uid)).toMatchObject({ kind: "ok", value: { ok: true, said: "Drained." } });
     expect(require("node:fs").statSync(dir).mode & 0o7777).toBe(0o711);
-    expect(keepOutcomes(dir, Date.now())).toEqual([]);
+    // A second on: the file's own time is never after the clock that judges it.
+    expect(keepOutcomes(dir, Date.now() + 1000)).toEqual([]);
     expect(keepOutcomes(dir, Date.now() + 2 * 3600_000)).toEqual([good.id]);
     expect(readOutcome(dir, good.id, uid).kind).toBe("missing");
     expect(() => readOutcome(dir, "../x", uid)).toThrow();

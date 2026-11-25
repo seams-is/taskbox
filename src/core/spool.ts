@@ -14,6 +14,7 @@ import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openS
 import { dirname, join } from "node:path";
 import type { Clock } from "../clock.ts";
 import { readUpTo } from "../workspace/read.ts";
+import { isBootId } from "./boot.ts";
 import { isId, type Rand, realRand, idOf } from "./ids.ts";
 import { isObj, plain, readOwnedJson, readOwnedText, type Read, safeParse, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
 
@@ -294,6 +295,8 @@ export function writeSpoolFile(dir: string, kind: string, body: Record<string, u
 export interface Outcome {
   id: string;
   at: number;
+  mono?: number; // the monotonic clock when it was written
+  boot?: string; // the boot it was written in
   ok: boolean;
   said: string;
   op?: string;
@@ -304,11 +307,18 @@ const outcomeFile = (dir: string, id: string) => {
   return join(dir, `${id}.json`);
 };
 function outcomeProblem(o: unknown): string | undefined {
-  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) ? undefined : "it isn't an outcome taskbox reads";
+  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) && (o.mono === undefined || Number.isSafeInteger(o.mono)) && (o.boot === undefined || isBootId(o.boot)) ? undefined : "it isn't an outcome taskbox reads";
 }
 // Records an outcome once: a request's first outcome stands. False when one was there.
 export function recordOutcome(dir: string, o: Outcome, w: Omit<WriteRules, "mode"> = {}): boolean {
   const path = outcomeFile(dir, o.id);
+  // The outcomes folder above each spool's must be root's alone too, or its spool folder could be swapped.
+  try {
+    const up = lstatSync(dirname(dir));
+    if (!up.isDirectory() || up.uid !== (w.owner ?? 0) || (up.mode & 0o022) !== 0) throw new Error(`${dirname(dir)} isn't root's alone`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
   try {
     const st = lstatSync(dir);
     if (!st.isDirectory() || st.uid !== (w.owner ?? 0) || (st.mode & 0o7777) !== 0o711) throw new Error(`${dir} isn't root's at 711`);
@@ -329,8 +339,11 @@ export function recordOutcome(dir: string, o: Outcome, w: Omit<WriteRules, "mode
 export function readOutcome(dir: string, id: string, rootUid = 0): Read<Outcome> {
   return readOwnedJson(outcomeFile(dir, id), { owner: rootUid, max: 4096 }, (v) => outcomeProblem(v) ?? (v as Outcome));
 }
-// Outcomes past OUTCOME_KEEP_MS go: the asker waits about 2 s. The ids removed.
-export function keepOutcomes(dir: string, now: number): string[] {
+// An outcome goes at whichever comes first: the wall clock an hour past it, a restart of the box, or,
+// in the same boot, an hour of the monotonic clock. A clock gone back keeps it; boot and mono still
+// end it. The asker waits about 2 s. The ids removed.
+export function keepOutcomes(dir: string, at: number | { wall: number; mono?: number; boot?: string }): string[] {
+  const m = typeof at === "number" ? { wall: at } as { wall: number; mono?: number; boot?: string } : at;
   const gone: string[] = [];
   let names: string[];
   try {
@@ -340,8 +353,20 @@ export function keepOutcomes(dir: string, now: number): string[] {
   }
   for (const n of names) {
     try {
-      if (now - lstatSync(join(dir, n)).mtimeMs > OUTCOME_KEEP_MS) {
-        unlinkSync(join(dir, n));
+      const path = join(dir, n);
+      const t = lstatSync(path).mtimeMs;
+      // A clock gone back removes nothing: boot and mono decide then.
+      let stale = m.wall - t > OUTCOME_KEEP_MS;
+      if (!stale && (m.mono !== undefined || m.boot !== undefined)) {
+        const o = readOwnedJson(path, { owner: lstatSync(path).uid, max: 4096 }, (v) => outcomeProblem(v) ?? (v as Outcome));
+        if (o.kind === "ok") {
+          const v = o.value;
+          if (v.boot !== undefined && m.boot !== undefined && v.boot !== m.boot) stale = true;
+          else if (v.boot === m.boot && v.mono !== undefined && m.mono !== undefined && m.mono - v.mono > OUTCOME_KEEP_MS) stale = true;
+        }
+      }
+      if (stale) {
+        unlinkSync(path);
         gone.push(n.slice(0, -5));
       }
     } catch {}

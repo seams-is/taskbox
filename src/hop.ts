@@ -17,6 +17,8 @@
 // its file. If neither happens by the deadline, the watcher takes the box back to v2.6.1 with
 // v2.6.1's own undo, so a v3 whose guard never starts is still undone. A failed undo leaves it in
 // place: it says so in taskbox check and tries again later.
+import { bootOutListed } from "./core/child.ts";
+import { rootStateOf } from "./core/paths.ts";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, existsSync, renameSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -496,8 +498,12 @@ export const KNOWN_DAEMONS = [GUARD_LABEL, TAILSCALED_LABEL, `${LABEL_PREFIX}.ta
 export const KNOWN_AGENTS = [AGENT_LABEL];
 
 // agentsUid: whose gui domain the agents run in (ci's); with none, their plists still go.
-export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist">, keep: string[] = KNOWN_DAEMONS, agentsUid?: number): Promise<string[]> {
+// v3's op jobs (core/child.ts) have their plists in root's ops folder, outside these folders, so with
+// an ops folder there, every op job launchd lists is booted out too.
+// missed: the op jobs it couldn't end, for the caller to say.
+export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist"> & Partial<Pick<Paths, "installId">>, keep: string[] = KNOWN_DAEMONS, agentsUid?: number, missed: string[] = []): Promise<string[]> {
   const gone: string[] = [];
+  if (p.installId && existsSync(rootStateOf({ installId: p.installId }).ops)) missed.push(...(await bootOutListed(sys).catch(() => ["launchd's list of jobs couldn't be read"])));
   for (const [dir, known, domain] of [
     [dirname(p.guardPlist), keep, "system"],
     [dirname(p.agentPlist), KNOWN_AGENTS, agentsUid === undefined ? undefined : `gui/${agentsUid}`],
