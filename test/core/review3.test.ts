@@ -141,6 +141,8 @@ describe("L6-new: the smaller edges", () => {
     recordOutcome(st.outcomes("agent"), { id: "rq_01JD8Q4AAAAAAAAAAAAAAAAAAA", at: 1, ok: true, said: "x" }, { owner: uid });
     writeFileSync(join(st.outcomes("agent"), "rq_x.json.new.999999.0123456789abcdef"), "half");
     const sys = new FakeSys();
+    // The keeping pass asks for the boot and the monotonic clock; unread here, so the wall rules apply.
+    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 1, stdout: "", stderr: "" } : undefined));
     const c = { sys, cfg: {}, p: { installId: join(st.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as never;
     await keepingPass.make(c)!.start!(sys.now())!();
     expect(readdirSync(st.outcomes("agent")).filter((n) => n.includes(".new."))).toEqual([]);

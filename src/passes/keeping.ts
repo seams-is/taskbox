@@ -5,7 +5,7 @@
 // dropped counts whose minute is over are written. Every full pass.
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { pidAlive } from "../core/child.ts";
+import { monoNow, pidAlive } from "../core/child.ts";
 import { eventLog, flushEvents, keepEvents } from "../core/events.ts";
 import { sweepTemps } from "../core/rootfile.ts";
 import { keepOutcomes } from "../core/spool.ts";
@@ -13,7 +13,7 @@ import { keepOps } from "../core/ops.ts";
 import { everyPass, type PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { lapse, updatePending } from "../core/pending.ts";
-import { GUARD_FULL_MS } from "../guard.ts";
+import { bootSeconds, GUARD_FULL_MS } from "../guard.ts";
 
 export const keepingPass: PassMaker = {
   name: "keeping",
@@ -23,13 +23,18 @@ export const keepingPass: PassMaker = {
     const root = c.rootUid ?? 0;
     const events = eventLog("guard", { dir: s.events, owner: root }, c.sys);
     let said = "";
+    let boot: string | undefined;
     return everyPass("keeping", "after", GUARD_FULL_MS, async () => {
       const problems: string[] = [];
       const now = c.sys.now();
+      // Lapses by wall, wall gone back, boot and monotonic clock, whichever comes first (pending.ts).
+      boot ??= (await bootSeconds(c.sys))?.toString();
+      const mono = await monoNow(c.sys);
+      const at = { wall: now, ...(mono !== undefined ? { mono } : {}), ...(boot !== undefined ? { boot } : {}) };
       // Under pending.json's lock, so a confirm answered at the same time is never undone (rootfile.ts).
       try {
         const lapsed = await updatePending(s.pending, { rootUid: root }, (p) => {
-          const l = lapse(p, now);
+          const l = lapse(p, at);
           return { state: l.lapsed.length ? l.state : p, out: l.lapsed };
         });
         for (const p of lapsed) {
@@ -51,7 +56,7 @@ export const keepingPass: PassMaker = {
       } catch {}
       for (const sp of spools) {
         if (!/^(agent|service|pool-[1-9][0-9]?)$/.test(sp)) continue;
-        keepOutcomes(s.outcomes(sp), now);
+        keepOutcomes(s.outcomes(sp), at);
         sweepTemps(s.outcomes(sp), pidAlive);
       }
       sweepTemps(s.dir, pidAlive);

@@ -75,6 +75,8 @@ describe("the keeping pass", () => {
     const s = rootState(root);
     mkdirSync(s.dir, { recursive: true });
     const sys = new FakeSys();
+    // The keeping pass asks for the boot and the monotonic clock; unread here, so the wall rules apply.
+    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 1, stdout: "", stderr: "" } : undefined));
     const lines: string[] = [];
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: (l: string) => lines.push(l) }, writer } as unknown as PassCtx;
     return { c, s, sys, lines };
@@ -172,6 +174,8 @@ describe("review 2: the keeping pass", () => {
     mkdirSync(s.events, { recursive: true });
     mkdirSync(s.ops, { recursive: true });
     const sys = new FakeSys();
+    // The keeping pass asks for the boot and the monotonic clock; unread here, so the wall rules apply.
+    sys.responders.push((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 1, stdout: "", stderr: "" } : undefined));
     const uid = process.getuid!();
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     return { c, s, sys, uid };
