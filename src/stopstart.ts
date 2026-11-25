@@ -2,6 +2,7 @@
 // login session, so no job or download runs. It lasts until `taskbox start`, or the service's next login,
 // which loads the LaunchAgent again: a login means the owner wants the box running, and a stop
 // that outlived it would leave the box down after a power cut with no sign why.
+import { bootId } from "./core/boot.ts";
 import { serviceName } from "./names.ts";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { mirrorJson } from "./shared.ts";
@@ -87,7 +88,8 @@ export async function drain(d: StopDeps): Promise<number> {
     d.say("Already stopped: the loop isn't running. Type taskbox start to start it.");
     return ALREADY;
   }
-  writeFileSync(d.paths.drain, JSON.stringify({ at: d.sys.now() }), { mode: 0o600 });
+  // The boot it was asked in, so the loop drops it after a restart and never on a clock step.
+  writeFileSync(d.paths.drain, JSON.stringify({ at: d.sys.now(), boot: await bootId(d.sys) }), { mode: 0o600 });
   const jobs = runningJobs(d.paths);
   d.say(jobs.length ? `Draining: ${jobs.join(" and ")} ${jobs.length === 1 ? "finishes" : "finish"}, then the loop stops. No new job starts.` : "Draining: no job is running, so the loop stops within a minute, or once a download under way stops. No new job starts.");
   d.say("Jobs that come meanwhile wait on GitHub. taskbox status -w shows the drain, and taskbox start cancels it.");

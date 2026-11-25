@@ -30,6 +30,9 @@ export interface SpawnOptions {
   onLine?: (line: string) => void;
 }
 
+// The longest line spawn passes on; the rest of a longer one is dropped.
+export const LINE_MAX = 64 * 1024;
+
 export type ProbeResult = "refused" | "open" | "timeout" | "error";
 
 // The machine's clock is part of it: now, sleep and every timer (clock.ts).
@@ -93,28 +96,31 @@ export function realSys(home: string): Sys {
     },
     spawn(cmd, args, opts = {}) {
       assertNotTest();
+      const stdin = opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]);
       const p = Bun.spawn([cmd, ...args], {
         env: { ...env, ...(opts.env ?? {}) },
-        stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]),
+        stdin,
         stdout: "pipe",
         stderr: "pipe",
       });
-      const read = async (s: ReadableStream<Uint8Array>) => {
+      const read = async (s: ReadableStream<Uint8Array>, onLine: ((line: string) => void) | undefined, cr: boolean) => {
         let buf = "";
         const dec = new TextDecoder();
         for await (const chunk of s) {
           buf += dec.decode(chunk, { stream: true });
           let i: number;
           // Tart redraws a line with \r when it thinks it has a terminal, so both end a line.
-          buf = buf.replace(/\r(?!\n)/g, "\n");
+          if (cr) buf = buf.replace(/\r(?!\n)/g, "\n");
           while ((i = buf.indexOf("\n")) >= 0) {
-            opts.onLine?.(buf.slice(0, i));
+            onLine?.(buf.slice(0, Math.min(i, LINE_MAX)));
             buf = buf.slice(i + 1);
           }
+          if (buf.length > LINE_MAX) buf = buf.slice(0, LINE_MAX);
         }
-        if (buf) opts.onLine?.(buf);
+        if (buf) onLine?.(buf);
       };
-      const drained = Promise.all([read(p.stdout), read(p.stderr)]);
+      const streams = [read(p.stdout as ReadableStream<Uint8Array>, opts.onLine, true), read(p.stderr as ReadableStream<Uint8Array>, opts.onLine, true)];
+      const drained = Promise.all(streams);
       return { exited: p.exited, done: Promise.all([p.exited, drained]).then(([c]) => c), kill: () => p.kill(9), pid: p.pid };
     },
     fetch(url, init) {

@@ -607,8 +607,11 @@ describe("a state the guard can't use", () => {
   }, SLOW);
 
   test("written whole: the new name is flushed before the rename, and the folder after", async () => {
-    const src = readFileSync(new URL("../src/workspace/pass.ts", import.meta.url), "utf8");
-    const fn = src.slice(src.indexOf("export function writeStateFile"), src.indexOf("function syncFolder"));
+    // writeStateFile writes through core/rootfile.ts's writeOwnedText, shared by root's state files.
+    const pass = readFileSync(new URL("../src/workspace/pass.ts", import.meta.url), "utf8");
+    expect(pass.slice(pass.indexOf("export function writeStateFile")).split("\n}\n")[0]).toContain("writeOwnedText(path, stateText(s)");
+    const src = readFileSync(new URL("../src/core/rootfile.ts", import.meta.url), "utf8");
+    const fn = src.slice(src.indexOf("export function writeOwnedText"), src.indexOf("export function syncFolder"));
     expect(fn.indexOf("fsyncSync(fd)")).toBeGreaterThan(-1);
     expect(fn.indexOf("fsyncSync(fd)")).toBeLessThan(fn.indexOf("renameSync(tmp, path)"));
     expect(fn.indexOf("syncFolder(dirname(path))")).toBeGreaterThan(fn.indexOf("renameSync(tmp, path)"));

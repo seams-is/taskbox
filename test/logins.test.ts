@@ -491,7 +491,8 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     mkdirSync(dirname(p.tailscaleSocket), { recursive: true });
     writeFileSync(p.tailscaledPlist, daemon.replaceAll("/private/var/log/taskbox-tailscaled.log", "/dev/null"));
     if (logDir) mkdirSync(dirname(p.tailscaledLog), { recursive: true });
-    const d: OpsDeps = { sys, paths: p, uid: 0, say: () => {}, ask: async () => "yes" };
+    // The one-shot is written only in folders that are root's alone: here, the tester's.
+    const d: OpsDeps = { sys, paths: p, uid: 0, say: () => {}, ask: async () => "yes", rootUid: process.getuid!() };
     return { sys, p, now, was, daemon, d };
   }
 
@@ -501,7 +502,8 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     expect(await restartServices(d, now, was, (path) => owned.push(path))).toContain("tailscaled loads again from this install's plist within a minute");
     expect(readFileSync(p.tailscaledPlist, "utf8")).toBe(daemon);
     const job = reloadPlistPath(p);
-    expect(owned).toEqual([p.tailscaledLog, job]);
+    // The token and the one-shot are each given to root on their new names, before the rename.
+    expect(owned.map((o) => o.replace(/\.new\.\d+\.[0-9a-f]{16}$/, ""))).toEqual([p.tailscaledLog, reloadToken(p), job]);
     expect(existsSync(reloadToken(p))).toBe(true);
     expect(statSync(job).mode & 0o777).toBe(0o644);
     expect(readFileSync(job, "utf8")).toBe(reloadPlist(reloadScript(TAILSCALED_LABEL, p.tailscaledPlist, reloadToken(p), job)));

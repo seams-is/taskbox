@@ -132,8 +132,9 @@ export async function checkSigned(d: VerifyDeps, o: { statement: string; signatu
 // when it is, or why not. It runs ssh-keygen -Y verify through d.run (as nobody, on the box) on the
 // signers line and the signature, written in a folder of its own inside d.tmp, root's at 755, with
 // both files at 644. Every check the guard and the update make on the owner's key comes through here.
-// namespace: NAMESPACE for a workspace statement, APPROVER_NAMESPACE for a key change.
-export async function verifySignature(d: VerifyDeps, o: { key: string; message: string; signature: string; namespace: typeof NAMESPACE | typeof APPROVER_NAMESPACE }): Promise<string | undefined> {
+// namespace: NAMESPACE for a workspace statement, APPROVER_NAMESPACE for a key change, taskbox-control
+// for v3's signed requests (core/statement.ts).
+export async function verifySignature(d: VerifyDeps, o: { key: string; message: string; signature: string; namespace: typeof NAMESPACE | typeof APPROVER_NAMESPACE | "taskbox-control" }): Promise<string | undefined> {
   if (!APPROVER_KEY.test(o.key)) return "No approver key is pinned on this box yet, so nothing can be approved.";
   if (!ARMOUR.test(o.signature)) return "The signature isn't one taskbox reads.";
   const flags = skFlags(new TextEncoder().encode(o.signature), o.namespace);

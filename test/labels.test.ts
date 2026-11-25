@@ -566,7 +566,7 @@ describe("undo restarts the root services on the code it went back to", () => {
     };
     const sys = box();
     const { now, was } = installs(true);
-    const d = { sys, paths: paths(tempRoot(), testBox()), uid: 0, say: () => {}, ask: async () => "yes" };
+    const d = { sys, paths: paths(tempRoot(), testBox()), uid: 0, say: () => {}, ask: async () => "yes", rootUid: process.getuid!() };
     const oldPlist = readFileSync(join(import.meta.dir, "../launchd/local.taskbox.tailscaled.plist"), "utf8").replace(TAILSCALE_SOCKET, OLD_TAILSCALE_SOCKET);
     mkdirSync(join(now, "app/launchd"), { recursive: true });
     writeFileSync(join(now, "app/launchd", `${TAILSCALED_LABEL}.plist`), oldPlist);

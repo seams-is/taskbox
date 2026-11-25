@@ -1,6 +1,7 @@
 // The first install and every update, one code path. Runs as root, at the
 // box's keyboard. It installs only a commit on taskbox main, after
 // the owner types yes to its PR number, title, merge date and seven characters.
+import { bootId, monoNow } from "./core/boot.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -27,7 +28,8 @@ import { basename, dirname, join } from "node:path";
 import { DOWNLOAD_LIMIT_MS } from "./ghfail.ts";
 import { readInstallId } from "./answers.ts";
 import { removeRequests } from "./requests.ts";
-import { allOk, type Check, type CheckContext, hashTree, INSTALL_PREFLIGHT, macos, runChecks } from "./checks.ts";
+import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from "./checks.ts";
+import { rows } from "./rows/index.ts";
 import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./actionskey.ts";
 import { type EngineName, kitFor } from "./vm.ts";
 import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
@@ -217,7 +219,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // true first, so the preflight confirms them rather than refusing one taskbox could set.
   const version = await runChecks([["macOS version", macos]], ctx);
   if (allOk(version)) await settleBox(d, ctx.cfg);
-  const pre = allOk(version) ? await runChecks(INSTALL_PREFLIGHT, ctx) : version;
+  const pre = allOk(version) ? await runChecks(rows("preflight", ctx), ctx) : version;
   printChecks(d, pre);
   if (!allOk(pre)) throw new Stop("A preflight check failed. Nothing was installed.", true);
 
@@ -784,7 +786,9 @@ async function hop(d: InstallDeps, o: { own: Config; installed: Installed | unde
       d.chown(join(next, "installed.json"), 0, 0);
       // 6. The rollback watcher, from this install, before anything moves.
       const now = d.sys.now();
-      await placeRollbackWatch(d.sys, d.paths, { v: 1, tag: st.tag, to: next, back: current, placedAt: now, deadline: now + ROLLBACK_AFTER_MS }, (path, uid, gid) => d.chown(path, uid, gid));
+      const placedMono = await monoNow(d.sys);
+      const boot = await bootId(d.sys);
+      await placeRollbackWatch(d.sys, d.paths, { v: 1, tag: st.tag, to: next, back: current, placedAt: now, deadline: now + ROLLBACK_AFTER_MS, ...(placedMono !== undefined && boot !== undefined ? { placedMono, boot } : {}) }, (path, uid, gid) => d.chown(path, uid, gid));
       d.say(`  Placed the rollback watcher: back to this install unless ${st.tag} proves itself by ${new Date(now + ROLLBACK_AFTER_MS).toISOString().slice(11, 16)} UTC.`);
     } catch (e) {
       rmSync(next, { recursive: true, force: true });
