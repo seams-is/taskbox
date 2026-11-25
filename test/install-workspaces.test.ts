@@ -349,13 +349,17 @@ describe("after the yes", () => {
     const v = JSON.parse(readFileSync(join(top, "versions.json"), "utf8"));
     v.tailscale = { version: "1.104.5", url: "", sha256: "", files: { tailscale: "", tailscaled: "" } };
     writeFileSync(join(top, "versions.json"), JSON.stringify(v));
-    const tar = Bun.spawnSync(["/usr/bin/tar", "-czf", "-", "-C", stage, "example-org-taskbox-abc1234"]);
-    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(tar.stdout) : undefined));
+    // Unpacked by copying the staged files, as stageRelease does (helpers.ts): real tar and gzip
+    // were most of this test's work, and under load ran past its limit.
+    const TARBALL = "the commit's tarball";
+    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(TARBALL) : undefined));
     const real = sys.run.bind(sys);
     sys.run = async (cmd, args, opts) => {
-      if (cmd === "/usr/bin/tar") {
-        const p = Bun.spawnSync([cmd, ...args], { env: { PATH: "/usr/bin:/bin" } });
-        return { code: p.exitCode ?? 1, stdout: "", stderr: p.stderr.toString() };
+      if (cmd === "/usr/bin/tar" && args[0] === "-xzf" && args[1]!.endsWith("src.tar.gz")) {
+        // What was downloaded is what is unpacked: the install's own file must hold the tarball.
+        if (readFileSync(args[1]!, "utf8") !== TARBALL) return { code: 1, stdout: "", stderr: "tar: Unrecognized archive format\n" };
+        cpSync(top, args[3]!, { recursive: true });
+        return { code: 0, stdout: "", stderr: "" };
       }
       return real(cmd, args, opts);
     };

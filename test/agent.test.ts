@@ -318,7 +318,8 @@ describe("the guard puts the agent back", () => {
 // after it undone, so the release in place stays current and running.
 describe("an agent step that stops the install", () => {
   const repo = join(import.meta.dir, "..");
-  let srcTar: Uint8Array | undefined;
+  let srcTree: string | undefined;
+  const TARBALL = "the commit's tarball";
   async function run(dir: Dir, before?: (p: InstallDeps["paths"]) => void) {
     const { healthyBox, installDeps } = await import("./helpers.ts");
     // The service, there already, a standard user who can unlock the disk.
@@ -326,22 +327,24 @@ describe("an agent step that stops the install", () => {
     const sys = dir.sys();
     healthyBox(sys);
     githubRoutes(sys);
-    // The commit's tarball is the same for every test here, so it is made once: real tar, gzip and
-    // the repo's files are most of each test's work.
-    srcTar ??= (() => {
-      const st = mkdtempSync(join(tmpdir(), "taskbox-src-"));
-      const top = join(st, "example-org-taskbox-abc1234");
+    // The commit's files, staged once for every test here, and unpacked by copying them, as
+    // stageRelease does (helpers.ts). Real tar and gzip were most of each test's work, and under load
+    // ran past its limit.
+    srcTree ??= (() => {
+      const top = join(mkdtempSync(join(tmpdir(), "taskbox-src-")), "example-org-taskbox-abc1234");
       copyRepo(top, ["test", "docs"]);
       writeFileSync(join(top, "taskbox.json"), JSON.stringify(CFG));
-      return Bun.spawnSync(["/usr/bin/tar", "-czf", "-", "-C", st, "example-org-taskbox-abc1234"]).stdout;
+      return top;
     })();
-    const tar = srcTar;
-    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(tar) : undefined));
+    const top = srcTree;
+    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(TARBALL) : undefined));
     const real = sys.run.bind(sys);
     sys.run = async (cmd, args, opts) => {
-      if (cmd === "/usr/bin/tar" && args.some((a) => a.endsWith("src.tar.gz"))) {
-        const p = Bun.spawnSync([cmd, ...args], { env: { PATH: "/usr/bin:/bin" } });
-        return { code: p.exitCode ?? 1, stdout: "", stderr: p.stderr.toString() };
+      if (cmd === "/usr/bin/tar" && args[0] === "-xzf" && args[1]!.endsWith("src.tar.gz")) {
+        // What was downloaded is what is unpacked: the install's own file must hold the tarball.
+        if (readFileSync(args[1]!, "utf8") !== TARBALL) return { code: 1, stdout: "", stderr: "tar: Unrecognized archive format\n" };
+        cpSync(top, args[3]!, { recursive: true });
+        return { code: 0, stdout: "", stderr: "" };
       }
       return real(cmd, args, opts);
     };
