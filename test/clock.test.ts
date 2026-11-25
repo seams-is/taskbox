@@ -75,7 +75,8 @@ describe("every timer goes through the clock", () => {
 
   test("clock.ts holds the real timers, and only them", () => {
     const own = timerCalls(readFileSync(join(SRC, CLOCK), "utf8")).map((c) => c.replace(/^\d+: /, ""));
-    expect(new Set(own)).toEqual(new Set(["Date.now", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "AbortSignal.timeout"]));
+    // Atomics.wait is waitSync's: a few milliseconds for code that must stay synchronous (core/child.ts takeLease).
+    expect(new Set(own)).toEqual(new Set(["Date.now", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "AbortSignal.timeout", "Atomics.wait"]));
   });
 
   test("the real clock's timers run, and a cancelled one doesn't", async () => {

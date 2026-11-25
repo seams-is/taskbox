@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import { looksSecret } from "./events.ts";
 import { canonical } from "./statement.ts";
+import { isBootId } from "./boot.ts";
 import { idOf, isId, type Rand, realRand } from "./ids.ts";
 import { isObj, plain, readOwnedJson, type Read, time, updateOwnedJson, type WriteRules } from "./rootfile.ts";
 
@@ -31,6 +32,8 @@ export interface Pending {
   askedAt: number;
   lapsesAt: number;
   op?: string; // the op that raised it
+  boot?: string; // the boot it was asked in
+  monoAt?: number; // the monotonic clock when it was asked
   payload: unknown;
   digest: string; // sha256 of kind, subject and payload: the same change asked twice is one entry
 }
@@ -47,10 +50,24 @@ export const digestOf = (kind: Kind, subject: string, payload: unknown) => {
   const c = canonical({ kind, subject, payload: payload ?? null }, 6);
   return c === undefined ? "" : createHash("sha256").update(JSON.stringify(c)).digest("hex");
 };
-// An item asked more than this after the clock's now was asked before the clock went back. It lapses,
-// so a clock set back never stretches its 24 hours.
-export const SKEW_MS = 5 * 60_000;
-const live = (p: { askedAt: number; lapsesAt: number }, now: number) => p.lapsesAt > now && p.askedAt <= now + SKEW_MS;
+// The moment an item is judged at: the wall clock, the monotonic clock and this boot (boot.ts). All
+// three are required; one the box can't read is undefined, and then every item lapses: a pending
+// change never waits on a guess.
+export interface Moment {
+  wall: number;
+  mono: number | undefined;
+  boot: string | undefined;
+}
+// An item lapses at whichever comes first, so no clock step, either way, keeps one alive past its
+// 24 hours: the wall clock past its limit; the wall clock earlier than its ask (it went back); a
+// restart of the box (a pending change doesn't survive one: §3.6 says nothing that keeps it); the
+// monotonic clock past its limit; or a clock the box can't read now.
+const live = (p: { askedAt: number; lapsesAt: number; boot?: string; monoAt?: number }, m: Moment) => {
+  if (m.mono === undefined || m.boot === undefined || p.monoAt === undefined || p.boot === undefined) return false;
+  if (m.wall >= p.lapsesAt || m.wall < p.askedAt) return false;
+  if (p.boot !== m.boot) return false;
+  return m.mono - p.monoAt < LAPSE_MS;
+};
 
 function itemProblem(p: unknown): string | undefined {
   if (!isObj(p)) return "an item isn't an object";
@@ -60,6 +77,7 @@ function itemProblem(p: unknown): string | undefined {
   if (!Array.isArray(p.shows) || p.shows.length < 1 || p.shows.length > SHOWS_MAX || !p.shows.every((l) => plain(l, 120))) return "an item's lines aren't ones taskbox shows";
   if (!time(p.askedAt) || !time(p.lapsesAt) || (p.lapsesAt as number) - (p.askedAt as number) !== LAPSE_MS) return "an item's times aren't ones taskbox reads";
   if (p.op !== undefined && !isId("op", p.op)) return "an item's op isn't an op id";
+  if ((p.boot !== undefined && !isBootId(p.boot)) || (p.monoAt !== undefined && !Number.isSafeInteger(p.monoAt))) return "an item's boot or clock isn't one taskbox reads";
   if (Buffer.byteLength(canon(p.payload ?? null)) > PAYLOAD_MAX) return "an item's payload is too big";
   if (p.digest === "" || p.digest !== digestOf(p.kind as Kind, p.subject as string, p.payload)) return "an item's digest isn't its own";
   if (looksSecret(canon(p))) return "an item holds something shaped like a secret";
@@ -90,36 +108,39 @@ export type Raised = { ok: true; state: PendingState; item: Pending; again: bool
 
 // Raises a change to wait for confirm. The same change asked again, while it waits, is the same
 // entry (again: true), so a re-run attaches to it. A full list refuses.
-export function raise(s: PendingState, a: Ask, now: number, rand: Rand = realRand): Raised {
+export function raise(s: PendingState, a: Ask, at: Moment, rand: Rand = realRand): Raised {
+  const m = at;
+  const now = m.wall;
+  if (m.mono === undefined || m.boot === undefined) return { ok: false, why: "The box's clock can't be read now, so nothing can wait for confirm. Ask again in a minute." };
   const digest = digestOf(a.kind, a.subject, a.payload);
   if (!digest) return { ok: false, why: "The change's payload isn't one taskbox keeps." };
-  const same = s.items.find((p) => live(p, now) && p.digest === digest);
+  const same = s.items.find((p) => live(p, at) && p.digest === digest);
   if (same) return { ok: true, state: s, item: same, again: true };
   // Every item counts, lapsed ones too until the keeping pass removes them: the file holds PENDING_MAX.
   if (s.items.length >= PENDING_MAX) return { ok: false, why: `${PENDING_MAX} changes are waiting or lapsed. Type taskbox confirm at the box, or wait a minute for the lapsed ones to go.` };
-  const item: Pending = { id: idOf("pc", now, rand), kind: a.kind, subject: a.subject, shows: a.shows.map((l) => l.replace(/[^\x20-\x7e]/g, " ").slice(0, 120)).slice(0, SHOWS_MAX), actor: a.actor, askedAt: now, lapsesAt: now + LAPSE_MS, ...(a.op !== undefined ? { op: a.op } : {}), payload: a.payload, digest };
+  const item: Pending = { id: idOf("pc", now, rand), kind: a.kind, subject: a.subject, shows: a.shows.map((l) => l.replace(/[^\x20-\x7e]/g, " ").slice(0, 120)).slice(0, SHOWS_MAX), actor: a.actor, askedAt: now, lapsesAt: now + LAPSE_MS, ...(a.op !== undefined ? { op: a.op } : {}), ...(m.boot !== undefined ? { boot: m.boot } : {}), ...(m.mono !== undefined ? { monoAt: m.mono } : {}), payload: a.payload, digest };
   const why = itemProblem(item);
   if (why) return { ok: false, why };
   return { ok: true, state: { v: 1, items: [...s.items, item] }, item, again: false };
 }
 
 // Items past their 24 hours leave the list. The caller writes a confirm.lapsed event for each.
-export function lapse(s: PendingState, now: number): { state: PendingState; lapsed: Pending[] } {
-  const lapsed = s.items.filter((p) => !live(p, now));
-  return lapsed.length ? { state: { v: 1, items: s.items.filter((p) => live(p, now)) }, lapsed } : { state: s, lapsed };
+export function lapse(s: PendingState, at: Moment): { state: PendingState; lapsed: Pending[] } {
+  const lapsed = s.items.filter((p) => !live(p, at));
+  return lapsed.length ? { state: { v: 1, items: s.items.filter((p) => live(p, at)) }, lapsed } : { state: s, lapsed };
 }
 
 // What waits now, oldest first.
-export const waiting = (s: PendingState, now: number): Pending[] => s.items.filter((p) => live(p, now)).sort((a, b) => a.askedAt - b.askedAt);
+export const waiting = (s: PendingState, at: Moment): Pending[] => s.items.filter((p) => live(p, at)).sort((a, b) => a.askedAt - b.askedAt);
 
 export type Taken = { ok: true; state: PendingState; item: Pending } | { ok: false; why: string };
 
 // An admin's answer at the box. A yes takes the item out for the caller to apply; a no takes it
 // out and applies nothing. A lapsed item can't be confirmed.
-export function answer(s: PendingState, id: string, now: number): Taken {
+export function answer(s: PendingState, id: string, at: Moment): Taken {
   const item = s.items.find((p) => p.id === id);
   if (!item) return { ok: false, why: "Nothing with that id waits for confirm." };
-  if (!live(item, now)) return { ok: false, why: "That change waited 24 hours and lapsed. Ask for it again from the laptop." };
+  if (!live(item, at)) return { ok: false, why: "That change waited 24 hours and lapsed. Ask for it again from the laptop." };
   return { ok: true, state: { v: 1, items: s.items.filter((p) => p.id !== id) }, item };
 }
 

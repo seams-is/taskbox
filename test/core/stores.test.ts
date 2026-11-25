@@ -10,6 +10,9 @@ import { fingerprint } from "../../src/approver.ts";
 import { keyPair } from "../sshsig.ts";
 
 const uid = process.getuid!();
+
+// A moment for the pending store: the wall clock, a monotonic clock that keeps pace with it, one boot.
+const mo = (wall: number) => ({ wall, mono: wall - 1_700_000_000_000, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" });
 const T = 1_800_000_000_000;
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-core-"));
 let k = 0;
@@ -155,49 +158,49 @@ describe("approvers", () => {
 describe("the pending store for confirm", () => {
   const ask = { kind: "approver-add" as const, subject: "SHA256:x", shows: ["Add approver key SHA256:x, asked by laptop nova."], actor: "owner (signed, key SHA256:y)", payload: { key: "k" } };
   test("a change waits 24 hours, then lapses", () => {
-    const r = raise(noPending(), ask, T);
+    const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error(r.why);
     expect(r.item.lapsesAt).toBe(T + LAPSE_MS);
-    expect(waiting(r.state, T + LAPSE_MS - 1)).toHaveLength(1);
-    expect(lapse(r.state, T + LAPSE_MS - 1).lapsed).toHaveLength(0);
-    const l = lapse(r.state, T + LAPSE_MS);
+    expect(waiting(r.state, mo(T + LAPSE_MS - 1))).toHaveLength(1);
+    expect(lapse(r.state, mo(T + LAPSE_MS - 1)).lapsed).toHaveLength(0);
+    const l = lapse(r.state, mo(T + LAPSE_MS));
     expect(l.lapsed.map((p) => p.id)).toEqual([r.item.id]);
     expect(l.state.items).toEqual([]);
   });
   test("the same change asked again is the same entry", () => {
-    const r = raise(noPending(), ask, T);
+    const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();
-    const again = raise(r.state, ask, T + 5);
+    const again = raise(r.state, ask, mo(T + 5));
     expect(again).toMatchObject({ ok: true, again: true, item: { id: r.item.id } });
-    expect(raise(r.state, { ...ask, payload: { key: "other" } }, T + 5)).toMatchObject({ ok: true, again: false });
+    expect(raise(r.state, { ...ask, payload: { key: "other" } }, mo(T + 5))).toMatchObject({ ok: true, again: false });
   });
   test("confirm takes it out; a lapsed one can't be confirmed", () => {
-    const r = raise(noPending(), ask, T);
+    const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();
-    expect(answer(r.state, r.item.id, T + 1)).toMatchObject({ ok: true, item: { payload: { key: "k" } } });
-    expect(answer(r.state, r.item.id, T + LAPSE_MS)).toMatchObject({ ok: false, why: expect.stringContaining("lapsed") });
-    expect(answer(r.state, "pc_nope", T)).toMatchObject({ ok: false });
+    expect(answer(r.state, r.item.id, mo(T + 1))).toMatchObject({ ok: true, item: { payload: { key: "k" } } });
+    expect(answer(r.state, r.item.id, mo(T + LAPSE_MS))).toMatchObject({ ok: false, why: expect.stringContaining("lapsed") });
+    expect(answer(r.state, "pc_nope", mo(T))).toMatchObject({ ok: false });
   });
   test("narrowing drops what it makes moot", () => {
-    const r = raise(noPending(), ask, T);
+    const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();
     expect(drop(r.state, (p) => p.subject === "SHA256:x").state.items).toEqual([]);
   });
   test("a full list refuses; a secret or a long line never goes in", () => {
     let s = noPending();
     for (let i = 0; i < PENDING_MAX; i++) {
-      const r = raise(s, { ...ask, payload: { i } }, T);
+      const r = raise(s, { ...ask, payload: { i } }, mo(T));
       if (!r.ok) throw new Error(r.why);
       s = r.state;
     }
-    expect(raise(s, { ...ask, payload: { i: "more" } }, T)).toMatchObject({ ok: false });
-    expect(raise(noPending(), { ...ask, payload: { t: "ghs_abcdefghijklmnopqrstuvwxyz0123" } }, T)).toMatchObject({ ok: false, why: expect.stringContaining("secret") });
-    const long = raise(noPending(), { ...ask, shows: ["x".repeat(500)] }, T);
+    expect(raise(s, { ...ask, payload: { i: "more" } }, mo(T))).toMatchObject({ ok: false });
+    expect(raise(noPending(), { ...ask, payload: { t: "ghs_abcdefghijklmnopqrstuvwxyz0123" } }, mo(T))).toMatchObject({ ok: false, why: expect.stringContaining("secret") });
+    const long = raise(noPending(), { ...ask, shows: ["x".repeat(500)] }, mo(T));
     expect(long.ok && long.item.shows[0]!.length).toBe(120);
   });
   test("round trip; an edited payload no longer matches its digest and reads as bad", async () => {
     const p = join(tmp(), "pending.json");
-    const r = raise(noPending(), ask, T);
+    const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();
     await updatePending(p, { rootUid: uid }, () => ({ state: r.state, out: undefined }));
     expect(readPending(p, uid)).toEqual({ kind: "ok", value: r.state });
@@ -257,25 +260,25 @@ describe("review fixes: nonces, approvers, pending", () => {
   });
   const ask = { kind: "channel" as const, subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { a: 1, b: 2 } };
   test("L7: the same change with its keys in another order is one entry", () => {
-    const r = raise(noPending(), ask, T);
+    const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();
-    expect(raise(r.state, { ...ask, payload: { b: 2, a: 1 } }, T)).toMatchObject({ ok: true, again: true });
+    expect(raise(r.state, { ...ask, payload: { b: 2, a: 1 } }, mo(T))).toMatchObject({ ok: true, again: true });
   });
   test("L7: lapsed items not yet removed count toward the cap, with a line that says so", () => {
     let s = noPending();
     for (let i = 0; i < PENDING_MAX; i++) {
-      const r = raise(s, { ...ask, payload: { i } }, T);
+      const r = raise(s, { ...ask, payload: { i } }, mo(T));
       if (!r.ok) throw new Error();
       s = r.state;
     }
-    expect(raise(s, { ...ask, payload: { i: "x" } }, T + LAPSE_MS)).toMatchObject({ ok: false, why: expect.stringContaining("waiting or lapsed") });
+    expect(raise(s, { ...ask, payload: { i: "x" } }, mo(T + LAPSE_MS))).toMatchObject({ ok: false, why: expect.stringContaining("waiting or lapsed") });
   });
   test("L6: an item asked in the clock's future lapses, so a clock set back never stretches its 24 hours", () => {
-    const r = raise(noPending(), ask, T);
+    const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();
-    expect(lapse(r.state, T - 10 * 60_000).lapsed).toHaveLength(1);
-    expect(waiting(r.state, T - 10 * 60_000)).toHaveLength(0);
-    expect(answer(r.state, r.item.id, T - 10 * 60_000).ok).toBe(false);
+    expect(lapse(r.state, mo(T - 10 * 60_000)).lapsed).toHaveLength(1);
+    expect(waiting(r.state, mo(T - 10 * 60_000))).toHaveLength(0);
+    expect(answer(r.state, r.item.id, mo(T - 10 * 60_000)).ok).toBe(false);
   });
 });
 

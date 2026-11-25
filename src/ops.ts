@@ -15,7 +15,8 @@ import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } fro
 import { kitFor } from "./vm.ts";
 import { removeRequests } from "./requests.ts";
 import { rows } from "./rows/index.ts";
-import { oneShotPlist, oneShotScript, psStart, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
+import { bootId, isBootId, monoNow } from "./core/boot.ts";
+import { endOpJobs, oneShotPlist, oneShotScript, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { halfMade, readRecord, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
@@ -36,7 +37,7 @@ import type { Sys } from "./sys.ts";
 import { readLoopState, runningJobs, slotsShown } from "./watch.ts";
 import { SHELL_COMMANDS } from "./shell.ts";
 import { placeTailscaledLog } from "./logins.ts";
-import { bootOutUnknown, KNOWN_DAEMONS, MAX_HOLD_MS, readRollbackWatch, removeRollbackWatch, retryAfterMs, rollbackWatchPaths, rollbackWatchState, writeRollbackWatch } from "./hop.ts";
+import { bootOutUnknown, KNOWN_DAEMONS, MAX_HOLD_MS, readRollbackWatch, type RollbackWatch, removeRollbackWatch, retryAfterMs, rollbackWatchPaths, rollbackWatchState, writeRollbackWatch } from "./hop.ts";
 
 export interface OpsDeps {
   sys: Sys;
@@ -535,6 +536,13 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
     for (const l of footer(await stateNow(d), "Nothing changed.", "Nothing to do: agents fix it.")) d.say(l);
     return 1;
   }
+  // Every op job first: its child runs this release's code, which the swap takes away (core/child.ts).
+  const opsDir = rootStateOf(d.paths).ops;
+  if (existsSync(opsDir)) {
+    const ended = await endOpJobs({ sys: d.sys, ops: { dir: opsDir, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {} }, "undone").catch(() => ({ cancelled: [], missed: ["the op jobs couldn't be read"] }));
+    if (ended.cancelled.length) d.say(`  Stopped ${ended.cancelled.length} operation${ended.cancelled.length === 1 ? "" : "s"} that ${ended.cancelled.length === 1 ? "was" : "were"} running.`);
+    for (const m of ended.missed) d.say(`  ${noControl(m).slice(0, 160)}`);
+  }
   // One rename moves /opt/taskbox to the kept install. Then the kept link moves to the newer one,
   // so undo can be undone. Stopping between the two leaves both links on the same install, which
   // runs.
@@ -550,7 +558,9 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   let did = `Back to #${prev.pr} ${noControl(prev.title)}. The loop moves to it once the current job or download ends.`;
   // v2.6.1 (docs/v3-design.md §5.7, 6): daemons of a later release, which this install doesn't know,
   // are booted out and their plists removed, so they don't run against an install that can't answer them.
-  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid).catch(() => [] as string[]);
+  const notEnded: string[] = [];
+  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid, notEnded).catch(() => [] as string[]);
+  for (const m of notEnded) d.say(`  An op job couldn't be ended: ${noControl(m).slice(0, 120)}.`);
   if (gone.length) did += ` Stopped ${gone.join(", ")}, which this install doesn't run.`;
   // Back across the label move: the kept code knows only the old labels (install.ts, labelsBack).
   const back = d.paths.previousLabelPrefix ? await labelsBack({ ...d, sys: d.sys }, d.paths.previousLabelPrefix).catch((e: Error) => `The services' names weren't put back: ${noControl(e.message).slice(0, 80)}. Type taskbox update.`) : undefined;
@@ -710,9 +720,12 @@ export async function remove(d: OpsDeps, o: { serviceUid?: number; overSsh?: boo
   done.push("left this box's runners for GitHub to drop within a day");
   // The guard, and its pf rules. With them gone, Screen Sharing reaches every network again.
   for (const label of [GUARD_LABEL, ...(old ? [old.guard] : [])]) await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
-  // Every running op's child, with all it started: none runs on as root once taskbox is gone.
-  const stopped = await stopChildren({ sys: d.sys, ops: { dir: rootStateOf(d.paths).ops, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {}, startOf: psStart(d.sys) }, "taskbox is being removed").catch(() => []);
+  // Every running op's job, booted out by its label, which ends its child and what that started:
+  // launchd owns them, so no pid is signalled. A job that can't be booted out is said.
+  const notStopped: string[] = [];
+  const stopped = await stopChildren({ sys: d.sys, ops: { dir: rootStateOf(d.paths).ops, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: (l) => notStopped.push(l) }, "taskbox is being removed").catch(() => []);
   if (stopped.length) done.push(`stopped ${stopped.length} operation${stopped.length === 1 ? "" : "s"} that ${stopped.length === 1 ? "was" : "were"} running`);
+  if (notStopped.length) missed.push(`${notStopped.length} operation${notStopped.length === 1 ? "'s job" : "s' jobs"}, which launchd couldn't end`);
   // A reload LaunchDaemon an undo left, so it can't load tailscaled again after remove.
   if (await dropReloadJob(d.sys, d.paths)) done.push("removed undo's LaunchDaemon that loads tailscaled again");
   const flushed = await d.sys.run(PFCTL, ["-a", ANCHOR, "-F", "rules"]);
@@ -1080,6 +1093,32 @@ async function restorePlists(d: OpsDeps, kept: string): Promise<string | undefin
 // move, at most MAX_HOLD_MS after it was placed), it takes the box back with undo, if the box still
 // runs the release it watches. A go-back that fails keeps the watcher: it records why, which taskbox
 // check shows, and tries again later. Every line goes to the guard's log.
+// Whether the watch's deadline has passed. A watch v3 placed carries the monotonic clock and the boot
+// it was placed at, and is judged by the time it has used on that clock (watchUsed), so no wall clock
+// step rolls an update back early or holds it longer. With no count (a watch v2.6.1 placed, or a boot
+// or mono the box can't read now), the wall clock decides, capped at MAX_HOLD_MS from the placing,
+// so the watch always ends.
+export function decideWatch(w: RollbackWatch, at: { wall: number }, used: number | undefined): boolean {
+  if (used === undefined) return at.wall >= Math.min(w.deadline, w.placedAt + MAX_HOLD_MS);
+  return used >= Math.min(w.deadline - w.placedAt, MAX_HOLD_MS);
+}
+
+// The watcher's own count of the time a v3 watch has used, in one file only the watcher writes,
+// beside the watch file: { boot, anchor, used }, written each run. In the same boot it adds mono since
+// the anchor; after a restart it goes on from what was used. A count that doesn't read, or is out of
+// range, starts again from the placing. Undefined when the boot or mono can't be read.
+export const watchClockFile = (p: Paths) => `${rollbackWatchPaths(p).file}.clock`;
+export function watchUsed(d: { paths: Paths }, w: RollbackWatch, at: { mono: number | undefined; boot: string | undefined }): number | undefined {
+  if (w.placedMono === undefined || w.boot === undefined || at.mono === undefined || at.boot === undefined) return undefined;
+  const file = watchClockFile(d.paths);
+  const c = readStateJson<{ boot?: unknown; anchor?: unknown; used?: unknown }>(file);
+  const good = !!c && isBootId(c.boot) && Number.isSafeInteger(c.anchor) && (c.anchor as number) >= 0 && Number.isSafeInteger(c.used) && (c.used as number) >= 0 && (c.used as number) <= MAX_HOLD_MS;
+  const from = good ? (c as { boot: string; anchor: number; used: number }) : { boot: w.boot, anchor: w.placedMono, used: 0 };
+  const used = Math.min(MAX_HOLD_MS, from.used + (from.boot === at.boot ? Math.max(0, at.mono - from.anchor) : 0));
+  writeFileSync(file, JSON.stringify({ boot: at.boot, anchor: at.mono, used }), { mode: 0o644 });
+  return used;
+}
+
 export async function rollbackWatch(d: OpsDeps, log: (line: string) => void): Promise<number> {
   const state = rollbackWatchState(d.paths);
   // A file it can't read never ends the watch: a line each hour (marked by a file of its own), and
@@ -1102,7 +1141,8 @@ export async function rollbackWatch(d: OpsDeps, log: (line: string) => void): Pr
     return 0;
   }
   const now = d.sys.now();
-  if (now < Math.min(w.deadline, w.placedAt + MAX_HOLD_MS) || (w.nextTry !== undefined && now < w.nextTry)) return 0;
+  const at = { wall: now, mono: await monoNow(d.sys), boot: await bootId(d.sys) };
+  if (!decideWatch(w, at, watchUsed(d, w, at)) || (w.nextTry !== undefined && now < w.nextTry)) return 0;
   const tag = noControl(w.tag).slice(0, 24);
   const r = await withUpdateLock(
     d.paths,
@@ -1122,8 +1162,9 @@ export async function rollbackWatch(d: OpsDeps, log: (line: string) => void): Pr
     async () => {
       // Read again under the lock: v3's guard may have proved it, or moved the deadline, meanwhile.
       const at = readRollbackWatch(d.paths);
+      const clocks = { wall: d.sys.now(), mono: await monoNow(d.sys), boot: await bootId(d.sys) };
       if (!at || at.proved === true) return "done" as const;
-      if (d.sys.now() < Math.min(at.deadline, at.placedAt + MAX_HOLD_MS)) return "wait" as const;
+      if (!decideWatch(at, clocks, watchUsed(d, at, clocks))) return "wait" as const;
       if (linkTarget(d.paths.opt) !== at.to || linkTarget(d.paths.prev) !== at.back) {
         log(`rollback watcher: ${tag} wasn't proved by its deadline, but the box no longer runs it, so nothing was moved`);
         return "done" as const;

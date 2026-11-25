@@ -11,6 +11,8 @@ import { type Place, type Row, type RowFn, numbered, rowsFor, rowsProblem } from
 import { TEST_REPO_ROW, testRepoRow } from "../loadcmd.ts";
 import { SECOND_KEY_ROW, secondKeyRow } from "../queue.ts";
 import { GUARD_ROWS } from "./guard.ts";
+import { OP_ROWS } from "./ops.ts";
+import { CLOCK_ROWS } from "./clock.ts";
 
 function v2Rows(): Row[] {
   return [
@@ -26,7 +28,7 @@ function v2Rows(): Row[] {
 let built: Row[] | undefined;
 export function allRows(): Row[] {
   if (built) return built;
-  const rows = [...v2Rows(), ...GUARD_ROWS];
+  const rows = [...v2Rows(), ...GUARD_ROWS, ...OP_ROWS, ...CLOCK_ROWS];
   const why = rowsProblem(rows);
   if (why) throw new Error(`the check rows can't be used: ${why}`);
   return (built = rows);

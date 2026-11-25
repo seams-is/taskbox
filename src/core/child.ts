@@ -1,24 +1,47 @@
-// The child runner (design §4.10.1). Work that takes long (an update, a connect, a key rotation,
-// settings apply) runs in a child process the guard starts and watches, so the pf tick is never held
-// up. The child reports through its output, one line per report, and the guard alone writes the op's
-// record and events: one writer for root's state.
+// The child runner (design §3.3, §4.10.1). Work that takes long (an update, a connect, a key
+// rotation, settings apply) runs as a child of its own, so the pf tick is never held up, and the
+// guard alone writes the op's record and events: one writer for root's state.
+//
+// Each op's child is a launchd job of its own, local.taskbox.op.<id>, which the guard bootstraps:
+// - launchd owns the job's processes, so a reload of the guard never touches the child, and
+//   `launchctl bootout` ends the child and what it started in its process group. No pid is read,
+//   compared or signalled, so nothing taskbox does can reach a process that isn't the job's. A
+//   program that leaves the group (setsid or setpgid) escapes it: macOS has nothing like a cgroup,
+//   and taskbox would rather miss it than signal a process it can't prove is its own. The rules
+//   below keep op children from running such programs;
+// - the child's life is a lock: it holds an exclusive lock on <id>.lease from its first line to its
+//   end. The guard's question "can I take it?" is answered by the kernel, with no ps and no guess;
+// - reports go one way, through the child's own files in root's ops folder: <id>.reports, numbered,
+//   appended, and <id>.progress, the newest progress only. The job's output goes to <id>.log, which
+//   nothing reads as a report. Every guard follows every op the same way (follow), so a guard reloaded
+//   part-way, or a new guard after a restart, carries on where the last one was.
+//
+// Rules for every caller of runChild, so that nothing an agent controls reaches root, and nothing
+// leaves the job's process group (bootout ends the group; a program that calls setsid or setpgid
+// leaves it and outlives bootout, seen in a Tart guest):
+// 1. argv is fixed: taskbox's Bun and one file of the app, nothing more (runChild enforces it). An
+//    op's parameters are read from its record, and are values only: never options, commands, env,
+//    or paths under a folder an agent can write.
+// 2. No git in a folder an agent can write: its .git/config can run code (hooks, fsmonitor,
+//    sshCommand). The job's env turns off git's system and global config and its prompts.
+// 3. No ssh with ControlPersist, no ssh-agent, no gpg-agent, no git credential cache: each daemonizes
+//    and leaves the group. The job's env carries no SSH_AUTH_SOCK.
+// 4. Nothing run with detached, nohup or setsid of its own.
 //
 // A child that must reload a daemon, the guard included, asks launchd to do it through a one-shot
-// LaunchDaemon of launchd's own (oneShot below). launchd ends a job's whole process group on bootout,
-// so a reload run from the child would end the child that asked for it, and leave the daemon unloaded.
-// v2's undo already reloads tailscaled this way (ops.ts restartServices); v3 makes it the one way.
-import { closeSync, constants, fstatSync, lstatSync, openSync, writeSync } from "node:fs";
+// LaunchDaemon of launchd's own (oneShot below), as v2's undo already does for tailscaled.
+import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, renameSync, rmSync, truncateSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { waitSync } from "../clock.ts";
+import { monoNow } from "./boot.ts";
 import type { Sys } from "../sys.ts";
 import type { EventLog } from "./events.ts";
+import { end, listOps, type Op, readOp, opEvent, type OpFolder, type OpType, pastNoReturn, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
 import { isObj, plain, readOwnedText, safeParse, writeOwnedText } from "./rootfile.ts";
-import { end, listOps, type Op, opEvent, type OpFolder, type OpType, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
 import { canonical, type Json } from "./statement.ts";
 
-// A report line: this prefix, then one JSON object, on the child's fd 3 and nowhere else. The
-// programs a child runs get fds 0 to 2 only, so nothing they print can pass as a report.
+// A report line: this prefix, then one JSON object.
 export const REPORT = "taskbox-report ";
-export const REPORT_FD = 3;
 export const REPORT_MAX = 4000;
 
 export interface Report {
@@ -36,55 +59,118 @@ export function reportLine(r: Report): string {
   return line;
 }
 
-// The op's handoff file, <id>.reports beside its record: the child's own, root's at 600 in root's
-// ops folder. The child writes every report there first, numbered, then on fd 3. A guard reloaded
-// part-way (by the child's own one-shot, say) takes the pipe with it; the next guard reads the
-// reports it missed from here (adoptOrphans), so the op still reaches its end.
+// The op's files, all in root's ops folder beside its record.
 export const reportsPath = (f: Pick<OpFolder, "dir">, id: string) => join(f.dir, `${id}.reports`);
+export const progressPath = (f: Pick<OpFolder, "dir">, id: string) => join(f.dir, `${id}.progress`);
+export const leasePath = (f: Pick<OpFolder, "dir">, id: string) => join(f.dir, `${id}.lease`);
+const plistPath = (f: Pick<OpFolder, "dir">, id: string) => join(f.dir, `${id}.plist`);
+const logPath = (f: Pick<OpFolder, "dir">, id: string) => join(f.dir, `${id}.log`);
+export const jobLabel = (id: string) => {
+  if (!/^op_[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) throw new Error("not an op's id");
+  return `local.taskbox.op.${id}`;
+};
 export const REPORTS_MAX = 1024 * 1024;
+// Room kept for the end: an end line is at most REPORT_MAX, so it always fits.
+export const END_ROOM = 8 * 1024;
+export const KEEP_MAX = REPORTS_MAX - END_ROOM;
+export const FULL_WHY = "its reports filled the 1 MB handoff file, so it was stopped there";
+// The exit code a child stops with once its handoff file is full.
+export const FULL_EXIT = 70;
 
-// The child's side. send() numbers the report, appends it to the handoff file, then writes it on fd 3.
-// It says false once nobody reads fd 3, as after its guard was reloaded (seen in a Tart guest: EPIPE);
-// the report is in the handoff file all the same.
-// A report with progress alone goes on fd 3 only, unnumbered: losing one costs nothing. Phases, events
-// and the end are numbered and kept in the handoff file, which stays within REPORTS_MAX: past
-// KEEP_MAX only the end is kept, so the next guard can always read it.
-export const KEEP_MAX = REPORTS_MAX - 8 * 1024;
-export function reporter(o: { op: string; reports: string; fd?: number }) {
+// macOS's O_EXLOCK: open(2) takes an exclusive flock on the file, or fails with EAGAIN beside
+// O_NONBLOCK. The lock lives as long as the open file does, so it ends when its holder does.
+export const O_EXLOCK = 0x20;
+const darwin = () => {
+  if (process.platform !== "darwin") throw new Error("an op's lease needs macOS's O_EXLOCK");
+};
+
+// Whether the lease is held by a child now. Free when no file is there or the lock can be taken.
+export function leaseHeld(path: string): boolean {
+  darwin();
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | O_EXLOCK | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EAGAIN" || code === "EWOULDBLOCK") return true;
+    if (code === "ENOENT") return false;
+    throw e;
+  }
+  closeSync(fd);
+  return false;
+}
+
+// The child's side: takes the lease, for the child's whole life. The guard's probe holds the lock for
+// an instant, so a busy lock is tried again a few times, 10 ms apart, before it is refused as held
+// by another child.
+export function takeLease(path: string, o: { tries?: number; wait?: () => void } = {}): number {
+  darwin();
+  const wait = o.wait ?? (() => waitSync(10));
+  for (let i = 0; ; i++) {
+    try {
+      return openSync(path, constants.O_RDWR | constants.O_CREAT | O_EXLOCK | constants.O_NONBLOCK | constants.O_NOFOLLOW, 0o600);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EAGAIN" && code !== "EWOULDBLOCK") throw e;
+      if (i >= (o.tries ?? 20)) throw new Error("another child holds this op's lease");
+      wait();
+    }
+  }
+}
+
+// The child's side. With lease, it takes the op's lease first, so no second reporter can run for one
+// op and restart its numbers. A report with progress alone overwrites <id>.progress. Every other
+// report is numbered once and appended to <id>.reports; a number is never taken back. END_ROOM stays
+// free for the end. A report that would pass KEEP_MAX fills the file: the reporter keeps a failed end
+// in its place and the child exits with FULL_EXIT, so the op fails with a reason. After an end,
+// nothing more is sent.
+export function reporter(o: { op: string; reports: string; progress: string; lease?: string; exit?: (code: number) => never }) {
+  if (o.lease) takeLease(o.lease);
+  const exit = o.exit ?? ((c: number) => process.exit(c));
   let n = 0;
-  let pipe = true;
-  let size = 0;
-  const fd = o.fd ?? REPORT_FD;
+  let ended = false;
+  const keep = (r: Report): boolean => {
+    const h = openSync(o.reports, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+    try {
+      const line = `${reportLine({ ...r, n: n + 1 })}\n`;
+      if (r.end === undefined && fstatSync(h).size + Buffer.byteLength(line) > KEEP_MAX) return false;
+      n++;
+      writeSync(h, line);
+      return true;
+    } finally {
+      closeSync(h);
+    }
+  };
   return {
-    send(r: Report): boolean {
-      const progressOnly = Object.keys(r).every((k) => k === "progress");
-      const keep = !progressOnly && (r.end !== undefined || size < KEEP_MAX);
-      const line = `${reportLine(keep ? { ...r, n: ++n } : r)}\n`;
-      if (keep && size + Buffer.byteLength(line) <= (r.end ? REPORTS_MAX : KEEP_MAX)) {
-        const h = openSync(o.reports, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+    send(r: Report): void {
+      if (ended) throw new Error("this op's child has sent its end already");
+      if (Object.keys(r).every((k) => k === "progress")) {
+        const tmp = `${o.progress}.new`;
+        rmSync(tmp, { force: true });
+        const h = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
         try {
-          size = fstatSync(h).size;
-          writeSync(h, line);
-          size += Buffer.byteLength(line);
+          writeSync(h, `${reportLine(r)}\n`);
         } finally {
           closeSync(h);
         }
-      } else if (keep) n--;
-      if (!pipe || fd < 0) return (pipe = false);
-      try {
-        writeSync(fd, line);
-      } catch {
-        pipe = false;
+        renameSync(tmp, o.progress);
+        return;
       }
-      return pipe;
+      if (!keep(r)) {
+        ended = true;
+        keep({ end: { state: "failed", why: FULL_WHY } });
+        exit(FULL_EXIT);
+      }
+      if (r.end) ended = true;
     },
   };
 }
 
-// The reporter a child makes from the environment its runner gave it.
+// The reporter a child makes from the environment its job gave it. It takes the lease.
 export const reporterFromEnv = (env: Record<string, string | undefined> = process.env) => {
-  if (!env.TASKBOX_OP || !env.TASKBOX_OP_REPORTS) throw new Error("this isn't an op's child");
-  return reporter({ op: env.TASKBOX_OP, reports: env.TASKBOX_OP_REPORTS });
+  const { TASKBOX_OP: op, TASKBOX_OP_REPORTS: reports, TASKBOX_OP_PROGRESS: progress, TASKBOX_OP_LEASE: lease } = env;
+  if (!op || !reports || !progress || !lease) throw new Error("this isn't an op's child");
+  return reporter({ op, reports, progress, lease });
 };
 
 // The guard's side: a report from one line, strictly, or undefined for any other line.
@@ -116,44 +202,40 @@ export function parseReport(line: string): Report | undefined {
 }
 
 export interface ChildDeps {
-  sys: Pick<Sys, "spawn" | "now">;
+  sys: Pick<Sys, "run" | "now">;
   ops: OpFolder;
   events: EventLog;
   log: (line: string) => void;
-  pid?: number; // this guard's pid, process.pid by default
-  boot: string; // this boot, kern.boottime's seconds, so the next guard can tell a restart
-  startOf?: (pid: number) => Promise<string | undefined>; // a process's start time (psStart), so a reused pid isn't taken for the child
+  boot: string; // this boot's uuid (boot.ts bootId), so a later guard can tell a restart
+  types?: readonly OpType[]; // to ask a type what a restart does to its op
+  said?: Set<string>; // what was logged already, so a file that can't be read is said once
 }
 
-// The one program an op's child may be: taskbox's own Bun, running a file of taskbox's app. Bun hands
-// a program it starts only fds 0 to 2, so fd 3 reaches the child and nothing the child runs. A shell
-// or any other program would pass fd 3 on to what it execs (dup2 clears close-on-exec), and Bun has
-// no way to set close-on-exec on an fd it was given, so nothing else is run with fd 3.
+// The one program an op's child may be: taskbox's own Bun, running a file of taskbox's app.
 export const CHILD_BUN = "/opt/taskbox/bin/bun";
 const APP_FILE = /^\/opt\/taskbox\/app\/src\/[a-z0-9/_-]+\.ts$/;
+// How long a new job has to take its lease before a free lease means it never started.
+export const STARTUP_MS = 30_000;
+const LAUNCHCTL_MS = 20_000;
 
-// A process's start time, by ps, or undefined when it isn't running.
-export const psStart =
-  (sys: Pick<Sys, "run">) =>
-  async (pid: number): Promise<string | undefined> => {
-    if (!Number.isSafeInteger(pid) || pid <= 1) return undefined;
-    const r = await sys.run("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeoutMs: 5_000 }).catch(() => undefined);
-    const t = r?.code === 0 ? r.stdout.trim() : "";
-    return t ? t.slice(0, 64) : undefined;
-  };
-
-// What the op's record keeps of its child, so the next guard can follow it.
+// What the op's record keeps of its child.
 export interface ChildInfo {
-  pid: number;
-  guardPid: number;
-  boot?: string;
-  started?: string; // its start time, by ps
+  label: string;
+  boot: string;
+  spawnedAt: number;
   applied: number; // the number of the last report applied
   events: string[];
+  done?: true; // its job has been booted out
+  limitMs?: number; // how long it may run: its op's deadline less its start, measured on mono time
+  monoAt?: number; // monoNow() when its limit started to count; unread at the start, taken on a tick
+  elapsedMs?: number; // mono time it has run, saved about once a minute, for a resume after a restart
+  overrun?: true; // past its limit, but not cancellable: flagged, never ended
 }
+
+export { monoNow } from "./boot.ts";
 const childOf = (op: Op): ChildInfo | undefined => {
   const c = op.child;
-  if (!isObj(c) || !Number.isSafeInteger(c.pid) || !Number.isSafeInteger(c.guardPid) || !Number.isSafeInteger(c.applied) || (c.boot !== undefined && typeof c.boot !== "string") || (c.started !== undefined && typeof c.started !== "string") || !Array.isArray(c.events) || !c.events.every((e) => typeof e === "string")) return undefined;
+  if (!isObj(c) || typeof c.label !== "string" || typeof c.boot !== "string" || !Number.isSafeInteger(c.spawnedAt) || !Number.isSafeInteger(c.applied) || !Array.isArray(c.events) || !c.events.every((e) => typeof e === "string")) return undefined;
   return c as unknown as ChildInfo;
 };
 
@@ -193,136 +275,252 @@ function write(d: Pick<ChildDeps, "events" | "log">, draft: Parameters<EventLog[
   }
 }
 
-export interface Running {
-  op: () => Op; // the op as last written
-  done: Promise<Op>; // the op once the child has exited and the record is final
-  kill(): void;
+function plist(label: string, cmd: string, args: string[], env: Record<string, string>, out: string): string {
+  const x = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const str = (v: string) => `    <string>${x(v)}</string>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${x(label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${[cmd, ...args].map(str).join("\n")}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+${Object.entries(env)
+  .map(([k, v]) => `    <key>${x(k)}</key>\n    <string>${x(v)}</string>`)
+  .join("\n")}
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/</string>
+  <key>StandardOutPath</key>
+  <string>${x(out)}</string>
+  <key>StandardErrorPath</key>
+  <string>${x(out)}</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+`;
 }
 
-// Starts the op's child and watches it. Lines that aren't reports go to the guard's log, cut short.
-// A child that exits without ending its op ends it as failed, with its exit code. The child leads a
-// process group of its own: launchd ends the guard's whole process group when the guard is booted
-// out, and a child left in it ends with it (seen in a Tart guest: SIGTERM, then gone).
-// Reports come only on the child's own channel (REPORT_FD); its output goes to the log as text.
-export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[]; bun?: string } = {}): Running {
-  if (cmd !== (o.bun ?? CHILD_BUN) || !APP_FILE.test(args[0] ?? "")) throw new Error("an op's child is taskbox's own Bun running a file of taskbox's app, and nothing else");
-  if (!d.boot) throw new Error("an op's child needs this boot's time, so a later guard can tell a restart");
-  let cur = op;
-  const events = [...(o.events ?? [])];
-  const p = d.sys.spawn(cmd, args, {
-    group: true,
-    env: { TASKBOX_OP: op.id, TASKBOX_OP_REPORTS: reportsPath(d.ops, op.id) },
-    onLine: (line) => {
-      if (line.trim()) d.log(`${op.id}: ${line.replace(/[^\x20-\x7e]/g, " ").slice(0, 200)}`);
-    },
-    onReport: (line) => {
-      const r = parseReport(line);
-      if (r) cur = applyReport(d, cur, r, events);
-      else d.log(`${op.id}: a line on the report channel isn't a report`);
-    },
-  });
-  // The record names its child and this guard, so a guard after this one can follow it.
-  const child: ChildInfo = { pid: p.pid ?? 0, guardPid: d.pid ?? process.pid, boot: d.boot, applied: 0, events };
-  cur = { ...cur, child };
-  writeOp(d.ops, cur);
-  // Its start time, once ps has said it, so a pid used again later is never taken for this child.
-  if (d.startOf && p.pid) {
-    void d.startOf(p.pid).then((started) => {
-      const c = childOf(cur);
-      if (started && c && cur.state === "running") {
-        cur = { ...cur, child: { ...c, started } };
-        writeOp(d.ops, cur);
-      }
-    });
-  }
-  const done = (p.done ?? p.exited).then(
-    (code) => {
-      if (cur.state === "running") cur = applyReport(d, cur, { end: { state: "failed", why: `its process ended with exit ${code} before it finished` } });
-      return cur;
-    },
-    () => {
-      if (cur.state === "running") cur = applyReport(d, cur, { end: { state: "failed", why: "its process couldn't be watched" } });
-      return cur;
-    },
-  );
-  return { op: () => cur, done, kill: () => p.kill() };
-}
-
-export interface AdoptDeps extends Pick<ChildDeps, "sys" | "ops" | "events" | "log"> {
-  pid: number; // this guard's
-  boot: string; // this boot; without it, nothing is adopted
-  alive: (c: ChildInfo) => boolean | Promise<boolean>; // aliveBy(psStart(sys)) on the box
-  types?: readonly OpType[]; // to ask a type what a restart does to its op
-  said?: Set<string>; // what was logged already, so a file that can't be read is said once
-}
-
-// A child is alive when its pid runs and, once its start time was read, still with that start time.
-export const aliveBy =
-  (startOf: (pid: number) => Promise<string | undefined>) =>
-  async (c: ChildInfo): Promise<boolean> => {
-    const now = await startOf(c.pid);
-    return now !== undefined && (c.started === undefined || c.started === now);
+// Starts the op's child as a launchd job of its own. Its plist lives in root's ops folder, outside
+// /Library/LaunchDaemons, so a restart never starts it again. The op's record names the job first,
+// then launchd is asked to load it; a job launchd won't take fails its op. The op as written.
+export async function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Promise<Op> {
+  // A refusal ends the op it was asked for, with why, if a record of it is there, so no op is left
+  // running with no child; then it throws to the caller.
+  const refuse = (why: string): never => {
+    if (readOp(d.ops, op.id).kind === "ok") {
+      try {
+        applyReport(d, op, { end: { state: "failed", why: `its job couldn't be made: ${why}` } });
+      } catch {}
+    }
+    throw new Error(why);
   };
+  if (cmd !== CHILD_BUN || !APP_FILE.test(args[0] ?? "")) refuse("an op's child is taskbox's own Bun running a file of taskbox's app, and nothing else");
+  if (args.length !== 1) refuse("an op's child takes no arguments: it reads its op's record");
+  try {
+    rootFolder(plistPath(d.ops, op.id), d.ops.owner);
+  } catch (e) {
+    refuse((e as Error).message);
+  }
+  if (!d.boot) refuse("an op's child needs this boot's time, so a later guard can tell a restart");
+  const label = jobLabel(op.id);
+  const env = {
+    PATH: "/opt/taskbox/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    HOME: "/var/root",
+    LANG: "en_US.UTF-8",
+    TASKBOX_OP: op.id,
+    TASKBOX_OP_REPORTS: reportsPath(d.ops, op.id),
+    TASKBOX_OP_PROGRESS: progressPath(d.ops, op.id),
+    TASKBOX_OP_LEASE: leasePath(d.ops, op.id),
+    // Rule 2: no git config but a repo's own, and no prompts.
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  const w = { owner: d.ops.owner, ...(d.ops.chown ? { chown: d.ops.chown } : {}) };
+  // Its output file is made first, root's at 600: launchd would make it at 644, and what a program
+  // prints may be private.
+  writeOwnedText(logPath(d.ops, op.id), "", { ...w, mode: 0o600 });
+  writeOwnedText(plistPath(d.ops, op.id), plist(label, cmd, args, env, logPath(d.ops, op.id)), { ...w, mode: 0o644 });
+  // A deadline becomes a length of time from now, on the monotonic clock, so no clock step ends it.
+  const limit = op.deadline !== null ? Math.max(0, op.deadline - op.startedAt) : undefined;
+  const monoAt = limit !== undefined ? await monoNow(d.sys) : undefined;
+  // The limit is kept even when mono can't be read yet: the first tick that reads it starts the count,
+  // and the "Op deadlines" row warns until then.
+  const child: ChildInfo = { label, boot: d.boot, spawnedAt: d.sys.now(), applied: 0, events: [...(o.events ?? [])], ...(limit !== undefined ? { limitMs: limit } : {}), ...(limit !== undefined && monoAt !== undefined ? { monoAt } : {}) };
+  let cur: Op = { ...op, child };
+  writeOp(d.ops, cur);
+  const r = await d.sys.run("/bin/launchctl", ["bootstrap", "system", plistPath(d.ops, op.id)], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: -1 }));
+  if (r.code !== 0) cur = await settle(d, applyReport(d, cur, { end: { state: "failed", why: "launchd didn't take its job" } }));
+  return cur;
+}
 
-// The next guard's half (design §3.3, §4.10.1): every running op whose child another guard started.
-// - After a restart of the box, the op fails, "the box restarted", unless its type resumes it, in
-//   which case its own package carries it on.
-// - Otherwise the reports the child wrote since the last one applied are taken from its handoff file,
-//   once each, in order. A child that is gone without its end fails its op.
-// The ops that ended here.
-export async function adoptOrphans(d: AdoptDeps): Promise<Op[]> {
-  if (!d.boot) throw new Error("ops are adopted only once this boot's time is read");
+// Boots the op's job out, which ends whatever of it still runs, and removes its plist. Once.
+async function settle(d: Pick<ChildDeps, "sys" | "ops" | "log">, op: Op): Promise<Op> {
+  const c = childOf(op);
+  if (!c || c.done) return op;
+  // The label is made again from the op's id, never taken from the record.
+  const r = await d.sys.run("/bin/launchctl", ["bootout", `system/${jobLabel(op.id)}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: -1 }));
+  // 3 and 113: launchd has no such job, which is booted out too.
+  if (r.code !== 0 && r.code !== 3 && r.code !== 113) {
+    d.log(`${op.id}: its job couldn't be booted out (launchctl exit ${r.code}); the guard tries again`);
+    return op;
+  }
+  rmSync(plistPath(d.ops, op.id), { force: true });
+  const next: Op = { ...op, child: { ...c, done: true } };
+  writeOp(d.ops, next);
+  return next;
+}
+
+// Every guard's one path, every tick, for every op with a child, whichever guard started it:
+// - after a restart of the box, a running op fails, "the box restarted", unless its type resumes it;
+// - the reports written since the last one applied are taken from the handoff file, once each, in
+//   number order, then the newest progress;
+// - a running op whose lease is free (and was free for STARTUP_MS since its job started) fails: its
+//   child is gone. The lease is read before the reports, so an end written right before the child
+//   exited still counts;
+// - an op that has ended has its job booted out, once.
+// The ops that ended this pass.
+export async function follow(d: ChildDeps): Promise<Op[]> {
   const ended: Op[] = [];
   for (const op of listOps(d.ops).ops) {
     const c = childOf(op);
-    if (op.state !== "running" || !c || c.guardPid === d.pid) continue;
+    if (!c) continue;
     let cur = op;
-    if (c.boot !== d.boot) {
-      const t = d.types?.find((x) => x.type === op.type);
-      if (t?.onBoot(op) === "resume") continue;
-      cur = applyReport(d, cur, { end: { state: "failed", why: "the box restarted" } });
-    } else {
-      // Read whether it lives first: an end it wrote before it exited is in the file read after.
-      const alive = await d.alive(c);
-      const f = readOwnedText(reportsPath(d.ops, op.id), { owner: d.ops.owner, max: REPORTS_MAX });
-      if (f.kind === "ok") {
-        for (const line of f.text.split("\n")) {
-          const r = parseReport(line);
-          if (!r || r.n === undefined) continue;
-          const now = childOf(cur);
-          if (!now || r.n !== now.applied + 1) continue;
-          cur = applyReport(d, cur, r, c.events);
-          if (cur.state !== "running") break;
+    if (cur.state === "running") {
+      let restarted = false;
+      if (c.boot !== d.boot) {
+        const t = d.types?.find((x) => x.type === op.type);
+        if (t?.onBoot(op) === "resume") {
+          // Its type carries it on: the new boot is written, and it is followed as any op is. Its
+          // limit goes on from what it had used; the count starts again on this boot's clock.
+          const { monoAt: _, ...rest } = c;
+          const left = c.limitMs !== undefined ? { limitMs: Math.max(0, c.limitMs - (c.elapsedMs ?? 0)), elapsedMs: 0 } : {};
+          cur = { ...cur, child: { ...rest, boot: d.boot, ...left } };
+          writeOp(d.ops, cur);
+        } else {
+          cur = applyReport(d, cur, { end: { state: "failed", why: "the box restarted" } });
+          restarted = true;
         }
-      } else if (f.kind === "bad") {
-        const key = `${op.id} ${f.why}`;
-        if (!d.said?.has(key)) d.log(`${op.id}: its child's reports can't be read: ${f.why}`);
-        d.said?.add(key);
       }
-      if (cur.state === "running" && !alive) cur = applyReport(d, cur, { end: { state: "failed", why: "its process ended before it finished" } });
+      if (!restarted && childOf(cur)!.limitMs !== undefined && cur.state === "running") cur = await overrun(d, cur);
+      if (!restarted && cur.state === "running") {
+        const held = leaseHeld(leasePath(d.ops, op.id));
+        trimLog(logPath(d.ops, op.id));
+        cur = takeReports(d, cur);
+        if (cur.state === "running" && !held && (childOf(cur)!.applied > 0 || d.sys.now() - c.spawnedAt > STARTUP_MS)) cur = applyReport(d, cur, { end: { state: "failed", why: "its process ended before it finished" } });
+      }
+      if (cur.state !== "running") ended.push(cur);
     }
-    if (cur.state !== "running") ended.push(cur);
+    if (cur.state !== "running") await settle(d, cur);
   }
   return ended;
 }
 
-// Ends every running op's child, by its process group, and cancels its op with why: what remove
-// does first, so no child of taskbox's runs on after it. A child whose start time isn't its own (a
-// pid used again) is left alone. The ops cancelled.
-export async function stopChildren(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log"> & { startOf: (pid: number) => Promise<string | undefined>; kill?: (pid: number) => void }, why: string): Promise<Op[]> {
-  const kill = d.kill ?? ((pid: number) => process.kill(pid, "SIGKILL"));
+// An op past its deadline, by the monotonic clock in this boot: a cancellable op before its point of
+// no return fails and its job is booted out; any other is never ended, only flagged once, with an
+// op.overrun event, for the "Op deadlines" row.
+async function overrun(d: ChildDeps, op: Op): Promise<Op> {
+  let c = childOf(op)!;
+  const mono = await monoNow(d.sys);
+  if (mono === undefined) return op;
+  if (c.monoAt === undefined) {
+    const next: Op = { ...op, child: { ...c, monoAt: mono } };
+    writeOp(d.ops, next);
+    return next;
+  }
+  const used = mono - c.monoAt;
+  if (used - (c.elapsedMs ?? 0) >= 60_000 && used <= c.limitMs!) {
+    op = { ...op, child: { ...c, elapsedMs: used } };
+    writeOp(d.ops, op);
+    c = childOf(op)!;
+  }
+  if (used <= c.limitMs!) return op;
+  if (op.cancellable && !pastNoReturn(op)) return applyReport(d, op, { end: { state: "failed", why: "it passed its deadline" } });
+  if (c.overrun) return op;
+  const next: Op = { ...op, child: { ...c, overrun: true } };
+  writeOp(d.ops, next);
+  try {
+    d.events.write({ type: "op.overrun", op: op.id, subject: op.subject, actor: "taskbox", text: `The ${op.type} is past its deadline, and can't be ended now: it is past ${op.pointOfNoReturn ?? "the point where it can be cancelled"}.`.slice(0, 240) });
+  } catch {}
+  return next;
+}
+
+function takeReports(d: ChildDeps, op: Op): Op {
+  let cur = op;
+  const f = readOwnedText(reportsPath(d.ops, op.id), { owner: d.ops.owner, max: REPORTS_MAX });
+  if (f.kind === "bad") {
+    const key = `${op.id} ${f.why}`;
+    if (!d.said?.has(key)) d.log(`${op.id}: its child's reports can't be read: ${f.why}`);
+    d.said?.add(key);
+  } else if (f.kind === "ok") {
+    const reports = f.text.split("\n").map(parseReport).filter((r): r is Report => r?.n !== undefined);
+    for (;;) {
+      const want = childOf(cur)!.applied + 1;
+      const r = reports.find((x) => x.n === want);
+      if (!r) break;
+      cur = applyReport(d, cur, r, childOf(cur)!.events);
+      if (cur.state !== "running") return cur;
+    }
+  }
+  const p = readOwnedText(progressPath(d.ops, op.id), { owner: d.ops.owner, max: REPORT_MAX + 1 });
+  const pr = p.kind === "ok" ? parseReport(p.text.trim()) : undefined;
+  if (pr?.progress && JSON.stringify(pr.progress) !== JSON.stringify(cur.progress)) cur = applyReport(d, cur, { progress: pr.progress });
+  return cur;
+}
+
+// The job's output is kept under LOG_MAX: past it, it is cut back to nothing, and says so. launchd
+// writes it with O_APPEND, so its next line goes at the new end.
+export const LOG_MAX = 1024 * 1024;
+function trimLog(path: string): void {
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile() || st.size <= LOG_MAX) return;
+    truncateSync(path, 0);
+    appendFileSync(path, `(taskbox cut this log at ${LOG_MAX} bytes)\n`);
+  } catch {}
+}
+
+// What undo does before it swaps, and the hop's sweep: every running op's job is booted out and its op
+// cancelled with why, then every op job launchd lists that no record names. So no op child of a newer
+// release runs on against an older install. The ops cancelled, and the labels it couldn't end.
+export async function endOpJobs(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, why: string): Promise<{ cancelled: Op[]; missed: string[] }> {
+  const missed: string[] = [];
+  const cancelled = await stopChildren({ ...d, log: (l) => (missed.push(l), d.log(l)) }, why);
+  missed.push(...(await bootOutListed(d.sys, new Set(cancelled.map((o) => jobLabel(o.id))))));
+  return { cancelled, missed };
+}
+
+// Boots out every op job launchd lists, but those in skip. The labels it couldn't end.
+export async function bootOutListed(sys: Pick<Sys, "run">, skip: ReadonlySet<string> = new Set()): Promise<string[]> {
+  const missed: string[] = [];
+  const r = await sys.run("/bin/launchctl", ["list"], { timeoutMs: LAUNCHCTL_MS }).catch(() => undefined);
+  if (r?.code !== 0) return ["launchd's list of jobs couldn't be read, so op jobs no record names weren't looked for"];
+  const labels = [...r.stdout.matchAll(/\t(local\.taskbox\.op\.op_[0-9A-HJKMNP-TV-Z]{26})$/gm)].map((m) => m[1]!);
+  for (const label of labels.filter((l) => !skip.has(l))) {
+    const b = await sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: -1 }));
+    if (b.code !== 0 && b.code !== 3 && b.code !== 113) missed.push(label);
+  }
+  return missed;
+}
+
+// What remove does first: every running op's job is booted out, which ends its child and what that
+// started, and its op cancelled with why. A job launchd can't boot out is said.
+export async function stopChildren(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, why: string): Promise<Op[]> {
   const out: Op[] = [];
   for (const op of listOps(d.ops).ops) {
     const c = childOf(op);
     if (op.state !== "running" || !c) continue;
-    if (await aliveBy(d.startOf)(c)) {
-      try {
-        kill(-c.pid);
-      } catch (e) {
-        d.log(`${op.id}: its child's group couldn't be ended: ${(e as Error).message.slice(0, 80)}`);
-      }
-    }
-    out.push(applyReport(d, op, { end: { state: "cancelled", why } }));
+    const next = applyReport(d, op, { end: { state: "cancelled", why } });
+    const s = await settle(d, next);
+    if (!childOf(s)?.done) d.log(`${op.id}: its job ${c.label} couldn't be booted out, so its child may still run`);
+    out.push(s);
   }
   return out;
 }
@@ -337,26 +535,6 @@ export const pidAlive = (pid: number): boolean => {
     return (e as NodeJS.ErrnoException).code === "EPERM";
   }
 };
-
-// The guard's children, one per op.
-export class Children {
-  private live = new Map<string, Running>();
-  constructor(private d: ChildDeps) {}
-  start(op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Running {
-    const have = this.live.get(op.id);
-    if (have) return have;
-    const r = runChild(this.d, op, cmd, args, o);
-    this.live.set(op.id, r);
-    void r.done.finally(() => this.live.delete(op.id));
-    return r;
-  }
-  get(id: string): Running | undefined {
-    return this.live.get(id);
-  }
-  get count(): number {
-    return this.live.size;
-  }
-}
 
 // The one-shot reload. A LaunchDaemon of launchd's own, RunAtLoad and no KeepAlive, root's, in
 // /Library/LaunchDaemons, whose script reloads one daemon and then removes itself:

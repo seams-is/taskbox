@@ -1,6 +1,7 @@
 // The first install and every update, one code path. Runs as root, at the
 // box's keyboard. It installs only a commit on taskbox main, after
 // the owner types yes to its PR number, title, merge date and seven characters.
+import { bootId, monoNow } from "./core/boot.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -785,7 +786,9 @@ async function hop(d: InstallDeps, o: { own: Config; installed: Installed | unde
       d.chown(join(next, "installed.json"), 0, 0);
       // 6. The rollback watcher, from this install, before anything moves.
       const now = d.sys.now();
-      await placeRollbackWatch(d.sys, d.paths, { v: 1, tag: st.tag, to: next, back: current, placedAt: now, deadline: now + ROLLBACK_AFTER_MS }, (path, uid, gid) => d.chown(path, uid, gid));
+      const placedMono = await monoNow(d.sys);
+      const boot = await bootId(d.sys);
+      await placeRollbackWatch(d.sys, d.paths, { v: 1, tag: st.tag, to: next, back: current, placedAt: now, deadline: now + ROLLBACK_AFTER_MS, ...(placedMono !== undefined && boot !== undefined ? { placedMono, boot } : {}) }, (path, uid, gid) => d.chown(path, uid, gid));
       d.say(`  Placed the rollback watcher: back to this install unless ${st.tag} proves itself by ${new Date(now + ROLLBACK_AFTER_MS).toISOString().slice(11, 16)} UTC.`);
     } catch (e) {
       rmSync(next, { recursive: true, force: true });

@@ -99,8 +99,9 @@ describe("records", () => {
     const f = folder();
     const op = started(drain);
     writeOp(f, op);
-    expect(readOp(f, op.id)).toEqual({ kind: "ok", value: op });
-    expect(listOps(f)).toEqual({ ops: [op], bad: [] });
+    // Its first write gives it its place in write order.
+    expect(readOp(f, op.id)).toEqual({ kind: "ok", value: { ...op, seq: 1 } });
+    expect(listOps(f)).toEqual({ ops: [{ ...op, seq: 1 }], bad: [] });
   });
   test("an older release's record is read with this release's defaults, and resumed", () => {
     const f = folder();
@@ -132,15 +133,18 @@ describe("records", () => {
     writeFileSync(join(f.dir, `${b.id}.json`), readFileSync(join((writeOp(f, a), f.dir), `${a.id}.json`)));
     expect(readOp(f, b.id)).toMatchObject({ kind: "bad" });
   });
-  test("are kept 30 days after they end", () => {
+  test("the newest records by write order are kept, by count; a running op always", () => {
     const f = folder();
     const old = end(started(drain), "succeeded", T);
-    const live = { ...started(drain, {}, "x"), startedAt: T + KEEP_MS + 1 };
     writeOp(f, old);
+    const live = started(drain, {}, "live");
     writeOp(f, live);
-    expect(keepOps(f, T + KEEP_MS)).toEqual([]);
-    expect(keepOps(f, T + KEEP_MS + 1)).toEqual([old.id]);
-    expect(listOps(f).ops.map((o) => o.id)).toEqual([live.id]);
+    const later = Array.from({ length: 30 }, (_, i) => end(started(drain, {}, `x${i}`), "succeeded", T - (i + 1) * 86_400_000));
+    for (const o of later.slice(0, 29)) writeOp(f, o);
+    expect(keepOps(f, { keep: 30 })).toEqual([]);
+    writeOp(f, later[29]!);
+    expect(keepOps(f, { keep: 30 })).toEqual([old.id]);
+    expect(listOps(f).ops.map((o) => o.id)).toContain(live.id);
   });
 });
 
@@ -164,14 +168,6 @@ describe("review fixes: H1 in params", () => {
   });
 });
 
-describe("review fixes: L6 in ops", () => {
-  test("a clock that jumps ahead keeps the newest records' 30 days", () => {
-    const f = { dir: mkdtempSync(join(tmpdir(), "taskbox-ops-")), owner: uid };
-    const op = end(started(drain), "succeeded", T);
-    writeOp(f, op);
-    expect(keepOps(f, T + 365 * 86_400_000)).toEqual([]);
-  });
-});
 
 describe("a record's handoff file", () => {
   test("goes with its record", () => {
@@ -179,8 +175,8 @@ describe("a record's handoff file", () => {
     const old = end(started(drain), "succeeded", T);
     writeOp(f, old);
     writeFileSync(join(f.dir, `${old.id}.reports`), "");
-    writeOp(f, { ...started(drain, {}, "x"), startedAt: T + KEEP_MS + 1 });
-    keepOps(f, T + KEEP_MS + 1);
+    for (let i = 0; i < 3; i++) writeOp(f, end(started(drain, {}, `x${i}`), "succeeded", T + (i + 1) * 86_400_000));
+    keepOps(f, { keep: 3 });
     expect(existsSync(join(f.dir, `${old.id}.reports`))).toBe(false);
   });
 });
