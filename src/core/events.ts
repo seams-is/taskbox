@@ -91,7 +91,9 @@ export function eventLine(e: Event): string {
   return line;
 }
 
-export type Draft = Omit<Event, "id" | "at" | "writer"> & { at?: number };
+// known: the event is about a request that carried a valid signature by a pinned key, or came from a
+// known principal. Such a refusal is always written whole; only unauthenticated junk is capped.
+export type Draft = Omit<Event, "id" | "at" | "writer"> & { at?: number; known?: true };
 
 // A new event from a draft, its id and time from the clock. Text is cut to one printable line.
 export function newEvent(writer: Writer, d: Draft, clock: Pick<Clock, "now">, rand: Rand = realRand, next?: (now: number) => string): Event {
@@ -280,11 +282,11 @@ export function readEvents(sources: readonly (Source & { writer: Writer })[], f:
   return { events: f.limit !== undefined ? merged.slice(-Math.max(0, f.limit)) : merged, skipped };
 }
 
-// Keeps one writer's folder to the newest keepDays distinct days there, and within maxBytes. Age is
-// by count, never by the clock, so no clock change can age out the history: a run of fake days can
-// only push out as many real days as it adds. Past maxBytes, days dated after today go first (a
-// clock that was ahead), then the oldest; today's files, the ones being written, never go. The clock
-// is used only to know which day is today. The names removed.
+// Keeps one writer's folder to the newest keepDays distinct days up to today, and within maxBytes.
+// Age is by count, never by the clock, so no clock change can age out the history. Days dated after
+// today (a clock that was ahead) are kept apart: they don't count toward keepDays and push out no real
+// day, and the keeping pass says they are there (futureDays). Past maxBytes they go first, newest
+// first, then the oldest days; today's files, the ones being written, never go. The names removed.
 export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBytes?: number } = {}): string[] {
   const keepDays = o.keepDays ?? KEEP_DAYS;
   const maxBytes = o.maxBytes ?? (KEEP_MB / 2) * 1024 * 1024;
@@ -300,7 +302,7 @@ export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBy
     return [];
   }
   const today = new Date(now).toISOString().slice(0, 10);
-  const kept = new Set([...new Set(files.map((x) => x.day))].slice(-keepDays));
+  const kept = new Set([...new Set(files.filter((x) => x.day <= today).map((x) => x.day))].slice(-keepDays));
   const gone: string[] = [];
   const remove = (x: { name: string; size: number }) => {
     try {
@@ -311,7 +313,7 @@ export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBy
       return false;
     }
   };
-  const left = files.filter((x) => x.day === today || kept.has(x.day) || !remove(x));
+  const left = files.filter((x) => x.day >= today || kept.has(x.day) || !remove(x));
   let total = left.reduce((n, x) => n + x.size, 0);
   const order = [...left.filter((x) => x.day > today).reverse(), ...left.filter((x) => x.day < today)];
   for (const x of order) {
@@ -319,6 +321,18 @@ export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBy
     if (remove(x)) total -= x.size;
   }
   return gone;
+}
+
+// The days of a writer's folder dated after today: a clock that was ahead, or is wrong now.
+export function futureDays(f: Pick<Folder, "dir" | "owner">, now: number): string[] {
+  const today = new Date(now).toISOString().slice(0, 10);
+  try {
+    const st = lstatSync(f.dir);
+    if (!st.isDirectory() || st.uid !== f.owner) return [];
+    return [...new Set(readdirSync(f.dir).map((n) => partOf(n)?.day).filter((d): d is string => d !== undefined && d > today))].sort();
+  } catch {
+    return [];
+  }
 }
 
 function sizeOf(path: string): number {
@@ -440,7 +454,7 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
   const lim = l;
   return {
     write(d) {
-      if (REFUSED(d.type)) {
+      if (REFUSED(d.type) && !d.known) {
         const now = d.at ?? lim.clock.now();
         const w = lim.refused;
         if (now - w.from >= 60_000) {

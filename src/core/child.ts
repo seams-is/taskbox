@@ -6,8 +6,9 @@
 // - launchd owns the job's processes, so a reload of the guard never touches the child, and
 //   `launchctl bootout` ends the child and what it started in its process group. No pid is read,
 //   compared or signalled, so nothing taskbox does can reach a process that isn't the job's. A
-//   program that leaves the group with setsid escapes it (seen in a Tart guest): macOS has nothing
-//   like a cgroup, and taskbox would rather miss it than signal a process it can't prove is its own;
+//   program that leaves the group (setsid or setpgid) escapes it: macOS has nothing like a cgroup,
+//   and taskbox would rather miss it than signal a process it can't prove is its own. The rules
+//   below keep op children from running such programs;
 // - the child's life is a lock: it holds an exclusive lock on <id>.lease from its first line to its
 //   end. The guard's question "can I take it?" is answered by the kernel, with no ps and no guess;
 // - reports go one way, through the child's own files in root's ops folder: <id>.reports, numbered,
@@ -15,10 +16,23 @@
 //   nothing reads as a report. Every guard follows every op the same way (follow), so a guard reloaded
 //   part-way, or a new guard after a restart, carries on where the last one was.
 //
+// Rules for every caller of runChild, so that nothing an agent controls reaches root, and nothing
+// leaves the job's process group (bootout ends the group; a program that calls setsid or setpgid
+// leaves it and outlives bootout, seen in a Tart guest):
+// 1. argv is fixed: taskbox's Bun and one file of the app, nothing more (runChild enforces it). An
+//    op's parameters are read from its record, and are values only: never options, commands, env,
+//    or paths under a folder an agent can write.
+// 2. No git in a folder an agent can write: its .git/config can run code (hooks, fsmonitor,
+//    sshCommand). The job's env turns off git's system and global config and its prompts.
+// 3. No ssh with ControlPersist, no ssh-agent, no gpg-agent, no git credential cache: each daemonizes
+//    and leaves the group. The job's env carries no SSH_AUTH_SOCK.
+// 4. Nothing run with detached, nohup or setsid of its own.
+//
 // A child that must reload a daemon, the guard included, asks launchd to do it through a one-shot
 // LaunchDaemon of launchd's own (oneShot below), as v2's undo already does for tailscaled.
-import { closeSync, constants, fstatSync, lstatSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, renameSync, rmSync, truncateSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { waitSync } from "../clock.ts";
 import type { Sys } from "../sys.ts";
 import type { EventLog } from "./events.ts";
 import { end, listOps, type Op, opEvent, type OpFolder, type OpType, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
@@ -85,15 +99,21 @@ export function leaseHeld(path: string): boolean {
   return false;
 }
 
-// The child's side: takes the lease, for the child's whole life. Refused when another holds it.
-export function takeLease(path: string): number {
+// The child's side: takes the lease, for the child's whole life. The guard's probe holds the lock for
+// an instant, so a busy lock is tried again a few times, 10 ms apart, before it is refused as held
+// by another child.
+export function takeLease(path: string, o: { tries?: number; wait?: () => void } = {}): number {
   darwin();
-  try {
-    return openSync(path, constants.O_RDWR | constants.O_CREAT | O_EXLOCK | constants.O_NONBLOCK | constants.O_NOFOLLOW, 0o600);
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "EAGAIN" || code === "EWOULDBLOCK") throw new Error("another child holds this op's lease");
-    throw e;
+  const wait = o.wait ?? (() => waitSync(10));
+  for (let i = 0; ; i++) {
+    try {
+      return openSync(path, constants.O_RDWR | constants.O_CREAT | O_EXLOCK | constants.O_NONBLOCK | constants.O_NOFOLLOW, 0o600);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EAGAIN" && code !== "EWOULDBLOCK") throw e;
+      if (i >= (o.tries ?? 20)) throw new Error("another child holds this op's lease");
+      wait();
+    }
   }
 }
 
@@ -285,6 +305,8 @@ ${Object.entries(env)
 // then launchd is asked to load it; a job launchd won't take fails its op. The op as written.
 export async function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Promise<Op> {
   if (cmd !== CHILD_BUN || !APP_FILE.test(args[0] ?? "")) throw new Error("an op's child is taskbox's own Bun running a file of taskbox's app, and nothing else");
+  if (args.length !== 1) throw new Error("an op's child takes no arguments: it reads its op's record");
+  rootFolder(plistPath(d.ops, op.id), d.ops.owner);
   if (!d.boot) throw new Error("an op's child needs this boot's time, so a later guard can tell a restart");
   const label = jobLabel(op.id);
   const env = {
@@ -295,6 +317,10 @@ export async function runChild(d: ChildDeps, op: Op, cmd: string, args: string[]
     TASKBOX_OP_REPORTS: reportsPath(d.ops, op.id),
     TASKBOX_OP_PROGRESS: progressPath(d.ops, op.id),
     TASKBOX_OP_LEASE: leasePath(d.ops, op.id),
+    // Rule 2: no git config but a repo's own, and no prompts.
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
   };
   const w = { owner: d.ops.owner, ...(d.ops.chown ? { chown: d.ops.chown } : {}) };
   // Its output file is made first, root's at 600: launchd would make it at 644, and what a program
@@ -313,7 +339,8 @@ export async function runChild(d: ChildDeps, op: Op, cmd: string, args: string[]
 async function settle(d: Pick<ChildDeps, "sys" | "ops" | "log">, op: Op): Promise<Op> {
   const c = childOf(op);
   if (!c || c.done) return op;
-  const r = await d.sys.run("/bin/launchctl", ["bootout", `system/${c.label}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: -1 }));
+  // The label is made again from the op's id, never taken from the record.
+  const r = await d.sys.run("/bin/launchctl", ["bootout", `system/${jobLabel(op.id)}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: -1 }));
   // 3 and 113: launchd has no such job, which is booted out too.
   if (r.code !== 0 && r.code !== 3 && r.code !== 113) {
     d.log(`${op.id}: its job couldn't be booted out (launchctl exit ${r.code}); the guard tries again`);
@@ -341,12 +368,22 @@ export async function follow(d: ChildDeps): Promise<Op[]> {
     if (!c) continue;
     let cur = op;
     if (cur.state === "running") {
+      let restarted = false;
       if (c.boot !== d.boot) {
         const t = d.types?.find((x) => x.type === op.type);
-        if (t?.onBoot(op) === "resume") continue;
-        cur = applyReport(d, cur, { end: { state: "failed", why: "the box restarted" } });
-      } else {
+        if (t?.onBoot(op) === "resume") {
+          // Its type carries it on: the new boot is written, and it is followed as any op is.
+          cur = { ...cur, child: { ...c, boot: d.boot } };
+          writeOp(d.ops, cur);
+        } else {
+          cur = applyReport(d, cur, { end: { state: "failed", why: "the box restarted" } });
+          restarted = true;
+        }
+      }
+      if (!restarted && cur.deadline !== null && d.sys.now() > cur.deadline) cur = applyReport(d, cur, { end: { state: "failed", why: "it passed its deadline" } });
+      if (!restarted && cur.state === "running") {
         const held = leaseHeld(leasePath(d.ops, op.id));
+        trimLog(logPath(d.ops, op.id));
         cur = takeReports(d, cur);
         if (cur.state === "running" && !held && (childOf(cur)!.applied > 0 || d.sys.now() - c.spawnedAt > STARTUP_MS)) cur = applyReport(d, cur, { end: { state: "failed", why: "its process ended before it finished" } });
       }
@@ -378,6 +415,41 @@ function takeReports(d: ChildDeps, op: Op): Op {
   const pr = p.kind === "ok" ? parseReport(p.text.trim()) : undefined;
   if (pr?.progress && JSON.stringify(pr.progress) !== JSON.stringify(cur.progress)) cur = applyReport(d, cur, { progress: pr.progress });
   return cur;
+}
+
+// The job's output is kept under LOG_MAX: past it, it is cut back to nothing, and says so. launchd
+// writes it with O_APPEND, so its next line goes at the new end.
+export const LOG_MAX = 1024 * 1024;
+function trimLog(path: string): void {
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile() || st.size <= LOG_MAX) return;
+    truncateSync(path, 0);
+    appendFileSync(path, `(taskbox cut this log at ${LOG_MAX} bytes)\n`);
+  } catch {}
+}
+
+// What undo does before it swaps, and the hop's sweep: every running op's job is booted out and its op
+// cancelled with why, then every op job launchd lists that no record names. So no op child of a newer
+// release runs on against an older install. The ops cancelled, and the labels it couldn't end.
+export async function endOpJobs(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, why: string): Promise<{ cancelled: Op[]; missed: string[] }> {
+  const missed: string[] = [];
+  const cancelled = await stopChildren({ ...d, log: (l) => (missed.push(l), d.log(l)) }, why);
+  missed.push(...(await bootOutListed(d.sys, new Set(cancelled.map((o) => jobLabel(o.id))))));
+  return { cancelled, missed };
+}
+
+// Boots out every op job launchd lists, but those in skip. The labels it couldn't end.
+export async function bootOutListed(sys: Pick<Sys, "run">, skip: ReadonlySet<string> = new Set()): Promise<string[]> {
+  const missed: string[] = [];
+  const r = await sys.run("/bin/launchctl", ["list"], { timeoutMs: LAUNCHCTL_MS }).catch(() => undefined);
+  if (r?.code !== 0) return ["launchd's list of jobs couldn't be read, so op jobs no record names weren't looked for"];
+  const labels = [...r.stdout.matchAll(/\t(local\.taskbox\.op\.op_[0-9A-HJKMNP-TV-Z]{26})$/gm)].map((m) => m[1]!);
+  for (const label of labels.filter((l) => !skip.has(l))) {
+    const b = await sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: -1 }));
+    if (b.code !== 0 && b.code !== 3 && b.code !== 113) missed.push(label);
+  }
+  return missed;
 }
 
 // What remove does first: every running op's job is booted out, which ends its child and what that

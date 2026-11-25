@@ -6,10 +6,10 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive } from "../core/child.ts";
-import { eventLog, flushEvents, keepEvents } from "../core/events.ts";
+import { eventLog, flushEvents, futureDays, keepEvents } from "../core/events.ts";
 import { sweepTemps } from "../core/rootfile.ts";
 import { keepOutcomes } from "../core/spool.ts";
-import { keepOps } from "../core/ops.ts";
+import { futureOps, keepOps } from "../core/ops.ts";
 import { everyPass, type PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { lapse, updatePending } from "../core/pending.ts";
@@ -23,6 +23,7 @@ export const keepingPass: PassMaker = {
     const root = c.rootUid ?? 0;
     const events = eventLog("guard", { dir: s.events, owner: root }, c.sys);
     let said = "";
+    let aheadSaid = false;
     return everyPass("keeping", "after", GUARD_FULL_MS, async () => {
       const problems: string[] = [];
       const now = c.sys.now();
@@ -43,7 +44,15 @@ export const keepingPass: PassMaker = {
       flushEvents();
       // Kept by count of days, never aged by the clock (events.ts, ops.ts keep*).
       keepEvents({ dir: s.events, owner: root }, now);
-      keepOps({ dir: s.ops, owner: root });
+      keepOps({ dir: s.ops, owner: root }, now);
+      // Days dated after today are kept apart, and said once while they last (rows/keeping.ts).
+      const ahead = [...futureDays({ dir: s.events, owner: root }, now), ...futureOps({ dir: s.ops, owner: root }, now).map((o) => new Date(o.endedAt ?? o.startedAt).toISOString().slice(0, 10))];
+      if (ahead.length && !aheadSaid) {
+        try {
+          events.write({ type: "guard.clock-ahead", actor: "taskbox", text: `Event or op history is dated after today (up to ${[...ahead].sort().at(-1)}): the clock moved. It is kept, and counts for nothing.` });
+          aheadSaid = true;
+        } catch {}
+      } else if (!ahead.length) aheadSaid = false;
       let spools: string[] = [];
       try {
         spools = readdirSync(join(s.dir, "outcomes"));

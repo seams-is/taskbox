@@ -55,7 +55,7 @@ describe("the lease", () => {
 describe("runChild: a launchd job of its own", () => {
   test("writes the job's plist root's way, names it by the op, records the child, bootstraps it", async () => {
     const s = setup();
-    const op = await runChild(s.d, s.op, CHILD_BUN, [APP, "op", "run"], { events: ["update."] });
+    const op = await runChild(s.d, s.op, CHILD_BUN, [APP], { events: ["update."] });
     const label = jobLabel(s.op.id);
     expect(s.calls).toEqual([`bootstrap system ${join(s.root, `${s.op.id}.plist`)}`]);
     const plist = readFileSync(join(s.root, `${s.op.id}.plist`), "utf8");
@@ -138,8 +138,13 @@ describe("following: one path for every op, the guard reloaded or not", () => {
   test("after a restart of the box the op fails, the box restarted, unless its type resumes it", async () => {
     const s = setup();
     await runChild(s.d, s.op, CHILD_BUN, [APP]);
-    expect(await follow({ ...s.d, boot: "boot-2", types: [{ ...update, onBoot: () => "resume" }] })).toEqual([]);
     expect((await follow({ ...s.d, boot: "boot-2" }))[0]).toMatchObject({ state: "failed", why: "the box restarted" });
+    // A type that resumes is followed on the new boot as any op is (review 5, L3).
+    const t = setup();
+    await runChild(t.d, t.op, CHILD_BUN, [APP]);
+    expect(await follow({ ...t.d, boot: "boot-2", types: [{ ...update, onBoot: () => "resume" }] })).toEqual([]);
+    const r = readOp(t.d.ops, t.op.id);
+    expect(r.kind === "ok" && [r.value.state, (r.value.child as { boot: string }).boot]).toEqual(["running", "boot-2"]);
   });
   test("a replayed or forged line in the handoff file isn't applied; a file that can't be read is said once", async () => {
     const s = setup();

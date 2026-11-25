@@ -15,7 +15,7 @@ import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } fro
 import { kitFor } from "./vm.ts";
 import { removeRequests } from "./requests.ts";
 import { rows } from "./rows/index.ts";
-import { oneShotPlist, oneShotScript, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
+import { endOpJobs, oneShotPlist, oneShotScript, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { halfMade, readRecord, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
@@ -534,6 +534,13 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
     d.say(`Can't go back: ${noControl((e as Error).message).slice(0, 200)}`);
     for (const l of footer(await stateNow(d), "Nothing changed.", "Nothing to do: agents fix it.")) d.say(l);
     return 1;
+  }
+  // Every op job first: its child runs this release's code, which the swap takes away (core/child.ts).
+  const opsDir = rootStateOf(d.paths).ops;
+  if (existsSync(opsDir)) {
+    const ended = await endOpJobs({ sys: d.sys, ops: { dir: opsDir, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {} }, "undone").catch(() => ({ cancelled: [], missed: ["the op jobs couldn't be read"] }));
+    if (ended.cancelled.length) d.say(`  Stopped ${ended.cancelled.length} operation${ended.cancelled.length === 1 ? "" : "s"} that ${ended.cancelled.length === 1 ? "was" : "were"} running.`);
+    for (const m of ended.missed) d.say(`  ${noControl(m).slice(0, 160)}`);
   }
   // One rename moves /opt/taskbox to the kept install. Then the kept link moves to the newer one,
   // so undo can be undone. Stopping between the two leaves both links on the same install, which

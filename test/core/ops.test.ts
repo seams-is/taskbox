@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { begin, cancel, end, keepOps, KEEP_MS, listOps, onBoot, type Op, opEvent, type OpType, readOp, toPhase, writeOp } from "../../src/core/ops.ts";
 
 const uid = process.getuid!();
+// A clock past every record these tests write, so none counts as dated after today.
+const FAR = 1_800_000_000_000 + 4000 * 86_400_000;
 const T = 1_800_000_000_000;
 let n = 0;
 const rand = (k: number) => {
@@ -140,9 +142,9 @@ describe("records", () => {
     writeOp(f, live);
     const later = Array.from({ length: 30 }, (_, i) => end(started(drain, {}, `x${i}`), "succeeded", T + (i + 1) * 86_400_000));
     for (const o of later.slice(0, 29)) writeOp(f, o);
-    expect(keepOps(f)).toEqual([]);
+    expect(keepOps(f, FAR)).toEqual([]);
     writeOp(f, later[29]!);
-    expect(keepOps(f)).toEqual([old.id]);
+    expect(keepOps(f, FAR)).toEqual([old.id]);
     expect(listOps(f).ops.map((o) => o.id)).toContain(live.id);
   });
 });
@@ -172,7 +174,7 @@ describe("review fixes: L6 in ops", () => {
     const f = { dir: mkdtempSync(join(tmpdir(), "taskbox-ops-")), owner: uid };
     const op = end(started(drain), "succeeded", T);
     writeOp(f, op);
-    expect(keepOps(f)).toEqual([]);
+    expect(keepOps(f, FAR)).toEqual([]);
   });
 });
 
@@ -183,7 +185,7 @@ describe("a record's handoff file", () => {
     writeOp(f, old);
     writeFileSync(join(f.dir, `${old.id}.reports`), "");
     for (let i = 0; i < 30; i++) writeOp(f, end(started(drain, {}, `x${i}`), "succeeded", T + (i + 1) * 86_400_000));
-    keepOps(f);
+    keepOps(f, FAR);
     expect(existsSync(join(f.dir, `${old.id}.reports`))).toBe(false);
   });
 });

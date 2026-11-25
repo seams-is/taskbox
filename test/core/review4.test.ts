@@ -53,7 +53,7 @@ describe("M2: ageing by count, never by the clock", () => {
       const b = begin([], update, { subject: `f${j}`, params: {}, actor: "owner" }, T + (400 + j) * DAY);
       if (b.kind !== "start") throw new Error();
       writeOp(f, { ...b.op, state: "succeeded", endedAt: T + (400 + j) * DAY });
-      keepOps(f);
+      keepOps(f, T + 1000 * DAY);
     }
     expect(readdirSync(f.dir).filter((n) => n.endsWith(".json"))).toHaveLength(28);
     for (let k = 1; k <= 10; k++) {
@@ -61,7 +61,7 @@ describe("M2: ageing by count, never by the clock", () => {
       if (b.kind !== "start") throw new Error();
       writeOp(f, { ...b.op, state: "succeeded", endedAt: T + (500 + k) * DAY });
     }
-    keepOps(f);
+    keepOps(f, T + 1000 * DAY);
     expect(readdirSync(f.dir).filter((n) => n.endsWith(".json"))).toHaveLength(30);
   });
   test("D3 and L5: outcomes dated in the future go too", () => {

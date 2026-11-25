@@ -236,7 +236,8 @@ export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: s
   }
   const ops: Op[] = [];
   const bad: string[] = [];
-  for (const n of names.slice(0, 5_000)) {
+  // Newest first, so past the cap the oldest are the ones not read.
+  for (const n of names.sort().reverse().slice(0, 5_000)) {
     const r = readOp(f, FILE.exec(n)![1]!);
     if (r.kind === "ok") ops.push(r.value);
     else bad.push(n);
@@ -245,28 +246,55 @@ export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: s
   return { ops, bad };
 }
 
-// Keeps the records of the newest KEEP_DAYS_N distinct days they ended on, by count, never by the
-// clock, so no clock change can age out the history. A running op is never removed. The ids removed.
+// Keeps the records of the newest KEEP_DAYS_N distinct days up to today, by count, never by the
+// clock, so no clock change can age out the history. Never removed: a running op, a record that
+// ended today, one dated after today (kept apart and flagged, as events' are), or one whose child's
+// job is still loaded (child.ts settles it first). Past maxBytes of the folder, the oldest ended
+// records go first, with their child's files. The ids removed.
 export const KEEP_DAYS_N = 30;
-export function keepOps(f: OpFolder): string[] {
+export const OPS_MAX_BYTES = 256 * 1024 * 1024;
+const CHILD_FILES = ["reports", "progress", "lease", "log", "plist"];
+export function keepOps(f: OpFolder, now: number, o: { maxBytes?: number } = {}): string[] {
   const gone: string[] = [];
+  const today = new Date(now).toISOString().slice(0, 10);
   const ops = listOps(f).ops;
-  const dayOf = (o: Op) => new Date(o.endedAt ?? o.startedAt).toISOString().slice(0, 10);
-  const kept = new Set([...new Set(ops.filter((o) => o.state !== "running").map(dayOf))].sort().slice(-KEEP_DAYS_N));
-  for (const op of ops.filter((o) => o.state !== "running" && !kept.has(dayOf(o)))) {
+  const dayOf = (x: Op) => new Date(x.endedAt ?? x.startedAt).toISOString().slice(0, 10);
+  const loaded = (x: Op) => isObj(x.child) && x.child.done !== true;
+  const removable = ops.filter((x) => x.state !== "running" && !loaded(x) && dayOf(x) < today).sort((a, b) => (a.id < b.id ? -1 : 1));
+  const kept = new Set([...new Set(ops.filter((x) => x.state !== "running" && dayOf(x) <= today).map(dayOf))].sort().slice(-KEEP_DAYS_N));
+  const sizeOf = (x: Op) => [x.id + ".json", ...CHILD_FILES.map((e) => `${x.id}.${e}`)].reduce((n, name) => {
     try {
-      unlinkSync(join(f.dir, `${op.id}.json`));
-      gone.push(op.id);
+      return n + lstatSync(join(f.dir, name)).size;
+    } catch {
+      return n;
+    }
+  }, 0);
+  const drop = (x: Op) => {
+    try {
+      unlinkSync(join(f.dir, `${x.id}.json`));
+      gone.push(x.id);
     } catch {}
-    // Its child's files (child.ts) go with it.
-    for (const ext of ["reports", "progress", "lease", "log", "plist"]) {
+    for (const ext of CHILD_FILES) {
       try {
-        unlinkSync(join(f.dir, `${op.id}.${ext}`));
+        unlinkSync(join(f.dir, `${x.id}.${ext}`));
       } catch {}
     }
+  };
+  for (const x of removable.filter((y) => !kept.has(dayOf(y)))) drop(x);
+  let total = ops.filter((x) => !gone.includes(x.id)).reduce((n, x) => n + sizeOf(x), 0);
+  for (const x of removable.filter((y) => !gone.includes(y.id))) {
+    if (total <= (o.maxBytes ?? OPS_MAX_BYTES)) break;
+    total -= sizeOf(x);
+    drop(x);
   }
   return gone;
 }
+
+// The op records dated after today.
+export const futureOps = (f: Pick<OpFolder, "dir" | "owner">, now: number): Op[] => {
+  const today = new Date(now).toISOString().slice(0, 10);
+  return listOps(f).ops.filter((x) => new Date(x.endedAt ?? x.startedAt).toISOString().slice(0, 10) > today);
+};
 
 // The event an op's change writes (events.ts Draft): op.started, op.progress and so on.
 export function opEvent(before: Op | undefined, after: Op): { type: string; op: string; subject: string; actor: string; text: string } | undefined {
