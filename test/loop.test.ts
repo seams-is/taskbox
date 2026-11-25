@@ -588,7 +588,8 @@ describe("an update during a pull", () => {
 
 
 describe("taskbox hold and share typed after the update", () => {
-  test("each gets one line saying it's gone, exits 2 as v3's other old names do (§2.6), and changes nothing", () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("each gets one line saying it's gone, exits 2 as v3's other old names do (§2.6), and changes nothing", () => {
     for (const cmd of [["hold", "--for", "1h", "--reason", "x"], ["share"]]) {
       const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "src/cli.ts"), ...cmd], { env: { PATH: "/usr/bin:/bin", HOME: tempRoot() } });
       expect(r.exitCode).toBe(2);
@@ -682,7 +683,7 @@ describe("what the loop records", () => {
     await oneJob(d, () => "c0ffee0", "c0ffee0", [], { kind: "macos" });
     expect(d.box.fastAt.macos).toBeUndefined();
   });
-  test("runLoop writes each slot's reason, and watch shows it under the slot's line", async () => {
+  test.serial("runLoop writes each slot's reason, and watch shows it under the slot's line", async () => {
     const sys = new FakeSys();
     sys.onSpawn = () => {};
     const d = loopDeps(sys, tempRoot());

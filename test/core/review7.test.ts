@@ -140,7 +140,8 @@ describe("the lows", () => {
     expect(keepOutcomes(dir, { wall: T - 1000, mono: 200, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" })).toEqual([]);
     expect(keepOutcomes(dir, { wall: T - 1000, mono: 200, boot: "0A1B2C3D-4E5F-4061-8293-A4B5C6D7E8F9" })).toEqual([id]);
   });
-  test("W2: readers read by bytes, so many small files hide nothing", () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("W2: readers read by bytes, so many small files hide nothing", () => {
     const dir = join(tmp(), "ev");
     appendEvent({ dir, owner: uid }, newEvent("guard", { type: "guard.started", actor: "taskbox", text: "the oldest" }, { now: () => T }));
     for (let i = 1; i <= 2100; i++) appendEvent({ dir, owner: uid }, newEvent("guard", { type: "guard.started", actor: "taskbox", text: "x" }, { now: () => T + i * 86_400_000 }));

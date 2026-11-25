@@ -114,7 +114,8 @@ describe("the listener", () => {
     l.stop();
   });
 
-  test("it ends with a timeout once its time is up", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("it ends with a timeout once its time is up", async () => {
     const { events } = start(0.002);
     await Bun.sleep(300);
     expect(events.at(-1)).toEqual({ timeout: true });
@@ -226,7 +227,7 @@ describe("taskbox connect github, against a fake GitHub", () => {
     expect(b.said.at(-1)).toMatch(/won't use: the App belongs to someone-else.*Delete the App example-org-taskbox-1-jobs on GitHub/);
   });
 
-  test("not installed in time: the App is kept for the next run, which finishes it", async () => {
+  test.serial("not installed in time: the App is kept for the next run, which finishes it", async () => {
     const b = box(CFG, ["finish"]);
     github(b.sys, { installedAfter: 1_000 });
     expect(await connectGithub(b.d)).toBe(1);
@@ -240,7 +241,7 @@ describe("taskbox connect github, against a fake GitHub", () => {
     expect(readBoxFile(b.p.boxSettings, me).settings?.sources).toEqual([{ type: "github-actions", appId: 5150, repos: ["example-org/app"], app: "example-org-taskbox-1-jobs" }]);
   });
 
-  test("a pending App can be dropped instead", async () => {
+  test.serial("a pending App can be dropped instead", async () => {
     const b = box(CFG, ["delete"]);
     github(b.sys, { installedAfter: 1_000 });
     await connectGithub(b.d);
@@ -275,7 +276,7 @@ describe("taskbox connect github, against a fake GitHub", () => {
     expect(calls.indexOf("DELETE /app/installations/8")).toBeGreaterThan(calls.lastIndexOf("GET /installation/repositories"));
   });
 
-  test("replace that stops before the install keeps the old source and key as they were", async () => {
+  test.serial("replace that stops before the install keeps the old source and key as they were", async () => {
     const cfg: Config = { ...CFG, sources: [{ type: "github-actions", appId: 4242, repos: ["example-org/app"], app: "old-jobs" }], boxKeys: ["sources"] };
     const b = box(cfg, ["replace"]);
     placeKey(b.p, 4242, OLD_PEM);

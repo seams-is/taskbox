@@ -548,7 +548,8 @@ describe("taskbox load report", () => {
 // Replays through the simulator: a load session beside a busy real repo.
 describe("replays with load beside", () => {
   for (const seed of [1, 2, 3, 4, 5, 6]) {
-    test(`seed ${seed}: load never holds more than slots - 1, every real job runs, and none waits behind load`, () => {
+    // test.serial: more than 50 ms of work alone (test/setup.ts).
+    test.serial(`seed ${seed}: load never holds more than slots - 1, every real job runs, and none waits behind load`, () => {
       const r = rng(seed);
       const real: SimJob[] = Array.from({ length: 30 }, (_, i) => {
         const mac = r() < 0.15;

@@ -227,6 +227,12 @@ describe("the screens", () => {
 
 // The whole loop with 2 slots: VMs of both kinds at once, labels, an update that waits for the
 // running job and ends the waiting VM.
+// Serial, under bun test --concurrent too. Each test runs hours of fake time, one fake timer per
+// event-loop turn (test/fake.ts), so it is thousands of turns of work. Run at once, every test in
+// the file takes a share of each turn, and a test's time limit counts the whole file's work: on a
+// loaded runner that passed 5 s and timed out the light tests beside them (the gate's test is 1,350
+// turns of a 2 s poll). One at a time, each test's limit counts its own work. test.serial, since
+// Bun 1.4.4 runs a describe.serial's tests at once under --concurrent.
 describe("the loop with 2 slots", () => {
   function twoSlotDeps() {
     const sys = new FakeSys();
@@ -241,7 +247,7 @@ describe("the loop with 2 slots", () => {
     return { sys, d };
   }
 
-  test("a macOS job and a Linux VM at once; an update ends the waiting VM, waits for the job, then restarts", async () => {
+  test.serial("a macOS job and a Linux VM at once; an update ends the waiting VM, waits for the job, then restarts", async () => {
     const { sys, d } = twoSlotDeps();
     const image = new Map<string, string>();
     sys.responders.unshift((cmd, args) => {
@@ -298,7 +304,7 @@ describe("the loop with 2 slots", () => {
     expect(beats).toEqual([false, true]);
   });
 
-  test("a drain ends the waiting VM, lets the running job finish, starts nothing new, then stops the loop with exit 0", async () => {
+  test.serial("a drain ends the waiting VM, lets the running job finish, starts nothing new, then stops the loop with exit 0", async () => {
     const { sys, d } = twoSlotDeps();
     const image = new Map<string, string>();
     const clonesAt: number[] = [];
@@ -385,7 +391,7 @@ describe("the loop with 2 slots", () => {
   const loopNow = (d: ReturnType<typeof twoSlotDeps>["d"]) => JSON.parse(readFileSync(d.paths.loopState, "utf8"));
   const update = (d: ReturnType<typeof twoSlotDeps>["d"]) => writeFileSync(d.paths.installed, JSON.stringify({ commit: "beef000", files: {} }));
 
-  test("a Whole holds every slot: the waiting VM ends, the running job finishes, nothing starts, and the held slots read empty only then", async () => {
+  test.serial("a Whole holds every slot: the waiting VM ends, the running job finishes, nothing starts, and the held slots read empty only then", async () => {
     const { sys, d } = twoSlotDeps();
     let ws: WorkspaceView[] = [];
     d.workspaces = () => ({ views: ws });
@@ -440,7 +446,7 @@ describe("the loop with 2 slots", () => {
   });
 
   // Build plan step 7: the real held path, from root's state file on disk, as the box wires it (cli.ts).
-  test("an approved Whole in workspaces.json holds every slot: each ends empty, and heldEmpty is true for all of them", async () => {
+  test.serial("an approved Whole in workspaces.json holds every slot: each ends empty, and heldEmpty is true for all of them", async () => {
     const { sys, d } = twoSlotDeps();
     mkdirSync(dirname(d.paths.workspaces), { recursive: true });
     let state: WsState | undefined;
@@ -494,7 +500,7 @@ describe("the loop with 2 slots", () => {
     expect([after.heldKind, after.heldFor, after.slots["1"].heldEmpty, after.slots["2"].heldEmpty]).toEqual([undefined, undefined, undefined, undefined]);
   });
 
-  test("a held slot's waiting VM keeps waiting while GitHub refuses to delete its runner, as in a drain", async () => {
+  test.serial("a held slot's waiting VM keeps waiting while GitHub refuses to delete its runner, as in a drain", async () => {
     const { sys, d } = twoSlotDeps();
     let refusals = 2;
     const deletes: { at: number; ok: boolean }[] = [];
@@ -532,7 +538,7 @@ describe("the loop with 2 slots", () => {
     expect(jobs[0].endedAt).toBe(deletes[2]!.at);
   });
 
-  test("a hold that begins while the one VM waits for a job shows in the loop's state at that check", async () => {
+  test.serial("a hold that begins while the one VM waits for a job shows in the loop's state at that check", async () => {
     const { sys, d } = twoSlotDeps();
     d.cfg = { ...MCFG, vmsAtOnce: 1 };
     d.checks = { ...d.checks, cfg: d.cfg };
@@ -556,7 +562,7 @@ describe("the loop with 2 slots", () => {
     expect(seen[0]).toBe("CI paused for nova-1 (you approved it)");
   });
 
-  test("a Whole never makes a held VM give way, even with a job the source sees waiting", async () => {
+  test.serial("a Whole never makes a held VM give way, even with a job the source sees waiting", async () => {
     const { sys, d } = twoSlotDeps();
     sys.onSpawn = () => {}; // no job comes to the box's VMs
     let ws: WorkspaceView[] = [];
@@ -595,7 +601,7 @@ describe("the loop with 2 slots", () => {
   // kern.boottime, as the box answers it: this boot began an hour before the test's clock.
   const bootAt = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/usr/sbin/sysctl" && args[1] === "kern.boottime" ? { code: 0, stdout: `{ sec = ${Math.floor((sys.now() - 3600_000) / 1000)}, usec = 0 } Thu Nov 19 10:00:00 2026\n`, stderr: "" } : undefined));
 
-  test("a drain survives the loop's own restart, and the loop stops again once drained", async () => {
+  test.serial("a drain survives the loop's own restart, and the loop stops again once drained", async () => {
     const { sys, d } = twoSlotDeps();
     bootAt(sys);
     // Written in this boot, before an update restarted the loop.
@@ -608,7 +614,7 @@ describe("the loop with 2 slots", () => {
     expect(existsSync(d.paths.stopped)).toBe(true);
   });
 
-  test("a drain from before the box's last boot ends at the loop's start, as a login means run", async () => {
+  test.serial("a drain from before the box's last boot ends at the loop's start, as a login means run", async () => {
     const { sys, d } = twoSlotDeps();
     bootAt(sys);
     // The drain names the boot it was asked in; this boot's uuid is another (core/boot.ts).
@@ -624,7 +630,7 @@ describe("the loop with 2 slots", () => {
     expect(readFileSync(d.paths.log, "utf8")).toContain("a drain from before the restart ended");
   }, 20_000);
 
-  test("a taskbox start as the drain ends starts the loop again, never leaves it down unasked", async () => {
+  test.serial("a taskbox start as the drain ends starts the loop again, never leaves it down unasked", async () => {
     const { sys, d } = twoSlotDeps();
     bootAt(sys);
     writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
@@ -638,7 +644,7 @@ describe("the loop with 2 slots", () => {
     expect(readFileSync(d.paths.log, "utf8")).toContain("taskbox start came as the drain ended");
   });
 
-  test("a runner GitHub never frees goes after a few asks, so a drain always ends", async () => {
+  test.serial("a runner GitHub never frees goes after a few asks, so a drain always ends", async () => {
     const { sys, d } = twoSlotDeps();
     let deletes = 0;
     d.gh.deleteRunner = async () => {
@@ -663,7 +669,7 @@ describe("the loop with 2 slots", () => {
     expect(deletes).toBeLessThanOrEqual(2 * DRAIN_REFUSALS);
   });
 
-  test("a drain stops a download under way, says why, and the loop stops with no VM started", async () => {
+  test.serial("a drain stops a download under way, says why, and the loop stops with no VM started", async () => {
     const { sys, d } = twoSlotDeps();
     // Only the macOS image is on disk, so a slot downloads Linux's.
     sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? { code: 0, stderr: "", stdout: JSON.stringify([{ Name: CFG.image, Source: "OCI" }]) } : undefined));
@@ -689,7 +695,7 @@ describe("the loop with 2 slots", () => {
     expect(readFileSync(d.paths.log, "utf8")).toContain("because a drain began (taskbox drain)");
   });
 
-  test("a Whole stops a download under way, says why, and starts no VM while it holds", async () => {
+  test.serial("a Whole stops a download under way, says why, and starts no VM while it holds", async () => {
     const { sys, d } = twoSlotDeps();
     // Only the macOS image is on disk, so a slot downloads Linux's.
     sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? { code: 0, stderr: "", stdout: JSON.stringify([{ Name: CFG.image, Source: "OCI" }]) } : undefined));
@@ -717,7 +723,7 @@ describe("the loop with 2 slots", () => {
     expect(readFileSync(d.paths.log, "utf8")).toContain("because a workspace holds the box; it starts again after");
   });
 
-  test("a VM waiting for a job keeps waiting while GitHub refuses to delete its runner, then goes", async () => {
+  test.serial("a VM waiting for a job keeps waiting while GitHub refuses to delete its runner, then goes", async () => {
     const { sys, d } = twoSlotDeps();
     let refusals = 2;
     let deletes = 0;
@@ -745,7 +751,7 @@ describe("the loop with 2 slots", () => {
     expect(readFileSync(d.paths.log, "utf8")).toContain("the VM kept waiting through the drain: GitHub didn't delete its runner (422 the runner is busy)");
   });
 
-  test("a Linux proof that tried no other job VM is proved again once one is up, at most every 30 min", async () => {
+  test.serial("a Linux proof that tried no other job VM is proved again once one is up, at most every 30 min", async () => {
     const { sys, d } = twoSlotDeps();
     const peersSeen: number[] = [];
     // The first pass tries none; every one after tries the macOS VM beside it.
@@ -768,7 +774,7 @@ describe("the loop with 2 slots", () => {
     expect(readProof(d.paths.projectState)?.peers).toBe(1);
   }, 20_000);
 
-  test("a proof that never finds another VM's address stops asking after 3 passes", async () => {
+  test.serial("a proof that never finds another VM's address stops asking after 3 passes", async () => {
     const { sys, d } = twoSlotDeps();
     const runs: number[] = [];
     d.proveLinux = async () => (runs.push(sys.now()), { ok: true, detail: "test", peers: 0 });
@@ -786,7 +792,7 @@ describe("the loop with 2 slots", () => {
     expect(readFileSync(d.paths.log, "utf8")).toContain("the Linux proof tried no other job VM 3 times");
   }, 20_000);
 
-  test("Softnet as root in one slot stops the loop: the other slot's waiting VM ends, and the loop exits 0", async () => {
+  test.serial("Softnet as root in one slot stops the loop: the other slot's waiting VM ends, and the loop exits 0", async () => {
     const { sys, d } = twoSlotDeps();
     let runs = 0;
     sys.responders.unshift((cmd, args) => {

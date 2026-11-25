@@ -164,25 +164,26 @@ function nprocNow(): number {
 }
 
 describe("the gate, run for real", () => {
-  test("clears the environment first: HOME is /var/empty and nothing else is set", () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("clears the environment first: HOME is /var/empty and nothing else is set", () => {
     expect(gateLine()).toMatch(/^#!\/usr\/bin\/env -S -i HOME=\/var\/empty \/opt\/taskbox\/bin\/bun --no-install --no-env-file --cwd=\/ --config=/);
     const { out } = runGate(plantedBox(inPhase("paused")), [], { body: "console.log(JSON.stringify({ env: process.env, cwd: process.cwd() }));\n" });
     expect(JSON.parse(out)).toEqual({ env: { HOME: "/var/empty" }, cwd: "/" });
   });
 
-  test("a Paused account with a planted .bunfig.toml, .env and BUN_OPTIONS: one line, exit 1, and no planted code runs", () => {
+  test.serial("a Paused account with a planted .bunfig.toml, .env and BUN_OPTIONS: one line, exit 1, and no planted code runs", () => {
     const { r, out, ran } = runGate(plantedBox(inPhase("paused")), ["-c", "id"]);
     expect(out).toBe("taskbox: nova-1 is Paused.\n");
     expect(r.exitCode).toBe(1);
     expect(ran).toBe(false);
   });
 
-  test("the plants are live: without the cleared environment, code runs", () => {
+  test.serial("the plants are live: without the cleared environment, code runs", () => {
     const { ran } = runGate(plantedBox(inPhase("paused")), ["-c", "id"], { line: gateLine().replace(" -i HOME=/var/empty", "") });
     expect(ran).toBe(true);
   });
 
-  test("a state others can write, a state that doesn't parse, and no state: closed", () => {
+  test.serial("a state others can write, a state that doesn't parse, and no state: closed", () => {
     expect(runGate(plantedBox(inPhase("active"), { stateMode: 0o666 }), ["-c", "id"]).out).toBe("taskbox: The workspaces state can't be used (others can write the state), so this account opens no shell.\n");
     expect(runGate(plantedBox("{"), ["-c", "id"]).out).toBe("taskbox: The workspaces state can't be used (the state doesn't parse), so this account opens no shell.\n");
     const none = runGate(plantedBox(null), ["-c", "id"]);
@@ -190,7 +191,7 @@ describe("the gate, run for real", () => {
     expect(none.r.exitCode).toBe(1);
   });
 
-  test("Active: the one command runs in the account's home, with its own plain environment and the hard process limit lowered", () => {
+  test.serial("Active: the one command runs in the account's home, with its own plain environment and the hard process limit lowered", () => {
     const want = nprocNow() - 1;
     const b = plantedBox(inPhase("active"));
     const { r, out, ran } = runGate(b, ["-c", 'ulimit -Hu; pwd; /usr/bin/env | /usr/bin/sort; exit 7'], { nproc: want });
