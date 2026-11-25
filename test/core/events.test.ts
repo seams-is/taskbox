@@ -73,8 +73,8 @@ describe("the log", () => {
   test("appends one line per event to its day's file, at 644", () => {
     const dir = join(tmp(), "events");
     const log = eventLog("guard", { dir, owner: uid }, clock(T), rand);
-    log.write({ type: "pause.started", actor: "service", text: "paused" });
-    log.write({ type: "pause.ended", actor: "service", text: "resumed" });
+    log.write({ type: "op.started", actor: "service", text: "paused" });
+    log.write({ type: "op.ended", actor: "service", text: "resumed" });
     expect(readdirSync(dir)).toEqual(["00000001-2026-11-23.jsonl"]);
     expect(readFileSync(join(dir, "00000001-2026-11-23.jsonl"), "utf8").split("\n").filter(Boolean)).toHaveLength(2);
     expect(statSync(join(dir, "00000001-2026-11-23.jsonl")).mode & 0o777).toBe(0o644 & ~process.umask());

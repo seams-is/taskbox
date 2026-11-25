@@ -10,7 +10,7 @@ import { keepOutcomes, OUTCOME_KEEP_MS, recordOutcome } from "../../src/core/spo
 
 const T = Date.parse("2026-11-25T12:00:00Z");
 const M = 5_000_000; // monotonic ms at the ask
-const at = (wall: number, mono = M, boot = "b1") => ({ wall, mono, boot });
+const at = (wall: number, mono = M, boot = "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17") => ({ wall, mono, boot });
 const ask = { kind: "channel" as const, subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { to: "beta" } };
 function raised() {
   const r = raise(noPending(), ask, at(T));
@@ -20,7 +20,7 @@ function raised() {
 
 describe("a pending change", () => {
   test("records the boot and the monotonic time it was asked at", () => {
-    expect(raised().item).toMatchObject({ askedAt: T, boot: "b1", monoAt: M });
+    expect(raised().item).toMatchObject({ askedAt: T, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17", monoAt: M });
   });
   test("a clock stepped back keeps it no longer: any wall time before its ask lapses it", () => {
     const r = raised();
@@ -41,8 +41,8 @@ describe("a pending change", () => {
   });
   test("a restart of the box lapses it", () => {
     const r = raised();
-    expect(lapse(r.state, at(T + 1000, 10, "b2")).lapsed).toHaveLength(1);
-    expect(answer(r.state, r.item.id, at(T + 1000, 10, "b2")).ok).toBe(false);
+    expect(lapse(r.state, at(T + 1000, 10, "0A1B2C3D-4E5F-4061-8293-A4B5C6D7E8F9")).lapsed).toHaveLength(1);
+    expect(answer(r.state, r.item.id, at(T + 1000, 10, "0A1B2C3D-4E5F-4061-8293-A4B5C6D7E8F9")).ok).toBe(false);
   });
 });
 
@@ -50,7 +50,7 @@ describe("an outcome file", () => {
   const id = `rq_${"0".repeat(26)}`;
   const setup = () => {
     const dir = join(mkdtempSync(join(tmpdir(), "taskbox-lapse-")), "outcomes", "agent");
-    recordOutcome(dir, { id, at: T, ok: true, said: "x", mono: M, boot: "b1" }, { owner: process.getuid!() });
+    recordOutcome(dir, { id, at: T, ok: true, said: "x", mono: M, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" }, { owner: process.getuid!() });
     utimesSync(join(dir, `${id}.json`), new Date(T), new Date(T));
     return dir;
   };
@@ -64,7 +64,7 @@ describe("an outcome file", () => {
     expect(keepOutcomes(dir, at(T + 1000, M + OUTCOME_KEEP_MS + 1))).toEqual([id]);
   });
   test("goes after a restart, and by the wall clock forward", () => {
-    expect(keepOutcomes(setup(), at(T + 1000, 10, "b2"))).toEqual([id]);
+    expect(keepOutcomes(setup(), at(T + 1000, 10, "0A1B2C3D-4E5F-4061-8293-A4B5C6D7E8F9"))).toEqual([id]);
     expect(keepOutcomes(setup(), at(T + OUTCOME_KEEP_MS + 1, M + 1000))).toEqual([id]);
     expect(readdirSync(setup())).toHaveLength(1);
   });

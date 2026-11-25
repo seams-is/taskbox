@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import type { Clock } from "../clock.ts";
 import { readUpTo } from "../workspace/read.ts";
 import { idOf, isId, monotonic, type Rand, realRand } from "./ids.ts";
-import { Verified } from "./statement.ts";
+import { isVerified, type Verified } from "./statement.ts";
 import { isObj, plain, safeParse } from "./rootfile.ts";
 
 export type Writer = "guard" | "loop";
@@ -106,16 +106,18 @@ export function newEvent(writer: Writer, d: Draft, clock: Pick<Clock, "now">, ra
 // Each file is named by a number taskbox gives it in write order, then the day it was started on:
 // 00000042-2026-11-25.jsonl. The number orders the files; the date is a label for people and decides
 // nothing that removes anything.
-// Progress and refused requests, the only types written at volume, go in files of their own ("-n"),
-// which the size cap takes first, so an op's end and an approval keep their room whatever a flood
-// writes.
+// Only the lasting kinds taskbox names (an op's life, confirm, the guard's own and events.dropped) go
+// in the main files; every other type, progress and refused requests among them, goes in files of its
+// own ("-n"), which the size cap takes first. So an op's end and an approval keep their room whatever
+// a flood of any other type writes. A new lasting kind is named here.
 const SEQ_FILE = /^(\d{8,})-(\d{4}-\d\d-\d\d)(-n)?\.jsonl$/;
 const seqOf = (name: string) => {
   const m = SEQ_FILE.exec(name);
   return m ? { seq: Number(m[1]), day: m[2]!, noise: m[3] !== undefined } : undefined;
 };
 export const seqFile = (seq: number, day: string, noise = false) => `${String(seq).padStart(8, "0")}-${day}${noise ? "-n" : ""}.jsonl`;
-const isNoise = (type: string) => /\.(progress|refused)$/.test(type);
+const LASTING = /^(op|confirm|guard|events)\./;
+const isNoise = (type: string) => !LASTING.test(type) || /\.(progress|refused)$/.test(type);
 const byWrite = (a: string, b: string) => seqOf(a)!.seq - seqOf(b)!.seq;
 // For tests and readers: the day a file was started on.
 export const dayOfFile = (name: string) => seqOf(name)?.day;
@@ -358,12 +360,17 @@ export const REFUSED = (type: string) => /\.refused$/.test(type);
 // request, so a cap by name could be passed by changing it.
 export const REFUSED_PER_MINUTE = 60;
 export const WINDOWS_MAX = 1000;
+// Known keys and principals have a map of their own, never pushed out by progress: pinned keys and
+// principals are few. Past KNOWN_MAX, a new one shares the folder's refused window.
+export const KNOWN_MAX = 100;
+type Window = { from: number; n: number; dropped: number; actor: string };
 
 interface Limiter {
   put: (d: Draft) => Event;
   clock: Pick<Clock, "now">;
   limit: number;
-  windows: Map<string, { from: number; n: number; dropped: number }>;
+  windows: Map<string, Window>;
+  known: Map<string, Window>;
   refused: { from: number; n: number; dropped: number };
 }
 // One limiter per writer's folder in this process, shared by every eventLog on it.
@@ -378,10 +385,10 @@ function refusedSummary(l: Limiter): void {
   w.dropped = 0;
 }
 
-function summary(l: Limiter, actor: string, w: { dropped: number }): void {
+function summary(l: Limiter, w: Window): void {
   if (!w.dropped) return;
   try {
-    l.put({ type: "events.dropped", actor: "taskbox", text: `${w.dropped} events from ${actor} were dropped in the minute before.`.slice(0, TEXT_MAX) });
+    l.put({ type: "events.dropped", actor: "taskbox", text: `${w.dropped} events from ${w.actor} were dropped in the minute before.`.slice(0, TEXT_MAX) });
   } catch {}
   w.dropped = 0;
 }
@@ -395,11 +402,12 @@ export function flushEvents(o: { all?: boolean } = {}): void {
       refusedSummary(l);
       if (!o.all) l.refused = { from: now, n: 0, dropped: 0 };
     }
-    for (const [actor, w] of [...l.windows]) {
-      if (!o.all && now - w.from < 60_000) continue;
-      summary(l, actor, w);
-      l.windows.delete(actor);
-    }
+    for (const map of [l.windows, l.known])
+      for (const [key, w] of [...map]) {
+        if (!o.all && now - w.from < 60_000) continue;
+        summary(l, w);
+        map.delete(key);
+      }
   }
 }
 
@@ -430,7 +438,7 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
       appendEvent(f, e);
       return e;
     };
-    l = { put, clock, limit: o.perActorPerMinute ?? PER_ACTOR_PER_MINUTE, windows: new Map(), refused: { from: clock.now(), n: 0, dropped: 0 } };
+    l = { put, clock, limit: o.perActorPerMinute ?? PER_ACTOR_PER_MINUTE, windows: new Map(), known: new Map(), refused: { from: clock.now(), n: 0, dropped: 0 } };
     limiters.set(key, l);
   } else {
     l.clock = clock;
@@ -440,7 +448,19 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
   return {
     write(d) {
       // Every refusal written here is junk, whoever it names: known ones come through refused().
-      if (REFUSED(d.type)) {
+      if (REFUSED(d.type)) return junk(d);
+      return windowed(d, d.actor, lim.windows, WINDOWS_MAX);
+    },
+    refused(d, by) {
+      if (!isVerified(by)) throw new Error("a known refusal needs the verifier's Verified");
+      if (!REFUSED(d.type)) throw new Error("refused() writes refused requests only");
+      const draft: Draft = { type: d.type, text: d.text, actor: by.actor, ...(d.subject !== undefined ? { subject: d.subject } : {}), ...(d.op !== undefined ? { op: d.op } : {}), ...(d.data !== undefined ? { data: d.data } : {}) };
+      if (!lim.known.has(by.key) && lim.known.size >= KNOWN_MAX) return junk(draft);
+      return windowed(draft, by.key, lim.known, KNOWN_MAX);
+    },
+  };
+  function junk(d: Draft): Event {
+      {
         const now = d.at ?? lim.clock.now();
         const w = lim.refused;
         if (now - w.from >= 60_000) {
@@ -457,31 +477,23 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
         if (r.dropped++ === 0) lim.put({ type: "events.dropped", actor: "taskbox", text: `More than ${REFUSED_PER_MINUTE} refused requests this minute: the rest are counted, and the count is written when the minute ends.` });
         return newEvent(writer, d, lim.clock, rand);
       }
-      return windowed(d, d.actor);
-    },
-    refused(d, by) {
-      if (!(by instanceof Verified)) throw new Error("a known refusal needs the verifier's Verified");
-      if (!REFUSED(d.type)) throw new Error("refused() writes refused requests only");
-      const draft: Draft = { type: d.type, text: d.text, actor: by.actor, ...(d.subject !== undefined ? { subject: d.subject } : {}), ...(d.op !== undefined ? { op: d.op } : {}), ...(d.data !== undefined ? { data: d.data } : {}) };
-      return windowed(draft, by.key);
-    },
-  };
+  }
   // Progress, by actor; known refusals, by key or principal. Each still capped, so no sender can fill
   // the disk; a refusal's first dropped line says so at once.
-  function windowed(d: Draft, key: string): Event {
+  function windowed(d: Draft, key: string, map: Map<string, Window>, max: number): Event {
     {
       if (!LIMITED(d.type) && !REFUSED(d.type)) return lim.put(d);
       const now = d.at ?? lim.clock.now();
-      let w = lim.windows.get(key);
+      let w = map.get(key);
       if (!w || now - w.from >= 60_000) {
-        if (w) summary(lim, d.actor, w);
-        w = { from: now, n: 0, dropped: 0 };
-        lim.windows.delete(key);
-        lim.windows.set(key, w);
-        while (lim.windows.size > WINDOWS_MAX) {
-          const [oldest, ow] = lim.windows.entries().next().value!;
-          summary(lim, oldest, ow);
-          lim.windows.delete(oldest);
+        if (w) summary(lim, w);
+        w = { from: now, n: 0, dropped: 0, actor: d.actor };
+        map.delete(key);
+        map.set(key, w);
+        while (map.size > max) {
+          const [oldest, ow] = map.entries().next().value!;
+          summary(lim, ow);
+          map.delete(oldest);
         }
       }
       if (w.n >= lim.limit) {

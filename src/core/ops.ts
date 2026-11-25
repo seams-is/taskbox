@@ -235,8 +235,8 @@ export function readOp(f: Pick<OpFolder, "dir" | "owner">, id: string): Read<Op>
 const order = (x: Op) => (Number.isSafeInteger(x.seq) ? (x.seq as number) : 0);
 // Newest by write order first; a record with no seq (an older release's) is oldest, then by id.
 const newestFirst = (a: Op, b: Op) => order(b) - order(a) || (a.id < b.id ? 1 : -1);
-// The scan's bound: keepOps keeps far fewer, so it is reached only if keeping fails for long.
-const SCAN = 20_000;
+// Every record is read: a cut in the folder's own order could hide a running op. keepOps keeps the
+// folder at OPS_KEEP records and OPS_MAX_BYTES, so the read stays small while keeping works.
 
 function allOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: string[] } {
   let names: string[];
@@ -249,7 +249,7 @@ function allOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: string[] 
   }
   const ops: Op[] = [];
   const bad: string[] = [];
-  for (const n of names.slice(0, SCAN)) {
+  for (const n of names) {
     const r = readOp(f, FILE.exec(n)![1]!);
     if (r.kind === "ok") ops.push(r.value);
     else bad.push(n);

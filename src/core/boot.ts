@@ -7,6 +7,8 @@
 import type { Sys } from "../sys.ts";
 
 const UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
+// A boot id as taskbox stores it: bootId's own form, a UUID in upper case, 36 characters.
+export const isBootId = (v: unknown): v is string => typeof v === "string" && v.length === 36 && UUID.test(v) && v === v.toUpperCase();
 
 export async function bootId(sys: Pick<Sys, "run">): Promise<string | undefined> {
   const r = await sys.run("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], { timeoutMs: 5_000 }).catch(() => undefined);

@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import { looksSecret } from "./events.ts";
 import { canonical } from "./statement.ts";
+import { isBootId } from "./boot.ts";
 import { idOf, isId, type Rand, realRand } from "./ids.ts";
 import { isObj, plain, readOwnedJson, type Read, time, updateOwnedJson, type WriteRules } from "./rootfile.ts";
 
@@ -76,7 +77,7 @@ function itemProblem(p: unknown): string | undefined {
   if (!Array.isArray(p.shows) || p.shows.length < 1 || p.shows.length > SHOWS_MAX || !p.shows.every((l) => plain(l, 120))) return "an item's lines aren't ones taskbox shows";
   if (!time(p.askedAt) || !time(p.lapsesAt) || (p.lapsesAt as number) - (p.askedAt as number) !== LAPSE_MS) return "an item's times aren't ones taskbox reads";
   if (p.op !== undefined && !isId("op", p.op)) return "an item's op isn't an op id";
-  if ((p.boot !== undefined && !plain(p.boot, 32)) || (p.monoAt !== undefined && !Number.isSafeInteger(p.monoAt))) return "an item's boot or clock isn't one taskbox reads";
+  if ((p.boot !== undefined && !isBootId(p.boot)) || (p.monoAt !== undefined && !Number.isSafeInteger(p.monoAt))) return "an item's boot or clock isn't one taskbox reads";
   if (Buffer.byteLength(canon(p.payload ?? null)) > PAYLOAD_MAX) return "an item's payload is too big";
   if (p.digest === "" || p.digest !== digestOf(p.kind as Kind, p.subject as string, p.payload)) return "an item's digest isn't its own";
   if (looksSecret(canon(p))) return "an item holds something shaped like a secret";
