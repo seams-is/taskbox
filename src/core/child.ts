@@ -206,7 +206,7 @@ export interface ChildDeps {
   ops: OpFolder;
   events: EventLog;
   log: (line: string) => void;
-  boot: string; // this boot, kern.boottime's seconds, so a later guard can tell a restart
+  boot: string; // this boot's uuid (boot.ts bootId), so a later guard can tell a restart
   types?: readonly OpType[]; // to ask a type what a restart does to its op
   said?: Set<string>; // what was logged already, so a file that can't be read is said once
 }

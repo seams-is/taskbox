@@ -15,6 +15,7 @@ import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } fro
 import { kitFor } from "./vm.ts";
 import { removeRequests } from "./requests.ts";
 import { rows } from "./rows/index.ts";
+import { bootId, isBootId, monoNow } from "./core/boot.ts";
 import { endOpJobs, oneShotPlist, oneShotScript, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
@@ -36,7 +37,7 @@ import type { Sys } from "./sys.ts";
 import { readLoopState, runningJobs, slotsShown } from "./watch.ts";
 import { SHELL_COMMANDS } from "./shell.ts";
 import { placeTailscaledLog } from "./logins.ts";
-import { bootOutUnknown, KNOWN_DAEMONS, MAX_HOLD_MS, readRollbackWatch, removeRollbackWatch, retryAfterMs, rollbackWatchPaths, rollbackWatchState, writeRollbackWatch } from "./hop.ts";
+import { bootOutUnknown, KNOWN_DAEMONS, MAX_HOLD_MS, readRollbackWatch, type RollbackWatch, removeRollbackWatch, retryAfterMs, rollbackWatchPaths, rollbackWatchState, writeRollbackWatch } from "./hop.ts";
 
 export interface OpsDeps {
   sys: Sys;
@@ -1092,6 +1093,32 @@ async function restorePlists(d: OpsDeps, kept: string): Promise<string | undefin
 // move, at most MAX_HOLD_MS after it was placed), it takes the box back with undo, if the box still
 // runs the release it watches. A go-back that fails keeps the watcher: it records why, which taskbox
 // check shows, and tries again later. Every line goes to the guard's log.
+// Whether the watch's deadline has passed. A watch v3 placed carries the monotonic clock and the boot
+// it was placed at, and is judged by the time it has used on that clock (watchUsed), so no wall clock
+// step rolls an update back early or holds it longer. With no count (a watch v2.6.1 placed, or a boot
+// or mono the box can't read now), the wall clock decides, capped at MAX_HOLD_MS from the placing,
+// so the watch always ends.
+export function decideWatch(w: RollbackWatch, at: { wall: number }, used: number | undefined): boolean {
+  if (used === undefined) return at.wall >= Math.min(w.deadline, w.placedAt + MAX_HOLD_MS);
+  return used >= Math.min(w.deadline - w.placedAt, MAX_HOLD_MS);
+}
+
+// The watcher's own count of the time a v3 watch has used, in one file only the watcher writes,
+// beside the watch file: { boot, anchor, used }, written each run. In the same boot it adds mono since
+// the anchor; after a restart it goes on from what was used. A count that doesn't read, or is out of
+// range, starts again from the placing. Undefined when the boot or mono can't be read.
+export const watchClockFile = (p: Paths) => `${rollbackWatchPaths(p).file}.clock`;
+export function watchUsed(d: { paths: Paths }, w: RollbackWatch, at: { mono: number | undefined; boot: string | undefined }): number | undefined {
+  if (w.placedMono === undefined || w.boot === undefined || at.mono === undefined || at.boot === undefined) return undefined;
+  const file = watchClockFile(d.paths);
+  const c = readStateJson<{ boot?: unknown; anchor?: unknown; used?: unknown }>(file);
+  const good = !!c && isBootId(c.boot) && Number.isSafeInteger(c.anchor) && (c.anchor as number) >= 0 && Number.isSafeInteger(c.used) && (c.used as number) >= 0 && (c.used as number) <= MAX_HOLD_MS;
+  const from = good ? (c as { boot: string; anchor: number; used: number }) : { boot: w.boot, anchor: w.placedMono, used: 0 };
+  const used = Math.min(MAX_HOLD_MS, from.used + (from.boot === at.boot ? Math.max(0, at.mono - from.anchor) : 0));
+  writeFileSync(file, JSON.stringify({ boot: at.boot, anchor: at.mono, used }), { mode: 0o644 });
+  return used;
+}
+
 export async function rollbackWatch(d: OpsDeps, log: (line: string) => void): Promise<number> {
   const state = rollbackWatchState(d.paths);
   // A file it can't read never ends the watch: a line each hour (marked by a file of its own), and
@@ -1114,7 +1141,8 @@ export async function rollbackWatch(d: OpsDeps, log: (line: string) => void): Pr
     return 0;
   }
   const now = d.sys.now();
-  if (now < Math.min(w.deadline, w.placedAt + MAX_HOLD_MS) || (w.nextTry !== undefined && now < w.nextTry)) return 0;
+  const at = { wall: now, mono: await monoNow(d.sys), boot: await bootId(d.sys) };
+  if (!decideWatch(w, at, watchUsed(d, w, at)) || (w.nextTry !== undefined && now < w.nextTry)) return 0;
   const tag = noControl(w.tag).slice(0, 24);
   const r = await withUpdateLock(
     d.paths,
@@ -1134,8 +1162,9 @@ export async function rollbackWatch(d: OpsDeps, log: (line: string) => void): Pr
     async () => {
       // Read again under the lock: v3's guard may have proved it, or moved the deadline, meanwhile.
       const at = readRollbackWatch(d.paths);
+      const clocks = { wall: d.sys.now(), mono: await monoNow(d.sys), boot: await bootId(d.sys) };
       if (!at || at.proved === true) return "done" as const;
-      if (d.sys.now() < Math.min(at.deadline, at.placedAt + MAX_HOLD_MS)) return "wait" as const;
+      if (!decideWatch(at, clocks, watchUsed(d, at, clocks))) return "wait" as const;
       if (linkTarget(d.paths.opt) !== at.to || linkTarget(d.paths.prev) !== at.back) {
         log(`rollback watcher: ${tag} wasn't proved by its deadline, but the box no longer runs it, so nothing was moved`);
         return "done" as const;

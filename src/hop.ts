@@ -388,6 +388,10 @@ export interface RollbackWatch {
   // The update lock held by another process for over 30 minutes, and when that was last logged (L7).
   blocked?: string;
   blockedLogAt?: number;
+  // v3 on: the monotonic clock and the boot when it was placed (core/boot.ts). v3's watcher judges the
+  // deadline by them, so a wall clock step neither rolls back nor holds an update. v2.6.1 ignores them.
+  placedMono?: number;
+  boot?: string;
 }
 
 // The latest a deadline may be moved to: 3 hours after the watcher was placed.
@@ -488,6 +492,8 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
   const { file, plist } = rollbackWatchPaths(p);
   rmSync(file, { force: true });
   rmSync(`${file}.unreadable`, { force: true });
+  // v3's watcher's own count of the time used (ops.ts watchClock).
+  rmSync(`${file}.clock`, { force: true });
   rmSync(plist, { force: true });
   await sys.run("/bin/launchctl", ["bootout", `system/${ROLLBACK_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
 }

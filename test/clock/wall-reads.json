@@ -1,0 +1,154 @@
+{
+  "clock.ts": {
+    "reads": 1,
+    "why": "the real Clock itself: every other read goes through it or Sys"
+  },
+  "log.ts": {
+    "reads": 1,
+    "why": "a log line's time label"
+  },
+  "progress.ts": {
+    "reads": 3,
+    "why": "a progress record's updatedAt and its rate: display"
+  },
+  "watch.ts": {
+    "reads": 1,
+    "why": "the watch screen's now: display"
+  },
+  "laptop/commands.ts": {
+    "reads": 5,
+    "why": "when a status was read and a screen drawn: display"
+  },
+  "laptop/home.ts": {
+    "reads": 1,
+    "why": "a temp file's unique name"
+  },
+  "laptop/main.ts": {
+    "reads": 1,
+    "why": "the laptop's Clock: passed on to the lines here"
+  },
+  "laptop/owner.ts": {
+    "reads": 1,
+    "why": "the time a signed statement carries (§3.7); the box judges its 5 minutes"
+  },
+  "laptop/pair.ts": {
+    "reads": 1,
+    "why": "when a box was paired: a label"
+  },
+  "laptop/screen.ts": {
+    "reads": 1,
+    "why": "how long a workspace has waited to save: display"
+  },
+  "laptop/update.ts": {
+    "reads": 4,
+    "why": "when the laptop last looked for an update: a step only looks sooner or later"
+  },
+  "actionskey.ts": {
+    "reads": 3,
+    "why": "a GitHub App JWT's iat and the clock offset GitHub reports: GitHub judges the JWT"
+  },
+  "github.ts": {
+    "reads": 4,
+    "why": "a GitHub App JWT's iat, the offset GitHub reports, and a failure's time for a status line"
+  },
+  "connectflow.ts": {
+    "reads": 9,
+    "why": "JWTs, labels on a pending connect, and the waits for GitHub and a new key: a step only ends a wait, which changes nothing and says so"
+  },
+  "watchdog.ts": {
+    "reads": 3,
+    "why": "a JWT, and whether the hourly workflows check and the last run are recent: a row's SKIP and display"
+  },
+  "away.ts": {
+    "reads": 2,
+    "why": "days until a date and recent logins: display"
+  },
+  "awaychecks.ts": {
+    "reads": 5,
+    "why": "how long ago the loop's last request and beat were: rows that say OK with a time"
+  },
+  "checks.ts": {
+    "reads": 5,
+    "why": "the guard's and the workspaces state's freshness (a stale read FAILs, so a step fails closed) and how recent a loss or a moved log is: display"
+  },
+  "rows/guard.ts": {
+    "reads": 1,
+    "why": "the guard's record's freshness: a stale read FAILs, so a step fails closed"
+  },
+  "cli.ts": {
+    "reads": 8,
+    "why": "the now passed to screens, the workspaces gate's freshness check (fails closed both ways) and the load session's wanted read: display and refusals"
+  },
+  "ops.ts": {
+    "reads": 15,
+    "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h"
+  },
+  "install.ts": {
+    "reads": 6,
+    "why": "installedAt labels, the lock's time, and the wait for Tailscale to start: a step only waits less or more"
+  },
+  "stopstart.ts": {
+    "reads": 4,
+    "why": "a drain's and a stop's time labels (the drain is judged by its boot uuid), and how long stop waits for the loop: a step only waits less or more"
+  },
+  "loadcmd.ts": {
+    "reads": 1,
+    "why": "the load command's now for its session's labels and freshness: display and a refusal to start"
+  },
+  "queue.ts": {
+    "reads": 2,
+    "why": "when the queue was read and a run's queued time when GitHub gives none: the scheduler's order"
+  },
+  "kinds.ts": {
+    "reads": 7,
+    "why": "the scheduler's now: when slots became ready or busy, and an idle VM's turn: a step only reorders a choice or gives an idle VM's turn away; no running job is ended"
+  },
+  "gate.ts": {
+    "reads": 2,
+    "why": "the workspaces gate's now: the state must be within 3 minutes either way, so a step fails closed"
+  },
+  "workspace/agent.ts": {
+    "reads": 6,
+    "why": "a request's time (the guard judges it), the wait for an answer, the workspaces state's freshness (fails closed both ways), and progress labels"
+  },
+  "workspace/pass.ts": {
+    "reads": 1,
+    "why": "the workspaces pass's now: its beat and when a failed fence proof is tried again, both timers, either way of a step"
+  },
+  "passes/v2.ts": {
+    "reads": 1,
+    "why": "the logins keeper's minute: a timer"
+  },
+  "passes/keeping.ts": {
+    "reads": 1,
+    "why": "the wall part of a Moment: a pending change and an outcome lapse on the wall clock too, and mono and the boot hold them to their limits"
+  },
+  "core/passes.ts": {
+    "reads": 2,
+    "why": "when each guard pass starts and ends: a pass's timing for its row"
+  },
+  "core/events.ts": {
+    "reads": 5,
+    "why": "an event's time and id, and the minute windows of its rate limits: a step only shortens or lengthens a window"
+  },
+  "core/spool.ts": {
+    "reads": 4,
+    "why": "a stale temp name in a spool (removing it early costs a resend) and the spool pass's time budget (a step leaves requests for the next pass)"
+  },
+  "core/child.ts": {
+    "reads": 3,
+    "why": "an op's end time and spawn time, and the 30 s a new job has to take its lease: a step only changes that grace; a free lease is the proof. Op deadlines are on mono"
+  },
+  "guard.ts": {
+    "reads": 7,
+    "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too"
+  },
+  "loopwatch.ts": {
+    "reads": 2,
+    "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
+  },
+  "loop.ts": {
+    "reads": 103,
+    "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both"
+  }
+}
