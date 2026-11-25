@@ -18,11 +18,10 @@
   },
   "tailscale": {
     "$comment": "tailscale and tailscaled v1.104.5, built twice by build-tailscale.yml, the two builds identical, and attached to the published, immutable release tailscale-v1.104.5 of the box's release repo (org, repo and releaseRepo in taskbox.json) as this asset. The install reads the asset with the App's token, then checks the tarball and each binary against these. url is the same asset, kept only for installs from before asset, which run the next update.",
-    "$todo": "This asset is on the release of seams-is/taskbox-archive, which v2.6.1 boxes read with their App's token. No box reads this repo for it yet. The first release of this repo re-publishes it: run build-tailscale.yml here (its tarball now carries Tailscale's LICENSE), publish the draft tailscale-v1.104.5 release, then pin the new asset ID and tarball SHA-256 here in a PR. The two binaries are built the same way, so their SHA-256s should not change; the PR checks them.",
     "version": "1.104.5",
-    "asset": 755695620,
-    "url": "https://api.github.com/repos/seams-is/taskbox-archive/releases/assets/755695620",
-    "sha256": "7e4a6016a5fc7fa37b47c73f694c4c99d58f0516d2df71a1ec267061e8e21a57",
+    "asset": 791295447,
+    "url": "https://api.github.com/repos/seams-is/taskbox/releases/assets/791295447",
+    "sha256": "cc990958dccdc053f701739f656a2acbd4e005931e7be91453f62eafc799ba3b",
     "files": {
       "tailscale": "964c2a0550680e79ee260130959087042e14ae17d3f671938a31d5ba186d2454",
       "tailscaled": "237ed22e03dea17896a81b7f2883752c2e1dc8d1ad199334c063843a8507da56"
