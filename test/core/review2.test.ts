@@ -42,7 +42,7 @@ describe("M1: the lock", () => {
   });
   test("N8: a nested lock on one file throws, rather than waiting for ever", async () => {
     const p = join(tmp(), "c.json");
-    await expect(withLock(p, () => withLock(p, () => "inner"))).rejects.toThrow("already");
+    await expect(withLock(p, () => withLock(p, () => "inner"))).rejects.toThrow("one lock at a time");
   });
   test("N8: two spellings of one file share one lock", async () => {
     const d = tmp();
@@ -220,7 +220,7 @@ describe("the child runner, review 2", () => {
     const { writeOp } = await import("../../src/core/ops.ts");
     const s = await setup();
     writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [], started: "Wed Nov 25 10:00:00 2026" } });
-    const ended = await adoptOrphans({ ...s.d, pid: 222, alive: aliveBy(async () => "Wed Nov 25 11:30:00 2026") });
+    const ended = await adoptOrphans({ ...s.d, pid: 222, alive: aliveBy(async () => ({ state: "running" as const, started: "Wed Nov 25 11:30:00 2026" })) });
     expect(ended[0]).toMatchObject({ state: "failed", why: "its process ended before it finished" });
   });
   test("N5: no adoption without the boot, so a restart is never mistaken for a live child", async () => {
@@ -228,7 +228,7 @@ describe("the child runner, review 2", () => {
     const { writeOp } = await import("../../src/core/ops.ts");
     const s = await setup();
     writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [] } });
-    await expect(adoptOrphans({ ...s.d, pid: 222, boot: "", alive: () => true })).rejects.toThrow("boot");
+    await expect(adoptOrphans({ ...s.d, pid: 222, boot: "", alive: () => "alive" as const })).rejects.toThrow("boot");
   });
   test("N2 and N5: a running op's child is ended by its group, adopted or not, and its op cancelled", async () => {
     const { stopChildren } = await import("../../src/core/child.ts");
@@ -236,7 +236,7 @@ describe("the child runner, review 2", () => {
     const s = await setup();
     writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [], started: "S" } });
     const killed: number[] = [];
-    const stopped = await stopChildren({ ...s.d, startOf: async () => "S", kill: (pid) => killed.push(pid) }, "the box is being removed");
+    const stopped = await stopChildren({ ...s.d, group: async () => ({ state: "known" as const, members: [{ pid: 4243, started: s.sys.now() }] }), kill: (pid) => killed.push(pid) }, "the box is being removed");
     expect(killed).toEqual([-4242]);
     expect(stopped.map((o) => o.state)).toEqual(["cancelled"]);
     const r = readOp(s.ops, s.op.id);
@@ -248,7 +248,7 @@ describe("the child runner, review 2", () => {
     const s = await setup();
     writeOp(s.ops, { ...s.op, child: { pid: 4242, guardPid: 111, boot: "b1", applied: 0, events: [], started: "S" } });
     const killed: number[] = [];
-    await stopChildren({ ...s.d, startOf: async () => "other", kill: (pid) => killed.push(pid) }, "x");
+    await stopChildren({ ...s.d, group: async () => ({ state: "known" as const, members: [{ pid: 4243, started: s.sys.now() - 86_400_000 }] }), kill: (pid) => killed.push(pid) }, "x");
     expect(killed).toEqual([]);
   });
   test("N4: progress goes on fd 3 only; the handoff file keeps phases, events and the end, within its cap", async () => {
@@ -257,12 +257,14 @@ describe("the child runner, review 2", () => {
     const f = join(tmp(), "r");
     const rep = reporter({ op: "op_01JD8Q4AAAAAAAAAAAAAAAAAAA", reports: f, fd: -1 });
     for (let i = 0; i < 20_000; i++) rep.send({ progress: { done: i, of: 20_000, text: "x".repeat(100) } });
-    for (let i = 0; i < 20_000; i++) rep.send({ event: { type: "update.step", text: "y".repeat(200) } });
-    rep.send({ end: { state: "succeeded" } });
+    // Past its cap the file takes a failed end and the reporter stops (review 3, M1-new).
+    expect(() => {
+      for (let i = 0; i < 20_000; i++) rep.send({ event: { type: "update.step", text: "y".repeat(200) } });
+    }).toThrow("full");
     expect(statSync(f).size).toBeLessThanOrEqual(REPORTS_MAX);
     const lines = readFileSync(f, "utf8").trim().split("\n").map((l) => parseReport(l)!);
     expect(lines.every((r) => r.n !== undefined && r.progress === undefined)).toBe(true);
-    expect(lines.at(-1)).toMatchObject({ end: { state: "succeeded" } });
+    expect(lines.at(-1)).toMatchObject({ end: { state: "failed" } });
     expect(lines.map((r) => r.n)).toEqual(lines.map((_, i) => i + 1));
   });
   test("N4: a handoff file that can't be read is said once, not every tick", async () => {
@@ -273,7 +275,7 @@ describe("the child runner, review 2", () => {
     writeFileSync(reportsPath(s.ops, s.op.id), "x");
     chmodSync(reportsPath(s.ops, s.op.id), 0o666);
     const said = new Set<string>();
-    for (let i = 0; i < 3; i++) await adoptOrphans({ ...s.d, pid: 222, alive: () => true, said });
+    for (let i = 0; i < 3; i++) await adoptOrphans({ ...s.d, pid: 222, alive: () => "alive" as const, said });
     expect(s.lines.filter((l) => l.includes("can't be read"))).toHaveLength(1);
   });
 });
@@ -288,7 +290,7 @@ describe("N6: a pass that fails is seen", () => {
     p.tick();
     p.tick();
     p.tick();
-    expect(p.problems()).toEqual(["the logins pass couldn't start: no keeper", "the bad pass failed: each tick"]);
+    expect(p.problems()).toEqual(["the logins pass couldn't start: no keeper", "the bad pass failed 3 times: each tick"]);
     expect(lines).toEqual(["the logins pass couldn't start: no keeper", "the bad pass failed: each tick"]);
   });
   test("the guard's record carries them, and a check row fails on them", async () => {

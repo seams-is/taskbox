@@ -10,7 +10,7 @@ import type { Sys } from "./sys.ts";
 import { linkTarget } from "./layout.ts";
 import { vmStarting } from "./loopwatch.ts";
 import { makePasses, type PassMaker, Passes } from "./core/passes.ts";
-import { type EventLog, eventLog, flushEvents } from "./core/events.ts";
+import { type EventLog, eventLog, flushEvents, installTermFlush } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { passMakers } from "./passes/index.ts";
 import { Log } from "./log.ts";
@@ -231,9 +231,12 @@ export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () 
   const problems = new Map<string, string>();
   const passes = new Passes(makePasses(makers, ctx, say, problems), sys, say, problems);
   // First, before the rules: after a restart, the pool's processes stop before anything else.
+  // A launchd stop is SIGTERM: the counts are written then too (core/events.ts).
+  const offTerm = installTermFlush();
   try {
     await watchWith(sys, cfg, p, keepGoing, passes, tellPasses);
   } finally {
+    offTerm();
     // Every event count the limiter holds is written before this guard ends (core/events.ts).
     flushEvents({ all: true });
   }
@@ -375,9 +378,12 @@ export function settler(sys: Sys, p: Paths, log: Pick<Log, "write">): () => Prom
 export function passTeller(events: EventLog | undefined): (ps: Passes) => void {
   const told = new Set<string>();
   return (ps) => {
-    for (const why of ps.problems()) {
-      if (told.has(why)) continue;
-      told.add(why);
+    const now = ps.problemsByPass();
+    // A pass that works again may be told again when it next fails.
+    for (const name of [...told]) if (!now.has(name)) told.delete(name);
+    for (const [name, why] of now) {
+      if (told.has(name)) continue;
+      told.add(name);
       try {
         events?.write({ type: "guard.pass-failed", actor: "taskbox", text: why });
       } catch {}

@@ -125,7 +125,9 @@ describe("review fixes: L2", () => {
     p.tick();
     await p.settle();
     expect(order).toEqual(["good"]);
-    expect(lines).toEqual(["the bad pass failed: start", "the bad pass failed: next"]);
+    // Said once; the second failure is counted (review 3).
+    expect(lines).toEqual(["the bad pass failed: start"]);
+    expect(p.problems()).toEqual(["the bad pass failed 2 times: next"]);
   });
   test("a maker that throws leaves its pass out", async () => {
     const { makePasses } = await import("../../src/core/passes.ts");
@@ -172,7 +174,7 @@ describe("review 2: the keeping pass", () => {
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     return { c, s, sys, uid };
   }
-  test("L6: a clock that jumps a year ahead, with an event written at the new time, ages nothing out", async () => {
+  test("L6: a clock that jumps a year ahead, with an event written at the new time, keeps the newest 7 days", async () => {
     const { c, s, sys, uid } = ctx();
     const { appendEvent, newEvent } = await import("../../src/core/events.ts");
     const day = 86_400_000;
@@ -183,7 +185,8 @@ describe("review 2: the keeping pass", () => {
     appendEvent({ dir: s.events, owner: uid }, newEvent("guard", { type: "check.failed", actor: "taskbox", text: "x" }, sys));
     await pass.next(sys.now(), false)!();
     await pass.next(sys.now() + GUARD, false)!();
-    expect(readdirSync(s.events)).toHaveLength(11);
+    // Ageing is by the real clock now, and the newest 7 days' files always stay (review 3, M2-new).
+    expect(readdirSync(s.events)).toHaveLength(7);
   });
   test("N7 and L9: it sweeps temporary names a crash left, and outcomes past their hour", async () => {
     const { c, s, sys, uid } = ctx();

@@ -135,12 +135,13 @@ describe("records", () => {
   test("are kept 30 days after they end", () => {
     const f = folder();
     const old = end(started(drain), "succeeded", T);
-    const live = { ...started(drain, {}, "x"), startedAt: T + KEEP_MS + 1 };
     writeOp(f, old);
-    writeOp(f, live);
+    // The newest 7 days' records are kept whatever their age: seven later days of them.
+    const later = Array.from({ length: 7 }, (_, i) => ({ ...end(started(drain, {}, `x${i}`), "succeeded", T + KEEP_MS + 1 + i * 86_400_000) }));
+    for (const o of later) writeOp(f, o);
     expect(keepOps(f, T + KEEP_MS)).toEqual([]);
     expect(keepOps(f, T + KEEP_MS + 1)).toEqual([old.id]);
-    expect(listOps(f).ops.map((o) => o.id)).toEqual([live.id]);
+    expect(listOps(f).ops.map((o) => o.id).sort()).toEqual(later.map((o) => o.id).sort());
   });
 });
 
@@ -179,7 +180,7 @@ describe("a record's handoff file", () => {
     const old = end(started(drain), "succeeded", T);
     writeOp(f, old);
     writeFileSync(join(f.dir, `${old.id}.reports`), "");
-    writeOp(f, { ...started(drain, {}, "x"), startedAt: T + KEEP_MS + 1 });
+    for (let i = 0; i < 7; i++) writeOp(f, end(started(drain, {}, `x${i}`), "succeeded", T + KEEP_MS + 1 + i * 86_400_000));
     keepOps(f, T + KEEP_MS + 1);
     expect(existsSync(join(f.dir, `${old.id}.reports`))).toBe(false);
   });

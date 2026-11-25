@@ -309,6 +309,13 @@ function outcomeProblem(o: unknown): string | undefined {
 // Records an outcome once: a request's first outcome stands. False when one was there.
 export function recordOutcome(dir: string, o: Outcome, w: Omit<WriteRules, "mode"> = {}): boolean {
   const path = outcomeFile(dir, o.id);
+  // The outcomes folder above each spool's must be root's alone too, or its spool folder could be swapped.
+  try {
+    const up = lstatSync(dirname(dir));
+    if (!up.isDirectory() || up.uid !== (w.owner ?? 0) || (up.mode & 0o022) !== 0) throw new Error(`${dirname(dir)} isn't root's alone`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
   try {
     const st = lstatSync(dir);
     if (!st.isDirectory() || st.uid !== (w.owner ?? 0) || (st.mode & 0o7777) !== 0o711) throw new Error(`${dir} isn't root's at 711`);

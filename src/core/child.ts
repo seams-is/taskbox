@@ -43,40 +43,55 @@ export function reportLine(r: Report): string {
 export const reportsPath = (f: Pick<OpFolder, "dir">, id: string) => join(f.dir, `${id}.reports`);
 export const REPORTS_MAX = 1024 * 1024;
 
-// The child's side. send() numbers the report, appends it to the handoff file, then writes it on fd 3.
-// It says false once nobody reads fd 3, as after its guard was reloaded (seen in a Tart guest: EPIPE);
-// the report is in the handoff file all the same.
-// A report with progress alone goes on fd 3 only, unnumbered: losing one costs nothing. Phases, events
-// and the end are numbered and kept in the handoff file, which stays within REPORTS_MAX: past
-// KEEP_MAX only the end is kept, so the next guard can always read it.
-export const KEEP_MAX = REPORTS_MAX - 8 * 1024;
+// The child's side. A report with progress alone goes on fd 3 only, unnumbered: losing one costs
+// nothing. Every other report is numbered once, kept in the handoff file, then written on fd 3. A
+// number is never taken back, and END_ROOM is kept free for the end, so the end always fits. A kept
+// report that would pass KEEP_MAX fills the file: the reporter keeps a failed end in its place, sends
+// it, and throws, so the op fails with a reason, never a lost end. It says false once nobody reads
+// fd 3, as after its guard was reloaded (seen in a Tart guest: EPIPE); the report is kept all the same.
+export const END_ROOM = 8 * 1024;
+export const KEEP_MAX = REPORTS_MAX - END_ROOM;
+export const FULL_WHY = "its reports filled the 1 MB handoff file, so it was stopped there";
 export function reporter(o: { op: string; reports: string; fd?: number }) {
   let n = 0;
   let pipe = true;
-  let size = 0;
+  let ended = false;
   const fd = o.fd ?? REPORT_FD;
+  const toPipe = (line: string) => {
+    if (!pipe || fd < 0) return (pipe = false);
+    try {
+      writeSync(fd, line);
+    } catch {
+      pipe = false;
+    }
+    return pipe;
+  };
+  const keep = (r: Report): string => {
+    const h = openSync(o.reports, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+    try {
+      const size = fstatSync(h).size;
+      const line = `${reportLine({ ...r, n: n + 1 })}\n`;
+      if (r.end === undefined && size + Buffer.byteLength(line) > KEEP_MAX) return "";
+      n++;
+      writeSync(h, line);
+      return line;
+    } finally {
+      closeSync(h);
+    }
+  };
   return {
     send(r: Report): boolean {
-      const progressOnly = Object.keys(r).every((k) => k === "progress");
-      const keep = !progressOnly && (r.end !== undefined || size < KEEP_MAX);
-      const line = `${reportLine(keep ? { ...r, n: ++n } : r)}\n`;
-      if (keep && size + Buffer.byteLength(line) <= (r.end ? REPORTS_MAX : KEEP_MAX)) {
-        const h = openSync(o.reports, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-        try {
-          size = fstatSync(h).size;
-          writeSync(h, line);
-          size += Buffer.byteLength(line);
-        } finally {
-          closeSync(h);
-        }
-      } else if (keep) n--;
-      if (!pipe || fd < 0) return (pipe = false);
-      try {
-        writeSync(fd, line);
-      } catch {
-        pipe = false;
+      if (ended) throw new Error("this op's child has sent its end already");
+      if (Object.keys(r).every((k) => k === "progress")) return toPipe(`${reportLine(r)}\n`);
+      const line = keep(r);
+      if (!line) {
+        ended = true;
+        const sent = toPipe(keep({ end: { state: "failed", why: FULL_WHY } }));
+        void sent;
+        throw new Error(`this op's handoff file is full: ${FULL_WHY}`);
       }
-      return pipe;
+      if (r.end) ended = true;
+      return toPipe(line);
     },
   };
 }
@@ -132,28 +147,56 @@ export interface ChildDeps {
 export const CHILD_BUN = "/opt/taskbox/bin/bun";
 const APP_FILE = /^\/opt\/taskbox\/app\/src\/[a-z0-9/_-]+\.ts$/;
 
-// A process's start time, by ps, or undefined when it isn't running.
-export const psStart =
+// What ps says of a process: running with its start time, gone, or unknown. Only an answer that the
+// pid isn't there (exit 1 and nothing printed) is gone; a timeout or any other failure is unknown.
+export type Seen = { state: "running"; started: string } | { state: "gone" } | { state: "unknown" };
+export const childSeen =
   (sys: Pick<Sys, "run">) =>
-  async (pid: number): Promise<string | undefined> => {
-    if (!Number.isSafeInteger(pid) || pid <= 1) return undefined;
+  async (pid: number): Promise<Seen> => {
+    if (!Number.isSafeInteger(pid) || pid <= 1) return { state: "gone" };
     const r = await sys.run("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeoutMs: 5_000 }).catch(() => undefined);
-    const t = r?.code === 0 ? r.stdout.trim() : "";
-    return t ? t.slice(0, 64) : undefined;
+    if (!r) return { state: "unknown" };
+    const t = r.stdout.trim();
+    if (r.code === 0 && t) return { state: "running", started: t.slice(0, 64) };
+    if (r.code === 1 && !t) return { state: "gone" };
+    return { state: "unknown" };
+  };
+// The start time alone, for runChild's record.
+export const psStart = (sys: Pick<Sys, "run">) => async (pid: number) => {
+  const s = await childSeen(sys)(pid);
+  return s.state === "running" ? s.started : undefined;
+};
+
+// Every process in a process group, with when each started, from one list of all processes, so the
+// group is found even once its leader is gone. Unknown when ps can't be read.
+export type Group = { state: "known"; members: { pid: number; started: number }[] } | { state: "unknown" };
+export const psGroup =
+  (sys: Pick<Sys, "run">) =>
+  async (pgid: number): Promise<Group> => {
+    const r = await sys.run("/bin/ps", ["-A", "-o", "pid=,pgid=,lstart="], { timeoutMs: 10_000 }).catch(() => undefined);
+    if (!r || r.code !== 0) return { state: "unknown" };
+    const members: { pid: number; started: number }[] = [];
+    for (const line of r.stdout.split("\n")) {
+      const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+      if (!m || Number(m[2]) !== pgid) continue;
+      const started = Date.parse(m[3]!);
+      if (Number.isFinite(started)) members.push({ pid: Number(m[1]), started });
+    }
+    return { state: "known", members };
   };
 
-// What the op's record keeps of its child, so the next guard can follow it.
 export interface ChildInfo {
   pid: number;
   guardPid: number;
   boot?: string;
   started?: string; // its start time, by ps
+  unknownSince?: number; // since when ps couldn't say whether it runs (the "Op children" row)
   applied: number; // the number of the last report applied
   events: string[];
 }
 const childOf = (op: Op): ChildInfo | undefined => {
   const c = op.child;
-  if (!isObj(c) || !Number.isSafeInteger(c.pid) || !Number.isSafeInteger(c.guardPid) || !Number.isSafeInteger(c.applied) || (c.boot !== undefined && typeof c.boot !== "string") || (c.started !== undefined && typeof c.started !== "string") || !Array.isArray(c.events) || !c.events.every((e) => typeof e === "string")) return undefined;
+  if (!isObj(c) || !Number.isSafeInteger(c.pid) || !Number.isSafeInteger(c.guardPid) || !Number.isSafeInteger(c.applied) || (c.boot !== undefined && typeof c.boot !== "string") || (c.started !== undefined && typeof c.started !== "string") || (c.unknownSince !== undefined && !Number.isSafeInteger(c.unknownSince)) || !Array.isArray(c.events) || !c.events.every((e) => typeof e === "string")) return undefined;
   return c as unknown as ChildInfo;
 };
 
@@ -204,8 +247,8 @@ export interface Running {
 // process group of its own: launchd ends the guard's whole process group when the guard is booted
 // out, and a child left in it ends with it (seen in a Tart guest: SIGTERM, then gone).
 // Reports come only on the child's own channel (REPORT_FD); its output goes to the log as text.
-export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[]; bun?: string } = {}): Running {
-  if (cmd !== (o.bun ?? CHILD_BUN) || !APP_FILE.test(args[0] ?? "")) throw new Error("an op's child is taskbox's own Bun running a file of taskbox's app, and nothing else");
+export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: { events?: readonly string[] } = {}): Running {
+  if (cmd !== CHILD_BUN || !APP_FILE.test(args[0] ?? "")) throw new Error("an op's child is taskbox's own Bun running a file of taskbox's app, and nothing else");
   if (!d.boot) throw new Error("an op's child needs this boot's time, so a later guard can tell a restart");
   let cur = op;
   const events = [...(o.events ?? [])];
@@ -251,17 +294,23 @@ export function runChild(d: ChildDeps, op: Op, cmd: string, args: string[], o: {
 export interface AdoptDeps extends Pick<ChildDeps, "sys" | "ops" | "events" | "log"> {
   pid: number; // this guard's
   boot: string; // this boot; without it, nothing is adopted
-  alive: (c: ChildInfo) => boolean | Promise<boolean>; // aliveBy(psStart(sys)) on the box
+  alive: (c: ChildInfo) => Life | Promise<Life>; // aliveBy(childSeen(sys)) on the box
   types?: readonly OpType[]; // to ask a type what a restart does to its op
   said?: Set<string>; // what was logged already, so a file that can't be read is said once
+  group?: (pgid: number) => Promise<Group>; // psGroup(sys) on the box: what a gone child left running is ended
+  kill?: (pid: number) => void;
 }
 
-// A child is alive when its pid runs and, once its start time was read, still with that start time.
+// A child is alive when its pid runs and, once its start time was read, still with that start time;
+// gone when ps says the pid isn't there or runs another process; unknown when ps can't say.
+export type Life = "alive" | "gone" | "unknown";
 export const aliveBy =
-  (startOf: (pid: number) => Promise<string | undefined>) =>
-  async (c: ChildInfo): Promise<boolean> => {
-    const now = await startOf(c.pid);
-    return now !== undefined && (c.started === undefined || c.started === now);
+  (seen: (pid: number) => Promise<Seen>) =>
+  async (c: ChildInfo): Promise<Life> => {
+    const s = await seen(c.pid);
+    if (s.state === "unknown") return "unknown";
+    if (s.state === "gone") return "gone";
+    return c.started === undefined || c.started === s.started ? "alive" : "gone";
   };
 
 // The next guard's half (design §3.3, §4.10.1): every running op whose child another guard started.
@@ -299,29 +348,62 @@ export async function adoptOrphans(d: AdoptDeps): Promise<Op[]> {
         if (!d.said?.has(key)) d.log(`${op.id}: its child's reports can't be read: ${f.why}`);
         d.said?.add(key);
       }
-      if (cur.state === "running" && !alive) cur = applyReport(d, cur, { end: { state: "failed", why: "its process ended before it finished" } });
+      if (cur.state === "running" && alive === "gone") {
+        // What it started may still run in its group, as root (seen in a Tart guest): ended first.
+        if (d.group) await endGroup(d, op, c);
+        cur = applyReport(d, cur, { end: { state: "failed", why: "its process ended before it finished" } });
+      }
+      // Unknown: the op stays running, so its subject stays taken, and it is marked for the "Op
+      // children" row until ps answers again. Nothing is ended on a guess.
+      const cc = childOf(cur);
+      if (cur.state === "running" && cc) {
+        if (alive === "unknown" && cc.unknownSince === undefined) {
+          cur = { ...cur, child: { ...cc, unknownSince: d.sys.now() } };
+          writeOp(d.ops, cur);
+        } else if (alive !== "unknown" && cc.unknownSince !== undefined) {
+          const { unknownSince: _, ...rest } = cc;
+          cur = { ...cur, child: rest };
+          writeOp(d.ops, cur);
+        }
+      }
     }
     if (cur.state !== "running") ended.push(cur);
   }
   return ended;
 }
 
-// Ends every running op's child, by its process group, and cancels its op with why: what remove
-// does first, so no child of taskbox's runs on after it. A child whose start time isn't its own (a
-// pid used again) is left alone. The ops cancelled.
-export async function stopChildren(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log"> & { startOf: (pid: number) => Promise<string | undefined>; kill?: (pid: number) => void }, why: string): Promise<Op[]> {
+// Ends every running op's child with its whole process group, and cancels its op with why: what
+// remove does first, so no child of taskbox's runs on after it. The group is ended even when its
+// leader is gone, as long as one of its members started at or after the child did: a group whose
+// members all started before (its number used again) is left alone, as is one ps can't read. The
+// ops cancelled.
+// Ends a child's process group when one of its members started at or after the child did. False when
+// the group couldn't be read, or was left alone.
+async function endGroup(d: Pick<ChildDeps, "log"> & { group?: (pgid: number) => Promise<Group>; kill?: (pid: number) => void }, op: Op, c: ChildInfo): Promise<boolean> {
+  if (!d.group) return false;
   const kill = d.kill ?? ((pid: number) => process.kill(pid, "SIGKILL"));
+  const since = c.started !== undefined && Number.isFinite(Date.parse(c.started)) ? Date.parse(c.started) : op.startedAt - 1_000;
+  const g = await d.group(c.pid);
+  if (g.state === "unknown") {
+    d.log(`${op.id}: its child's process group couldn't be read, so it wasn't ended`);
+    return false;
+  }
+  if (!g.members.some((m) => m.started >= since)) return false;
+  try {
+    kill(-c.pid);
+    return true;
+  } catch (e) {
+    d.log(`${op.id}: its child's group couldn't be ended: ${(e as Error).message.slice(0, 80)}`);
+    return false;
+  }
+}
+
+export async function stopChildren(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log"> & { group: (pgid: number) => Promise<Group>; kill?: (pid: number) => void }, why: string): Promise<Op[]> {
   const out: Op[] = [];
   for (const op of listOps(d.ops).ops) {
     const c = childOf(op);
     if (op.state !== "running" || !c) continue;
-    if (await aliveBy(d.startOf)(c)) {
-      try {
-        kill(-c.pid);
-      } catch (e) {
-        d.log(`${op.id}: its child's group couldn't be ended: ${(e as Error).message.slice(0, 80)}`);
-      }
-    }
+    await endGroup(d, op, c);
     out.push(applyReport(d, op, { end: { state: "cancelled", why } }));
   }
   return out;

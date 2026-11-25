@@ -125,10 +125,12 @@ describe("the log", () => {
   });
   test("keeps 30 days and a size cap, oldest first, never the file being written", () => {
     const dir = tmp();
-    for (const d of ["2026-10-01", "2026-10-30", "2026-11-20", "2026-11-23"]) writeFileSync(join(dir, `${d}.jsonl`), "x".repeat(100));
+    // The newest 7 days' files are kept whatever their age (KEEP_NEWEST_DAYS); older ones go after 30 days.
+    const recent = ["2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20", "2026-11-21", "2026-11-22", "2026-11-23"];
+    for (const d of ["2026-10-01", "2026-10-30", ...recent]) writeFileSync(join(dir, `${d}.jsonl`), "x".repeat(100));
     writeFileSync(join(dir, "notes.txt"), "kept");
     expect(keepEvents({ dir, owner: uid }, T)).toEqual(["2026-10-01.jsonl"]);
-    expect(keepEvents({ dir, owner: uid }, T, { maxBytes: 150 })).toEqual(["2026-10-30.jsonl", "2026-11-20.jsonl"]);
+    expect(keepEvents({ dir, owner: uid }, T, { maxBytes: 150 })).toEqual(["2026-10-30.jsonl", ...recent.slice(0, -1).map((d) => `${d}.jsonl`)]);
     expect(readdirSync(dir).sort()).toEqual(["2026-11-23.jsonl", "notes.txt"]);
   });
   test("the admins' record is root's private file, by event id", () => {
@@ -222,8 +224,8 @@ describe("review fixes: M3 and the lows on events", () => {
     const dir = tmp();
     for (const d of ["2026-11-01", "2026-11-23"]) writeFileSync(join(dir, `${d}.jsonl`), "x");
     expect(keepEvents({ dir, owner: uid }, T + 365 * 86_400_000)).toEqual([]);
-    // Back in time: a file from the future is kept and never stops the rest being aged.
+    // An old day among the newest 7 days there is kept whatever the clock says.
     writeFileSync(join(dir, "2026-09-01.jsonl"), "x");
-    expect(keepEvents({ dir, owner: uid }, T)).toEqual(["2026-09-01.jsonl"]);
+    expect(keepEvents({ dir, owner: uid }, T)).toEqual([]);
   });
 });

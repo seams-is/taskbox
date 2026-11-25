@@ -280,10 +280,12 @@ export function readEvents(sources: readonly (Source & { writer: Writer })[], f:
   return { events: f.limit !== undefined ? merged.slice(-Math.max(0, f.limit)) : merged, skipped };
 }
 
-// Keeps one writer's folder within keepDays and maxBytes, every file counted, today's parts too:
-// files past keepDays go, then the oldest while the rest is over maxBytes. The newest file, the one
-// being written, is never removed. Age is counted from the newest file's day when the clock is past
-// it, so a clock that jumps ahead never ages out the days kept. The names removed.
+// Keeps one writer's folder within keepDays and maxBytes, every file counted, today's parts too.
+// Age is by the real clock: a day's files go once the day is keepDays or more behind today. But the
+// files of the newest KEEP_NEWEST_DAYS days there are never aged out, whatever the clock says, so a
+// clock that jumps ahead can't empty the log. Past maxBytes the oldest go first, and the newest file,
+// the one being written, never goes. The names removed.
+export const KEEP_NEWEST_DAYS = 7;
 export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBytes?: number } = {}): string[] {
   const keepDays = o.keepDays ?? KEEP_DAYS;
   const maxBytes = o.maxBytes ?? (KEEP_MB / 2) * 1024 * 1024;
@@ -299,17 +301,13 @@ export function keepEvents(f: Folder, now: number, o: { keepDays?: number; maxBy
     return [];
   }
   if (!files.length) return [];
-  const newestDay = partOf(files.at(-1)!.name)!.day;
-  const nowDay = new Date(now).toISOString().slice(0, 10);
-  const ref = nowDay < newestDay ? now : Date.parse(`${newestDay}T00:00:00Z`);
-  const oldest = new Date(ref - keepDays * 86_400_000).toISOString().slice(0, 10);
-  // Files dated after the clock (it went back) are kept, and never hold up the others' ageing.
-  const future = files.filter((x) => partOf(x.name)!.day > nowDay && nowDay < newestDay);
+  const newest = new Set([...new Set(files.map((x) => partOf(x.name)!.day))].slice(-KEEP_NEWEST_DAYS));
+  const oldest = new Date(now - (keepDays - 1) * 86_400_000).toISOString().slice(0, 10);
   const gone: string[] = [];
   let total = files.reduce((n, x) => n + x.size, 0);
   for (const x of files.slice(0, -1)) {
-    if (future.includes(x)) continue;
-    if (partOf(x.name)!.day < oldest || total > maxBytes) {
+    const day = partOf(x.name)!.day;
+    if ((day < oldest && !newest.has(day)) || total > maxBytes) {
       try {
         unlinkSync(join(f.dir, x.name));
         gone.push(x.name);
@@ -349,9 +347,10 @@ export interface EventLog {
   write(d: Draft): Event;
 }
 
-// Only chatty types are limited: progress lines. An op's start and end, every state change and every
+// Only chatty types are limited: progress lines, and refused requests, which anyone who can write a
+// spool can make many of. An op's start and end, every state change and every
 // security-relevant event are always written, so no flood can hide them.
-export const LIMITED = (type: string) => /\.progress$/.test(type);
+export const LIMITED = (type: string) => /\.(progress|refused)$/.test(type);
 export const WINDOWS_MAX = 1000;
 
 interface Limiter {
@@ -382,6 +381,20 @@ export function flushEvents(o: { all?: boolean } = {}): void {
       l.windows.delete(actor);
     }
   }
+}
+
+// On SIGTERM, which is every launchd stop, update and reload of the guard: every count is written,
+// then the process exits, as SIGTERM's own default would. The remover it gives takes the handler off.
+export function installTermFlush(proc: Pick<NodeJS.Process, "on" | "off" | "exit"> = process): () => void {
+  const onTerm = () => {
+    try {
+      flushEvents({ all: true });
+    } finally {
+      proc.exit(0);
+    }
+  };
+  proc.on("SIGTERM", onTerm);
+  return () => void proc.off("SIGTERM", onTerm);
 }
 
 // Its ids keep their order within a millisecond. One actor writes at most perActorPerMinute progress

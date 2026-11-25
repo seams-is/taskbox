@@ -15,7 +15,7 @@ describe("the check-row registry", () => {
     expect(names(rows("prestart"))).toEqual(names(PRESTART));
     // v3 adds one row, "Guard passes", after the Screen Sharing guard's (rows/guard.ts).
     const extra = names(CHECK_EXTRA);
-    extra.splice(extra.indexOf("Screen Sharing guard") + 1, 0, "Guard passes");
+    extra.splice(extra.indexOf("Screen Sharing guard") + 1, 0, "Guard passes", "Op children");
     expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...extra, SECOND_KEY_ROW]);
     expect(names(rows("away", ctx()))).toEqual([...names(AWAY_ONLY), ...names(PRESTART), ...extra]);
     expect(names(rows("preflight"))).toEqual(names(INSTALL_PREFLIGHT));

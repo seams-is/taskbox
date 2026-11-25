@@ -15,7 +15,7 @@ import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } fro
 import { kitFor } from "./vm.ts";
 import { removeRequests } from "./requests.ts";
 import { rows } from "./rows/index.ts";
-import { oneShotPlist, oneShotScript, psStart, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
+import { oneShotPlist, oneShotScript, psGroup, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { halfMade, readRecord, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
@@ -711,7 +711,7 @@ export async function remove(d: OpsDeps, o: { serviceUid?: number; overSsh?: boo
   // The guard, and its pf rules. With them gone, Screen Sharing reaches every network again.
   for (const label of [GUARD_LABEL, ...(old ? [old.guard] : [])]) await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
   // Every running op's child, with all it started: none runs on as root once taskbox is gone.
-  const stopped = await stopChildren({ sys: d.sys, ops: { dir: rootStateOf(d.paths).ops, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {}, startOf: psStart(d.sys) }, "taskbox is being removed").catch(() => []);
+  const stopped = await stopChildren({ sys: d.sys, ops: { dir: rootStateOf(d.paths).ops, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {}, group: psGroup(d.sys) }, "taskbox is being removed").catch(() => []);
   if (stopped.length) done.push(`stopped ${stopped.length} operation${stopped.length === 1 ? "" : "s"} that ${stopped.length === 1 ? "was" : "were"} running`);
   // A reload LaunchDaemon an undo left, so it can't load tailscaled again after remove.
   if (await dropReloadJob(d.sys, d.paths)) done.push("removed undo's LaunchDaemon that loads tailscaled again");

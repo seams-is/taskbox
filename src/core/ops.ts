@@ -245,14 +245,16 @@ export function listOps(f: Pick<OpFolder, "dir" | "owner">): { ops: Op[]; bad: s
   return { ops, bad };
 }
 
-// Removes records past keeping. Age is counted from the newest record's time when the clock is past
-// it, so a clock that jumps ahead never ages out the days kept. The ids removed.
+// Removes records past keeping, by the real clock. The records that ended on the newest
+// KEEP_NEWEST_DAYS days among them are never aged out, whatever the clock says, so a clock that jumps
+// ahead can't empty the history. A running op is never removed. The ids removed.
+export const KEEP_NEWEST_DAYS = 7;
 export function keepOps(f: OpFolder, now: number): string[] {
   const gone: string[] = [];
   const ops = listOps(f).ops;
-  const newest = Math.max(0, ...ops.map((o) => o.endedAt ?? o.startedAt));
-  const ref = ops.length ? Math.min(now, newest) : now;
-  for (const op of ops.filter((o) => expired(o, ref))) {
+  const dayOf = (o: Op) => new Date(o.endedAt ?? o.startedAt).toISOString().slice(0, 10);
+  const newest = new Set([...new Set(ops.map(dayOf))].sort().slice(-KEEP_NEWEST_DAYS));
+  for (const op of ops.filter((o) => expired(o, now) && !newest.has(dayOf(o)))) {
     try {
       unlinkSync(join(f.dir, `${op.id}.json`));
       gone.push(op.id);

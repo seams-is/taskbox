@@ -179,7 +179,7 @@ describe("an op whose guard was reloaded", () => {
     void r;
     return { ...s, rep, boot: o.boot ?? "boot-1" };
   }
-  const adopt = (s: ReturnType<typeof orphan>, alive: boolean, boot = s.boot) => adoptOrphans({ ...s.d, pid: 222, boot, alive: () => alive, types });
+  const adopt = (s: ReturnType<typeof orphan>, alive: boolean, boot = s.boot) => adoptOrphans({ ...s.d, pid: 222, boot, alive: () => (alive ? "alive" : "gone"), types });
   test("the runner records the child, and the reports it applied", async () => {
     const s = orphan();
     const rec = readOp(s.d.ops, s.op.id);
@@ -219,14 +219,14 @@ describe("an op whose guard was reloaded", () => {
   });
   test("after a restart, a type that resumes keeps its op for its own package to carry on", async () => {
     const s = orphan();
-    const changed = await adoptOrphans({ ...s.d, pid: 222, boot: "boot-2", alive: () => false, types: [{ ...update, onBoot: () => "resume" }] });
+    const changed = await adoptOrphans({ ...s.d, pid: 222, boot: "boot-2", alive: () => "gone" as const, types: [{ ...update, onBoot: () => "resume" }] });
     expect(changed).toEqual([]);
     const rec = readOp(s.d.ops, s.op.id);
     expect(rec.kind === "ok" && rec.value.state).toBe("running");
   });
   test("the guard that runs the child never adopts it", async () => {
     const s = orphan();
-    expect(await adoptOrphans({ ...s.d, pid: 111, boot: "boot-1", alive: () => false, types })).toEqual([]);
+    expect(await adoptOrphans({ ...s.d, pid: 111, boot: "boot-1", alive: () => "gone" as const, types })).toEqual([]);
   });
   test("a report written twice, or a forged line in the handoff file, isn't applied", async () => {
     const s = orphan();
