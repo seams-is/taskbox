@@ -5,7 +5,7 @@ import { eventLog } from "../core/events.ts";
 import { follow } from "../core/child.ts";
 import type { PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
-import { bootSeconds } from "../guard.ts";
+import { bootId } from "../core/boot.ts";
 
 export const opsPass: PassMaker = {
   name: "ops",
@@ -17,7 +17,7 @@ export const opsPass: PassMaker = {
     let boot: string | undefined;
     const said = new Set<string>();
     const job = async () => {
-      boot ??= (await bootSeconds(c.sys))?.toString();
+      boot ??= await bootId(c.sys);
       // Without this boot's time a restart can't be told, so nothing is followed yet; the pass fails,
       // and the "Guard passes" row says so.
       if (!boot) throw new Error("this boot's time can't be read, so ops wait");

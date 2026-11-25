@@ -7,6 +7,7 @@ import { CHILD_BUN, follow, jobLabel, O_EXLOCK, runChild } from "../../src/core/
 import { appendEvent, eventLog, keepEvents, newEvent, readEvents } from "../../src/core/events.ts";
 import { begin, end, keepOps, listOps, type OpType, readOp, writeOp } from "../../src/core/ops.ts";
 import { FakeSys } from "../fake.ts";
+import { Verified } from "../../src/core/statement.ts";
 
 const uid = process.getuid!();
 const DAY = 86_400_000;
@@ -123,14 +124,14 @@ describe("N2: known refusals", () => {
   test("K3: a known sender is capped per principal, with its count said", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid };
     const log = eventLog("guard", e, { now: () => T });
-    for (let i = 0; i < 5000; i++) log.write({ type: "workspace.refused", actor: "agent-1 (signed)", text: "x", known: true });
-    log.write({ type: "workspace.refused", actor: "owner (signed, key SHA256:o)", text: "the owner's", known: true });
+    for (let i = 0; i < 5000; i++) log.refused({ type: "workspace.refused", text: "x" }, Verified.principal("agent-1"));
+    log.refused({ type: "workspace.refused", text: "the owner's" }, Verified.signer(`SHA256:${"o".repeat(43)}`));
     const ev = readEvents([{ ...e, writer: "guard" }]).events;
-    expect(ev.filter((x) => x.actor === "agent-1 (signed)")).toHaveLength(60);
+    expect(ev.filter((x) => x.actor === "agent-1")).toHaveLength(60);
     expect(ev.some((x) => x.text === "the owner's")).toBe(true);
-    expect(ev.some((x) => x.type === "events.dropped" && x.text.includes("agent-1 (signed)"))).toBe(true);
+    expect(ev.some((x) => x.type === "events.dropped" && x.text.includes("agent-1"))).toBe(true);
   });
-  test("K4: only a typed true counts as known: a spread request's own 'known' is junk", () => {
+  test("K4: a spread request's own 'known' is junk", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid };
     const log = eventLog("guard", e, { now: () => T });
     const req = JSON.parse('{"type":"workspace.refused","actor":"nobody","text":"junk","known":"yes"}');

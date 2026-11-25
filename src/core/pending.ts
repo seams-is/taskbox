@@ -49,24 +49,23 @@ export const digestOf = (kind: Kind, subject: string, payload: unknown) => {
   const c = canonical({ kind, subject, payload: payload ?? null }, 6);
   return c === undefined ? "" : createHash("sha256").update(JSON.stringify(c)).digest("hex");
 };
-// The moment an item is judged at: the wall clock, and, when they can be read, the monotonic clock
-// (child.ts monoNow) and this boot. A bare number is the wall clock alone.
+// The moment an item is judged at: the wall clock, the monotonic clock and this boot (boot.ts). All
+// three are required; one the box can't read is undefined, and then every item lapses: a pending
+// change never waits on a guess.
 export interface Moment {
   wall: number;
-  mono?: number;
-  boot?: string;
+  mono: number | undefined;
+  boot: string | undefined;
 }
-export const momentOf = (m: number | Moment): Moment => (typeof m === "number" ? { wall: m } : m);
 // An item lapses at whichever comes first, so no clock step, either way, keeps one alive past its
 // 24 hours: the wall clock past its limit; the wall clock earlier than its ask (it went back); a
-// restart of the box (a pending change doesn't survive one: §3.6 says nothing that keeps it, and a
-// restart is a good time to ask again); or, in the same boot, the monotonic clock past its limit.
-const live = (p: { askedAt: number; lapsesAt: number; boot?: string; monoAt?: number }, at: number | Moment) => {
-  const m = momentOf(at);
+// restart of the box (a pending change doesn't survive one: §3.6 says nothing that keeps it); the
+// monotonic clock past its limit; or a clock the box can't read now.
+const live = (p: { askedAt: number; lapsesAt: number; boot?: string; monoAt?: number }, m: Moment) => {
+  if (m.mono === undefined || m.boot === undefined || p.monoAt === undefined || p.boot === undefined) return false;
   if (m.wall >= p.lapsesAt || m.wall < p.askedAt) return false;
-  if (p.boot !== undefined && m.boot !== undefined && p.boot !== m.boot) return false;
-  if (p.boot !== undefined && p.boot === m.boot && p.monoAt !== undefined && m.mono !== undefined && m.mono - p.monoAt >= LAPSE_MS) return false;
-  return true;
+  if (p.boot !== m.boot) return false;
+  return m.mono - p.monoAt < LAPSE_MS;
 };
 
 function itemProblem(p: unknown): string | undefined {
@@ -108,9 +107,10 @@ export type Raised = { ok: true; state: PendingState; item: Pending; again: bool
 
 // Raises a change to wait for confirm. The same change asked again, while it waits, is the same
 // entry (again: true), so a re-run attaches to it. A full list refuses.
-export function raise(s: PendingState, a: Ask, at: number | Moment, rand: Rand = realRand): Raised {
-  const m = momentOf(at);
+export function raise(s: PendingState, a: Ask, at: Moment, rand: Rand = realRand): Raised {
+  const m = at;
   const now = m.wall;
+  if (m.mono === undefined || m.boot === undefined) return { ok: false, why: "The box's clock can't be read now, so nothing can wait for confirm. Ask again in a minute." };
   const digest = digestOf(a.kind, a.subject, a.payload);
   if (!digest) return { ok: false, why: "The change's payload isn't one taskbox keeps." };
   const same = s.items.find((p) => live(p, at) && p.digest === digest);
@@ -124,19 +124,19 @@ export function raise(s: PendingState, a: Ask, at: number | Moment, rand: Rand =
 }
 
 // Items past their 24 hours leave the list. The caller writes a confirm.lapsed event for each.
-export function lapse(s: PendingState, at: number | Moment): { state: PendingState; lapsed: Pending[] } {
+export function lapse(s: PendingState, at: Moment): { state: PendingState; lapsed: Pending[] } {
   const lapsed = s.items.filter((p) => !live(p, at));
   return lapsed.length ? { state: { v: 1, items: s.items.filter((p) => live(p, at)) }, lapsed } : { state: s, lapsed };
 }
 
 // What waits now, oldest first.
-export const waiting = (s: PendingState, at: number | Moment): Pending[] => s.items.filter((p) => live(p, at)).sort((a, b) => a.askedAt - b.askedAt);
+export const waiting = (s: PendingState, at: Moment): Pending[] => s.items.filter((p) => live(p, at)).sort((a, b) => a.askedAt - b.askedAt);
 
 export type Taken = { ok: true; state: PendingState; item: Pending } | { ok: false; why: string };
 
 // An admin's answer at the box. A yes takes the item out for the caller to apply; a no takes it
 // out and applies nothing. A lapsed item can't be confirmed.
-export function answer(s: PendingState, id: string, at: number | Moment): Taken {
+export function answer(s: PendingState, id: string, at: Moment): Taken {
   const item = s.items.find((p) => p.id === id);
   if (!item) return { ok: false, why: "Nothing with that id waits for confirm." };
   if (!live(item, at)) return { ok: false, why: "That change waited 24 hours and lapsed. Ask for it again from the laptop." };

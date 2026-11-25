@@ -88,6 +88,7 @@ export function opProblem(v: unknown): string | undefined {
   if (v.result !== null && !isObj(v.result)) return "its result isn't an object";
   if (v.why !== undefined && !plain(v.why, 240)) return "its why isn't a short line";
   if ((v.state === "running") !== (v.endedAt === null)) return "its state and end time disagree";
+  if (v.seq !== undefined && !(Number.isSafeInteger(v.seq) && (v.seq as number) >= 0)) return "its place in write order isn't one taskbox reads";
   return undefined;
 }
 

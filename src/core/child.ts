@@ -33,6 +33,7 @@
 import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, renameSync, rmSync, truncateSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { waitSync } from "../clock.ts";
+import { monoNow } from "./boot.ts";
 import type { Sys } from "../sys.ts";
 import type { EventLog } from "./events.ts";
 import { end, listOps, type Op, readOp, opEvent, type OpFolder, type OpType, pastNoReturn, type Progress, toPhase, withProgress, writeOp } from "./ops.ts";
@@ -226,17 +227,12 @@ export interface ChildInfo {
   events: string[];
   done?: true; // its job has been booted out
   limitMs?: number; // how long it may run: its op's deadline less its start, measured on mono time
-  monoAt?: number; // monoNow() when its job started
+  monoAt?: number; // monoNow() when its limit started to count; unread at the start, taken on a tick
+  elapsedMs?: number; // mono time it has run, saved about once a minute, for a resume after a restart
   overrun?: true; // past its limit, but not cancellable: flagged, never ended
 }
 
-// A clock that no change of the wall clock moves: kern.monotonicclock_usecs, in ms. Undefined when it
-// can't be read, and then no deadline is judged.
-export async function monoNow(sys: Pick<Sys, "run">): Promise<number | undefined> {
-  const r = await sys.run("/usr/sbin/sysctl", ["-n", "kern.monotonicclock_usecs"], { timeoutMs: 5_000 }).catch(() => undefined);
-  const m = r?.code === 0 ? /^(\d+)/.exec(r.stdout.trim()) : null;
-  return m ? Math.floor(Number(m[1]) / 1000) : undefined;
-}
+export { monoNow } from "./boot.ts";
 const childOf = (op: Op): ChildInfo | undefined => {
   const c = op.child;
   if (!isObj(c) || typeof c.label !== "string" || typeof c.boot !== "string" || !Number.isSafeInteger(c.spawnedAt) || !Number.isSafeInteger(c.applied) || !Array.isArray(c.events) || !c.events.every((e) => typeof e === "string")) return undefined;
@@ -355,7 +351,9 @@ export async function runChild(d: ChildDeps, op: Op, cmd: string, args: string[]
   // A deadline becomes a length of time from now, on the monotonic clock, so no clock step ends it.
   const limit = op.deadline !== null ? Math.max(0, op.deadline - op.startedAt) : undefined;
   const monoAt = limit !== undefined ? await monoNow(d.sys) : undefined;
-  const child: ChildInfo = { label, boot: d.boot, spawnedAt: d.sys.now(), applied: 0, events: [...(o.events ?? [])], ...(limit !== undefined && monoAt !== undefined ? { limitMs: limit, monoAt } : {}) };
+  // The limit is kept even when mono can't be read yet: the first tick that reads it starts the count,
+  // and the "Op deadlines" row warns until then.
+  const child: ChildInfo = { label, boot: d.boot, spawnedAt: d.sys.now(), applied: 0, events: [...(o.events ?? [])], ...(limit !== undefined ? { limitMs: limit } : {}), ...(limit !== undefined && monoAt !== undefined ? { monoAt } : {}) };
   let cur: Op = { ...op, child };
   writeOp(d.ops, cur);
   const r = await d.sys.run("/bin/launchctl", ["bootstrap", "system", plistPath(d.ops, op.id)], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: -1 }));
@@ -400,15 +398,18 @@ export async function follow(d: ChildDeps): Promise<Op[]> {
       if (c.boot !== d.boot) {
         const t = d.types?.find((x) => x.type === op.type);
         if (t?.onBoot(op) === "resume") {
-          // Its type carries it on: the new boot is written, and it is followed as any op is.
-          cur = { ...cur, child: { ...c, boot: d.boot } };
+          // Its type carries it on: the new boot is written, and it is followed as any op is. Its
+          // limit goes on from what it had used; the count starts again on this boot's clock.
+          const { monoAt: _, ...rest } = c;
+          const left = c.limitMs !== undefined ? { limitMs: Math.max(0, c.limitMs - (c.elapsedMs ?? 0)), elapsedMs: 0 } : {};
+          cur = { ...cur, child: { ...rest, boot: d.boot, ...left } };
           writeOp(d.ops, cur);
         } else {
           cur = applyReport(d, cur, { end: { state: "failed", why: "the box restarted" } });
           restarted = true;
         }
       }
-      if (!restarted && c.limitMs !== undefined && c.monoAt !== undefined && cur.state === "running") cur = await overrun(d, cur);
+      if (!restarted && childOf(cur)!.limitMs !== undefined && cur.state === "running") cur = await overrun(d, cur);
       if (!restarted && cur.state === "running") {
         const held = leaseHeld(leasePath(d.ops, op.id));
         trimLog(logPath(d.ops, op.id));
@@ -426,9 +427,21 @@ export async function follow(d: ChildDeps): Promise<Op[]> {
 // no return fails and its job is booted out; any other is never ended, only flagged once, with an
 // op.overrun event, for the "Op deadlines" row.
 async function overrun(d: ChildDeps, op: Op): Promise<Op> {
-  const c = childOf(op)!;
+  let c = childOf(op)!;
   const mono = await monoNow(d.sys);
-  if (mono === undefined || mono - c.monoAt! <= c.limitMs!) return op;
+  if (mono === undefined) return op;
+  if (c.monoAt === undefined) {
+    const next: Op = { ...op, child: { ...c, monoAt: mono } };
+    writeOp(d.ops, next);
+    return next;
+  }
+  const used = mono - c.monoAt;
+  if (used - (c.elapsedMs ?? 0) >= 60_000 && used <= c.limitMs!) {
+    op = { ...op, child: { ...c, elapsedMs: used } };
+    writeOp(d.ops, op);
+    c = childOf(op)!;
+  }
+  if (used <= c.limitMs!) return op;
   if (op.cancellable && !pastNoReturn(op)) return applyReport(d, op, { end: { state: "failed", why: "it passed its deadline" } });
   if (c.overrun) return op;
   const next: Op = { ...op, child: { ...c, overrun: true } };

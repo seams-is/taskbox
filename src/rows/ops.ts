@@ -9,6 +9,8 @@ import type { Row } from "../core/rows.ts";
 export async function overrunRow(c: CheckContext, ops?: Pick<OpFolder, "dir" | "owner">): Promise<Omit<Check, "name">> {
   const f = ops ?? { dir: rootStateOf(c.paths).ops, owner: c.rootUid ?? 0 };
   const late = listOps(f).ops.filter((o) => o.state === "running" && (o.child as { overrun?: unknown } | undefined)?.overrun === true);
+  const unclocked = listOps(f).ops.filter((o) => o.state === "running" && typeof (o.child as { limitMs?: unknown } | undefined)?.limitMs === "number" && (o.child as { monoAt?: unknown }).monoAt === undefined);
+  if (!late.length && unclocked.length) return { status: "WARN", detail: `the box's monotonic clock couldn't be read, so the deadline of ${unclocked.slice(0, 3).map((o) => `the ${o.type} ${o.id}`).join(", ")} isn't counted yet` };
   if (!late.length) return { status: "OK", detail: "no op is past its deadline" };
   return { status: "FAIL", detail: `${late.slice(0, 3).map((o) => `the ${o.type} ${o.id}`).join(", ")} is past its deadline and can't be ended now. taskbox op show follows it; it ends by itself or at a restart` };
 }

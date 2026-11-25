@@ -44,12 +44,6 @@ describe("a pending change", () => {
     expect(lapse(r.state, at(T + 1000, 10, "b2")).lapsed).toHaveLength(1);
     expect(answer(r.state, r.item.id, at(T + 1000, 10, "b2")).ok).toBe(false);
   });
-  test("with no monotonic time or boot known, the wall rules still hold", () => {
-    const r = raise(noPending(), ask, T);
-    if (!r.ok) throw new Error();
-    expect(lapse(r.state, T - 1).lapsed).toHaveLength(1);
-    expect(lapse(r.state, T + 1).lapsed).toHaveLength(0);
-  });
 });
 
 describe("an outcome file", () => {
@@ -60,9 +54,9 @@ describe("an outcome file", () => {
     utimesSync(join(dir, `${id}.json`), new Date(T), new Date(T));
     return dir;
   };
-  test("goes when the wall clock is before it, by any amount", () => {
+  test("is kept when the wall clock goes back: boot and mono decide then (review 7, O1)", () => {
     const dir = setup();
-    expect(keepOutcomes(dir, at(T - 1000, M + 1000))).toEqual([id]);
+    expect(keepOutcomes(dir, at(T - 1000, M + 1000))).toEqual([]);
   });
   test("goes at its hour of monotonic time, whatever the wall clock says", () => {
     const dir = setup();

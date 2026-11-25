@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import type { Clock } from "../clock.ts";
 import { readUpTo } from "../workspace/read.ts";
 import { idOf, isId, monotonic, type Rand, realRand } from "./ids.ts";
+import { Verified } from "./statement.ts";
 import { isObj, plain, safeParse } from "./rootfile.ts";
 
 export type Writer = "guard" | "loop";
@@ -42,7 +43,6 @@ export const READ_FILE_MAX = 64 * 1024 * 1024;
 export const PART_MAX = 16 * 1024 * 1024;
 // What one reader takes in all, newest first; files past it are named as skipped.
 export const READ_MAX = 256 * 1024 * 1024;
-export const READ_FILES_MAX = 2_000;
 // Events one actor may write a minute; past it they are counted, and one events.dropped says so.
 export const PER_ACTOR_PER_MINUTE = 60;
 
@@ -90,11 +90,7 @@ export function eventLine(e: Event): string {
   return line;
 }
 
-// known: the verifier's own result, true only when the refused request carried a valid signature by
-// a pinned key or came from a known principal. Set it field by field from that result, never by
-// spreading a request: only a typed true counts. Known refusals get a window per principal; junk
-// shares one cap; neither can fill the disk, and each count is written.
-export type Draft = Omit<Event, "id" | "at" | "writer"> & { at?: number; known?: true };
+export type Draft = Omit<Event, "id" | "at" | "writer"> & { at?: number };
 
 // A new event from a draft, its id and time from the clock. Text is cut to one printable line.
 export function newEvent(writer: Writer, d: Draft, clock: Pick<Clock, "now">, rand: Rand = realRand, next?: (now: number) => string): Event {
@@ -110,12 +106,16 @@ export function newEvent(writer: Writer, d: Draft, clock: Pick<Clock, "now">, ra
 // Each file is named by a number taskbox gives it in write order, then the day it was started on:
 // 00000042-2026-11-25.jsonl. The number orders the files; the date is a label for people and decides
 // nothing that removes anything.
-const SEQ_FILE = /^(\d{8})-(\d{4}-\d\d-\d\d)\.jsonl$/;
+// Progress and refused requests, the only types written at volume, go in files of their own ("-n"),
+// which the size cap takes first, so an op's end and an approval keep their room whatever a flood
+// writes.
+const SEQ_FILE = /^(\d{8,})-(\d{4}-\d\d-\d\d)(-n)?\.jsonl$/;
 const seqOf = (name: string) => {
   const m = SEQ_FILE.exec(name);
-  return m ? { seq: Number(m[1]), day: m[2]! } : undefined;
+  return m ? { seq: Number(m[1]), day: m[2]!, noise: m[3] !== undefined } : undefined;
 };
-export const seqFile = (seq: number, day: string) => `${String(seq).padStart(8, "0")}-${day}.jsonl`;
+export const seqFile = (seq: number, day: string, noise = false) => `${String(seq).padStart(8, "0")}-${day}${noise ? "-n" : ""}.jsonl`;
+const isNoise = (type: string) => /\.(progress|refused)$/.test(type);
 const byWrite = (a: string, b: string) => seqOf(a)!.seq - seqOf(b)!.seq;
 // For tests and readers: the day a file was started on.
 export const dayOfFile = (name: string) => seqOf(name)?.day;
@@ -136,10 +136,13 @@ export function appendEvent(f: Folder, e: Event): void {
   const line = eventLine(e);
   ensureFolder(f);
   const day = e.at.slice(0, 10);
-  const last = readdirSync(f.dir).filter((n) => seqOf(n) !== undefined).sort(byWrite).at(-1);
+  const noise = isNoise(e.type);
+  const names = readdirSync(f.dir).filter((n) => seqOf(n) !== undefined).sort(byWrite);
+  const top = names.length ? seqOf(names.at(-1)!)!.seq : 0;
+  const last = names.filter((n) => seqOf(n)!.noise === noise).at(-1);
   const at = last ? seqOf(last)! : undefined;
   const full = last !== undefined && sizeOf(join(f.dir, last)) + Buffer.byteLength(line) > (f.partMax ?? PART_MAX);
-  const name = at && !full && day <= at.day ? last! : seqFile((at?.seq ?? 0) + 1, at && day < at.day ? at.day : day);
+  const name = at && !full && day <= at.day ? last! : seqFile(top + 1, at && day < at.day ? at.day : day, noise);
   const path = join(f.dir, name);
   const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644);
   try {
@@ -218,7 +221,7 @@ export interface EventsRead {
 
 // Both writers' events, merged by id, filtered. Newest files are read first, up to the reader's cap;
 // a file that isn't safe to read, or past the cap, is named in skipped, never passed over unsaid.
-export function readEvents(sources: readonly (Source & { writer: Writer })[], f: Filter = {}, cap: { maxBytes?: number; maxFiles?: number } = {}): EventsRead {
+export function readEvents(sources: readonly (Source & { writer: Writer })[], f: Filter = {}, cap: { maxBytes?: number } = {}): EventsRead {
   const out: Event[] = [];
   const skipped: string[] = [];
   const files: { path: string; name: string; s: Source & { writer: Writer } }[] = [];
@@ -244,11 +247,10 @@ export function readEvents(sources: readonly (Source & { writer: Writer })[], f:
   files.sort((a, b) => byWrite(b.name, a.name));
   let bytes = 0;
   const maxBytes = cap.maxBytes ?? READ_MAX;
-  const maxFiles = cap.maxFiles ?? READ_FILES_MAX;
   let taken = 0;
   for (const x of files) {
     const size = sizeOf(x.path);
-    if (taken >= maxFiles || bytes + size > maxBytes) {
+    if (bytes + size > maxBytes) {
       skipped.push(x.path);
       continue;
     }
@@ -300,7 +302,10 @@ export function keepEvents(f: Folder, o: { maxBytes?: number } = {}): string[] {
   }
   const gone: string[] = [];
   let total = files.reduce((n, x) => n + x.size, 0);
-  for (const x of files.slice(0, -1)) {
+  // Never the newest file of either kind; the volume files first, oldest first, then the rest.
+  const newest = new Set([files.filter((x) => seqOf(x.name)!.noise).at(-1)?.name, files.filter((x) => !seqOf(x.name)!.noise).at(-1)?.name]);
+  const order = [...files.filter((x) => seqOf(x.name)!.noise), ...files.filter((x) => !seqOf(x.name)!.noise)].filter((x) => !newest.has(x.name));
+  for (const x of order) {
     if (total <= maxBytes) break;
     try {
       unlinkSync(join(f.dir, x.name));
@@ -338,6 +343,10 @@ export function appendAdmin(path: string, e: { id: string; name: string }, chown
 // A writer bound to its folder and clock: what the guard and the loop hold.
 export interface EventLog {
   write(d: Draft): Event;
+  // A refused request whose sender the verifier knows (statement.ts Verified): its actor comes from
+  // the Verified, and it is capped per key or principal, 60 a minute, its first drop written at once.
+  // Built from named fields only, so nothing in a request reaches the cap's key.
+  refused(d: { type: string; text: string; subject?: string; op?: string; data?: Record<string, unknown> }, by: Verified): Event;
 }
 
 // Only chatty types are limited: progress lines, by actor, and refused requests, which anyone who can
@@ -430,9 +439,8 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
   const lim = l;
   return {
     write(d) {
-      // Known only as the verifier's own typed true: a spread request's "known" is junk.
-      const known = d.known === true;
-      if (REFUSED(d.type) && !known) {
+      // Every refusal written here is junk, whoever it names: known ones come through refused().
+      if (REFUSED(d.type)) {
         const now = d.at ?? lim.clock.now();
         const w = lim.refused;
         if (now - w.from >= 60_000) {
@@ -449,16 +457,27 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
         if (r.dropped++ === 0) lim.put({ type: "events.dropped", actor: "taskbox", text: `More than ${REFUSED_PER_MINUTE} refused requests this minute: the rest are counted, and the count is written when the minute ends.` });
         return newEvent(writer, d, lim.clock, rand);
       }
-      // Progress, and known refusals: a window per actor. A known sender is still capped, so no agent
-      // with a key can fill the disk; its first dropped line says so at once.
-      if (!LIMITED(d.type) && !(REFUSED(d.type) && known)) return lim.put(d);
+      return windowed(d, d.actor);
+    },
+    refused(d, by) {
+      if (!(by instanceof Verified)) throw new Error("a known refusal needs the verifier's Verified");
+      if (!REFUSED(d.type)) throw new Error("refused() writes refused requests only");
+      const draft: Draft = { type: d.type, text: d.text, actor: by.actor, ...(d.subject !== undefined ? { subject: d.subject } : {}), ...(d.op !== undefined ? { op: d.op } : {}), ...(d.data !== undefined ? { data: d.data } : {}) };
+      return windowed(draft, by.key);
+    },
+  };
+  // Progress, by actor; known refusals, by key or principal. Each still capped, so no sender can fill
+  // the disk; a refusal's first dropped line says so at once.
+  function windowed(d: Draft, key: string): Event {
+    {
+      if (!LIMITED(d.type) && !REFUSED(d.type)) return lim.put(d);
       const now = d.at ?? lim.clock.now();
-      let w = lim.windows.get(d.actor);
+      let w = lim.windows.get(key);
       if (!w || now - w.from >= 60_000) {
         if (w) summary(lim, d.actor, w);
         w = { from: now, n: 0, dropped: 0 };
-        lim.windows.delete(d.actor);
-        lim.windows.set(d.actor, w);
+        lim.windows.delete(key);
+        lim.windows.set(key, w);
         while (lim.windows.size > WINDOWS_MAX) {
           const [oldest, ow] = lim.windows.entries().next().value!;
           summary(lim, oldest, ow);
@@ -471,6 +490,6 @@ export function eventLog(writer: Writer, f: Folder, clock: Pick<Clock, "now">, r
       }
       w.n++;
       return lim.put(d);
-    },
-  };
+    }
+  }
 }

@@ -7,6 +7,7 @@ import { CHILD_BUN, follow, jobLabel, leaseHeld, leasePath, O_EXLOCK, runChild, 
 import { eventLog, keepEvents, readEvents, REFUSED_PER_MINUTE } from "../../src/core/events.ts";
 import { begin, end, keepOps, listOps, type OpType, readOp, writeOp } from "../../src/core/ops.ts";
 import { FakeSys } from "../fake.ts";
+import { Verified } from "../../src/core/statement.ts";
 
 const uid = process.getuid!();
 const DAY = 86_400_000;
@@ -73,7 +74,7 @@ describe("L2: a real refusal is never hidden", () => {
   test("K4: 60 junk refusals, then one that names a known key: the known one is written whole", () => {
     const s = setup();
     for (let i = 0; i < REFUSED_PER_MINUTE + 10; i++) s.d.events.write({ type: "workspace.refused", actor: `x${i}`, text: "junk" });
-    s.d.events.write({ type: "workspace.refused", actor: "owner (signed, key SHA256:real)", text: "a stale nonce", known: true });
+    s.d.events.refused({ type: "workspace.refused", text: "a stale nonce" }, Verified.signer(`SHA256:${"r".repeat(43)}`));
     const evs = readEvents([{ ...s.ev, writer: "guard" }]).events;
     expect(evs.some((e) => e.text === "a stale nonce")).toBe(true);
     expect(evs.filter((e) => e.type === "workspace.refused")).toHaveLength(REFUSED_PER_MINUTE + 1);

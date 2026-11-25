@@ -88,7 +88,10 @@ describe("the keeping pass", () => {
   test("a change past its 24 hours lapses, with a confirm.lapsed event", async () => {
     const { c, s, sys } = ctx(true);
     const uid = process.getuid!();
-    const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["Move to beta."], actor: "owner (signed, key SHA256:x)", payload: { to: "beta" } }, sys.now() - LAPSE_MS);
+
+// A moment for the pending store: the wall clock, a monotonic clock that keeps pace with it, one boot.
+const mo = (wall: number) => ({ wall, mono: wall - 1_700_000_000_000, boot: "B" });
+    const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["Move to beta."], actor: "owner (signed, key SHA256:x)", payload: { to: "beta" } }, mo(sys.now() - LAPSE_MS));
     if (!r.ok) throw new Error();
     await updatePending(s.pending, { rootUid: uid }, () => ({ state: r.state, out: undefined }));
     const pass = keepingPass.make({ ...c, rootUid: uid })!;
@@ -150,13 +153,13 @@ describe("the ops pass", () => {
     mkdirSync(s.ops, { recursive: true });
     const sys = new FakeSys();
     const booted: string[] = [];
-    sys.responders.push((cmd, args) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "{ sec = 1700000000, usec = 0 }", stderr: "" } : cmd === "/bin/launchctl" ? (booted.push(args.join(" ")), { code: 0, stdout: "", stderr: "" }) : undefined));
+    sys.responders.push((cmd, args) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE\n", stderr: "" } : cmd === "/bin/launchctl" ? (booted.push(args.join(" ")), { code: 0, stdout: "", stderr: "" }) : undefined));
     const uid = process.getuid!();
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     expect(opsPass.make({ ...c, writer: false })).toBeUndefined();
     const b = begin([], { type: "update", phases: ["a", "b"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "taskbox" }, sys.now());
     if (b.kind !== "start") throw new Error();
-    writeOp({ dir: s.ops, owner: uid }, { ...b.op, child: { label: `local.taskbox.op.${b.op.id}`, boot: "1700000000", spawnedAt: sys.now(), applied: 0, events: [] } });
+    writeOp({ dir: s.ops, owner: uid }, { ...b.op, child: { label: `local.taskbox.op.${b.op.id}`, boot: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", spawnedAt: sys.now(), applied: 0, events: [] } });
     writeFileSync(reportsPath({ dir: s.ops }, b.op.id), `${reportLine({ n: 1, phase: "b", end: { state: "succeeded" } })}\n`, { mode: 0o600 });
     const pass = opsPass.make(c)!;
     expect(pass.at).toBe("after");

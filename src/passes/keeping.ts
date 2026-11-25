@@ -5,7 +5,8 @@
 // dropped counts whose minute is over are written. Every full pass.
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { monoNow, pidAlive } from "../core/child.ts";
+import { pidAlive } from "../core/child.ts";
+import { bootId, monoNow } from "../core/boot.ts";
 import { eventLog, flushEvents, keepEvents } from "../core/events.ts";
 import { sweepTemps } from "../core/rootfile.ts";
 import { keepOutcomes } from "../core/spool.ts";
@@ -13,7 +14,7 @@ import { keepOps } from "../core/ops.ts";
 import { everyPass, type PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { lapse, updatePending } from "../core/pending.ts";
-import { bootSeconds, GUARD_FULL_MS } from "../guard.ts";
+import { GUARD_FULL_MS } from "../guard.ts";
 
 export const keepingPass: PassMaker = {
   name: "keeping",
@@ -28,9 +29,10 @@ export const keepingPass: PassMaker = {
       const problems: string[] = [];
       const now = c.sys.now();
       // Lapses by wall, wall gone back, boot and monotonic clock, whichever comes first (pending.ts).
-      boot ??= (await bootSeconds(c.sys))?.toString();
+      boot ??= await bootId(c.sys);
       const mono = await monoNow(c.sys);
-      const at = { wall: now, ...(mono !== undefined ? { mono } : {}), ...(boot !== undefined ? { boot } : {}) };
+      // A clock the box can't read lapses every waiting change (pending.ts).
+      const at = { wall: now, mono, boot };
       // Under pending.json's lock, so a confirm answered at the same time is never undone (rootfile.ts).
       try {
         const lapsed = await updatePending(s.pending, { rootUid: root }, (p) => {
@@ -46,7 +48,6 @@ export const keepingPass: PassMaker = {
         problems.push(`the changes waiting for confirm can't be read: ${String((e as Error).message).replace(/^.*can't be read: /, "")}`);
       }
       flushEvents();
-      // Kept by count of days, never aged by the clock (events.ts, ops.ts keep*).
       // By write order and size, never by the clock (events.ts, ops.ts keep*).
       keepEvents({ dir: s.events, owner: root });
       keepOps({ dir: s.ops, owner: root });

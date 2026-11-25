@@ -338,9 +338,9 @@ export function recordOutcome(dir: string, o: Outcome, w: Omit<WriteRules, "mode
 export function readOutcome(dir: string, id: string, rootUid = 0): Read<Outcome> {
   return readOwnedJson(outcomeFile(dir, id), { owner: rootUid, max: 4096 }, (v) => outcomeProblem(v) ?? (v as Outcome));
 }
-// An outcome goes at whichever comes first, as a pending change lapses (pending.ts): the wall clock
-// an hour past it, the wall clock before it, a restart of the box, or, in the same boot, an hour of
-// the monotonic clock. The asker waits about 2 s. The ids removed.
+// An outcome goes at whichever comes first: the wall clock an hour past it, a restart of the box, or,
+// in the same boot, an hour of the monotonic clock. A clock gone back keeps it; boot and mono still
+// end it. The asker waits about 2 s. The ids removed.
 export function keepOutcomes(dir: string, at: number | { wall: number; mono?: number; boot?: string }): string[] {
   const m = typeof at === "number" ? { wall: at } as { wall: number; mono?: number; boot?: string } : at;
   const gone: string[] = [];
@@ -354,7 +354,8 @@ export function keepOutcomes(dir: string, at: number | { wall: number; mono?: nu
     try {
       const path = join(dir, n);
       const t = lstatSync(path).mtimeMs;
-      let stale = m.wall - t > OUTCOME_KEEP_MS || m.wall < t;
+      // A clock gone back removes nothing: boot and mono decide then.
+      let stale = m.wall - t > OUTCOME_KEEP_MS;
       if (!stale && (m.mono !== undefined || m.boot !== undefined)) {
         const o = readOwnedJson(path, { owner: lstatSync(path).uid, max: 4096 }, (v) => outcomeProblem(v) ?? (v as Outcome));
         if (o.kind === "ok") {
