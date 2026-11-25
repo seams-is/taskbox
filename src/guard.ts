@@ -8,9 +8,12 @@ import { dirname, join } from "node:path";
 import { type Config, DEFAULT_TUN, GUARD_LABEL, type Installed, LAUNCHCTL_MS, type Paths, previousLabels, readJson, readStateJson, TAILSCALED_LABEL } from "./config.ts";
 import type { Sys } from "./sys.ts";
 import { linkTarget } from "./layout.ts";
-import { newLoopWatch, vmStarting, watchLoop } from "./loopwatch.ts";
+import { vmStarting } from "./loopwatch.ts";
+import { makePasses, type PassMaker, Passes } from "./core/passes.ts";
+import { type EventLog, eventLog, flushEvents } from "./core/events.ts";
+import { rootStateOf } from "./core/paths.ts";
+import { passMakers } from "./passes/index.ts";
 import { Log } from "./log.ts";
-import { FAST_GROWTH, LoginsKeeper } from "./logins.ts";
 import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
 import { SCREEN_SHARING_ANCHOR } from "./workspace/fence.ts";
 import { fencePass, newWsMemory, type WsDeps, workspacePass } from "./workspace/pass.ts";
@@ -78,6 +81,7 @@ export interface GuardRecord {
   // The boot, by kern.boottime's seconds, in which this guard has had the rules in place. Rules found
   // gone after that went missing; at a boot's first pass they were never there (v2.1.1).
   inPlaceBoot?: number;
+  passes?: string[]; // guard passes left out or failing (core/passes.ts), for the "Guard passes" row
 }
 
 // The boot's start, in seconds, from kern.boottime ("{ sec = 1700000000, usec = 0 } ..."), or undefined.
@@ -210,75 +214,40 @@ export async function rulesInPlace(sys: Sys, tun: string): Promise<boolean> {
 
 // The guard's life, as root: a full pass now and every minute, and a read every 2 s between them.
 // Rules found gone on a read get a full pass at once, which puts them back and records the time.
-// v2.5.0: each full pass also reads the loop's beats from outside it and restarts a frozen loop
-// (loopwatch.ts). A failure there never stops the guard's own work.
-// The workspace pass (workspace/pass.ts) runs beside the tick as watch() does: started on each tick
-// when the last one has finished, and never awaited, so a slow or failing pass never holds up pf.
-export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () => boolean = () => true, ws?: () => Promise<unknown>): Promise<void> {
-  const lw = newLoopWatch();
+// Everything else is a pass beside the tick (core/passes.ts, src/passes/): the workspaces, the loop's
+// watch, the logins record, tailscaled's watch, and what later packages add. Each runs one at a time
+// and is never awaited, so a slow or failing pass never holds up pf. ws: the workspace pass cli.ts
+// chose by the guard's label. makers: the passes, for tests.
+export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () => boolean = () => true, ws?: () => Promise<unknown>, makers: PassMaker[] = passMakers()): Promise<void> {
   // Each restart of the loop, in root's own log under /var/log (1 MB, then rotated), beside the
   // record the next loop logs in its own.
   const log = new Log(p.guardLog, undefined, 1_000_000);
-  const settle = settler(sys, p, log);
-  const wsPass = ws ?? workspaceRunner({ sys, cfg, p }, log);
-  let wsRunning: Promise<unknown> | undefined;
-  const workspaces = () => {
-    if (wsRunning) return;
-    try {
-      wsRunning = Promise.resolve(wsPass())
-        .catch(() => undefined)
-        .finally(() => (wsRunning = undefined));
-    } catch {
-      wsRunning = undefined;
-    }
-  };
+  // Only the guard under its current label writes root's shared state (labelProblem).
+  const writer = labelProblem(process.env.XPC_SERVICE_NAME) === undefined;
+  const ctx = { sys, cfg, p, log, writer, ...(ws ? { ws } : {}) };
+  const say = (l: string) => log.write(l);
+  // Each pass problem once, as a guard.pass-failed event, by the one writer only.
+  const tellPasses = passTeller(writer ? eventLog("guard", { dir: rootStateOf(p).events, owner: 0 }, sys) : undefined);
+  const problems = new Map<string, string>();
+  const passes = new Passes(makePasses(makers, ctx, say, problems), sys, say, problems);
   // First, before the rules: after a restart, the pool's processes stop before anything else.
-  workspaces();
-  // Never awaited by the tick, so the pf check every 2 s never waits on launchctl; one at a time.
-  let watching: Promise<unknown> | undefined;
-  // tailscaled's log and the records of Tailscale SSH logins (logins.ts): every minute, and sooner
-  // once the log has grown by FAST_GROWTH, so a flood of lines is read as it comes. One at a time.
-  const keeper = new LoginsKeeper(sys, p, cfg);
-  let keeping: Promise<unknown> | undefined;
-  let loginsErr: string | undefined;
-  let keptAt = 0;
-  const keep = (minute: boolean) => {
-    if (minute) keptAt = sys.now();
-    keeping ??= keeper
-      .pass(sys.now(), minute)
-      .then(
-        (r) => {
-          if (r.said) log.write(r.said);
-          loginsErr = undefined;
-        },
-        (e: unknown) => {
-          // Said once, not every minute, until a pass works again.
-          const why = `couldn't keep the record of Tailscale SSH logins: ${String((e as Error)?.message ?? e).slice(0, 120)}`;
-          if (why !== loginsErr) log.write(why);
-          loginsErr = why;
-        },
-      )
-      .finally(() => (keeping = undefined));
-  };
-  const watch = () => {
-    watching ??= settle()
-      .catch(() => undefined)
-      .then(() => watchLoop(sys, p, lw))
-      .then((did) => did && log.write(did))
-      .catch(() => undefined)
-      .finally(() => (watching = undefined));
-  };
+  try {
+    await watchWith(sys, cfg, p, keepGoing, passes, tellPasses);
+  } finally {
+    // Every event count the limiter holds is written before this guard ends (core/events.ts).
+    flushEvents({ all: true });
+  }
+}
+
+async function watchWith(sys: Sys, cfg: Config, p: Paths, keepGoing: () => boolean, passes: Passes, tellPasses: (ps: Passes) => void): Promise<void> {
+  passes.begin("before");
   // The record from before a restart of the guard, however old: its boot says whether the rules
   // were in place earlier in this boot.
   let last = await guardOnce(sys, cfg, readGuard(p, sys.now(), 0, false));
-  writeGuard(p, last);
-  watch();
-  keep(true);
-  const tailscaled = tailscaledWatch(sys, p, log);
-  let watchingTs: Promise<unknown> | undefined;
+  writeGuard(p, withPasses(last, passes));
+  tellPasses(passes);
+  passes.begin("after");
   let fullAt = sys.now();
-  // Its own minute, so a guard whose pass keeps failing (and runs every tick) still watches the loop.
-  let watchAt = sys.now();
   while (keepGoing()) {
     await sys.sleep(GUARD_TICK_MS);
     const due = sys.now() - fullAt >= GUARD_FULL_MS;
@@ -286,17 +255,10 @@ export async function guardWatch(sys: Sys, cfg: Config, p: Paths, keepGoing: () 
       last = await guardOnce(sys, cfg, last);
       fullAt = sys.now();
     } else last = { ...last, at: sys.now() };
-    writeGuard(p, last);
-    workspaces();
-    if (sys.now() - watchAt >= GUARD_FULL_MS) {
-      watch();
-      watchAt = sys.now();
-    }
-    if (sys.now() - keptAt >= GUARD_FULL_MS) keep(true);
-    else if (!keeping && keeper.growth() >= FAST_GROWTH) keep(false);
-    watchingTs ??= tailscaled()
-      .catch(() => undefined)
-      .finally(() => (watchingTs = undefined));
+    writeGuard(p, withPasses(last, passes));
+    tellPasses(passes);
+    // Never awaited: each pass runs one at a time beside the tick (core/passes.ts).
+    passes.tick();
   }
 }
 
@@ -380,7 +342,7 @@ export function fenceRunner(d: WsDeps): () => Promise<void> {
 // v2.5.1: an update run by an older release's code lays the install out the old way (vm.ts settle).
 // This guard runs the new code as root, so each pass settles it, until it has, once no VM is starting.
 // Only the install the guard started with: an undo puts back an older one, which keeps its layout.
-export function settler(sys: Sys, p: Paths, log: Log): () => Promise<void> {
+export function settler(sys: Sys, p: Paths, log: Pick<Log, "write">): () => Promise<void> {
   const commit = () => {
     try {
       return readJson<Installed>(p.installed).commit;
@@ -406,6 +368,28 @@ export function settler(sys: Sys, p: Paths, log: Log): () => Promise<void> {
       log.write(`Softnet wasn't moved to its own folder yet: ${(e as Error).message}`);
     }
   };
+}
+
+// Writes each pass problem once, as a guard.pass-failed event, however many ticks it lasts. With no
+// event log (a guard that isn't the one writer), it writes nothing.
+export function passTeller(events: EventLog | undefined): (ps: Passes) => void {
+  const told = new Set<string>();
+  return (ps) => {
+    for (const why of ps.problems()) {
+      if (told.has(why)) continue;
+      told.add(why);
+      try {
+        events?.write({ type: "guard.pass-failed", actor: "taskbox", text: why });
+      } catch {}
+    }
+  };
+}
+
+// The record with the passes' problems now, or without the field when there are none.
+function withPasses(r: GuardRecord, passes: Passes): GuardRecord {
+  const { passes: _, ...rest } = r;
+  const now = passes.problems();
+  return now.length ? { ...rest, passes: now.map((l) => l.replace(/[^\x20-\x7e]/g, " ").slice(0, 200)).slice(0, 20) } : rest;
 }
 
 export function writeGuard(p: Paths, r: GuardRecord): void {

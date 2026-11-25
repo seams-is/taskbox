@@ -27,7 +27,8 @@ import { basename, dirname, join } from "node:path";
 import { DOWNLOAD_LIMIT_MS } from "./ghfail.ts";
 import { readInstallId } from "./answers.ts";
 import { removeRequests } from "./requests.ts";
-import { allOk, type Check, type CheckContext, hashTree, INSTALL_PREFLIGHT, macos, runChecks } from "./checks.ts";
+import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from "./checks.ts";
+import { rows } from "./rows/index.ts";
 import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./actionskey.ts";
 import { type EngineName, kitFor } from "./vm.ts";
 import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
@@ -217,7 +218,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // true first, so the preflight confirms them rather than refusing one taskbox could set.
   const version = await runChecks([["macOS version", macos]], ctx);
   if (allOk(version)) await settleBox(d, ctx.cfg);
-  const pre = allOk(version) ? await runChecks(INSTALL_PREFLIGHT, ctx) : version;
+  const pre = allOk(version) ? await runChecks(rows("preflight", ctx), ctx) : version;
   printChecks(d, pre);
   if (!allOk(pre)) throw new Stop("A preflight check failed. Nothing was installed.", true);
 
