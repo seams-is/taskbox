@@ -84,11 +84,15 @@ describe("the registry", () => {
   });
 
   test("a new noun is one more file: nothing shared changes", () => {
+    // The new file alone, in a folder of its own: loading it reads nothing of the rest, so the test
+    // stays fast under --concurrent. Beside the registry it fits, and its line parses.
     const dir = tempRoot();
-    for (const f of readdirSync(CMD_DIR)) writeFileSync(join(dir, f), readFileSync(join(CMD_DIR, f), "utf8").replaceAll('"../', `"${join(CMD_DIR, "..")}/`).replaceAll('"./', `"${CMD_DIR}/`));
     writeFileSync(join(dir, "size.ts"), `export const commands = [{ path: ["size", "list"], summary: "Every VM size.", who: ["anyone"], flags: ["json"], shell: true, run: async () => 0 }];\n`);
-    const specs = loadRegistry(dir);
-    expect(specs.length).toBe(registry().length + 1);
+    writeFileSync(join(dir, "Not-a-command.ts"), "throw new Error('loaded');\n");
+    const added = loadRegistry(dir);
+    expect(added.map((s) => s.path.join(" "))).toEqual(["size list"]);
+    const specs = [...registry(), ...added];
+    expect(registryProblem(specs)).toBeUndefined();
     expect(parse(specs, ["size", "list", "--json"]).ok).toBe(true);
   });
 
