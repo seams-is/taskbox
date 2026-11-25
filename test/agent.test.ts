@@ -12,7 +12,7 @@ import { guardAgent, install, type InstallDeps, keepAgent, placeAgent, Stop } fr
 import { Log } from "../src/log.ts";
 import { readFileSync } from "node:fs";
 import { FakeSys, githubRoutes } from "./fake.ts";
-import { CFG, tempRoot, testBox } from "./helpers.ts";
+import { CFG, copyRepo, tempRoot, testBox } from "./helpers.ts";
 
 const AGENT = "taskbox-agent";
 const guidFor = (uid: number) => `0F0F0F0F-0000-0000-0000-${String(uid).padStart(12, "0")}`;
@@ -327,7 +327,7 @@ describe("an agent step that stops the install", () => {
     githubRoutes(sys);
     const st = mkdtempSync(join(tmpdir(), "taskbox-src-"));
     const top = join(st, "example-org-taskbox-abc1234");
-    cpSync(repo, top, { recursive: true, filter: (f) => !/\/(node_modules|\.git)(\/|$)/.test(f) });
+    copyRepo(top);
     writeFileSync(join(top, "taskbox.json"), JSON.stringify(CFG));
     const tar = Bun.spawnSync(["/usr/bin/tar", "-czf", "-", "-C", st, "example-org-taskbox-abc1234"]);
     sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(tar.stdout) : undefined));

@@ -1,19 +1,22 @@
 // Tests never touch the machine or the owner's tools: the real Sys refuses to
 // run, HOME is a temp folder and PATH holds system folders only.
 import { afterEach } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setServiceName } from "../src/names.ts";
 import type { FakeSys } from "./fake.ts";
 
 process.env.TASKBOX_TEST = "1";
-// Each run's temp folders go in one folder of its own. Left in the system temp folder, about 1,500
-// a run piled up, and bun reads that folder whenever it starts a script below it, so each real bun
-// the tests start got slower: about 800 ms each with 870,000 left there. A run removes the folders
-// of earlier runs whose process has ended, here, before any test and outside any time limit, so at
-// most one run's folders are left.
-const base = tmpdir();
+// Each run's temp folders go in one folder of its own, under node_modules/.cache in the repo. Left
+// in the system temp folder, about 1,500 a run piled up, and bun reads every folder above a script
+// when it starts it, so each real bun the tests start got slower: about 800 ms each with 870,000
+// left there, and more while Spotlight indexed them. Under the repo, no real bun a test starts
+// depends on what else is in the machine's temp folder. A run removes the folders of earlier runs
+// whose process has ended, here, before any test and outside any time limit, so at most one run's
+// folders are left.
+const base = join(import.meta.dir, "..", "node_modules", ".cache", "taskbox-test");
+mkdirSync(base, { recursive: true });
 for (const name of readdirSync(base)) {
   const pid = Number(/^taskbox-test-run-(\d+)-/.exec(name)?.[1]);
   if (!pid || pid === process.pid || alive(pid)) continue;

@@ -45,7 +45,8 @@ describe("the lease", () => {
     closeSync(fd);
     expect(leaseHeld(p)).toBe(false);
   });
-  test("A3: a second reporter for one op is refused, so numbers can't restart", () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("A3: a second reporter for one op is refused, so numbers can't restart", () => {
     const s = setup();
     rep(s);
     expect(() => rep(s)).toThrow("holds this op");
@@ -165,7 +166,7 @@ describe("following: one path for every op, the guard reloaded or not", () => {
 });
 
 describe("the reporter", () => {
-  test("M1-new and L1: a full file keeps a failed end, then the child exits; no number twice", () => {
+  test.serial("M1-new and L1: a full file keeps a failed end, then the child exits; no number twice", () => {
     const s = setup();
     let code: number | undefined;
     const r = reporter({ op: s.op.id, reports: reportsPath(s.d.ops, s.op.id), progress: progressPath(s.d.ops, s.op.id), exit: ((c: number) => {
@@ -181,7 +182,7 @@ describe("the reporter", () => {
     expect(lines.map((l) => l.n)).toEqual(lines.map((_, i) => i + 1));
     expect(statSync(reportsPath(s.d.ops, s.op.id)).size).toBeLessThanOrEqual(KEEP_MAX + 4096);
   });
-  test("the end always fits, and nothing is sent after it", () => {
+  test.serial("the end always fits, and nothing is sent after it", () => {
     const s = setup();
     const r = reporter({ op: s.op.id, reports: reportsPath(s.d.ops, s.op.id), progress: progressPath(s.d.ops, s.op.id), exit: () => { throw new Error("would exit"); } });
     while ((statSync(reportsPath(s.d.ops, s.op.id), { throwIfNoEntry: false })?.size ?? 0) < KEEP_MAX - 300) r.send({ event: { type: "update.step", text: "y".repeat(230) } });
@@ -189,7 +190,7 @@ describe("the reporter", () => {
     expect(parseReport(readFileSync(reportsPath(s.d.ops, s.op.id), "utf8").trim().split("\n").at(-1)!)?.end?.state).toBe("succeeded");
     expect(() => r.send({ phase: "proving" })).toThrow("end");
   }, 30_000);
-  test("progress goes to its own file, the newest only, and never fills the handoff file", () => {
+  test.serial("progress goes to its own file, the newest only, and never fills the handoff file", () => {
     const s = setup();
     const r = reporter({ op: s.op.id, reports: reportsPath(s.d.ops, s.op.id), progress: progressPath(s.d.ops, s.op.id) });
     for (let i = 0; i < 1000; i++) r.send({ progress: { done: i, of: 1000 } });

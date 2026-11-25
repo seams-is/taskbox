@@ -12,7 +12,7 @@ import { fingerprint, keyChangeText, ROTATE_ASK, type Verifier } from "../src/ap
 import { earlierWorkspaces, install, type InstallDeps, TRUST_FILES, trustFilesLine } from "../src/install.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
 import { Dir } from "./fake-dir.ts";
-import { CFG, healthyBox, installDeps, PEM } from "./helpers.ts";
+import { CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
 import { laptopMain } from "../src/laptop/main.ts";
 import { keyDir, writeLaptop } from "../src/laptop/settings.ts";
 import { SSH } from "../src/laptop/box.ts";
@@ -343,7 +343,7 @@ describe("after the yes", () => {
     githubRoutes(sys, { settings });
     const stage = mkdtempSync(join(tmpdir(), "taskbox-src-"));
     const top = join(stage, "example-org-taskbox-abc1234");
-    cpSync(repo, top, { recursive: true, filter: (f) => !/\/(node_modules|\.git)(\/|$)/.test(f) });
+    copyRepo(top);
     writeFileSync(join(top, "taskbox.json"), JSON.stringify(settings));
     // An empty tailscale pin, so the install stops right after the accounts, with nothing downloaded.
     const v = JSON.parse(readFileSync(join(top, "versions.json"), "utf8"));

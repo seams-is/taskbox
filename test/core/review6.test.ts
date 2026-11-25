@@ -56,7 +56,8 @@ describe("retention by write order", () => {
     // Under the cap the first written goes first, whatever its date says.
     expect(keepEvents({ dir, owner: uid }, { maxBytes: 450 })).toEqual([names[0]!]);
   });
-  test("ops: kept by the order taskbox wrote them, the newest OPS_KEEP and under the byte cap; dates play no part", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("ops: kept by the order taskbox wrote them, the newest OPS_KEEP and under the byte cap; dates play no part", async () => {
     const { OPS_KEEP } = await import("../../src/core/ops.ts");
     const f = { dir: tmp(), owner: uid };
     const ids: string[] = [];
@@ -69,7 +70,7 @@ describe("retention by write order", () => {
     }
     expect(keepOps(f).sort()).toEqual(ids.slice(0, 3).sort());
   }, 60_000);
-  test("F6 and N4: a running op is always seen, however many records there are", () => {
+  test.serial("F6 and N4: a running op is always seen, however many records there are", () => {
     const f = { dir: tmp(), owner: uid };
     const b = begin([], update, { subject: "real", params: {}, actor: "owner" }, T);
     if (b.kind !== "start") throw new Error();
