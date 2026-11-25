@@ -186,7 +186,8 @@ describe("one guard pass", () => {
     expect(kills(first)).toEqual(["-k 192.168.1.30", "-k 0.0.0.0/0 -k 192.168.1.30"]);
     const sys = new FakeSys();
     gone(sys);
-    const r = await guardOnce(sys, CFG, { ok: true, detail: "x", at: sys.now() - 2000, tun: "utun99", inPlaceBoot: BOOT });
+    // The boot is this boot's uuid (core/boot.ts), the fake's own.
+    const r = await guardOnce(sys, CFG, { ok: true, detail: "x", at: sys.now() - 2000, tun: "utun99", inPlaceBoot: sys.bootUuid });
     expect(r.missingAt).toBe(sys.now());
     // The LAN viewer's states go both ways; the tailnet session and the VM's connection stay.
     expect(kills(sys)).toEqual(["-k 192.168.1.30", "-k 0.0.0.0/0 -k 192.168.1.30"]);
@@ -200,8 +201,9 @@ describe("one guard pass", () => {
   // v2.1.1: a failed pass in between, a failed load, or a guard restarted after its record
   // went stale, each forgot the rules had been in place, so their going missing at a VM start was lost.
   test("rules once in place this boot and then gone count as missing, through a failed pass, a failed load or a restart", async () => {
-    const BOOT = 1_799_990_000;
-    const boot = (sys: FakeSys, sec = BOOT) => sys.responders.unshift((cmd) => (cmd === "/usr/sbin/sysctl" ? { code: 0, stdout: `{ sec = ${sec}, usec = 0 } Mon Jan  1 00:00:00 2027\n`, stderr: "" } : undefined));
+    // The boot is kern.bootsessionuuid (core/boot.ts), which a clock step leaves alone.
+    const BOOT = "11111111-2222-3333-4444-555555555555";
+    const boot = (sys: FakeSys, id = BOOT) => void (sys.bootUuid = id);
     const inPlace = new FakeSys();
     boot(inPlace);
     pf(inPlace);
@@ -233,7 +235,7 @@ describe("one guard pass", () => {
     expect((await guardOnce(restarted, CFG, { ...ok, at: ok.at - 3600_000 })).missingAt).toBe(restarted.now());
     // After a restart of the Mac, the first pass finds nothing: never in place this boot.
     const rebooted = new FakeSys();
-    boot(rebooted, BOOT + 5000);
+    boot(rebooted, "99999999-2222-3333-4444-555555555555");
     pf(rebooted, { shown: "" });
     expect((await guardOnce(rebooted, CFG, ok)).missingAt).toBeUndefined();
   });

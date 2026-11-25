@@ -611,7 +611,8 @@ describe("the loop with 2 slots", () => {
   test("a drain from before the box's last boot ends at the loop's start, as a login means run", async () => {
     const { sys, d } = twoSlotDeps();
     bootAt(sys);
-    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() - 2 * 3600_000 }));
+    // The drain names the boot it was asked in; this boot's uuid is another (core/boot.ts).
+    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() - 2 * 3600_000, boot: "99999999-2222-3333-4444-555555555555" }));
     sys.onSpawn = () => {};
     const t0 = sys.now();
     const sleep = sys.sleep.bind(sys);

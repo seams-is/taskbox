@@ -7,6 +7,7 @@ import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.
 import { appendJob, type JobRecord, type Phases, runnerResult, type Wait } from "./jobs.ts";
 import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
 import { rows } from "./rows/index.ts";
+import { bootId, monoNow } from "./core/boot.ts";
 import { afterEnd, beforeStart, type JobHook, withHookFields } from "./core/hooks.ts";
 import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
@@ -594,9 +595,11 @@ export function jobRecordResult(outcome: JobOutcome, runner: JobRecord["result"]
 // gate keeps starts apart, but another VM can stop while this one starts. When the rules went
 // missing while another VM started or stopped too, the box can't tell which did it: shared is true,
 // and it still counts as this start's, so the box fails closed.
-export function vmStartGuard(g: GuardRecord | undefined, startedAt: number, besides: VmWindow[] = []): { read: boolean; rulesWentMissing: boolean; shared?: boolean } {
+// startMono: the monotonic clock at the start. When the guard's record has the same clock for when
+// the rules went missing, that decides, so a wall clock step can't hide a loss of the rules.
+export function vmStartGuard(g: GuardRecord | undefined, startedAt: number, besides: VmWindow[] = [], startMono?: number): { read: boolean; rulesWentMissing: boolean; shared?: boolean } {
   const read = !!g && g.at > startedAt;
-  const rulesWentMissing = !!g && g.missingAt !== undefined && g.missingAt >= startedAt;
+  const rulesWentMissing = !!g && (g.missingMono !== undefined && startMono !== undefined ? g.missingMono >= startMono : g.missingAt !== undefined && g.missingAt >= startedAt);
   if (!rulesWentMissing) return { read, rulesWentMissing };
   const m = g!.missingAt!;
   // The guard notices a change up to a tick late, so a window counts for a tick after it closed.
@@ -952,6 +955,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     const logins = await loginSessions(d.sys).catch(() => undefined);
     beside = logins?.known ? logins.users.filter((u) => u !== d.cfg.accounts.service) : undefined;
     vmStartedAt = d.sys.now();
+    const vmStartedMono = await monoNow(d.sys);
     startDone = d.box?.window(d.slot, "start", vmStartedAt);
     vmProc = t.start(vm, net);
     if (!(await guestReady(d, vm, "starting a VM", vmProc.exited))) {
@@ -962,7 +966,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // A VM start is when vmnet could reload pf. The guard reads its rules every 2 s, so by now it has
     // read them since the start; a time in missingAt after the start means they went missing then.
     const besides = (d.box?.windows ?? []).filter((w) => w.slot !== d.slot);
-    const guardAtStart = vmStartGuard(readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0), vmStartedAt, besides);
+    const guardAtStart = vmStartGuard(readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0), vmStartedAt, besides, vmStartedMono);
     const meUp = d.box?.held.get(d.slot);
     if (meUp) meUp.vm = vm;
     mark("guestUp");
@@ -1093,6 +1097,11 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // A load job has a short ceiling of its own, whatever its workflow says (security review, finding 3).
     const ceiling = turn.role === "load" ? Math.min(ceilingMs(d.cfg), LOAD_JOB_MAX_MS) : ceilingMs(d.cfg);
     const booted = d.sys.now();
+    // The caps below are on the monotonic clock, so a wall clock step ends no job (core/boot.ts). The
+    // VM's and the job's starts are taken on the first tick after each, a few seconds late at most.
+    // With mono unread, the wall clock stands in, as before.
+    let bootedMono: number | undefined;
+    let startedMono: number | undefined;
     let giveWayAskedAt = 0;
     let queueAskedAt = booted;
     let wantGiveWay = false;
@@ -1119,13 +1128,17 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
           .catch(() => {})
           .finally(() => (sampling = undefined));
       }
+      const mono = await monoNow(d.sys);
+      bootedMono ??= mono;
+      if (started !== undefined && startedMono === undefined) startedMono = mono;
+      const since = (wall: number, m: number | undefined) => (mono !== undefined && m !== undefined ? mono - m : d.sys.now() - wall);
       // A hard cap on any VM, in case the runner's "Running job" line changes.
-      if (d.sys.now() - booted > d.cfg.vmMaxHours * 3600_000) {
+      if (since(booted, bootedMono) > d.cfg.vmMaxHours * 3600_000) {
         outcome = "ceiling";
         runner.kill();
         break;
       }
-      if (started !== undefined && d.sys.now() - started > ceiling) {
+      if (started !== undefined && since(started, startedMono) > ceiling) {
         outcome = "ceiling";
         runner.kill();
         break;
@@ -1397,14 +1410,15 @@ export function relabelDue(d: Pick<LoopDeps, "paths" | "log">, oldName: boolean)
   };
 }
 
-async function dropDrainFromBeforeBoot(d: Pick<LoopDeps, "sys" | "paths" | "log">): Promise<void> {
-  const at = readStateJson<{ at?: unknown }>(d.paths.drain)?.at;
-  if (at === undefined && !existsSync(d.paths.drain)) return;
-  // kern.boottime reads "{ sec = 1700000000, usec = 0 } ...", as the guard reads it.
-  const r = await d.sys.run("/usr/sbin/sysctl", ["-n", "kern.boottime"], { timeoutMs: 5_000 }).catch(() => undefined);
-  const m = r?.code === 0 ? /sec = (\d+)/.exec(r.stdout) : null;
-  const boot = m ? Number(m[1]) : undefined;
-  if (typeof at !== "number" || (boot !== undefined && at < boot * 1000)) {
+// A drain names the boot it was asked in (stopstart.ts). After a restart, which ended its jobs, it is
+// dropped. The boot is kern.bootsessionuuid, which a clock step leaves alone, so a step never drops
+// the owner's drain. A drain with no boot (from before v3) is kept: the owner resumes it.
+export async function dropDrainFromBeforeBoot(d: Pick<LoopDeps, "sys" | "paths" | "log">): Promise<void> {
+  if (!existsSync(d.paths.drain)) return;
+  const was = readStateJson<{ boot?: unknown }>(d.paths.drain)?.boot;
+  if (typeof was !== "string") return;
+  const now = await bootId(d.sys);
+  if (now !== undefined && now !== was.toUpperCase()) {
     rmSync(d.paths.drain, { force: true });
     d.log.write("a drain from before the restart ended: the restart had already ended its jobs");
   }

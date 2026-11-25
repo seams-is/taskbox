@@ -26,6 +26,11 @@ export class FakeSys implements Sys {
   fallbacks: Responder[] = [];
   routes: Route[] = [];
   clock = 1_800_000_000_000;
+  // The box's monotonic clock (core/boot.ts monoNow) runs with clock, offset by this much: a test
+  // steps the wall clock alone by moving clock and taking the same off monoOffset.
+  monoOffset = -1_700_000_000_000;
+  // This boot's kern.bootsessionuuid; a test restarts the box by changing it.
+  bootUuid = "11111111-2222-3333-4444-555555555555";
   onSpawn: (p: FakeProc) => void = () => {};
   probe: ProbeResult = "refused";
   addresses = ["127.0.0.1", "192.168.1.20"];
@@ -48,6 +53,9 @@ export class FakeSys implements Sys {
       const out = r(cmd, args, opts);
       if (out) return out;
     }
+    // The box's two clocks that a wall clock step doesn't move, unless a test answers them itself.
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.monotonicclock_usecs") return { code: 0, stdout: `${(this.clock + this.monoOffset) * 1000} 1\n`, stderr: "" };
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.bootsessionuuid") return { code: 0, stdout: `${this.bootUuid}\n`, stderr: "" };
     // Plenty of room unless a test says otherwise: 500 GB.
     if (cmd === "/bin/df") return { code: 0, stdout: `F 1 U A C M\n/dev/disk3s5 1 1 ${500e9 / 1024} 1% /\n`, stderr: "" };
     // The Softnet check's process list: launchd is always there, and no Softnet runs as root.

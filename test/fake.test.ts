@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { bootSeconds } from "../src/guard.ts";
 import { FakeSys } from "./fake.ts";
 import { unknownCommands } from "./helpers.ts";
 
@@ -93,8 +92,8 @@ test.todo("a sleep that lost a race costs nothing, even across real I/O", async 
 describe("a command no fake answers", () => {
   test("makes its test fail with the command named, even where the code catches it", async () => {
     const sys = new FakeSys();
-    // bootSeconds turns a failed run into undefined, so only the record shows it.
-    expect(await bootSeconds(sys)).toBeUndefined();
+    // Code that turns a failed run into undefined, as many callers do: only the record shows it.
+    expect(await sys.run("/usr/sbin/sysctl", ["-n", "kern.boottime"]).catch(() => undefined)).toBeUndefined();
     expect(unknownCommands()).toEqual(["/usr/sbin/sysctl -n kern.boottime"]);
     sys.unknown = [];
   });
