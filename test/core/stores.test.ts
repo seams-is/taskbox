@@ -12,7 +12,7 @@ import { keyPair } from "../sshsig.ts";
 const uid = process.getuid!();
 
 // A moment for the pending store: the wall clock, a monotonic clock that keeps pace with it, one boot.
-const mo = (wall: number) => ({ wall, mono: wall - 1_700_000_000_000, boot: "B" });
+const mo = (wall: number) => ({ wall, mono: wall - 1_700_000_000_000, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" });
 const T = 1_800_000_000_000;
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-core-"));
 let k = 0;

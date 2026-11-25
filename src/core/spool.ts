@@ -14,6 +14,7 @@ import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openS
 import { dirname, join } from "node:path";
 import type { Clock } from "../clock.ts";
 import { readUpTo } from "../workspace/read.ts";
+import { isBootId } from "./boot.ts";
 import { isId, type Rand, realRand, idOf } from "./ids.ts";
 import { isObj, plain, readOwnedJson, readOwnedText, type Read, safeParse, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
 
@@ -306,7 +307,7 @@ const outcomeFile = (dir: string, id: string) => {
   return join(dir, `${id}.json`);
 };
 function outcomeProblem(o: unknown): string | undefined {
-  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) && (o.mono === undefined || Number.isSafeInteger(o.mono)) && (o.boot === undefined || plain(o.boot, 32)) ? undefined : "it isn't an outcome taskbox reads";
+  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) && (o.mono === undefined || Number.isSafeInteger(o.mono)) && (o.boot === undefined || isBootId(o.boot)) ? undefined : "it isn't an outcome taskbox reads";
 }
 // Records an outcome once: a request's first outcome stands. False when one was there.
 export function recordOutcome(dir: string, o: Outcome, w: Omit<WriteRules, "mode"> = {}): boolean {

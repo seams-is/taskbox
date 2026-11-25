@@ -125,20 +125,20 @@ describe("the lows", () => {
   });
   test("P2: a lapse needs the wall clock, the monotonic clock and the boot; an unread clock lapses", () => {
     const ask = { kind: "channel" as const, subject: "c", shows: ["x"], actor: "owner", payload: {} };
-    const r = raise(noPending(), ask, { wall: T, mono: 5, boot: "u" });
+    const r = raise(noPending(), ask, { wall: T, mono: 5, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" });
     if (!r.ok) throw new Error();
-    expect(lapse(r.state, { wall: T + 1, mono: 6, boot: "u" }).lapsed).toHaveLength(0);
-    expect(lapse(r.state, { wall: T + 1, mono: undefined, boot: "u" }).lapsed).toHaveLength(1);
+    expect(lapse(r.state, { wall: T + 1, mono: 6, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" }).lapsed).toHaveLength(0);
+    expect(lapse(r.state, { wall: T + 1, mono: undefined, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" }).lapsed).toHaveLength(1);
     expect(lapse(r.state, { wall: T + 1, mono: 6, boot: undefined }).lapsed).toHaveLength(1);
-    expect(answer(r.state, r.item.id, { wall: T + 1, mono: 5 + LAPSE_MS, boot: "u" }).ok).toBe(false);
+    expect(answer(r.state, r.item.id, { wall: T + 1, mono: 5 + LAPSE_MS, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" }).ok).toBe(false);
   });
   test("O1: a back step of the clock never removes an outcome; boot and mono decide then", () => {
     const id = `rq_${"0".repeat(26)}`;
     const dir = join(tmp(), "outcomes", "agent");
-    recordOutcome(dir, { id, at: T, ok: true, said: "x", mono: 100, boot: "u" }, { owner: uid });
+    recordOutcome(dir, { id, at: T, ok: true, said: "x", mono: 100, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" }, { owner: uid });
     utimesSync(join(dir, `${id}.json`), new Date(T), new Date(T));
-    expect(keepOutcomes(dir, { wall: T - 1000, mono: 200, boot: "u" })).toEqual([]);
-    expect(keepOutcomes(dir, { wall: T - 1000, mono: 200, boot: "v" })).toEqual([id]);
+    expect(keepOutcomes(dir, { wall: T - 1000, mono: 200, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" })).toEqual([]);
+    expect(keepOutcomes(dir, { wall: T - 1000, mono: 200, boot: "0A1B2C3D-4E5F-4061-8293-A4B5C6D7E8F9" })).toEqual([id]);
   });
   test("W2: readers read by bytes, so many small files hide nothing", () => {
     const dir = join(tmp(), "ev");

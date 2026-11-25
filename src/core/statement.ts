@@ -127,11 +127,17 @@ export function splitSigned(word: string): { statement: string; signature: strin
 // Who a request is known to come from, as the verifier found it: a pinned key whose signature checked,
 // or a principal the box knows by other means (a spool's owner by uid). Only code makes one; JSON
 // can't, since parsing never makes an instance of a class. The event log caps refusals by it.
+// Only the two factories make one; isVerified checks that, so an object built on its prototype isn't one.
+const made = new WeakSet<object>();
+export const isVerified = (v: unknown): v is Verified => typeof v === "object" && v !== null && made.has(v);
 export class Verified {
   private constructor(
     readonly key: string,
     readonly actor: string,
-  ) {}
+  ) {
+    made.add(this);
+    Object.freeze(this);
+  }
   static signer(fingerprint: string): Verified {
     if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) throw new Error("not a key's fingerprint");
     return new Verified(`key ${fingerprint}`, `owner (signed, key ${fingerprint})`);
@@ -157,6 +163,8 @@ export interface Want {
 // keys: approvers.ts pinnedKeys, never a key from settings or the request. nonce: the subject's
 // current nonce (nonces.ts currentNonce). This is the pure check: callers use signed.ts consumeSigned,
 // which rotates the nonce under its lock before the request applies.
+export const VERIFY_PER_MINUTE = 60;
+let budget = { from: 0, n: 0 };
 export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readonly string[]; installId: string; now: number; nonce: (subject: string) => string | undefined; want: Want }): Promise<Checked> {
   if (!o.keys.length) return refuse("denied", "No approver key is pinned on this box yet. Type taskbox key trust approver at the box.");
   const parts = splitSigned(o.word);
@@ -169,7 +177,13 @@ export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readon
   const want = canonical(o.want.args);
   if (want === undefined || JSON.stringify(want) !== JSON.stringify(s.args)) return refuse("denied", "The statement's arguments aren't this command's.");
   // The signature first, then the nonce: a word refused for its nonce is still known to be the
-  // owner's, so its refusal is told apart from junk (events.ts refused).
+  // owner's, so its refusal is told apart from junk (events.ts refused). Past VERIFY_PER_MINUTE
+  // checks in this process's minute, a word whose nonce is stale is refused unchecked, as junk, so a
+  // flood can't make the box run ssh-keygen without end. A word with the current nonce is always checked.
+  const stale = o.nonce(s.subject) !== s.nonce;
+  if (o.now - budget.from >= 60_000 || o.now < budget.from) budget = { from: o.now, n: 0 };
+  if (stale && budget.n >= VERIFY_PER_MINUTE) return refuse("stale-state", "The statement's nonce isn't the box's current one: another signed request applied first.");
+  budget.n++;
   let signer: string | undefined;
   for (const key of o.keys) {
     const why = await verifySignature(d, { key, message: parts.statement, signature: parts.signature, namespace: CONTROL_NS }).catch(() => "failed");
