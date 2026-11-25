@@ -80,6 +80,7 @@ export interface GuardRecord {
   tunUp?: boolean; // the utun exists with a Tailscale address, so Screen Sharing reaches the tailnet
   missingAt?: number; // the last time a pass found the rules gone, put them back, and dropped Screen Sharing's states
   missingMono?: number; // the same on the monotonic clock (core/boot.ts), which a VM start compares against
+  missingUnread?: true; // the last loss was found on a pass that couldn't read mono: every VM start refuses until a loss with mono, or a restart
   // The boot, by kern.bootsessionuuid (which a clock step leaves alone), in which this guard has had
   // the rules in place. Rules found gone after that went missing; at a boot's first pass they were
   // never there (v2.1.1). A number is v2's boot seconds, which matches no uuid.
@@ -160,9 +161,12 @@ export async function guardOnce(sys: Sys, cfg: Config, last?: GuardRecord): Prom
   const boot = await bootId(sys);
   const mono = await monoNow(sys);
   // Whether this guard had the rules in place earlier in this boot. A failed pass in between doesn't
-  // forget it. With no boot time, the last pass's own result stands in.
-  const hadRules = boot !== undefined ? last?.inPlaceBoot === boot : last?.ok === true;
-  const keep: { missingAt?: number; missingMono?: number; inPlaceBoot?: string } = { ...(last?.missingAt !== undefined ? { missingAt: last.missingAt } : {}), ...(last?.missingMono !== undefined ? { missingMono: last.missingMono } : {}), ...(hadRules && boot !== undefined ? { inPlaceBoot: boot } : {}) };
+  // forget it. With the boot unread, any sign of rules in place before counts, so a loss is never
+  // passed over for a clock the box can't read.
+  const hadRules = boot !== undefined ? last?.inPlaceBoot === boot : last?.ok === true || last?.inPlaceBoot !== undefined;
+  // A loss's mono time, or its mark that mono was unread, holds only in the boot it was found in.
+  const thisBoot = boot === undefined || last?.inPlaceBoot === boot;
+  const keep: { missingAt?: number; missingMono?: number; missingUnread?: true; inPlaceBoot?: string } = { ...(last?.missingAt !== undefined ? { missingAt: last.missingAt } : {}), ...(thisBoot && last?.missingMono !== undefined ? { missingMono: last.missingMono } : {}), ...(thisBoot && last?.missingUnread === true ? { missingUnread: true as const } : {}), ...(hadRules && boot !== undefined ? { inPlaceBoot: boot } : {}) };
   const done = (ok: boolean, detail: string): GuardRecord => ({ ok, detail, at, tun, ...keep });
   const main = await sys.run(PFCTL, ["-s", "rules"], { timeoutMs: 10_000 });
   if (main.code !== 0) return done(false, "pf's rules could not be read");
@@ -174,14 +178,22 @@ export async function guardOnce(sys: Sys, cfg: Config, last?: GuardRecord): Prom
   // the guard's first start after an install or a restart, didn't go missing: only rules this guard
   // had in place count. The states go either way.
   const wasMissing = before.code !== 0 || !loadedMatches(before.stdout, tun);
-  let missingAt = last?.missingAt;
-  let missingMono = last?.missingMono;
+  let missingAt = keep.missingAt;
+  let missingMono = keep.missingMono;
+  let missingUnread = keep.missingUnread;
+  // A pass that can't read mono still marks the loss now, and drops the older mono time, so a VM
+  // start never reads an old one and misses this loss (loop.ts vmStartGuard refuses without it).
   if (wasMissing && hadRules) {
     missingAt = at;
     keep.missingAt = at;
+    missingMono = mono;
+    missingUnread = mono === undefined ? true : undefined;
     if (mono !== undefined) {
-      missingMono = mono;
       keep.missingMono = mono;
+      delete keep.missingUnread;
+    } else {
+      delete keep.missingMono;
+      keep.missingUnread = true;
     }
   }
   const load = await sys.run(PFCTL, ["-a", ANCHOR, "-f", "-"], { stdin: anchorRules(tun), timeoutMs: 10_000 });
@@ -206,7 +218,7 @@ export async function guardOnce(sys: Sys, cfg: Config, last?: GuardRecord): Prom
     detail = `pf drops port ${SCREEN_SHARING_PORT} everywhere. ${elsewhere ? `Tailscale is on another interface, not ${tun}` : `Tailscale isn't up on ${tun}`}, so Screen Sharing reaches nowhere`;
   }
   // The rules are in place now, read back above.
-  return { ...done(true, detail), tunUp: up, ...(missingAt !== undefined ? { missingAt } : {}), ...(missingMono !== undefined ? { missingMono } : {}), ...(boot !== undefined ? { inPlaceBoot: boot } : {}) };
+  return { ...done(true, detail), tunUp: up, ...(missingAt !== undefined ? { missingAt } : {}), ...(missingMono !== undefined ? { missingMono } : {}), ...(missingUnread ? { missingUnread } : {}), ...(boot !== undefined ? { inPlaceBoot: boot } : {}) };
 }
 
 // Whether the rules are in place now: one read of the anchor, cheap enough for every tick.

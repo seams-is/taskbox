@@ -494,7 +494,6 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
   rmSync(`${file}.unreadable`, { force: true });
   // v3's watcher's own count of the time used (ops.ts watchClock).
   rmSync(`${file}.clock`, { force: true });
-  rmSync(`${file}.clock.used`, { force: true });
   rmSync(plist, { force: true });
   await sys.run("/bin/launchctl", ["bootout", `system/${ROLLBACK_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
 }

@@ -139,7 +139,7 @@ describe("the gate and the guard", () => {
     expect(vmStartGuard(g, M, [{ slot: 2, what: "start", from: M + 1_000 }]).shared).toBe(true);
     expect(vmStartGuard(g, M, [{ slot: 2, what: "stop", from: M - 60_000, to: M - 50_000 }]).shared).toBeUndefined();
     // Rules in place: nothing to blame.
-    expect(vmStartGuard({ ...g, missingAt: M - 1 }, M, [{ slot: 2, what: "start", from: M }])).toEqual({ read: true, rulesWentMissing: false });
+    expect(vmStartGuard({ ...g, missingAt: M - 1 }, M, [{ slot: 2, what: "start", from: M }], 1)).toEqual({ read: true, rulesWentMissing: false });
   });
 });
 

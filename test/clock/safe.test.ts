@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { oneJob, vmStartGuard } from "../../src/loop.ts";
+import { decideWatch, watchClockFile, watchUsed } from "../../src/ops.ts";
 import { FakeSys } from "../fake.ts";
 import { loopDeps, tempRoot } from "../helpers.ts";
 
@@ -50,7 +51,9 @@ describe("M-c: the VM-start check for missing rules", () => {
     const g = { ok: true, detail: "", at: 0, tun: "utun99", missingAt: 1000, missingMono: 50_000 };
     // The wall clock went back: missingAt is before the start's wall time, but by mono it is after.
     expect(vmStartGuard(g, 5000, [], 40_000).rulesWentMissing).toBe(true);
-    expect(vmStartGuard(g, 0, [], 60_000).rulesWentMissing).toBe(false);
+    // Either clock saying after the start is enough (review 8): here the wall says after, mono before.
+    expect(vmStartGuard(g, 0, [], 60_000).rulesWentMissing).toBe(true);
+    expect(vmStartGuard(g, 5000, [], 60_000).rulesWentMissing).toBe(false);
   });
   test("the guard records when the rules went missing on both clocks, and its boot by uuid", async () => {
     const src = readFileSync(new URL("../../src/guard.ts", import.meta.url), "utf8");
@@ -80,25 +83,34 @@ describe("M-d: a drain from before a restart", () => {
 });
 
 describe("M-b: the rollback watcher's deadline in v3's tree", () => {
-  test("a watch placed with mono time is judged by it: a wall step ends nothing; mono past the deadline does", async () => {
-    const { decideWatch } = await import("../../src/ops.ts");
-    const w = { v: 1 as const, tag: "v3.0.0-rc.2", to: "/a", back: "/b", placedAt: 1000, deadline: 1000 + 70 * 60_000, placedMono: 500, boot: "U" };
-    expect(decideWatch(w, { wall: 1000 + 10 * H, mono: 500 + 60_000, boot: "U" })).toBe(false);
-    expect(decideWatch(w, { wall: 1000, mono: 500 + 70 * 60_000, boot: "U" })).toBe(true);
+  const U = "11111111-2222-3333-4444-555555555555";
+  const V = "99999999-2222-3333-4444-555555555555";
+  const w = { v: 1 as const, tag: "v3.0.0-rc.2", to: "/a", back: "/b", placedAt: 1000, deadline: 1000 + 70 * 60_000, placedMono: 500, boot: U };
+  const paths = () => {
+    const p = loopDeps(new FakeSys(), tempRoot()).paths;
+    mkdirSync(dirname(watchClockFile(p)), { recursive: true });
+    return { paths: p };
+  };
+  test("a watch placed with mono time is judged by it: a wall step ends nothing; mono past the deadline does", () => {
+    const d = paths();
+    expect(decideWatch(w, { wall: 1000 + 10 * H }, watchUsed(d, w, { mono: 500 + 60_000, boot: U }))).toBe(false);
+    expect(decideWatch(w, { wall: 1000 }, watchUsed(d, w, { mono: 500 + 70 * 60_000, boot: U }))).toBe(true);
     // A deadline moved later, and the cap: three hours from the place on mono.
-    expect(decideWatch({ ...w, deadline: 1000 + 10 * H }, { wall: 1000, mono: 500 + 3 * H, boot: "U" })).toBe(true);
+    const late = { ...w, deadline: 1000 + 10 * H };
+    expect(decideWatch(late, { wall: 1000 }, watchUsed(paths(), late, { mono: 500 + 3 * H, boot: U }))).toBe(true);
   });
-  test("after a restart it goes on from the time it had used, never from the wall clock", async () => {
-    const { decideWatch } = await import("../../src/ops.ts");
-    const w = { v: 1 as const, tag: "t", to: "/a", back: "/b", placedAt: 1000, deadline: 1000 + 70 * 60_000, placedMono: 500, boot: "U", elapsedMs: 30 * 60_000 };
-    expect(decideWatch(w, { wall: 1000 + 10 * H, mono: 10, boot: "V" })).toBe(false);
-    expect(decideWatch(w, { wall: 1000, mono: 10, boot: "V" }, 40 * 60_000)).toBe(true);
+  test("after a restart it goes on from the time it had used, never from the wall clock", () => {
+    const d = paths();
+    expect(watchUsed(d, w, { mono: 500 + 30 * 60_000, boot: U })).toBe(30 * 60_000);
+    expect(decideWatch(w, { wall: 1000 + 10 * H }, watchUsed(d, w, { mono: 10, boot: V }))).toBe(false);
+    expect(decideWatch(w, { wall: 1000 }, watchUsed(d, w, { mono: 10 + 40 * 60_000, boot: V }))).toBe(true);
   });
-  test("a watch v2.6.1 placed, with no mono time, is judged by the wall clock as v2.6.1 judges it", async () => {
-    const { decideWatch } = await import("../../src/ops.ts");
-    const w = { v: 1 as const, tag: "t", to: "/a", back: "/b", placedAt: 1000, deadline: 1000 + 70 * 60_000 };
-    expect(decideWatch(w, { wall: 1000 + 70 * 60_000, mono: 10, boot: "U" })).toBe(true);
-    expect(decideWatch(w, { wall: 1000, mono: 10, boot: "U" })).toBe(false);
+  test("a watch v2.6.1 placed, with no mono time, is judged by the wall clock as v2.6.1 judges it", () => {
+    const old = { v: 1 as const, tag: "t", to: "/a", back: "/b", placedAt: 1000, deadline: 1000 + 70 * 60_000 };
+    const used = watchUsed(paths(), old, { mono: 10, boot: U });
+    expect(used).toBeUndefined();
+    expect(decideWatch(old, { wall: 1000 + 70 * 60_000 }, used)).toBe(true);
+    expect(decideWatch(old, { wall: 1000 }, used)).toBe(false);
   });
   test("v3's install places the watch with mono time and the boot", () => {
     const src = readFileSync(new URL("../../src/install.ts", import.meta.url), "utf8");
@@ -106,23 +118,28 @@ describe("M-b: the rollback watcher's deadline in v3's tree", () => {
   });
 });
 
-describe("no new deadline on the wall clock", () => {
-  // Every place src compares the wall clock against a limit, by file, with why it may. A new one fails
-  // here: put it on the monotonic clock (core/boot.ts monoNow), or say here why a step can't hurt.
-  const ALLOWED: Record<string, string> = JSON.parse(readFileSync(new URL("./wall-deadlines.json", import.meta.url), "utf8"));
+describe("every wall clock read in src is a known one", () => {
+  // Each file that reads the wall clock (Date.now, new Date(), Date(), any .now() but
+  // performance.now(), performance.timeOrigin), with how many reads it has and why a step can't end,
+  // kill or allow anything there. A new read fails here: put it on the monotonic clock
+  // (core/boot.ts monoNow), or say in wall-reads.json why a step can't hurt.
+  const ALLOWED: Record<string, { reads: number; why: string }> = JSON.parse(readFileSync(new URL("./wall-reads.json", import.meta.url), "utf8"));
   const SRC = new URL("../../src/", import.meta.url).pathname;
   const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
-  const DEADLINE = /(?:sys|clock|d\.sys|c\.sys|deps\.sys)\.now\(\)\s*-\s*[\w.$!?()]+\s*>=?|\bnow\s*-\s*[\w.$!?()]+\s*>=?\s*[\w.*]*(?:MS|_MS|Ms|ms|max|Max|limit|Limit|ceiling|deadline|Hours|timeout)|(?:sys|clock|d\.sys)\.now\(\)\s*>=?\s*[\w.]*(?:deadline|Deadline|until|Until|limit|Limit)|\bnow\s*>=?\s*[\w.]*(?:deadline|Deadline|until|Until)/;
-  test("every such read is a known one", () => {
-    const found: string[] = [];
+  const READ = /\bDate\.now\b|\bnew Date\(\s*\)|(?<![\w.])Date\(\s*\)|(?<!performance)\.now\(\)|\bperformance\.timeOrigin\b/g;
+  const reads = (text: string) => text.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n").match(READ)?.length ?? 0;
+  test("each file's reads match the list, and each has a reason", () => {
+    const found: Record<string, number> = {};
     for (const f of files(SRC)) {
-      const lines = readFileSync(f, "utf8").split("\n");
-      lines.forEach((l, i) => {
-        if (!DEADLINE.test(l) || l.trim().startsWith("//")) return;
-        found.push(`${f.slice(SRC.length)}: ${l.trim()}`);
-      });
+      const n = reads(readFileSync(f, "utf8"));
+      if (n) found[f.slice(SRC.length)] = n;
     }
-    const unknown = found.filter((x) => !(x in ALLOWED));
-    expect(unknown).toEqual([]);
+    expect(found).toEqual(Object.fromEntries(Object.entries(ALLOWED).map(([f, a]) => [f, a.reads])));
+    expect(Object.values(ALLOWED).every((a) => a.why.length > 10)).toBe(true);
+  });
+  test("it sees every shape of read the review listed", () => {
+    for (const l of ["Date.now() - t > LIMIT_MS", "if (Date.now() >= deadline)", "new Date().getTime() - t > MAX_MS", "const elapsed = d.sys.now() - startedAt;", "startedAt + LIMIT_MS < d.sys.now()", "deadline <= d.sys.now()", "this.sys.now() > w.expiresAt", "const f = Date.now;", "Date() + x", "performance.timeOrigin + 5"]) expect(reads(l)).toBe(1);
+    expect(reads("performance.now() - t")).toBe(0);
+    expect(reads("new Date(k.at).toISOString()")).toBe(0);
   });
 });

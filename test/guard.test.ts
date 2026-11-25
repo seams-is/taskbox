@@ -712,7 +712,10 @@ describe("a VM start and the guard", () => {
     expect(vmStartGuard(undefined, 100)).toEqual({ read: false, rulesWentMissing: false });
     expect(vmStartGuard({ ...r, at: 90 }, 100)).toEqual({ read: false, rulesWentMissing: false });
     expect(vmStartGuard({ ...r, at: 150 }, 100)).toEqual({ read: true, rulesWentMissing: false });
-    expect(vmStartGuard({ ...r, at: 150, missingAt: 50 }, 100)).toEqual({ read: true, rulesWentMissing: false });
+    // A loss on record with no mono time is judged by the wall clock, once the start's mono reads.
+    expect(vmStartGuard({ ...r, at: 150, missingAt: 50 }, 100, [], 1)).toEqual({ read: true, rulesWentMissing: false });
+    // With the start's mono unread, any loss on record refuses (review 8).
+    expect(vmStartGuard({ ...r, at: 150, missingAt: 50 }, 100)).toEqual({ read: true, rulesWentMissing: true });
     expect(vmStartGuard({ ...r, at: 150, missingAt: 120 }, 100)).toEqual({ read: true, rulesWentMissing: true });
   });
 
