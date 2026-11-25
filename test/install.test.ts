@@ -160,7 +160,8 @@ describe("install", () => {
     expect(sys.requests.some((r) => r.url.endsWith("/repos/example-org/taskbox/commits/abc1234def5678abc1234def5678abc1234def56"))).toBe(true);
   });
 
-  test("a tool that does not match its pin stops before anything is installed", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("a tool that does not match its pin stops before anything is installed", async () => {
     const sys = new FakeSys();
     healthyBox(sys);
     githubRoutes(sys);
@@ -171,7 +172,7 @@ describe("install", () => {
     expect(existsSync(join(root, "Users/ci/.taskbox/app-key.pem"))).toBe(false);
   });
 
-  test("with tailscaled's download not pinned yet, nothing is downloaded or installed", async () => {
+  test.serial("with tailscaled's download not pinned yet, nothing is downloaded or installed", async () => {
     const sys = new FakeSys();
     healthyBox(sys);
     githubRoutes(sys);
@@ -195,7 +196,7 @@ describe("an install run to the end", () => {
     return log;
   }
 
-  test("a first install ends with Installed., the tree in place and the services loaded on the new code", async () => {
+  test.serial("a first install ends with Installed., the tree in place and the services loaded on the new code", async () => {
     const sys = new FakeSys();
     const loaded = fakeLaunchd(sys);
     healthyBox(sys);
@@ -265,7 +266,7 @@ describe("an install run to the end", () => {
     return { sys, d, said, log, loaded, out };
   }
 
-  test("an update over it ends with Installed., keeps the old folder for undo, and moves the old services' names", async () => {
+  test.serial("an update over it ends with Installed., keeps the old folder for undo, and moves the old services' names", async () => {
     const { root, daemons, before } = await installedUnderOldNames();
     const { sys, d, said, log, loaded } = await update(root);
     expect(said.at(-1)).toBe("Installed. The loop restarts on the new commit once the current job or the image download ends.");
@@ -314,7 +315,7 @@ describe("an install run to the end", () => {
     return { d, said, log, loaded, out, before, root };
   }
 
-  test("an update from the last release, already under the new names, moves nothing and reloads both services on the new code", async () => {
+  test.serial("an update from the last release, already under the new names, moves nothing and reloads both services on the new code", async () => {
     const { d, said, log, loaded, out, before } = await updateFromLastRelease();
     expect(out).toBe("installed");
     const now = basename(linkTarget(d.paths.opt)!);
@@ -337,7 +338,7 @@ describe("an install run to the end", () => {
     expect(out).not.toBe("installed");
   });
 
-  test("the same commit installed again keeps the install kept for undo", async () => {
+  test.serial("the same commit installed again keeps the install kept for undo", async () => {
     const { root, before } = await installedUnderOldNames();
     await update(root);
     const again = await update(root);
@@ -345,7 +346,7 @@ describe("an install run to the end", () => {
     expect(basename(linkTarget(again.d.paths.prev)!)).toBe(before);
   });
 
-  test("an old service that won't stop stops the update before anything new is written or loaded", async () => {
+  test.serial("an old service that won't stop stops the update before anything new is written or loaded", async () => {
     const { root, daemons } = await installedUnderOldNames();
     // A box that never had the new names.
     for (const f of [`${GUARD_LABEL}.plist`, `${TAILSCALED_LABEL}.plist`]) fs.rmSync(join(daemons, f));
@@ -357,7 +358,7 @@ describe("an install run to the end", () => {
     expect([...loaded].sort()).toEqual([`${OLD}.guard`, `${OLD}.tailscaled`]);
   });
 
-  test("undo after the update goes back, then restarts the guard on the kept code", async () => {
+  test.serial("undo after the update goes back, then restarts the guard on the kept code", async () => {
     const { root, before } = await installedUnderOldNames();
     const { sys, d } = await update(root);
     const now = basename(linkTarget(d.paths.opt)!);
@@ -374,7 +375,7 @@ describe("an install run to the end", () => {
     expect(basename(linkTarget(d.paths.prev)!)).toBe(now);
   });
 
-  test("undo to an install from before the names moved puts the old names back once /opt/taskbox points at it", async () => {
+  test.serial("undo to an install from before the names moved puts the old names back once /opt/taskbox points at it", async () => {
     const { root, before } = await installedUnderOldNames();
     const { sys, d } = await update(root);
     // The kept install as a release from before the move made it: launchd files under the old names.

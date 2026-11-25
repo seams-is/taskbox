@@ -81,7 +81,8 @@ describe("the copies every user reads", () => {
     chmodSync(join(p.shared, ".."), 0o777);
     expect(sharedProblem(p, me, me)).toContain("isn't root's alone");
   });
-  test("the log's copy keeps its last 256 KB", () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("the log's copy keeps its last 256 KB", () => {
     const p = box();
     for (let i = 0; i < 400; i++) mirrorLogLine(p, `${i} ${"x".repeat(1000)}`);
     const text = readFileSync(join(p.shared, "loop.log"), "utf8");

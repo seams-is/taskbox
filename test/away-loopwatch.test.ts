@@ -227,7 +227,8 @@ describe("the guard's watch of the loop", () => {
     expect(runningNow("x = {\n\t\tstate = running\n\t\tpid = 9\n}\n")).toBe(false);
   });
 
-  test("the guard runs it on its full passes", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("the guard runs it on its full passes", async () => {
     const { sys, d, kicks } = setup();
     // A beat that goes quiet: its 3 minutes, the grace and the margin, counted on mono from the first pass.
     writeLoopState(d.paths, { slotCount: 1, slots: { "1": { beat: beatFor("waiting", sys.now()) } } });

@@ -12,7 +12,7 @@ import { fingerprint, keyChangeText, ROTATE_ASK, type Verifier } from "../src/ap
 import { earlierWorkspaces, install, type InstallDeps, TRUST_FILES, trustFilesLine } from "../src/install.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
 import { Dir } from "./fake-dir.ts";
-import { CFG, healthyBox, installDeps, PEM } from "./helpers.ts";
+import { CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
 import { laptopMain } from "../src/laptop/main.ts";
 import { keyDir, writeLaptop } from "../src/laptop/settings.ts";
 import { SSH } from "../src/laptop/box.ts";
@@ -343,19 +343,23 @@ describe("after the yes", () => {
     githubRoutes(sys, { settings });
     const stage = mkdtempSync(join(tmpdir(), "taskbox-src-"));
     const top = join(stage, "example-org-taskbox-abc1234");
-    cpSync(repo, top, { recursive: true, filter: (f) => !/\/(node_modules|\.git)(\/|$)/.test(f) });
+    copyRepo(top, ["test", "docs"]);
     writeFileSync(join(top, "taskbox.json"), JSON.stringify(settings));
     // An empty tailscale pin, so the install stops right after the accounts, with nothing downloaded.
     const v = JSON.parse(readFileSync(join(top, "versions.json"), "utf8"));
     v.tailscale = { version: "1.104.5", url: "", sha256: "", files: { tailscale: "", tailscaled: "" } };
     writeFileSync(join(top, "versions.json"), JSON.stringify(v));
-    const tar = Bun.spawnSync(["/usr/bin/tar", "-czf", "-", "-C", stage, "example-org-taskbox-abc1234"]);
-    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(tar.stdout) : undefined));
+    // Unpacked by copying the staged files, as stageRelease does (helpers.ts): real tar and gzip
+    // were most of this test's work, and under load ran past its limit.
+    const TARBALL = "the commit's tarball";
+    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(TARBALL) : undefined));
     const real = sys.run.bind(sys);
     sys.run = async (cmd, args, opts) => {
-      if (cmd === "/usr/bin/tar") {
-        const p = Bun.spawnSync([cmd, ...args], { env: { PATH: "/usr/bin:/bin" } });
-        return { code: p.exitCode ?? 1, stdout: "", stderr: p.stderr.toString() };
+      if (cmd === "/usr/bin/tar" && args[0] === "-xzf" && args[1]!.endsWith("src.tar.gz")) {
+        // What was downloaded is what is unpacked: the install's own file must hold the tarball.
+        if (readFileSync(args[1]!, "utf8") !== TARBALL) return { code: 1, stdout: "", stderr: "tar: Unrecognized archive format\n" };
+        cpSync(top, args[3]!, { recursive: true });
+        return { code: 0, stdout: "", stderr: "" };
       }
       return real(cmd, args, opts);
     };
@@ -367,7 +371,8 @@ describe("after the yes", () => {
     return { out, d: d as InstallDeps, sys };
   }
 
-  test("the key is pinned and the pool account made, then the install goes on", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("the key is pinned and the pool account made, then the install goes on", async () => {
     const dir = new Dir();
     const { out, d, sys } = await run(dir);
     expect(out).toContain("tailscaled has no download pinned yet");

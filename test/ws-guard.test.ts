@@ -392,7 +392,8 @@ describe("red team: the spool", () => {
     expect(b.state().workspaces.map((w) => w.agent)).toEqual(["kim"]);
   });
 
-  test("files that can't be removed (the immutable flag) never take a slot: 20 old signed ones don't starve a real request", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("files that can't be removed (the immutable flag) never take a slot: 20 old signed ones don't starve a real request", async () => {
     const b = wsBox();
     const locked: string[] = [];
     for (let i = 0; i < 20; i++) {

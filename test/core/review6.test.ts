@@ -56,29 +56,36 @@ describe("retention by write order", () => {
     // Under the cap the first written goes first, whatever its date says.
     expect(keepEvents({ dir, owner: uid }, { maxBytes: 450 })).toEqual([names[0]!]);
   });
-  test("ops: kept by the order taskbox wrote them, the newest OPS_KEEP and under the byte cap; dates play no part", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("ops: kept by the order taskbox wrote them, the newest OPS_KEEP and under the byte cap; dates play no part", async () => {
     const { OPS_KEEP } = await import("../../src/core/ops.ts");
     const f = { dir: tmp(), owner: uid };
     const ids: string[] = [];
+    // writeOp numbers the first five itself. Each new number reads every record before it, so the
+    // rest carry the next number already, as writeOp would give it: that keeps the test to one read
+    // of the folder per record instead of a million.
     for (let i = 0; i < OPS_KEEP + 3; i++) {
       const at = i % 2 ? T + 365 * DAY : T - 365 * DAY;
       const b = begin([], update, { subject: `s${i}`, params: {}, actor: "owner" }, at);
       if (b.kind !== "start") throw new Error();
-      writeOp(f, end(b.op, "succeeded", at));
+      writeOp(f, { ...end(b.op, "succeeded", at), ...(i < 5 ? {} : { seq: i + 1 }) });
       ids.push(b.op.id);
     }
+    expect(ids.slice(0, 5).map((id) => { const r = readOp(f, id); return r.kind === "ok" ? r.value.seq : undefined; })).toEqual([1, 2, 3, 4, 5]);
     expect(keepOps(f).sort()).toEqual(ids.slice(0, 3).sort());
   }, 60_000);
-  test("F6 and N4: a running op is always seen, however many records there are", () => {
+  test.serial("F6 and N4: a running op is always seen, however many records there are", () => {
     const f = { dir: tmp(), owner: uid };
     const b = begin([], update, { subject: "real", params: {}, actor: "owner" }, T);
     if (b.kind !== "start") throw new Error();
     writeOp(f, b.op);
-    for (let i = 0; i < 300; i++) {
+    // Three times max ended records, all newer: the running op is past max, and still listed. Kept
+    // small: each new record reads every one before it for its number, so the work grows as the square.
+    for (let i = 0; i < 60; i++) {
       const x = begin([], update, { subject: `f${i}`, params: {}, actor: "owner" }, T + 365 * DAY + i);
       if (x.kind === "start") writeOp(f, end(x.op, "succeeded", T + 365 * DAY + i));
     }
-    expect(listOps(f, { max: 100 }).ops.some((o) => o.id === b.op.id)).toBe(true);
+    expect(listOps(f, { max: 20 }).ops.some((o) => o.id === b.op.id)).toBe(true);
   });
 });
 

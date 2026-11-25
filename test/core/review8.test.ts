@@ -75,7 +75,8 @@ describe("the lows", () => {
     expect(kept).toContain("op.ended");
     expect(kept).toContain("op.started");
   });
-  test("review-6 N4: past 20,000 records, no running op is hidden by the folder's order", () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("review-6 N4: past 20,000 records, no running op is hidden by the folder's order", () => {
     const f = { dir: tmp(), owner: uid };
     chmodSync(f.dir, 0o755);
     const t: OpType = { type: "drain", phases: ["a"], onBoot: () => "fail" };
@@ -85,7 +86,8 @@ describe("the lows", () => {
     for (let n = 0; n < 300; n++) {
       const r = begin([], t, { subject: `box${n}`, params: {}, actor: "owner" }, T);
       if (r.kind !== "start") throw new Error();
-      writeOp(f, r.op);
+      // Numbered here, as writeOp would number them, so it doesn't read the folder for each.
+      writeOp(f, { ...r.op, seq: n + 1 });
       running.push(r.op.id);
     }
     const text = JSON.stringify({ ...b.op, state: "succeeded", endedAt: T });
@@ -96,7 +98,7 @@ describe("the lows", () => {
     expect(running.filter((id) => !got.has(id))).toEqual([]);
     expect(readdirSync(f.dir).length).toBeGreaterThan(20_000);
   }, 120_000);
-  test("churn: progress from many new actors can't reset a known key's cap", () => {
+  test.serial("churn: progress from many new actors can't reset a known key's cap", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid };
     const log = eventLog("guard", e, { now: () => T });
     const key = Verified.signer("SHA256:" + "c".repeat(43));

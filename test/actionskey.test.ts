@@ -119,7 +119,8 @@ describe("placing a key", () => {
     expect(sourceKeyPath(p, 4242)).toBe(file);
   });
 
-  test("a second App's key goes beside the first; neither overwrites the other", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("a second App's key goes beside the first; neither overwrites the other", async () => {
     const { d, p } = box();
     await placeSourceKey(d, KEY2, 4242, me);
     const NEW = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey;

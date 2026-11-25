@@ -257,6 +257,13 @@ export const TAILSCALE_ASSET = 123;
 // each tool's download is a fake archive its test pin matches. The fake tar and ditto unpack each
 // archive by its bytes, so nothing real is unpacked. edit changes versions.json after the pins.
 // extra: more files in the release's tree, such as a v3 release's signers file (hop.test.ts).
+// The repo's files into dir, less node_modules, .git and skip, one top-level entry at a time. The
+// tests' temp folders are under node_modules/.cache (test/setup.ts), and cpSync refuses to copy a
+// folder into one inside it, even where its filter would leave that one out.
+export function copyRepo(dir: string, skip: string[] = []): void {
+  for (const name of fs.readdirSync(REPO)) if (![".git", "node_modules", ...skip].includes(name)) cpSync(join(REPO, name), join(dir, name), { recursive: true });
+}
+
 export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<string, any>) => void = () => {}, extra: (dir: string) => void = () => {}): void {
   const unpack = new Map<string, (dir: string) => void>();
   const archive = (name: string, into: (dir: string) => void) => {
@@ -287,7 +294,9 @@ export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<s
   served.set(assetUrl(cfg, TAILSCALE_ASSET), ts);
   edit(v);
   const src = archive("src", (dir) => {
-    cpSync(REPO, dir, { recursive: true, filter: (f) => !/\/(node_modules|\.git)(\/|$)/.test(f.slice(REPO.length)) });
+    // The commit's files, less test/ and docs/: the install reads none of them, and they are half
+    // the tree, which each install copies, then copies and hashes again.
+    copyRepo(dir, ["test", "docs"]);
     writeFileSync(join(dir, "taskbox.json"), JSON.stringify(cfg));
     writeFileSync(join(dir, "versions.json"), JSON.stringify(v));
     extra(dir);

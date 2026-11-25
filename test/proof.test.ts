@@ -181,7 +181,8 @@ describe("the loop fails closed", () => {
     expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).linuxProof).toBe("passed: held");
   });
 
-  test("a failed proof is tried again after 6 hours, not before", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("a failed proof is tried again after 6 hours, not before", async () => {
     const sys = new FakeSys();
     both(sys);
     const d = linuxDeps(sys);
