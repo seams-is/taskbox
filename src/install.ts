@@ -30,7 +30,7 @@ import { readInstallId } from "./answers.ts";
 import { removeRequests } from "./requests.ts";
 import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from "./checks.ts";
 import { rows } from "./rows/index.ts";
-import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./actionskey.ts";
+import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./keys.ts";
 import { type EngineName, kitFor } from "./vm.ts";
 import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
 import { compareTags, GitHub, type Head, mergeDate, RELEASE_TAG, repoMissing } from "./github.ts";
@@ -39,7 +39,7 @@ import { clean } from "./progress.ts";
 import { commandLinkProblem, linkTarget, placeCommandLink, prune, relink, swapIn, withUpdateLock } from "./layout.ts";
 import { POOL_GROUP, POOL_USER, poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
 import { BOX_FIX, readBoxFile } from "./boxsettings.ts";
-import { adoptSource, type ConnectDeps } from "./connectflow.ts";
+import { adoptSource } from "./connectflow.ts";
 import { type AccountDeps, agentSteps, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAgent, placePool, planPool, planScreenSharing, planService, readRecord, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
 import { adminState } from "./elevate.ts";
 import { readActionsKey } from "./queue.ts";
@@ -420,7 +420,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     // before anything changes, so the box never loses its source.
     if (adopting) {
       const installedCfg = loadConfig(d.configDir, d.paths.boxSettings, d.rootUid ?? 0);
-      const kept = await adoptSource({ ...d, cfg: installedCfg, serviceUid, admin: { name: d.owner, uid: -1, home: d.ownerHome }, listen: () => ({ kill() {} }), open() {} } as ConnectDeps);
+      const kept = await adoptSource({ ...d, cfg: installedCfg, serviceUid });
       if (!("slug" in kept)) throw new Stop(`The job source App couldn't be kept in this box's own settings: ${kept.why}. Nothing was installed. Type taskbox connect github, or taskbox disconnect github to go without a source, then taskbox update again.`, true);
       d.say(`  Kept the job source App ${kept.slug} in this box's own settings.`);
       config = loadConfig(src, d.paths.boxSettings, d.rootUid ?? 0);

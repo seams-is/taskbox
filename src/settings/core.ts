@@ -6,6 +6,7 @@ import { type EngineName, ENGINES } from "../vm.ts";
 import { checkAccounts } from "./accounts.ts";
 import { type AwaySettings, checkAway } from "./away.ts";
 import { checkKind, checkLabels, IMAGE_PIN, type Kind, type KindSettings, MAX_SLOTS, DEFAULT_TURN_IDLE_MINUTES } from "./kinds.ts";
+import { checkRunnerApp, type RunnerAppSettings } from "./connect.ts";
 import { checkScheduling, type ClassRule, type SourceSettings, type Timings } from "./scheduling.ts";
 
 export interface Config {
@@ -83,6 +84,8 @@ export interface Config {
   // v2.4.0: where the box reads what is waiting, how it ranks it, and the
   // timings its rules use. Every value is the owner's: the code names no org, repo, App or label.
   sources?: SourceSettings[];
+  // v3: the runner App connect github made or adopted, kept in box.json (settings/connect.ts).
+  runnerApp?: RunnerAppSettings;
   // Set by the layering (layers.ts), never in a file: the keys box.json sets, why it was set aside,
   // and each key it held that it may not.
   boxKeys?: string[];
@@ -137,6 +140,7 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
   if (new Set(labels).size !== labels.length) throw new Error("taskbox.json: every label and merge label is different");
   checkLabels(c);
   checkScheduling(c, warn);
+  checkRunnerApp(c);
   checkAway(c, warn);
   if ("turnIdleMinutes" in c && (!Number.isInteger(c.turnIdleMinutes) || c.turnIdleMinutes! < 1 || c.turnIdleMinutes! > 60)) throw new Error("taskbox.json: turnIdleMinutes is 1 to 60");
   if ("quietTurnMinutes" in c && (!Number.isInteger(c.quietTurnMinutes) || c.quietTurnMinutes! < (c.turnIdleMinutes ?? DEFAULT_TURN_IDLE_MINUTES) || c.quietTurnMinutes! > 240)) throw new Error("taskbox.json: quietTurnMinutes is turnIdleMinutes to 240");

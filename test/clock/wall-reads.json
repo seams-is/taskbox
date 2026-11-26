@@ -43,17 +43,17 @@
     "reads": 4,
     "why": "when the laptop last looked for an update: a step only looks sooner or later"
   },
-  "actionskey.ts": {
+  "keys.ts": {
     "reads": 3,
     "why": "a GitHub App JWT's iat and the clock offset GitHub reports: GitHub judges the JWT"
   },
   "github.ts": {
-    "reads": 4,
-    "why": "a GitHub App JWT's iat, the offset GitHub reports, and a failure's time for a status line"
+    "reads": 5,
+    "why": "a GitHub App JWT's iat, for the loop and connect, the offset GitHub reports, and a failure's time for a status line"
   },
   "connectflow.ts": {
-    "reads": 9,
-    "why": "JWTs, labels on a pending connect, and the waits for GitHub and a new key: a step only ends a wait, which changes nothing and says so"
+    "reads": 6,
+    "why": "when a connect began (an App made before it isn't this connect's), and the waits for GitHub and a code: a step only ends a wait, which changes nothing and says so"
   },
   "watchdog.ts": {
     "reads": 3,
@@ -174,5 +174,13 @@
   "shell.ts": {
     "reads": 1,
     "why": "the agent shell's refusal envelope's at: a label"
+  },
+  "broker.ts": {
+    "reads": 2,
+    "why": "the hour the GitHub key keeper's counts are kept under: display only"
+  },
+  "cmd/connect.ts": {
+    "reads": 1,
+    "why": "when the connect op began, for its record and to tell its own App from an older one: GitHub's created_at decides, with a minute's room"
   }
 }

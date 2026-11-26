@@ -131,8 +131,8 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["stop", "start", "drain", "prune"], bad: ["stop --now", "start x", "drain --force", "prune --dry-run"] },
   { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
   { good: ["rollback", "remove", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
-  { good: ["connect github", "connect github --new-key", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "disconnect"] },
-  { good: ["install --bootstrap /tmp/x", "guard", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
+  { good: ["connect github", "connect github --jobs example-org/app", "connect status", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "connect github --new-key", "disconnect"] },
+  { good: ["install --bootstrap /tmp/x", "guard", "loop", "rollback-watch", "broker"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
   { good: [], bad: ["release nova-1"] },
 ];

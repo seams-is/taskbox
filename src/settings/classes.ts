@@ -9,7 +9,7 @@ const PRODUCT = [
   "turnIdleMinutes", "quietTurnMinutes", "actionsAppId", "classes", "timings", "away", "engine", "runnerNamePrefix", "vmsAtOnce", "vmCpus", "vmMemoryMB",
   "minFreeDiskGB", "vmMaxHours", "tailscaleTun", "accounts",
 ];
-const LOCAL = ["sources"];
+const LOCAL = ["sources", "runnerApp"];
 const CLASSES = new Map<string, KeyClass>([...PRODUCT.map((k) => [k, "product"] as const), ...LOCAL.map((k) => [k, "local"] as const)]);
 
 // A top-level key's class, or undefined for a key taskbox doesn't know.

@@ -58,11 +58,11 @@ describe("the docs", () => {
   });
 
   test("The key messages name GitHub's key steps one way, as GitHub's docs do", () => {
-    // connect github says the key steps now; actionskey.ts says none, but
+    // connect github says the key steps now; keys.ts says none, but
     // never the old way either.
-    for (const f of ["src/install.ts", "src/connectflow.ts", "src/actionskey.ts"]) {
+    for (const f of ["src/install.ts", "src/keys.ts"]) {
       const text = readFileSync(join(repo, f), "utf8");
-      if (f !== "src/actionskey.ts") expect(text).toContain("Key pairs");
+      if (f !== "src/keys.ts") expect(text).toContain("Key pairs");
       expect(text).not.toMatch(/Generate a private key|under Private keys/);
     }
   });

@@ -1,4 +1,7 @@
-// The second App's key (v2.1.0): Actions read only, installed on jobsFrom only, for the queued-jobs
+// The GitHub Apps' keys. Two parts: v2's (below, to the keeper's part) and v3's GitHub key keeper's
+// folder (at the end).
+//
+// v2's second App's key (v2.1.0): Actions read only, installed on jobsFrom only, for the queued-jobs
 // chooser. The install, run by the owner with sudo, takes it from the owner's Downloads, proves with
 // GitHub that it is that App's key with exactly those rights, and places it in root's own folder,
 // /opt/taskbox-keys, as the service's file at mode 600. Root never writes in the service's home. The loop reads it from
@@ -197,7 +200,7 @@ export async function placeActionsKey(d: InstallDeps, cfg: Config, serviceUid: n
 
 const NO_KEY = "no new key in Downloads yet";
 
-// One new key in the admin's Downloads (connect --new-key): exactly one file ending
+// One new key in the admin's Downloads (the v2 install path): exactly one file ending
 // .private-key.pem, not a download in progress, made at or after since. Read as readDownloadedKey
 // reads it. Returns the key and the file to delete once it is placed, or why there is none yet.
 export function keyFromDownloads(dl: string, since: number): { pem: string; from: string; name: string; dev: number; ino: number } | { why: string; wait: boolean } {
@@ -307,3 +310,211 @@ export function removeReadFile(from: string, dev: number, ino: number): boolean 
 }
 
 export class KeyStop extends Error {}
+
+// ---- The GitHub key keeper's folder (v3) ----
+// Both Apps' keys sit with the broker (broker.ts), which runs as _taskboxgh and is the only reader:
+// /var/db/taskbox-broker/keys/, _taskboxgh's at 0700, each key _taskboxgh's at 0600. Root hands a key
+// in as <role>-<id>.pending.pem, made with O_EXCL and O_NOFOLLOW so nothing else has a name for it,
+// written whole and flushed; once its App is proved, the pending name is renamed to <role>-<id>.pem.
+// No temporary file is ever made. The service account never reads this folder.
+export type KeyRole = "runner" | "source";
+export const BROKER_ACCOUNT = "_taskboxgh";
+
+export interface BrokerPaths {
+  dir: string; // /var/db/taskbox-broker: root's, 755
+  keys: string; // _taskboxgh's, 700
+  run: string; // root's, 700, with an ACL for _taskboxgh (make the socket) and the service account (reach it)
+  guard: string; // root's, 700, with an ACL for _taskboxgh only: the guard's own socket
+  socket: string; // run/broker.sock
+  guardSocket: string; // guard/broker.sock
+  used: string; // _taskboxgh's: the counts of what it handed out, by hour
+}
+
+export const brokerPaths = (root: string): BrokerPaths => brokerPathsIn(join(root, "var/db/taskbox-broker"));
+// The same, from config.ts's Paths, whose /var/db holds the logins record.
+export const brokerPathsOf = (p: { loginsSeen: string }): BrokerPaths => brokerPathsIn(join(dirname(p.loginsSeen), "taskbox-broker"));
+export function brokerPathsIn(dir: string): BrokerPaths {
+  return { dir, keys: join(dir, "keys"), run: join(dir, "run"), guard: join(dir, "guard"), socket: join(dir, "run/broker.sock"), guardSocket: join(dir, "guard/broker.sock"), used: join(dir, "used.jsonl") };
+}
+
+const KEY_NAME = /^(runner|source)-([1-9][0-9]{0,11})(\.pending)?\.pem$/;
+export const keyFileName = (role: KeyRole, id: number, pending = false) => {
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error("not an App ID");
+  return `${role}-${id}${pending ? ".pending" : ""}.pem`;
+};
+
+export type HeldKey = { role: KeyRole; id: number; pending: boolean; name: string };
+
+// The keys in the folder, by name only. Anything else in it is passed over.
+export function listKeys(dir: string): HeldKey[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const m = KEY_NAME.exec(name);
+    return m ? [{ role: m[1] as KeyRole, id: Number(m[2]), pending: m[3] !== undefined, name }] : [];
+  });
+}
+
+// The keys folder as it must be: a folder, not a link, the keeper's, 700. undefined when it is.
+export function keysDirProblem(dir: string, ownerUid: number): string | undefined {
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return `${dir} isn't there`;
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) return `${dir} isn't a folder`;
+  if (st.uid !== ownerUid) return `${dir} isn't the GitHub key keeper's`;
+  if ((st.mode & 0o777) !== 0o700) return `${dir} isn't 700`;
+  return undefined;
+}
+
+function syncDir(dir: string): void {
+  const dfd = openSync(dir, constants.O_RDONLY);
+  try {
+    fsyncSync(dfd);
+  } finally {
+    closeSync(dfd);
+  }
+}
+
+// Root hands a new App's key to the keeper. The pending name must be new: an App ID is never reused,
+// so a name that is there already means something is wrong, and nothing is written.
+export function placePending(o: { dir: string; ownerUid: number; ownerGid: number; chown: (path: string, uid: number, gid: number) => void }, role: KeyRole, id: number, pem: string): string | undefined {
+  const why = keysDirProblem(o.dir, o.ownerUid);
+  if (why) return why;
+  if (pem.length === 0 || pem.length > MAX_KEY) return "the key isn't one GitHub made";
+  const path = join(o.dir, keyFileName(role, id, true));
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EEXIST" ? `a key for App ${id} is there already` : `the key couldn't be written (${(e as NodeJS.ErrnoException).code ?? "error"})`;
+  }
+  try {
+    const buf = Buffer.from(pem, "utf8");
+    for (let off = 0; off < buf.length; ) off += writeSync(fd, buf, off, buf.length - off);
+    fsyncSync(fd);
+    o.chown(path, o.ownerUid, o.ownerGid);
+  } catch (e) {
+    closeSync(fd);
+    rmSync(path, { force: true });
+    return `the key couldn't be written (${(e as Error).message.slice(0, 60)})`;
+  }
+  closeSync(fd);
+  syncDir(o.dir);
+  return undefined;
+}
+
+// The pending key becomes the App's key, by one rename, then the folder is flushed.
+export function promoteKey(dir: string, role: KeyRole, id: number): string | undefined {
+  const from = join(dir, keyFileName(role, id, true));
+  try {
+    const st = lstatSync(from);
+    if (!st.isFile()) return "the pending key isn't a plain file";
+  } catch {
+    return listKeys(dir).some((k) => k.role === role && k.id === id && !k.pending) ? undefined : `no key for App ${id} is waiting`;
+  }
+  renameSync(from, join(dir, keyFileName(role, id)));
+  syncDir(dir);
+  return undefined;
+}
+
+// Both names of one App's key go: its own and its pending one.
+export function dropKey(dir: string, role: KeyRole, id: number): void {
+  rmSync(join(dir, keyFileName(role, id)), { force: true });
+  rmSync(join(dir, keyFileName(role, id, true)), { force: true });
+  try {
+    syncDir(dir);
+  } catch {}
+}
+
+// A key file read with no link followed: a plain file with one name, ownerUid's, nobody else's to
+// read or write, at most MAX_KEY bytes, and a private key. undefined when it isn't all of those.
+export function readKeyFile(path: string, ownerUid: number): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1 || st.uid !== ownerUid || (st.mode & 0o077) !== 0 || st.size === 0 || st.size > MAX_KEY) return undefined;
+    const buf = Buffer.alloc(MAX_KEY + 1);
+    const n = readSync(fd, buf, 0, MAX_KEY + 1, 0);
+    if (n > MAX_KEY) return undefined;
+    const pem = buf.subarray(0, n).toString("utf8");
+    createPrivateKey(pem);
+    return pem;
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export const readHeldKey = (dir: string, ownerUid: number, role: KeyRole, id: number, pending = false) => readKeyFile(join(dir, keyFileName(role, id, pending)), ownerUid);
+
+// A v2 key read once by root for adoption by the move to v3: from a folder the service account can
+// write, so no link is followed, the file must be a plain file with one name owned by one of owners,
+// and under the size cap. The service account can't point root at another file this way.
+export function readAdoptedKey(path: string, owners: readonly number[]): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1 || !owners.includes(st.uid) || st.size === 0 || st.size > MAX_KEY) return undefined;
+    const buf = Buffer.alloc(MAX_KEY + 1);
+    const n = readSync(fd, buf, 0, MAX_KEY + 1, 0);
+    if (n > MAX_KEY) return undefined;
+    const pem = buf.subarray(0, n).toString("utf8");
+    createPrivateKey(pem);
+    return pem;
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// The keeper's folders, made or put right by root: the folder 755 root's; keys 700 the keeper's;
+// run and guard 700 root's, each with its ACL. chmod -N first, so no other entry stays.
+export async function brokerFoldersProblem(d: { sys: Pick<InstallDeps["sys"], "run">; chown: (path: string, uid: number, gid: number) => void; rootUid?: number }, b: BrokerPaths, o: { brokerUid: number; brokerGid: number; brokerName: string; serviceName: string }): Promise<string | undefined> {
+  const root = d.rootUid ?? 0;
+  const folder = (path: string, uid: number, gid: number, mode: number): string | undefined => {
+    try {
+      lstatSync(path);
+    } catch {
+      mkdirSync(path, { recursive: true, mode });
+    }
+    const st = lstatSync(path);
+    if (st.isSymbolicLink() || !st.isDirectory()) return `${path} isn't a folder`;
+    d.chown(path, uid, gid);
+    chmodSync(path, mode);
+    return undefined;
+  };
+  const why = folder(b.dir, root, 0, 0o755) ?? folder(b.keys, o.brokerUid, o.brokerGid, 0o700) ?? folder(b.run, root, 0, 0o700) ?? folder(b.guard, root, 0, 0o700);
+  if (why) return why;
+  const acl: [string, string[]][] = [
+    [b.run, [`user:${o.brokerName} allow list,add_file,delete_child,search`, `user:${o.serviceName} allow search`]],
+    [b.guard, [`user:${o.brokerName} allow list,add_file,delete_child,search`]],
+  ];
+  for (const [dir, entries] of acl) {
+    const r = await d.sys.run("/bin/chmod", ["-N", dir], { timeoutMs: 10_000 });
+    if (r.code !== 0) return `chmod -N failed on ${dir}`;
+    for (const e of entries) {
+      const a = await d.sys.run("/bin/chmod", ["+a", e, dir], { timeoutMs: 10_000 });
+      if (a.code !== 0) return `chmod +a failed on ${dir}`;
+    }
+  }
+  return undefined;
+}

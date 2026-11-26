@@ -99,7 +99,7 @@ export function quietAccounts(sys: FakeSys): void {
   keyFolderAcl(sys);
 }
 
-// root's key folder's ACL (actionskey.ts keyDirProblem): every entry off, then the service's one.
+// root's key folder's ACL (keys.ts keyDirProblem): every entry off, then the service's one.
 // There is no service user here, so chmod's ACL calls are answered, not run.
 export function keyFolderAcl(sys: FakeSys): void {
   sys.fallbacks.push((cmd, args) => (cmd === "/bin/chmod" && (args[0] === "-N" || (args[0] === "+a" && args[1] === "user:taskbox allow search")) ? out("") : undefined));

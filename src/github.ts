@@ -367,3 +367,115 @@ export function parseHead(c: {
 export function mergeDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
 }
+
+// ---- v3: calls as an App, for connect github and the GitHub key keeper (broker.ts) ----
+// One call to the API with a limit, no redirect followed, and the version header. Throws only when
+// GitHub can't be reached; every answer, a refusal too, is returned.
+export async function apiCall(sys: Pick<Sys, "fetch" | "timeout">, method: string, path: string, auth?: string, body?: unknown): Promise<Response> {
+  return sys.fetch(API + path, {
+    method,
+    headers: {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "taskbox",
+      ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    redirect: "error",
+    signal: sys.timeout(CALL_LIMIT_MS),
+  });
+}
+
+// An answer's JSON, or undefined when it has none.
+export const bodyOf = async (r: Response): Promise<unknown> => r.json().catch(() => undefined);
+
+// The rights an installation token may ask for, by App role: never more than the App has.
+export type TokenAsk = { repositories?: string[]; permissions: Record<string, "read" | "write"> };
+
+// One App, as its own key signs: its JWT for each call, never kept, never returned.
+export class AppClient {
+  constructor(
+    private sys: Pick<Sys, "fetch" | "timeout" | "now">,
+    private log: Pick<Log, "secret">,
+    readonly appId: number,
+    private pem: string,
+  ) {}
+
+  private jwt(): string {
+    const j = appJwt(this.appId, this.pem, this.sys.now());
+    this.log.secret(j);
+    return j;
+  }
+
+  call(method: string, path: string, body?: unknown): Promise<Response> {
+    return apiCall(this.sys, method, path, this.jwt(), body);
+  }
+
+  // A token for one installation, with the rights asked and no more, on the repos asked.
+  async token(installation: number, ask: TokenAsk): Promise<{ token: string; expiresAt?: string } | { status: number }> {
+    const r = await this.call("POST", `/app/installations/${installation}/access_tokens`, ask);
+    if (!r.ok) return { status: r.status };
+    const b = (await bodyOf(r)) as { token?: unknown; expires_at?: unknown } | undefined;
+    if (typeof b?.token !== "string" || !b.token) return { status: 0 };
+    this.log.secret(b.token);
+    return { token: b.token, ...(typeof b.expires_at === "string" ? { expiresAt: b.expires_at } : {}) };
+  }
+
+  // The App's installations, up to a hundred.
+  installations(): Promise<Response> {
+    return this.call("GET", "/app/installations?per_page=100");
+  }
+
+  uninstall(installation: number): Promise<Response> {
+    return this.call("DELETE", `/app/installations/${installation}`);
+  }
+}
+
+// A call with an installation token.
+export const tokenCall = (sys: Pick<Sys, "fetch" | "timeout">, token: string, method: string, path: string, body?: unknown) => apiCall(sys, method, path, token, body);
+
+// The repos an installation token reaches, up to a hundred, by full name.
+export async function tokenRepos(sys: Pick<Sys, "fetch" | "timeout">, token: string): Promise<string[] | { status: number }> {
+  const r = await tokenCall(sys, token, "GET", "/installation/repositories?per_page=100");
+  if (!r.ok) return { status: r.status };
+  const b = (await bodyOf(r)) as { repositories?: { full_name?: unknown }[] } | undefined;
+  return (b?.repositories ?? []).map((x) => (typeof x?.full_name === "string" ? x.full_name : ""));
+}
+
+// A token is done with: revoked, whatever happens.
+export const revokeToken = (sys: Pick<Sys, "fetch" | "timeout">, token: string) => tokenCall(sys, token, "DELETE", "/installation/token").then(() => undefined, () => undefined);
+
+// A runner group as GitHub lists it, with only what taskbox reads.
+export type RunnerGroup = { id: number; name: string; visibility: string; allowsPublic: boolean; restricted: boolean; workflows: string[]; isDefault: boolean };
+
+export function runnerGroupsOf(raw: unknown): RunnerGroup[] {
+  const list = (raw as { runner_groups?: unknown } | undefined)?.runner_groups;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((g) => {
+    if (!g || typeof g !== "object") return [];
+    const r = g as Record<string, unknown>;
+    if (!Number.isSafeInteger(r.id) || typeof r.name !== "string") return [];
+    return [{
+      id: r.id as number,
+      name: r.name,
+      visibility: typeof r.visibility === "string" ? r.visibility : "",
+      allowsPublic: r.allows_public_repositories === true,
+      restricted: r.restricted_to_workflows === true,
+      workflows: Array.isArray(r.selected_workflows) ? r.selected_workflows.filter((w): w is string => typeof w === "string") : [],
+      isDefault: r.default === true,
+    }];
+  });
+}
+
+// A runner in the org, as GitHub lists it.
+export type OrgRunner = { id: number; name: string; groupId?: number };
+
+export function orgRunnersOf(raw: unknown): OrgRunner[] {
+  const list = (raw as { runners?: unknown } | undefined)?.runners;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((x) => {
+    const r = (x ?? {}) as Record<string, unknown>;
+    return Number.isSafeInteger(r.id) && typeof r.name === "string" ? [{ id: r.id as number, name: r.name, ...(Number.isSafeInteger(r.runner_group_id) ? { groupId: r.runner_group_id as number } : {}) }] : [];
+  });
+}

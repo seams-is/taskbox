@@ -273,7 +273,7 @@ async function softnetRow(c: { paths: Paths; uid?: number; serviceUid?: number }
 }
 
 // Closes Softnet's folder to every account but root and the service (the pattern of the job source App's key
-// folder, actionskey.ts).
+// folder, keys.ts).
 async function closeFolder(folder: string, service: string, run: (cmd: string, args: string[]) => Promise<void>): Promise<void> {
   await run("/bin/chmod", ["700", folder]);
   await run("/bin/chmod", ["-N", folder]);
