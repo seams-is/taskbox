@@ -421,6 +421,24 @@ describe("the spool itself", () => {
     expect(existsSync(b.s.agentSpool)).toBe(false);
   });
 
+  test("a v2 agent taskbox took (placed) has its requests taken; any other role closes the spool", async () => {
+    const b = await box();
+    writeRecord({ chown: () => {}, rootUid: me }, b.p.accountsRecord, { made: { "taskbox-agent": { role: "placed", uid: me } } });
+    const fresh = requestsJob({ c: { sys: b.sys, cfg: CFG, p: b.p, log: { write: () => {} }, writer: true, rootUid: me }, handlers: testHandlers().handlers, verify: verifyDeps(), chown: () => {} });
+    const r = writeSpoolFile(b.s.agentSpool, "nonce", { subject: "box" }, b.sys);
+    await fresh();
+    expect(readOutcome(b.d.outcomes, r.id, me)).toMatchObject({ kind: "ok", value: { ok: true } });
+    for (const role of ["person", "service", "net"] as const) {
+      writeRecord({ chown: () => {}, rootUid: me }, b.p.accountsRecord, { made: { "taskbox-agent": { role, uid: me } } });
+      const job = requestsJob({ c: { sys: b.sys, cfg: CFG, p: b.p, log: { write: () => {} }, writer: true, rootUid: me }, handlers: testHandlers().handlers, verify: verifyDeps(), chown: () => {} });
+      await expect(job()).rejects.toThrow("the agent spool is closed");
+    }
+    // Placed, but the account's uid isn't the one recorded.
+    writeRecord({ chown: () => {}, rootUid: me }, b.p.accountsRecord, { made: { "taskbox-agent": { role: "placed", uid: me + 1 } } });
+    const moved = requestsJob({ c: { sys: b.sys, cfg: CFG, p: b.p, log: { write: () => {} }, writer: true, rootUid: me }, handlers: testHandlers().handlers, verify: verifyDeps(), chown: () => {} });
+    await expect(moved()).rejects.toThrow("the agent spool is closed");
+  });
+
   test("an agent account that isn't the one accounts.json records closes the spool", async () => {
     const b = await box();
     writeRecord({ chown: () => {}, rootUid: me }, b.p.accountsRecord, { made: { "taskbox-agent": { role: "agent", uid: me + 1 } } });

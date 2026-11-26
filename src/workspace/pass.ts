@@ -25,7 +25,7 @@ import { randomBytes } from "node:crypto";
 import { lstatSync, renameSync, statfsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { poolNames, poolOf } from "../access.ts";
-import { readRecord, uidOf } from "../accounts.ts";
+import { isAgentRole, readRecord, uidOf } from "../accounts.ts";
 import { readInstallId } from "../answers.ts";
 import { trustedKey } from "../approver.ts";
 import { type Config, type Paths, vmsAtMostOf } from "../config.ts";
@@ -106,8 +106,8 @@ async function poolAccounts(d: WsDeps): Promise<{ list: PoolAccount[]; sure: boo
   return { list, sure: false };
 }
 
-// The agent account's user ID: the one root's accounts.json records for accounts.agent, and only
-// while the account has that ID now.
+// The agent account's user ID: the one root's accounts.json records for accounts.agent, as made or
+// as a v2 agent taskbox took (placed), and only while the account has that ID now.
 // The agent spool's pass (passes/requests.ts) reads it the same way.
 export async function agentUid(d: Pick<WsDeps, "sys" | "cfg" | "p" | "rootUid">): Promise<number | undefined> {
   const name = d.cfg.accounts.agent;
@@ -119,7 +119,7 @@ export async function agentUid(d: Pick<WsDeps, "sys" | "cfg" | "p" | "rootUid">)
     return undefined;
   }
   const m = readRecord(d.p.accountsRecord).made[name];
-  if (m?.role !== "agent") return undefined;
+  if (!m || !isAgentRole(m.role)) return undefined;
   return (await uidOf(d.sys, name).catch(() => undefined)) === m.uid ? m.uid : undefined;
 }
 

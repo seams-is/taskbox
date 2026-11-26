@@ -40,7 +40,7 @@ import { commandLinkProblem, linkTarget, placeCommandLink, prune, relink, swapIn
 import { poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
 import { BOX_FIX, readBoxFile } from "./boxsettings.ts";
 import { adoptSource, type ConnectDeps } from "./connectflow.ts";
-import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, recordedIds, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
+import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, isAgentRole, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, recordedIds, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { adminState } from "./elevate.ts";
@@ -967,7 +967,7 @@ export async function placeAgent(d: AgentDeps, user: string, target: string = ag
     const made = await makeAgent(deps, user, REMOTE_SHELL, target, d.paths.accountsRecord);
     if (typeof made === "string") throw new Stop(made, true);
     d.say(`  Made the account ${user}, for agents and the controller over Tailscale SSH. It has no password.`);
-  } else if (!["agent", "placed"].includes(readRecord(d.paths.accountsRecord).made[user]?.role ?? "")) {
+  } else if (!isAgentRole(readRecord(d.paths.accountsRecord).made[user]?.role)) {
     if (!claimed) throw new Stop(`${user} is an account taskbox didn't make, and no admin has typed its name at the box to take it as the agent. Nothing else was installed. At the box, as your admin user, type taskbox update.`, true);
     // The one agent from before v2.7.0 (planAgent): placed, never made, so nothing deletes it.
     const rec = readRecord(d.paths.accountsRecord);
