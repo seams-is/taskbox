@@ -1,6 +1,6 @@
 // Which kind of VM a free slot starts next. The loop asks one function before every VM: schedule(),
 // which asks the scheduler (scheduler.ts). With one slot and no view of the queue, v2.1.0's turns.
-import { type Budget, capOf, type Config, type Role, DEFAULT_QUIET_TURN_MINUTES, DEFAULT_TURN_IDLE_MINUTES, type Kind, KIND_WORD, kindsOf, labelsFor, MACOS_MAX, runnerDefaults, sizeOf, sizesOf, timingsOf, warmSizeOf } from "./config.ts";
+import { type Budget, capOf, kindCapOf, type Config, type Role, DEFAULT_QUIET_TURN_MINUTES, DEFAULT_TURN_IDLE_MINUTES, type Kind, KIND_WORD, kindsOf, labelsFor, runnerDefaults, sizeOf, sizesOf, timingsOf, warmSizeOf } from "./config.ts";
 import { decide, type KindHistory, type KindView, type SchedulerInput, type SlotState } from "./scheduler.ts";
 import type { JobSource, Snapshot } from "./source.ts";
 
@@ -148,7 +148,7 @@ export interface Occupant {
   size?: string;
   memoryMB?: number;
   cpus?: number;
-  going?: boolean; // told to give way; its VM still stops
+  going?: number; // when it was told to give way; its VM still stops
 }
 
 // The chooser for every box from v2.4.0: it reads the job source,
@@ -191,7 +191,7 @@ export function schedule(d: ScheduleDeps): KindChooser {
       kind: k,
       labels: labelsFor(d.cfg, k),
       defaults: runnerDefaults(k),
-      cap: k === "macos" ? Math.min(MACOS_MAX, d.slots) : d.slots,
+      cap: kindCapOf(k, d.slots),
       open: kinds.includes(k),
       sizes: sizesOf(d.cfg, k).map((z) => ({ name: z.name, labels: z.labels, cpus: z.vmCpus, memoryMB: z.vmMemoryMB, cap: capOf(z, budget, d.slots) })),
       warm: warmSizeOf(d.cfg, k).name,
@@ -199,7 +199,7 @@ export function schedule(d: ScheduleDeps): KindChooser {
   const states = (skip?: number): SlotState[] =>
     d.occupants()
       .filter((o) => o.slot !== skip)
-      .map((o) => ({ slot: o.slot, kind: o.kind, labels: o.labels, state: o.job ? "busy" : "waiting", since: o.since ?? d.ev.now(), ...(o.readyAt !== undefined ? { readySince: o.readyAt } : {}), ...(o.role === "load" ? { role: o.role } : {}), ...sizeFields(o), ...(o.going ? { going: true } : {}) }));
+      .map((o) => ({ slot: o.slot, kind: o.kind, labels: o.labels, state: o.job ? "busy" : "waiting", since: o.since ?? d.ev.now(), ...(o.readyAt !== undefined ? { readySince: o.readyAt } : {}), ...(o.role === "load" ? { role: o.role } : {}), ...sizeFields(o), ...(o.going !== undefined ? { going: o.going } : {}) }));
   // An occupant's size and what it holds. One from before sizes holds its kind's default.
   const sizeFields = (o: Occupant) => {
     const z = sizeOf(d.cfg, o.kind, o.size);
@@ -229,7 +229,7 @@ export function schedule(d: ScheduleDeps): KindChooser {
     if (mine) {
       d.ev.why?.(me, mine.why);
       const o = d.occupants().find((x) => x.slot === me);
-      if (o) o.going = true;
+      if (o) o.going = d.ev.now();
     }
     return !!mine;
   };

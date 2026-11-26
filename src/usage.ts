@@ -10,6 +10,8 @@
 // shorter than the sample interval can be missed; CPU over more than the one second each sample
 // watches.
 
+import { bySize } from "./config.ts";
+
 // One sample, as the guest reports it.
 export interface UsageSample {
   memUsedMB: number; // in use: macOS anonymous less purgeable, wired and compressed pages; Linux MemTotal less MemAvailable
@@ -88,9 +90,9 @@ export function summarise(samples: UsageSample[]): JobUsage | undefined {
   const mem = samples.map((s) => s.memUsedMB);
   const cpu = samples.map((s) => s.cpuBusy);
   const last = samples[samples.length - 1]!;
-  // A fresh Linux guest counts from 0; a macOS image may hold old reports, so only a rise counts there.
+  // Only a rise between samples counts: a macOS image may hold old reports, so one sample says nothing.
   const ooms = samples.flatMap((x) => (x.oom === undefined ? [] : [x.oom]));
-  const oom = ooms.length ? Math.max(...ooms) - (ooms.length > 1 ? Math.min(...ooms) : 0) : 0;
+  const oom = ooms.length > 1 ? Math.max(...ooms) - Math.min(...ooms) : 0;
   return { samples: samples.length, memPeakMB: Math.max(...mem), memP90MB: p90(mem), memTotalMB: last.memTotalMB, cpuPeak: Math.max(...cpu), cpuP90: p90(cpu), cpus: last.cpus, ...(oom > 0 ? { oom } : {}) };
 }
 
@@ -168,6 +170,7 @@ export function labelUsageLines(all: LabelUsage[]): string[] {
 // - A size is off when most of its runs fit the next size down, or a fifth pass 85%.
 export const SUGGEST_RUNS = 20;
 export const SUGGEST_MIN = 10;
+export const SIZE_RUNS = 50;
 export interface SizeShape {
   kind: "macos" | "linux";
   name: string;
@@ -204,7 +207,7 @@ export interface SizeAdvice {
   over: number;
 }
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.ceil(0.5 * xs.length) - 1)]!;
-const ordered = (sizes: SizeShape[]) => [...sizes].sort((a, b) => a.vmMemoryMB - b.vmMemoryMB || a.vmCpus - b.vmCpus);
+const ordered = (sizes: SizeShape[]) => [...sizes].sort(bySize);
 
 // The size a run had: the one its first label is, else the one with its CPUs and memory. A line from
 // before sizes, with neither, ran in the default.
@@ -216,7 +219,8 @@ function sizeOfRun(r: UsageRun, sizes: SizeShape[]): SizeShape | undefined {
 
 export function jobUsage(runs: UsageRun[], sizes: SizeShape[], last = SUGGEST_RUNS, min = SUGGEST_MIN): { jobs: JobAdvice[]; sizes: SizeAdvice[] } {
   const groups = new Map<string, { job: string; label: string; size: SizeShape; rs: UsageRun[] }>();
-  const bySize = new Map<string, { size: SizeShape; us: JobUsage[] }>();
+  // Each size's own advice reads its newest SIZE_RUNS runs, across its jobs.
+  const perSize = new Map<string, { size: SizeShape; us: JobUsage[] }>();
   for (const r of runs) {
     const label = r.labels?.[0];
     const size = sizeOfRun(r, sizes);
@@ -226,9 +230,9 @@ export function jobUsage(runs: UsageRun[], sizes: SizeShape[], last = SUGGEST_RU
     if (g.rs.length < last) g.rs.push(r);
     groups.set(k, g);
     const sk = `${size.kind}/${size.name}`;
-    const sg = bySize.get(sk) ?? { size, us: [] };
-    sg.us.push(r.usage);
-    bySize.set(sk, sg);
+    const sg = perSize.get(sk) ?? { size, us: [] };
+    if (sg.us.length < SIZE_RUNS) sg.us.push(r.usage);
+    perSize.set(sk, sg);
   }
   const jobs: JobAdvice[] = [];
   for (const g of groups.values()) {
@@ -253,7 +257,7 @@ export function jobUsage(runs: UsageRun[], sizes: SizeShape[], last = SUGGEST_RU
     if (to) jobs.push({ ...base, verdict: "smaller", to });
   }
   const out: SizeAdvice[] = [];
-  for (const { size, us } of bySize.values()) {
+  for (const { size, us } of perSize.values()) {
     if (us.length < min) continue;
     const all = ordered(sizes.filter((z) => z.kind === size.kind));
     const down = all[all.findIndex((z) => z.name === size.name) - 1];

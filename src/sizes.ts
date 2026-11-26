@@ -1,7 +1,7 @@
 // Sizes by label, as people read them: each kind's sizes, the VMs' budget, what fits beside the VMs
 // up now, the mixes that fit, and the size suggestions (usage.ts). taskbox size list and the "Sizes"
 // row in taskbox check show them. Nothing here starts or stops a VM: the scheduler does (scheduler.ts).
-import { type Budget, budgetOf, capOf, type Config, type Kind, KIND_WORD, kindsOf, MACOS_MAX, type Size, sizesOf, vmsAtMostOf } from "./config.ts";
+import { type Budget, budgetOf, capOf, type Config, type Kind, kindCapOf as kindCap, KIND_WORD, kindsOf, type Size, sizeOf, sizesOf, vmsAtMostOf } from "./config.ts";
 import type { SizeShape, UsageRun } from "./usage.ts";
 import { jobUsage, jobUsageLines } from "./usage.ts";
 
@@ -17,17 +17,18 @@ export interface SizeRow {
 }
 export interface SizesView {
   budget: Budget;
+  totalGB?: number; // the Mac's memory, hw.memsize / 1e9
   vmsAtMost: number;
   sizes: SizeRow[];
   up: { kind: Kind; size: string }[];
   mixes: { kind: Kind; size: string; n: number }[][];
 }
 
-const gb = (mb: number) => (mb / 1000).toFixed(1);
+// GB is MB / 1024, the sizes' own unit, on every screen.
+const gb = (mb: number) => (mb / 1024).toFixed(1);
 const gib = (mb: number) => Math.round(mb / 1024);
 export const sizeName = (r: { kind: Kind; name: string }) => (r.name === "default" ? `${KIND_WORD[r.kind]} default` : `${KIND_WORD[r.kind]} ${r.name}`);
 const all = (cfg: Config): { kind: Kind; s: Size }[] => kindsOf(cfg).flatMap((k) => sizesOf(cfg, k).map((s) => ({ kind: k, s })));
-const kindCap = (k: Kind, n: number) => (k === "macos" ? Math.min(MACOS_MAX, n) : n);
 
 // up: the VMs up now, by kind and size, from the loop's state.
 export function sizesView(cfg: Config, totalGB: number | undefined, logicalCpus: number | undefined, up: { kind: Kind; size: string }[] = []): SizesView {
@@ -35,15 +36,14 @@ export function sizesView(cfg: Config, totalGB: number | undefined, logicalCpus:
   const n = vmsAtMostOf(cfg);
   const known = budget.memoryMB !== undefined;
   const fit = (memoryMB: number, cpus: number) => known && memoryMB <= budget.memoryMB! && (budget.cpus === undefined || cpus <= budget.cpus);
-  const sizeOfUp = (u: { kind: Kind; size: string }) => sizesOf(cfg, u.kind).find((s) => s.name === u.size) ?? sizesOf(cfg, u.kind)[0]!;
-  const held = up.reduce((a, u) => ({ mem: a.mem + sizeOfUp(u).vmMemoryMB, cpus: a.cpus + sizeOfUp(u).vmCpus }), { mem: 0, cpus: 0 });
+  const held = up.reduce((a, u) => ({ mem: a.mem + sizeOf(cfg, u.kind, u.size).vmMemoryMB, cpus: a.cpus + sizeOf(cfg, u.kind, u.size).vmCpus }), { mem: 0, cpus: 0 });
   const rows = all(cfg).map(({ kind, s }) => {
     const cap = capOf(s, budget, n);
     const count = (pred: (u: { kind: Kind; size: string }) => boolean) => up.filter(pred).length;
     const capsOk = up.length < n && count((u) => u.kind === kind) < kindCap(kind, n) && count((u) => u.kind === kind && u.size === s.name) < cap;
     return { kind, name: s.name, labels: s.labels, cpus: s.vmCpus, memoryMB: s.vmMemoryMB, cap, fits: fit(s.vmMemoryMB, s.vmCpus), ...(known ? { fitsNow: capsOk && fit(held.mem + s.vmMemoryMB, held.cpus + s.vmCpus) } : {}) };
   });
-  return { budget, vmsAtMost: n, sizes: rows, up, mixes: known ? mixes(rows, budget, n) : [] };
+  return { budget, ...(totalGB !== undefined ? { totalGB } : {}), vmsAtMost: n, sizes: rows, up, mixes: known ? mixes(rows, budget, n) : [] };
 }
 
 // Every mix of sizes that fits the budget, the count and each cap, and that has no room for one more
@@ -93,7 +93,7 @@ export function sizesRow(v: SizesView): { status: "OK" | "SKIP" | "FAIL"; detail
     .join("; ");
   if (v.budget.memoryMB === undefined) return { status: "SKIP", detail: `${byKind}. ${budgetLine(v)}` };
   const big = v.sizes.filter((r) => !r.fits);
-  if (big.length) return { status: "FAIL", detail: `${big.map((r) => `${sizeName(r)} needs ${gb(r.memoryMB)} GB and ${r.cpus} CPUs`).join("; ")}, more than the VMs get, so its jobs wait for a size that can't fit. ${budgetLine(v)} Fix: a settings PR makes the size smaller, or lowers boxKeepsGB` };
+  if (big.length) return { status: "FAIL", detail: `${big.map((r) => `${sizeName(r)} needs ${gb(r.memoryMB)} GB and ${r.cpus} CPUs`).join("; ")}, more than the VMs get of this Mac's ${((v.totalGB ?? 0) * 1e9 / 1024 ** 3).toFixed(0)} GB, so its jobs wait for a size that can't fit. ${budgetLine(v)} Fix: a settings PR makes the size smaller, or lowers boxKeepsGB` };
   return { status: "OK", detail: `${byKind}. ${budgetLine(v)}` };
 }
 
@@ -122,4 +122,12 @@ export const shapesOf = (cfg: Config): SizeShape[] => all(cfg).map(({ kind, s })
 // The VMs up now, from the loop's state: each slot with a VM, by its kind and size.
 export function upFromLoop(slots: Record<string, { slot?: unknown; vmKind?: unknown; size?: unknown }> | undefined): { kind: Kind; size: string }[] {
   return Object.values(slots ?? {}).flatMap((s) => ((s.vmKind === "macos" || s.vmKind === "linux") && s.slot !== "idle" ? [{ kind: s.vmKind as Kind, size: typeof s.size === "string" ? s.size : "default" }] : []));
+}
+
+// status's budget line: "VMs hold 16.0 of 21.8 GB and 8 of 10 CPUs."
+export function holdsLine(budget: Budget, held: { memoryMB?: number; cpus?: number }[]): string {
+  if (budget.memoryMB === undefined) return "The box can't read its memory, so no VM starts beside another.";
+  const mem = held.reduce((n, h) => n + (h.memoryMB ?? 0), 0);
+  const cpus = held.reduce((n, h) => n + (h.cpus ?? 0), 0);
+  return `VMs hold ${gb(mem)} of ${gb(budget.memoryMB)} GB${budget.cpus !== undefined ? ` and ${cpus} of ${budget.cpus} CPUs` : ""}.`;
 }

@@ -36,7 +36,7 @@ export interface SizeSettings {
 }
 
 // The box's VM budget: what the box keeps for itself and its users, the most VMs at once, and the
-// most vCPUs across them. Absent: 12 GB, vmsAtOnce, and the box's logical CPUs.
+// most vCPUs across them. Absent: a share of its memory (keepsOf), vmsAtOnce, and its logical CPUs.
 export interface BudgetSettings {
   boxKeepsGB?: number;
   vmsAtMost?: number;
@@ -55,7 +55,6 @@ export const MAX_SLOTS = 6;
 export const V2_MAX_SLOTS = 4;
 export const DEFAULT_SIZE = "default";
 export const MAX_SIZES = 4; // beside the default
-export const DEFAULT_BOX_KEEPS_GB = 12;
 const SIZE_NAME = /^[a-z][a-z0-9-]{0,19}$/;
 
 // Every label this kind's VMs may register, its own label first. A waiting VM with no job in mind
@@ -124,16 +123,24 @@ export interface Budget {
 }
 export function budgetOf(cfg: Config, totalGB: number | undefined, logicalCpus: number | undefined): Budget {
   const b = cfg.base ?? cfg;
-  const keeps = b.boxKeepsGB ?? DEFAULT_BOX_KEEPS_GB;
+  const keeps = keepsOf(cfg, totalGB ?? 0);
   const cpus = b.cpuBudget ?? logicalCpus;
   return { ...(totalGB !== undefined ? { memoryMB: Math.max(0, Math.round((totalGB - keeps) * 1000)) } : {}), ...(cpus !== undefined ? { cpus } : {}) };
 }
+// What the box keeps for itself and its users: boxKeepsGB, else 35% of its memory, from 4 to 16 GB,
+// so the default size starts alone on any Mac from 16 GB (test/sizes.test.ts has the table).
+export function keepsOf(cfg: Config, totalGB: number): number {
+  const set = (cfg.base ?? cfg).boxKeepsGB;
+  return set ?? Math.min(16, Math.max(4, Math.round(totalGB * 0.35)));
+}
 // The most VMs at once: vmsAtMost, or v2's vmsAtOnce, or 1.
+// Every reader of the VM cap reads it here.
 export function vmsAtMostOf(cfg: Config): number {
-  const b = cfg.base ?? cfg;
-  const n = b.vmsAtMost ?? b.vmsAtOnce;
+  const n = cfg.vmsAtMost ?? cfg.vmsAtOnce;
   return Number.isInteger(n) && n! >= 1 ? n! : 1;
 }
+// A kind's cap: macOS at most MACOS_MAX, Apple's licence.
+export const kindCapOf = (kind: Kind, vmsAtMost: number): number => (kind === "macos" ? Math.min(MACOS_MAX, vmsAtMost) : vmsAtMost);
 // A size's cap: its maxAtOnce, else 1 for a size over half the memory budget, else vmsAtMost.
 export function capOf(s: Pick<Size, "maxAtOnce" | "vmMemoryMB">, budget: Budget, vmsAtMost: number): number {
   if (s.maxAtOnce !== undefined) return Math.min(s.maxAtOnce, vmsAtMost);
@@ -200,7 +207,7 @@ const SIZE_KEYS = ["name", "labels", "vmCpus", "vmMemoryMB", "maxAtOnce"];
 
 // Each kind's sizes and the box's VM budget. Checked before checkLabels, which reads the sizes.
 export function checkSizes(c: Config): void {
-  if ("boxKeepsGB" in c && (typeof c.boxKeepsGB !== "number" || !Number.isFinite(c.boxKeepsGB) || c.boxKeepsGB < 8 || c.boxKeepsGB > 512)) throw new Error("taskbox.json: boxKeepsGB is what the box keeps for itself and its users, 8 to 512");
+  if ("boxKeepsGB" in c && (typeof c.boxKeepsGB !== "number" || !Number.isFinite(c.boxKeepsGB) || c.boxKeepsGB < 4 || c.boxKeepsGB > 512)) throw new Error("taskbox.json: boxKeepsGB is what the box keeps for itself and its users, 4 to 512");
   if ("vmsAtMost" in c && !int(c.vmsAtMost, 1, MAX_SLOTS)) throw new Error(`taskbox.json: vmsAtMost is the most VMs at once, 1 to ${MAX_SLOTS}`);
   if ("cpuBudget" in c && !int(c.cpuBudget, 1, 256)) throw new Error("taskbox.json: cpuBudget is the most vCPUs across the VMs, 1 to 256");
   for (const [where, k] of [["", c], ["linux.", c.linux]] as const) {

@@ -1,6 +1,6 @@
-// Sizes by label: the settings, the scheduler's tables, its properties on random loads, the 17 and
-// 18 Nov replays with sizes, the size suggestions, and taskbox size list. The numbers are a 32 GiB
-// box with 10 CPUs and the box keeping 12 GB: the VMs get 22.36 GB in the code's units.
+// Sizes by label: the settings, the scheduler's tables, its properties on random loads, two replayed
+// days with sizes, the size suggestions, and taskbox size list. Most numbers are a 32 GiB Mac with 10
+// CPUs keeping 12 GB: the VMs get 22360 MB in the sizes' units, shown as 21.8 GB (MB / 1024).
 import { describe, expect, test } from "bun:test";
 import { allLabelsFor, budgetOf, type Config, DEFAULT_TIMINGS, forSize, type Kind, kindOfLabel, runnerDefaults, sizesOf, smallestSize, warmSizeOf } from "../src/config.ts";
 import { decide, fitOf, type KindView, registers, type SchedulerInput, type SizeView, type SlotState } from "../src/scheduler.ts";
@@ -45,7 +45,7 @@ const known = (items: WaitingItem[]) => ({ known: true as const, at: NOW, items 
 const input = (o: Partial<SchedulerInput>): SchedulerInput => ({ now: NOW, slots: 5, kinds: kinds(), slotStates: [], snapshot: known([]), classes: MERGE, timings: DEFAULT_TIMINGS, history: { macos: { noVmSince: 0 }, linux: { noVmSince: 0 } }, budget: BUDGET, ...o });
 const starts = (d: ReturnType<typeof decide>) => d.flatMap((x) => (x.do === "start" ? [`${x.slot} ${x.kind} ${x.size}${x.item ? ` ${x.item.key}` : ""}`] : []));
 
-// The box's settings with taskbox-1's sizes.
+// The sized settings: small, default and large Linux, and macOS's default.
 const SIZED: Config = {
   ...CFG,
   boxKeepsGB: 12,
@@ -83,7 +83,7 @@ describe("the settings", () => {
     expect(load(linux({ sizes: [{ ...s("a"), when: { event: ["push"] } }] }))).toThrow("has only");
     expect(load(linux({ warmSize: "huge" }))).toThrow("warmSize");
     expect(load(linux({ maxAtOnce: 0 }))).toThrow("maxAtOnce");
-    expect(load({ boxKeepsGB: 4 })).toThrow("boxKeepsGB");
+    expect(load({ boxKeepsGB: 3 })).toThrow("boxKeepsGB");
     expect(load({ vmsAtMost: 7 })).toThrow("vmsAtMost");
     expect(load({ cpuBudget: 0 })).toThrow("cpuBudget");
     expect(loadConfig(writeConfig({ ...base(), vmsAtMost: 6, cpuBudget: 12, boxKeepsGB: 16, ...linux({ warmSize: "small" }) })).vmsAtMost).toBe(6);
@@ -122,10 +122,10 @@ describe("the numbers on a 32 GB box", () => {
     expect(m.some((x) => x.includes("2 linux large"))).toBe(false);
   });
   test("the Sizes row, and a size that can never fit fails it", () => {
-    expect(sizesRow(v)).toEqual({ status: "OK", detail: "Linux small 2/4 GB, default 4/8 GB, large 8/16 GB; macOS default 4/8 GB. VMs get 22.4 GB and 10 CPUs, at most 5 at once." });
+    expect(sizesRow(v)).toEqual({ status: "OK", detail: "Linux small 2/4 GB, default 4/8 GB, large 8/16 GB; macOS default 4/8 GB. VMs get 21.8 GB and 10 CPUs, at most 5 at once." });
     const tight = sizesRow(sizesView({ ...SIZED, boxKeepsGB: 20 }, GIB32, 10));
     expect(tight.status).toBe("FAIL");
-    expect(tight.detail).toContain("Linux large needs 16.4 GB and 8 CPUs, more than the VMs get");
+    expect(tight.detail).toContain("Linux large needs 16.0 GB and 8 CPUs, more than the VMs get of this Mac's 32 GB");
     expect(sizesRow(sizesView(SIZED, undefined, 10)).status).toBe("SKIP");
   });
   test("what fits now beside the VMs up, from the loop's state", () => {
@@ -162,7 +162,7 @@ describe("the scheduler with sizes", () => {
     const st = [vm(1, "macos", "default", "busy"), vm(2, "macos", "default", "busy")];
     expect(starts(decide(input({ slotStates: st, snapshot: known([item("s", ["taskbox-linux-small"], NOW - M)]) })))).toEqual(["3 linux small s"]);
     const d = decide(input({ slotStates: st, snapshot: known([item("d", ["taskbox-linux"], NOW - 2 * M)]) }));
-    expect(d[0]).toEqual({ slot: 3, do: "wait", why: "a job for Linux has waited 2 min and needs 8.2 GB and 4 CPUs, and the VMs hold 16.4 of 22.4 GB and 8 of 10 CPUs" });
+    expect(d[0]).toEqual({ slot: 3, do: "wait", why: "a job for Linux has waited 2 min and needs 8.0 GB and 4 CPUs, and the VMs hold 16.0 of 21.8 GB and 8 of 10 CPUs" });
     // Five small jobs, five VMs.
     expect(starts(decide(input({ snapshot: known([1, 2, 3, 4, 5, 6].map((i) => item(`s${i}`, ["taskbox-linux-small"], NOW - i * M))) }))).length).toBe(5);
   });
@@ -171,7 +171,7 @@ describe("the scheduler with sizes", () => {
     const items = [item("d", ["taskbox-linux"], NOW - 2 * M), item("s", ["taskbox-linux-small"], NOW - M)];
     const d = decide(input({ slotStates: st, snapshot: known(items) }));
     expect(starts(d)).toEqual(["3 linux small s"]);
-    expect(d[0]!.why).toBe("a job for Linux small has waited 1 min, and fits beside the VMs; a job for Linux has waited 2 min and needs 8.2 GB and 4 CPUs, and the VMs hold 16.4 of 22.4 GB and 8 of 10 CPUs");
+    expect(d[0]!.why).toBe("a job for Linux small has waited 1 min, and fits beside the VMs; a job for Linux has waited 2 min and needs 8.0 GB and 4 CPUs, and the VMs hold 16.0 of 21.8 GB and 8 of 10 CPUs");
   });
   test("no backfill past the floor: nothing starts that the head doesn't fit beside", () => {
     // A large job past the floor while a default Linux job runs: small fits now, but the large one
@@ -189,12 +189,12 @@ describe("the scheduler with sizes", () => {
     // needs 8.2 GB and 4 CPUs: the macOS VM alone frees enough, the small one doesn't.
     const st = [vm(1, "linux", "default", "busy"), vm(2, "linux", "small", "waiting"), vm(3, "macos", "default", "waiting")];
     const g = (d: ReturnType<typeof decide>) => d.filter((x) => x.do === "give-way");
-    expect(g(decide(input({ slotStates: st, snapshot: known([item("d", ["taskbox-linux", "taskbox-linux-merge"], NOW - M)]) })))).toEqual([{ slot: 3, do: "give-way", why: "a job for Linux has waited 1 min and needs 8.2 GB and 4 CPUs, the VMs hold 20.5 of 22.4 GB and 10 of 10 CPUs, and no waiting job needs this VM, so it gives way to make room" }]);
+    expect(g(decide(input({ slotStates: st, snapshot: known([item("d", ["taskbox-linux", "taskbox-linux-merge"], NOW - M)]) })))).toEqual([{ slot: 3, do: "give-way", why: "a job for Linux has waited 1 min and needs 8.0 GB and 4 CPUs, the VMs hold 20.0 of 21.8 GB and 10 of 10 CPUs, and no waiting job needs this VM, so it gives way to make room" }]);
     // No one VM frees enough for a large job, but two do: the biggest goes first, then the next.
     const three = [vm(1, "macos", "default", "waiting"), vm(2, "linux", "small", "waiting"), vm(3, "linux", "default", "waiting")];
     expect(g(decide(input({ slotStates: three, snapshot: known([item("l", LARGE, NOW - M)]) })))).toEqual([expect.objectContaining({ slot: 3 })]);
     // While that one still goes, no second VM gives way.
-    expect(g(decide(input({ slotStates: [three[0]!, three[1]!, { ...three[2]!, state: "busy", going: true }], snapshot: known([item("l", LARGE, NOW - M)]) })))).toEqual([]);
+    expect(g(decide(input({ slotStates: [three[0]!, three[1]!, { ...three[2]!, state: "busy", going: NOW - M }], snapshot: known([item("l", LARGE, NOW - M)]) })))).toEqual([]);
     // Only running jobs: nothing to free, so nothing gives way.
     const busy = [vm(1, "macos", "default", "busy"), vm(2, "linux", "default", "busy")];
     expect(decide(input({ slotStates: busy, snapshot: known([item("l", LARGE, NOW - 20 * M)]) })).filter((x) => x.do === "give-way")).toEqual([]);
@@ -226,7 +226,7 @@ describe("the scheduler with sizes", () => {
     const d = decide(input({ budget: { memoryMB: 12360, cpus: 10 }, snapshot: known([item("l", LARGE, NOW - 30 * M), item("s", ["taskbox-linux-small"], NOW - M)]) }));
     expect(starts(d)).toEqual(["1 linux small s", "2 macos default"]);
     const only = decide(input({ budget: { memoryMB: 12360, cpus: 10 }, slotStates: [vm(1, "macos", "default", "waiting"), vm(2, "linux", "default", "waiting")], snapshot: known([item("l", LARGE, NOW - 30 * M)]) }));
-    expect(only).toEqual([expect.objectContaining({ do: "wait", why: "a job for Linux large waits for a size that can't fit: it needs 16.4 GB and 8 CPUs, and the VMs get 12.4 GB and 10 CPUs" }), expect.objectContaining({ do: "wait" }), expect.objectContaining({ do: "wait" })]);
+    expect(only).toEqual([expect.objectContaining({ do: "wait", why: "a job for Linux large waits for a size that can't fit: it needs 16.0 GB and 8 CPUs, and the VMs get 12.1 GB and 10 CPUs" }), expect.objectContaining({ do: "wait" }), expect.objectContaining({ do: "wait" })]);
   });
   test("memory the box can't read: one VM, alone (fails closed)", () => {
     expect(starts(decide(input({ budget: { cpus: 10 }, snapshot: known([item("a", ["taskbox-linux-small"], NOW - 2 * M), item("b", ["taskbox-linux-small"], NOW - M)]) })))).toEqual(["1 linux small a"]);
@@ -249,55 +249,71 @@ describe("the scheduler with sizes", () => {
   });
 });
 
-// The sizes' kinds, for the simulator, with taskbox-1's budget and 5 VMs at most.
+// The sizes' kinds, for the simulator, with the 32 GB budget and 5 VMs at most.
 const SIM = { kinds: kinds(), budget: BUDGET, slots: 5 };
 const lin = (name: string, q: number, minutes: number, labels = ["taskbox-linux"], event?: string): SimJob => ({ name, kind: "linux", labels, queuedAt: q * M, minutes, ...(event ? { event } : {}) });
 const mac = (name: string, q: number, minutes: number): SimJob => ({ name, kind: "macos", labels: ["taskbox-macos"], queuedAt: q * M, minutes });
 
 describe("properties, on random loads with sizes", () => {
-  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
-    test(`seed ${seed}: every job runs, the sizes never pass the budget, macOS at most 2, large at most 1, and waits are bounded`, () => {
-      const r = rng(seed);
-      const jobs: SimJob[] = Array.from({ length: 40 }, (_, i) => {
-        const x = r();
-        const labels = x < 0.15 ? ["taskbox-macos"] : x < 0.6 ? ["taskbox-linux-small"] : x < 0.9 ? ["taskbox-linux"] : ["taskbox-linux-large"];
-        return { name: `j${i}`, kind: labels[0] === "taskbox-macos" ? "macos" : "linux", labels, queuedAt: Math.floor(r() * 90) * M, minutes: 0.5 + Math.floor(r() * 8) };
-      });
-      const out = simulate({
-        jobs,
-        ...SIM,
-        mode: "source",
-        classes: MERGE,
-        check: (vms) => {
-          expect(vms.reduce((n, v) => n + (v.memoryMB ?? 0), 0)).toBeLessThanOrEqual(BUDGET.memoryMB);
-          expect(vms.reduce((n, v) => n + (v.cpus ?? 0), 0)).toBeLessThanOrEqual(BUDGET.cpus);
-          expect(vms.length).toBeLessThanOrEqual(5);
-          expect(vms.filter((v) => v.kind === "macos").length).toBeLessThanOrEqual(2);
-          expect(vms.filter((v) => v.size === "large").length).toBeLessThanOrEqual(1);
-        },
-      });
-      expect(out.runs.length).toBe(jobs.length);
-      // A job waits at most for the work queued before it, plus a boot, the floor and a give-way: a
-      // rule that starved a size would break it.
-      for (const run of out.runs) {
-        const before = jobs.filter((j) => j.queuedAt <= run.queuedAt && j.name !== run.name).reduce((n, j) => n + j.minutes * M + 160_000, 0);
-        expect(run.wait).toBeLessThanOrEqual(before + 160_000 + DEFAULT_TIMINGS.floorMinutes * M + DEFAULT_TIMINGS.giveWayMinutes * M);
+  // Three budgets (a small, a 32 GB and a big Mac), two caps, and merge-group jobs, so the class
+  // paths run too. Only sizes that can fit the budget are asked for.
+  const RULES = [{ name: "merge", when: { event: ["merge_group"] } }];
+  const rank = (j: SimJob) => (j.event === "merge_group" ? 0 : 1);
+  const boot = (j: SimJob) => (j.kind === "macos" ? 150_000 : 60_000) + 10_000;
+  for (const memoryMB of [12360, 22360, 40000])
+    for (const slots of [3, 5])
+      for (const seed of [1, 2, 3, 4, 5, 6]) {
+        test(`${memoryMB} MB, ${slots} VMs, seed ${seed}: every job runs, the sizes never pass the budget, the caps hold, and each wait is bounded by the work of its class or better before it`, () => {
+          const r = rng(seed * 7 + slots + memoryMB);
+          const budget = { memoryMB, cpus: memoryMB > 30000 ? 20 : 10 };
+          const jobs: SimJob[] = Array.from({ length: 40 }, (_, i) => {
+            const x = r();
+            const large = memoryMB >= 16384 && x >= 0.9;
+            const labels = x < 0.15 ? ["taskbox-macos"] : x < 0.6 ? ["taskbox-linux-small"] : large ? ["taskbox-linux-large"] : ["taskbox-linux"];
+            const merge = labels[0] !== "taskbox-macos" && !large && r() < 0.2;
+            const l = merge ? [labels[0] === "taskbox-linux-small" ? "taskbox-linux-small-merge" : "taskbox-linux-merge"] : labels;
+            return { name: `j${i}`, kind: labels[0] === "taskbox-macos" ? "macos" : "linux", labels: l, queuedAt: Math.floor(r() * 90) * M, minutes: 0.5 + Math.floor(r() * 8), ...(merge ? { event: "merge_group" } : {}) };
+          });
+          const out = simulate({
+            jobs,
+            kinds: kinds({ slots }),
+            budget,
+            slots,
+            mode: "source",
+            classes: RULES,
+            check: (vms) => {
+              expect(vms.reduce((n, v) => n + (v.memoryMB ?? 0), 0)).toBeLessThanOrEqual(budget.memoryMB);
+              expect(vms.reduce((n, v) => n + (v.cpus ?? 0), 0)).toBeLessThanOrEqual(budget.cpus);
+              expect(vms.length).toBeLessThanOrEqual(slots);
+              expect(vms.filter((v) => v.kind === "macos").length).toBeLessThanOrEqual(2);
+              expect(vms.filter((v) => v.size === "large").length).toBeLessThanOrEqual(1);
+            },
+          });
+          expect(out.runs.length).toBe(jobs.length);
+          // Work conserving within a class: a job waits at most for the jobs of its class or better
+          // queued before it, one after another, plus a job already running (none is stopped), the
+          // floor, a give-way and its own boot.
+          const longest = Math.max(...jobs.map((j) => j.minutes * M + boot(j)));
+          for (const run of out.runs) {
+            const me = jobs.find((j) => j.name === run.name)!;
+            const ahead = jobs.filter((j) => j !== me && j.queuedAt <= me.queuedAt && rank(j) <= rank(me)).reduce((n, j) => n + j.minutes * M + boot(j), 0);
+            expect(run.wait).toBeLessThanOrEqual(ahead + longest + DEFAULT_TIMINGS.floorMinutes * M + DEFAULT_TIMINGS.giveWayMinutes * M + boot(me));
+          }
+          expect(out.giveWays).toBeLessThanOrEqual(jobs.length + 3);
+        });
       }
-      expect(out.giveWays).toBeLessThanOrEqual(jobs.length + 3);
-    });
-  }
 });
 
-// The two real days of test/scheduler.test.ts, with each Linux job on the size the suggestions would
-// give it. Those days recorded no use per job, so the mapping follows what the box's records show
+// The two replayed days of test/scheduler.test.ts, with each Linux job on the size the suggestions
+// would give it. Those days recorded no use per job, so the mapping follows what the box's records show
 // across Linux jobs: 90% of peaks under 1.9 GB and 3.9 CPUs. The tenth that ran longest, the
 // CPU-heavy ones, stay on the default; the rest go small.
 const sized = (j: SimJob, heavy: boolean): SimJob => (j.kind === "linux" && !heavy ? { ...j, labels: j.labels.map((l) => (l === "taskbox-linux" ? "taskbox-linux-small" : l === "taskbox-linux-merge" ? "taskbox-linux-small-merge" : l)) } : j);
-const NOV17: SimJob[] = [
+const BURST: SimJob[] = [
   mac("mac1", 12, 2), ...[0.5, 2, 4, 2, 3, 0.5, 0.5].map((m, i) => lin(`a${i + 1}`, 12, m)),
   mac("mac2", 27, 8), ...[0.5, 0.5, 0.5, 0.5, 0.5, 2, 1, 1, 2, 0.5, 2].map((m, i) => lin(`b${i + 1}`, 27, m)),
 ];
-const NOV18: SimJob[] = [
+const GATES: SimJob[] = [
   ...Array.from({ length: 14 }, (_, i) => lin(`pr-${i}`, i * 2, 2.5)),
   lin("gate-1", 4, 2, ["taskbox-linux-merge"], "merge_group"),
   lin("gate-2", 4, 1, ["taskbox-linux-merge"], "merge_group"),
@@ -308,12 +324,12 @@ const peak = (runs: { startedAt: number; endedAt: number }[]) => Math.max(...run
 const lastEnd = (runs: { endedAt: number }[]) => Math.max(...runs.map((r) => r.endedAt));
 const maxWait = (runs: { wait: number }[]) => Math.max(...runs.map((r) => r.wait));
 
-describe("replay: 17 Nov with sizes, against 2 slots", () => {
-  const two = simulate({ jobs: NOV17, slots: 2, mode: "source", classes: MERGE });
-  const jobs = NOV17.map((j) => sized(j, j.minutes >= 3));
+describe("replay: a burst of 18 Linux jobs and 2 macOS jobs with sizes, against 2 slots", () => {
+  const two = simulate({ jobs: BURST, slots: 2, mode: "source", classes: MERGE });
+  const jobs = BURST.map((j) => sized(j, j.minutes >= 3));
   const sizedRun = simulate({ jobs, ...SIM, mode: "source", classes: MERGE });
   test("more jobs at once, the burst ends sooner, and no job waits longer", () => {
-    expect(sizedRun.runs.length).toBe(NOV17.length);
+    expect(sizedRun.runs.length).toBe(BURST.length);
     expect(peak(two.runs)).toBe(2);
     expect(peak(sizedRun.runs)).toBeGreaterThanOrEqual(4);
     expect(lastEnd(sizedRun.runs)).toBeLessThan(lastEnd(two.runs) - 3 * M);
@@ -322,11 +338,21 @@ describe("replay: 17 Nov with sizes, against 2 slots", () => {
   test("the macOS jobs wait at most a boot", () => {
     for (const r of sizedRun.runs.filter((x) => x.kind === "macos")) expect(r.wait).toBeLessThanOrEqual(150_000 + 10_000);
   });
+  test("each job runs on the size it asked for, the heavy ones on the default, none waiting past the floor and a job", () => {
+    for (const r of sizedRun.runs) {
+      const j = jobs.find((x) => x.name === r.name)!;
+      // A small job may take the warm default VM; a job asking for the default never runs smaller.
+      if (j.labels[0] === "taskbox-linux-small") expect(["small", "default"]).toContain(r.size!);
+      else expect(r.size).toBe("default");
+      expect(r.wait).toBeLessThanOrEqual(DEFAULT_TIMINGS.floorMinutes * M + 4 * M + 150_000);
+    }
+    expect(sizedRun.runs.filter((r) => ["a3", "a5"].includes(r.name)).map((r) => r.size)).toEqual(["default", "default"]);
+  });
 });
 
-describe("replay: 18 Nov with sizes, against 2 slots", () => {
-  const two = simulate({ jobs: NOV18, slots: 2, mode: "source", classes: MERGE, github: "newest" });
-  const jobs = NOV18.map((j) => sized(j, j.name === "pr-3" || j.name === "pr-10"));
+describe("replay: 14 PR jobs with 3 merge-group gates, with sizes, against 2 slots", () => {
+  const two = simulate({ jobs: GATES, slots: 2, mode: "source", classes: MERGE, github: "newest" });
+  const jobs = GATES.map((j) => sized(j, j.name === "pr-3" || j.name === "pr-10"));
   const sizedRun = simulate({ jobs, ...SIM, mode: "source", classes: MERGE, github: "newest" });
   const gate = (r: { name: string }) => r.name.startsWith("gate-");
   test("the gate jobs still go first, and wait less than on 2 slots", () => {
@@ -398,7 +424,8 @@ describe("size suggestions", () => {
     const s = parseLinuxUsage(linux)!;
     expect(summarise([{ ...s, oom: 0 }, { ...s, oom: 0 }])?.oom).toBeUndefined();
     expect(summarise([{ ...s, oom: 3 }, { ...s, oom: 4 }])?.oom).toBe(1);
-    expect(summarise([{ ...s, oom: 2 }])?.oom).toBe(2);
+    // One sample says nothing: a macOS image may hold old reports.
+    expect(summarise([{ ...s, oom: 2 }])?.oom).toBeUndefined();
     expect(validUsage({ ...summarise([s])!, oom: 1 })).toBe(true);
     expect(validUsage({ ...summarise([s])!, oom: -1 })).toBe(false);
     expect(parseMacUsage("total 8589934592\nncpu 4\npage 16384\nAnonymous pages: 1000.\nPages purgeable: 0.\nPages wired down: 100.\nPages occupied by compressor: 0.\nCPU usage: 10% user, 10% sys, 80% idle\noom 1\n")?.oom).toBe(1);
@@ -406,7 +433,7 @@ describe("size suggestions", () => {
   test("size list's screen: the sizes, the budget, the mixes and the suggestions", () => {
     const lines = sizesScreen(sizesView(SIZED, GIB32, 10), runs(20, "lint", LIN, () => use(1000, 0.8)), SIZED);
     expect(lines).toContain("  Linux small: 2 CPUs, 4 GB, at most 5 at once. Labels: taskbox-linux-small, taskbox-linux-small-merge. One more fits now.");
-    expect(lines).toContain("VMs get 22.4 GB and 10 CPUs, at most 5 at once.");
+    expect(lines).toContain("VMs get 21.8 GB and 10 CPUs, at most 5 at once.");
     expect(lines).toContain("  5 Linux small");
     expect(lines).toContain("  lint (taskbox-linux): 20 runs, peak memory 90% under 1.0 GB, CPUs median 0.8: suits taskbox-linux-small (2 CPUs, 4 GB)");
   });
@@ -433,7 +460,91 @@ describe("the loop's slot memory", () => {
   test("the memory check before a start keeps boxKeepsGB", async () => {
     const { memoryShort } = await import("../src/memory.ts");
     const m = { pressure: 1 as const, availableGB: 20, totalGB: GIB32 };
-    expect(memoryShort(m, 4096, 16384)).toBeUndefined();
+    expect(memoryShort(m, 4096, 16384, 12)).toBeUndefined();
     expect(memoryShort(m, 4096, 16384, 16)).toContain("the box keeps 16 GB");
+  });
+});
+
+describe("one cap, read everywhere", () => {
+  test("a box with vmsAtMost 5 has 5 for the loop, check, the load test, the timings and workspaces", async () => {
+    const { slotCount } = await import("../src/loop.ts");
+    const { slotsLine } = await import("../src/ops.ts");
+    const { acceptance } = await import("../src/timings.ts");
+    const { vmsAtMostOf } = await import("../src/config.ts");
+    const box = { ...SIZED, vmsAtOnce: 2 };
+    expect([slotCount(box), vmsAtMostOf(box), vmsAtMostOf(forSize(box, "linux", "small"))]).toEqual([5, 5, 5]);
+    expect(slotsLine(box)).toStartWith("5 VMs at once");
+    expect(acceptance(box, [], [], NOW, true).find((c) => c.id === "linux-burst")?.value).not.toBe("one slot or no Linux kind");
+    // Every other reader goes through vmsAtMostOf: none reads v2's vmsAtOnce itself.
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const src = join(import.meta.dir, "../src");
+    const files = (readdirSync(src, { recursive: true }) as string[]).filter((f) => f.endsWith(".ts") && !f.startsWith("settings/"));
+    expect(files.filter((f) => /\.vmsAtOnce\b/.test(readFileSync(join(src, f), "utf8")))).toEqual([]);
+  });
+});
+
+describe("the box's keep on any Mac", () => {
+  // hw.memsize / 1e9 for each Mac, what the box keeps by default, and what the VMs get.
+  const MACS: [number, number, number][] = [
+    [16, 6, 11180],
+    [24, 9, 16770],
+    [32, 12, 22360],
+    [64, 16, 52719],
+    [128, 16, 121439],
+  ];
+  const { boxKeepsGB: _, ...plain } = SIZED;
+  for (const [gib, keeps, memoryMB] of MACS)
+    test(`${gib} GB: keeps ${keeps} GB, the VMs get ${memoryMB} MB, the default size starts alone, and the budget stays under the total`, async () => {
+      const { keepsOf } = await import("../src/config.ts");
+      const total = (gib * 1024 ** 3) / 1e9;
+      expect(keepsOf(plain, total)).toBe(keeps);
+      const b = budgetOf(plain, total, 10);
+      expect(b.memoryMB).toBe(memoryMB);
+      expect(b.memoryMB!).toBeLessThan(total * 1000);
+      for (const kind of ["macos", "linux"] as Kind[]) expect(b.memoryMB!).toBeGreaterThanOrEqual(sizesOf(plain, kind)[0]!.vmMemoryMB);
+      expect(sizesRow(sizesView(plain, total, 10)).status).toBe(gib >= 24 ? "OK" : "FAIL");
+      expect(starts(decide(input({ budget: b, snapshot: known([item("d", ["taskbox-linux"], NOW - M)]) })))).toContain("1 linux default d");
+    });
+});
+
+describe("memory the box can't read", () => {
+  test("a VM no job needs still gives way, so a job of the other kind isn't held back", () => {
+    const d = decide(input({ budget: { cpus: 10 }, slotStates: [vm(1, "linux", "default", "waiting")], snapshot: known([item("m", ["taskbox-macos"], NOW - M)]) }));
+    expect(d.filter((x) => x.do === "give-way").map((x) => x.slot)).toEqual([1]);
+  });
+  test("on the fake clock, one VM at a time, and every job runs", () => {
+    const jobs = [mac("m1", 0, 3), lin("l1", 0, 2, ["taskbox-linux-small"]), lin("l2", 1, 2), mac("m2", 5, 1), lin("l3", 6, 4, ["taskbox-linux-large"])];
+    const out = simulate({ jobs, kinds: kinds(), budget: { cpus: 10 }, slots: 5, mode: "source", classes: MERGE, check: (vms) => expect(vms.filter((v) => v.goneAt === undefined || v.job).length).toBeLessThanOrEqual(1) });
+    expect(out.runs.map((r) => r.name).sort()).toEqual(["l1", "l2", "l3", "m1", "m2"]);
+  });
+});
+
+describe("the hold past the floor", () => {
+  test("a younger job of a kind with no VM doesn't restart the count: the older one past the floor still holds the rest back", () => {
+    const st = [vm(1, "linux", "default", "busy")];
+    const items = [item("l", LARGE, NOW - 9 * M), item("m", ["taskbox-macos"], NOW - M)];
+    const d = decide(input({ slotStates: st, snapshot: known(items) }));
+    expect(starts(d)).toEqual([]);
+    expect(d[0]).toMatchObject({ do: "wait", why: expect.stringContaining("a job for Linux large has waited 9 min") });
+  });
+  test("a VM still going after giveWayMinutes no longer holds back the next give-way", () => {
+    const st = (going: number) => [vm(1, "linux", "default", "waiting"), { ...vm(2, "linux", "small", "busy"), going }];
+    const gives = (going: number) => decide(input({ slotStates: st(going), snapshot: known([item("l", LARGE, NOW - M)]) })).filter((x) => x.do === "give-way").map((x) => x.slot);
+    expect([gives(NOW - M), gives(NOW - 4 * M)]).toEqual([[], [1]]);
+  });
+});
+
+describe("status's budget line", () => {
+  test("the loop's budget line and each slot's size, on the status screen", async () => {
+    const { holdsLine } = await import("../src/sizes.ts");
+    const { screen, vmWords } = await import("../src/watch.ts");
+    expect(holdsLine(BUDGET, [{ memoryMB: 8192, cpus: 4 }, { memoryMB: 4096, cpus: 2 }])).toBe("VMs hold 12.0 of 21.8 GB and 6 of 10 CPUs.");
+    expect(holdsLine({ cpus: 10 }, [])).toBe("The box can't read its memory, so no VM starts beside another.");
+    expect(vmWords({ slot: "waiting for a job", vmKind: "linux", size: "small" }, NOW)).toStartWith("Linux small: ");
+    expect(vmWords({ slot: "waiting for a job", vmKind: "linux", size: "default" }, NOW)).toStartWith("Linux: ");
+    const dir = tempRoot();
+    const loopFile = join(dir, "loop.json");
+    writeFileSync(loopFile, JSON.stringify({ slot: "idle", budget: "VMs hold 12.0 of 21.8 GB and 6 of 10 CPUs." }));
+    expect(screen({ pullFile: join(dir, "pull.json"), loopFile, now: NOW })).toContain("Budget:    VMs hold 12.0 of 21.8 GB and 6 of 10 CPUs.");
   });
 });

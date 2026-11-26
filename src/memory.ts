@@ -43,17 +43,15 @@ export async function readLogicalCpus(sys: Sys): Promise<number | undefined> {
   return r?.code === 0 && Number.isInteger(n) && n >= 1 && n <= 1024 ? n : undefined;
 }
 
+// The free memory a start leaves the box's users, beside its own size: macOS's free and inactive
+// pages, so a margin over what macOS frees at once, the same on any Mac.
 export const MEMORY_SPARE_GB = 4;
-// With more than one VM, what the box keeps for macOS and its users, whatever the VMs hold (v2.2.0).
-// 2 VMs of 8 GB on a 32 GB box leave about 18 GB; a third would leave 10, under this.
-export const BOX_KEEPS_GB = 12;
 
 // Why no new VM starts, or undefined. Fails closed: memory that can't be read counts as short.
 // othersMB: the memory of the VMs already running. A VM's memory isn't all in use as it starts, so
-// free memory alone can't show room for a second: their sizes together, and the box's share, must fit
-// in the box's whole memory too.
-// keepsGB: boxKeepsGB from the settings.
-export function memoryShort(m: Memory, vmMemoryMB: number, othersMB = 0, keepsGB = BOX_KEEPS_GB): string | undefined {
+// free memory alone can't show room for a second: their sizes together, and what the box keeps
+// (keepsGB, keepsOf), must fit in the box's whole memory too.
+export function memoryShort(m: Memory, vmMemoryMB: number, othersMB: number, keepsGB: number): string | undefined {
   if (m.pressure === undefined || m.availableGB === undefined) return "the box can't read its memory";
   if (m.pressure !== 1) return `memory pressure is ${m.pressure === 2 ? "high" : "very high"}`;
   const need = vmMemoryMB / 1000 + MEMORY_SPARE_GB;

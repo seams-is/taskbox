@@ -24,6 +24,7 @@ export interface SimJob {
 export interface SimRun {
   name: string;
   kind: Kind;
+  size?: string;
   role?: "load";
   slot: number;
   askedAt: number;
@@ -114,13 +115,13 @@ export function simulate(o: SimOptions): { runs: SimRun[]; starts: { at: number;
       waiting.delete(j.name);
       v.job = { name: j.name, endAt: now + j.minutes * 60_000 };
       vmLabels.set(j.name, v.labels);
-      done.push({ name: j.name, kind: v.kind, ...(j.role ? { role: j.role } : {}), slot: v.slot, askedAt: v.askedAt, readyAt: v.readyAt, ...(v.className ? { className: v.className } : {}), queuedAt: j.queuedAt, startedAt: now, endedAt: now + j.minutes * 60_000, wait: now - j.queuedAt });
+      done.push({ name: j.name, kind: v.kind, ...(v.size ? { size: v.size } : {}), ...(j.role ? { role: j.role } : {}), slot: v.slot, askedAt: v.askedAt, readyAt: v.readyAt, ...(v.className ? { className: v.className } : {}), queuedAt: j.queuedAt, startedAt: now, endedAt: now + j.minutes * 60_000, wait: now - j.queuedAt });
       if (now - v.readyAt <= timings.busyWithinSeconds * 1000) history[v.kind] = { ...history[v.kind], fastAt: now };
     }
     if (!waiting.size && !vms.some((v) => v.job && v.goneAt === undefined)) break;
     o.check?.(vms, now);
     // The scheduler.
-    const slotStates: SlotState[] = vms.map((v) => ({ slot: v.slot, kind: v.kind, labels: v.labels, state: v.job || v.goneAt !== undefined ? "busy" : "waiting", since: v.askedAt, ...(v.readyAt <= now ? { readySince: v.readyAt } : {}), ...(v.role ? { role: v.role } : {}), ...(v.size ? { size: v.size, memoryMB: v.memoryMB, cpus: v.cpus } : {}), ...(v.goneAt !== undefined && !v.job ? { going: true } : {}) }));
+    const slotStates: SlotState[] = vms.map((v) => ({ slot: v.slot, kind: v.kind, labels: v.labels, state: v.job || v.goneAt !== undefined ? "busy" : "waiting", since: v.askedAt, ...(v.readyAt <= now ? { readySince: v.readyAt } : {}), ...(v.role ? { role: v.role } : {}), ...(v.size ? { size: v.size, memoryMB: v.memoryMB, cpus: v.cpus } : {}), ...(v.goneAt !== undefined && !v.job ? { going: v.goneAt - cleanup } : {}) }));
     // With a lag, the snapshot still lists jobs that started in the last lagMs.
     const lag = o.lagMs ?? 0;
     const listed = [...queued(), ...done.filter((r) => now - r.startedAt < lag).map((r) => byName.get(r.name)!)];

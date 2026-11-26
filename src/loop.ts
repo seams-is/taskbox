@@ -13,7 +13,7 @@ import { loopState } from "./core/paths.ts";
 import { afterEnd, beforeStart, type JobHook, withHookFields } from "./core/hooks.ts";
 import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
-import { AGENT_LABEL, awayOf, budgetOf, DEFAULT_BOX_KEEPS_GB, DEFAULT_SIZE, forKind, forSize, sizeOf, sizesOf, sizeWord, smallestSize, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf, vmsAtMostOf } from "./config.ts";
+import { AGENT_LABEL, awayOf, budgetOf, DEFAULT_SIZE, keepsOf, forKind, forSize, sizeOf, sizesOf, sizeWord, smallestSize, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf, vmsAtMostOf } from "./config.ts";
 import { guestOf } from "./guest.ts";
 import { installedCommit, peerTargets, PROOF_RETRY_MS, proofHolds, proofResult, proofScript, proofTargets, readProof, writeProof } from "./proof.ts";
 import { type KindChooser, type Occupant, QUEUE_POLL_MS, schedule, type Turn } from "./kinds.ts";
@@ -22,6 +22,7 @@ import { NoSource, type JobSource } from "./source.ts";
 import { type GitHub, repoMissing } from "./github.ts";
 import { RunnerChain } from "./ghfail.ts";
 import { beatFor, RESTARTS_WINDOW_MS, staleBeat } from "./beat.ts";
+import { holdsLine } from "./sizes.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
 import { readLoop } from "./watch.ts";
 import { heldOf, holdReason, isHeld, type WorkspacesNow } from "./held.ts";
@@ -192,6 +193,7 @@ export class Slots {
   // What the VMs' budget is made from: the box's memory as last read, and its logical CPUs.
   totalGB: number | undefined;
   logicalCpus: number | undefined;
+  budgetShown: string | undefined; // status's budget line, as last written
   startedAt = 0;
 
   constructor(readonly count: number) {}
@@ -716,8 +718,9 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
     return { key: "guard", text: "the guard's rules went missing when a VM started, so no VM starts while Screen Sharing is on" };
   }
   const mem = await (d.memory ?? (() => readMemory(d.sys)))();
-  if (d.box) d.box.totalGB = mem.totalGB;
-  const short = up ? memoryShortWhileUp(mem) : memoryShort(mem, d.cfg.vmMemoryMB, othersMB(d), (d.cfg.base ?? d.cfg).boxKeepsGB ?? DEFAULT_BOX_KEEPS_GB);
+  // The last good read stands for the budget; a start still fails closed below.
+  if (d.box && mem.totalGB !== undefined) d.box.totalGB = mem.totalGB;
+  const short = up ? memoryShortWhileUp(mem) : memoryShort(mem, d.cfg.vmMemoryMB, othersMB(d), keepsOf(d.cfg, mem.totalGB ?? 0));
   if (short) return { key: "memory", text: `${short}, so the box starts no new VM` };
   return undefined;
 }
@@ -1839,6 +1842,12 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     // A free slot: VMs left from jobs go, at most every LEAK_CHECK_MS (v2.5.0).
     if (!c.box.held.has(d.slot) && d.sys.now() - c.box.leakCheckAt >= LEAK_CHECK_MS) await cleanLeakedVms({ ...d, box: c.box });
     const chosen = await c.choose(last, c.served(), d.slot);
+    // status's budget line, written when it changes.
+    const budgetNow = holdsLine(budgetOf(d.cfg, c.box.totalGB, c.box.logicalCpus), [...c.box.held.values()]);
+    if (budgetNow !== c.box.budgetShown) {
+      c.box.budgetShown = budgetNow;
+      writeLoopState(d.paths, { budget: budgetNow });
+    }
     // A VM waiting for a job gives way once the proof is due, such as when the second update brings
     // the Linux runner mid-wait. The proof then runs at the top of the loop. A VM with a job keeps it.
     // With more than one slot, only when no slot is free, and only the highest waiting slot.

@@ -23,7 +23,7 @@ export interface SlotState {
   size?: string;
   memoryMB?: number;
   cpus?: number;
-  going?: boolean; // it was told to give way, and still holds its memory until it is gone
+  going?: number; // when it was told to give way: it still holds its memory until it is gone
 }
 
 // One size of a kind. cap: the most VMs of it at once (maxAtOnce, from capOf).
@@ -155,7 +155,8 @@ export function assign(items: ReturnType<typeof ranked>, slotStates: SlotState[]
   return { matched, at, unmatched };
 }
 
-const gb = (mb: number) => (mb / 1000).toFixed(1);
+// GB on every screen is MB / 1024, the sizes' own unit.
+const gb = (mb: number) => (mb / 1024).toFixed(1);
 // A size for people: "Linux small", or "Linux" for the default or a kind with no sizes.
 const word = (k: KindView, z?: SizeView) => (!z || !k.sizes?.length || z.name === DEFAULT_SIZE ? KIND_WORD[k.kind] : `${KIND_WORD[k.kind]} ${z.name}`);
 type Held = { mem: number; cpus: number; vms: number };
@@ -286,10 +287,13 @@ export function decide(s: SchedulerInput): Decision[] {
       if (!ok.length) return { i: -1 };
       const best = ok[0]!.rank;
       const head = ok.find((it) => it.rank === best && !count.get(it.kv.kind)) ?? ok[0]!;
-      if (room(head.size)) return { i: queue.indexOf(head) };
-      const past = s.now - head.queuedAt >= floorMs;
-      const x = ok.find((it) => it !== head && room(it.size) && (!past || beside(head, it)));
-      return { i: x ? queue.indexOf(x) : -1, head };
+      // Every job past the floor that doesn't fit holds the rest back, the head or not, so a younger
+      // head of another kind doesn't restart the count.
+      const held = ok.filter((it) => !room(it.size) && s.now - it.queuedAt >= floorMs);
+      const allowed = (x: Unmatched) => room(x.size) && held.every((h) => h === x || beside(h, x));
+      if (allowed(head)) return { i: queue.indexOf(head) };
+      const x = ok.find((it) => it !== head && allowed(it));
+      return { i: x ? queue.indexOf(x) : -1, ...(room(head.size) ? { head: held[0]! } : { head }) };
     };
     for (const slot of free) {
       const { i, head } = next();
@@ -323,11 +327,12 @@ export function decide(s: SchedulerInput): Decision[] {
       if (never(it.size)) continue;
       const noSlot = !empty.length;
       const noRoom = !room(it.size);
-      // While a VM that gave way still goes, its memory isn't free yet: wait for it, never a second.
-      if ((!noSlot && !noRoom) || (noRoom && (!known || s.slotStates.some((x) => x.going)))) continue;
+      // While a VM that gave way still goes, its memory isn't free yet: wait for it, never a second,
+      // for at most giveWayMinutes. Memory the box can't read: a VM no job needs still goes.
+      if ((!noSlot && !noRoom) || (noRoom && s.slotStates.some((x) => x.going !== undefined && s.now - x.going < giveWayMs))) continue;
       const sizeHeld = (x: SlotState) => (sizeCount.get(key(it.kv.kind, it.size.name)) ?? 0) - (x.kind === it.kv.kind && (x.size ?? DEFAULT_SIZE) === it.size.name ? 1 : 0) < it.size.cap;
       const cands = s.slotStates
-        .filter((x) => x.state === "waiting" && !x.going && !wrong(x) && !out.some((d) => d.slot === x.slot))
+        .filter((x) => x.state === "waiting" && x.going === undefined && !wrong(x) && !out.some((d) => d.slot === x.slot))
         .filter((x) => !matched.has(x.slot) || (x.readySince !== undefined && matched.get(x.slot)! > it.rank))
         // A load job may take only a waiting load VM's place, never a real VM's, and only within the load caps, counting this VM's going.
         .filter((x) => it.role !== "load" || (roleOf(x) === "load" && loads - 1 < loadCap && loadKindOk(it.kv, x.kind === it.kv.kind ? 1 : 0)))
