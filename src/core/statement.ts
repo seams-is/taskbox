@@ -185,7 +185,8 @@ export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readon
   if (stale && budget.n >= VERIFY_PER_MINUTE) return refuse("stale-state", "The statement's nonce isn't the box's current one: another signed request applied first.");
   budget.n++;
   let signer: string | undefined;
-  for (const key of o.keys) {
+  // Only the pinned key the signature itself names is tried: one ssh-keygen run, never one per key.
+  for (const key of o.keys.filter((k) => k.split(" ")[1] === signatureKey(parts.signature))) {
     const why = await verifySignature(d, { key, message: parts.statement, signature: parts.signature, namespace: CONTROL_NS }).catch(() => "failed");
     if (why === undefined) {
       signer = fingerprint(key);
@@ -196,4 +197,29 @@ export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readon
   const current = o.nonce(s.subject);
   if (current === undefined || current !== s.nonce) return { ...refuse("stale-state", "The statement's nonce isn't the box's current one: another signed request applied first."), signer: Verified.signer(signer) };
   return { ok: true, statement: s, signer };
+}
+
+// The public key an armoured SSH signature names (PROTOCOL.sshsig), as base64 of its blob, the same
+// as a key line's second field; undefined when it isn't an SSHSIG. Only a hint for which pinned key to
+// try: ssh-keygen still checks the signature against the pinned key itself.
+export function signatureKey(armoured: string): string | undefined {
+  const m = /^-----BEGIN SSH SIGNATURE-----\n([A-Za-z0-9+/=\n]+)-----END SSH SIGNATURE-----\n?$/.exec(armoured);
+  if (!m) return undefined;
+  const b = Buffer.from(m[1]!.replace(/\n/g, ""), "base64");
+  if (b.length < 14 || b.subarray(0, 6).toString("latin1") !== "SSHSIG") return undefined;
+  const n = b.readUInt32BE(10);
+  return 14 + n <= b.length ? b.subarray(14, 14 + n).toString("base64") : undefined;
+}
+
+// The args a command line signs: its own flags by name, the global flags that change what it does,
+// and its words. The box and the controller build them the same way from the box's own parse, so
+// the statement and the command agree. Flags that change only how the answer is shown or where it
+// goes aren't signed. No command that takes --signed has a flag named --words (registry.ts).
+const UNSIGNED_FLAGS = new Set(["json", "box", "signed", "watch", "follow", "detach", "yes"]);
+export function argsOf(p: { args: readonly string[]; opts: Record<string, string | true | string[]>; flags: Partial<Record<string, string | true>> }): Args {
+  const out: Args = {};
+  for (const [k, v] of Object.entries(p.flags)) if (v !== undefined && !UNSIGNED_FLAGS.has(k)) out[k] = v;
+  for (const [k, v] of Object.entries(p.opts)) out[k] = Array.isArray(v) ? [...v] : v;
+  if (p.args.length) out.words = [...p.args];
+  return canonical(out) as Args;
 }

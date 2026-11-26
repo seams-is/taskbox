@@ -9,7 +9,7 @@
 // - a request is unlinked before it is applied, so one that crashes root can't crash it twice;
 // - root never creates, renames into or changes anything in a spool.
 // A request carries its id, kind and time, and is good for 2 minutes either side of root's clock. Its
-// outcome is recorded by id (outcomes), which the asking command waits for about 2 s.
+// outcome is recorded by id (outcomes), which the asking command waits for (core/asker.ts).
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readdirSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Clock } from "../clock.ts";
@@ -117,6 +117,8 @@ export interface SpoolRules {
   requestMax?: number;
   // Who the spool belongs to, for the lines: "the agent account" by default.
   whose?: string;
+  // How old an entry is for the flood's cut, lower first: its mtime by default, which the asker sets.
+  age?: (e: Entry) => number;
 }
 
 export interface SpoolMemory {
@@ -127,6 +129,7 @@ export const newSpoolMemory = (): SpoolMemory => ({ stuck: new Set() });
 export interface SpoolReport {
   did: string[];
   problems: string[];
+  closed?: string; // why the spool couldn't be read at all, when it couldn't
 }
 
 // One pass over a spool. take is called for each chosen request after it is unlinked, with what was
@@ -139,6 +142,7 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
   const why = spoolProblem(spool, r.owner, r.rootUid ?? 0, r.whose);
   if (why) {
     report.problems.push(`${why}, so the spool is closed`);
+    report.closed = why;
     return;
   }
   const all = listSpool(spool, r.scan ?? SCAN);
@@ -176,7 +180,8 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
   entries = entries.filter((x) => !old.includes(x));
   // A flood: the oldest past max go.
   if (entries.length > max) {
-    entries.sort((a, b) => a.mtimeMs - b.mtimeMs || (a.name < b.name ? -1 : 1));
+    const age = r.age ?? ((e: Entry) => e.mtimeMs);
+    entries.sort((a, b) => age(a) - age(b) || (a.name < b.name ? -1 : 1));
     const drop = entries.slice(0, entries.length - max);
     for (const e of drop) {
       try {
@@ -236,7 +241,7 @@ export interface Request {
   body: Record<string, unknown>;
 }
 
-export type RequestRead = { ok: true; request: Request } | { ok: false; why: string };
+export type RequestRead = { ok: true; request: Request } | { ok: false; why: string; expired?: true };
 const refuse = (why: string): RequestRead => ({ ok: false, why });
 
 // A request from what root read, for the id and kind its name gave, at root's time. Strict: v, id,
@@ -264,7 +269,7 @@ export function readRequest(file: string, f: SpoolFile, o: { owner: number; now:
   if (v.id !== n.id) return refuse("the request's id isn't its file's");
   if (v.kind !== n.kind) return refuse("the request's kind isn't its file's");
   if (!time(v.at)) return refuse("the request's time isn't one taskbox reads");
-  if (Math.abs(o.now - (v.at as number)) > (o.forMs ?? REQUEST_FOR_MS)) return refuse("the request is more than 2 minutes old, or from the future");
+  if (Math.abs(o.now - (v.at as number)) > (o.forMs ?? REQUEST_FOR_MS)) return { ok: false, why: "the request is more than 2 minutes old, or from the future", expired: true };
   if (!isObj(v.body)) return refuse("the request's body isn't an object");
   const bad = o.kinds[n.kind]!(v.body);
   if (bad) return refuse(bad);
@@ -343,7 +348,7 @@ export function readOutcome(dir: string, id: string, rootUid = 0): Read<Outcome>
 }
 // An outcome goes at whichever comes first: the wall clock an hour past it, a restart of the box, or,
 // in the same boot, an hour of the monotonic clock. A clock gone back keeps it; boot and mono still
-// end it. The asker waits about 2 s. The ids removed.
+// end it. The asker waits seconds for it. The ids removed.
 export function keepOutcomes(dir: string, at: number | { wall: number; mono?: number; boot?: string }): string[] {
   const m = typeof at === "number" ? { wall: at } as { wall: number; mono?: number; boot?: string } : at;
   const gone: string[] = [];

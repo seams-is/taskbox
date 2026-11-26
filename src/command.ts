@@ -5,6 +5,7 @@
 // A file in src/cmd/ imports types and small helpers only. Its handlers import what they run when
 // they run, so the agent account's shell can read every command's name and flags without loading the box.
 import type { Paths } from "./config.ts";
+import { isSignedWord } from "./core/word.ts";
 import type { OpsDeps } from "./ops.ts";
 import type { Sys } from "./sys.ts";
 
@@ -53,7 +54,7 @@ const GLOBAL_CHECKS: Partial<Record<GlobalFlag, (v: string) => boolean>> = {
   since: (v) => duration(v) !== undefined || /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/.test(v),
   until: (v) => duration(v) !== undefined || /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/.test(v),
   box: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(v),
-  signed: (v) => v.length <= 3000 && /^[A-Za-z0-9_-]{1,2800}\.[A-Za-z0-9_-]{1,2800}$/.test(v),
+  signed: isSignedWord,
 };
 
 // A command's own flag: --away, --to VERSION, --admin NAME given more than once.
@@ -160,6 +161,9 @@ export interface CliDeps {
   hostname?(): string;
   // Tests: whether the guard's watch goes on. launchd's guard runs until it is stopped.
   guardTicks?(): boolean;
+  // Tests: the commands to read the line against, in place of src/cmd/'s; and root's uid, 0 on a box.
+  specs?: readonly CommandSpec[];
+  rootUid?: number;
 }
 
 export type Values = Record<string, string | true | string[]>;

@@ -1,27 +1,23 @@
 // The asking side of the agent spool, run as the agent account through its shell (shell.ts): a
-// request written whole to the spool (spool.ts writeSpoolFile), then its outcome read by id from
-// root's outcomes folder. The guard takes the spool every tick (passes/requests.ts).
-//
-// Two uses here:
-// - `--signed <statement>.<signature>` on a command that takes it: the owner's step, sent as a signed
-//   request with the command's own action and args (dispatch.ts argsOf). The command's own handler
-//   never runs here; the guard's handler for that action does, once the signature checks.
-// - `nonce SUBJECT`: the subject's current nonce, read from root's nonces.json (644). When it has
-//   none yet, a nonce request asks the guard to make one.
-// Nothing here gives anyone more of the box: the spool is the agent account's own folder, and root
-// decides what each request is worth.
+// request written whole to the spool, then its outcome read by id from root's outcomes folder.
+// - `--signed <statement>.<signature>` on a command that takes it sends the owner's step with the
+//   command's own action and args (statement.ts argsOf); the guard's handler applies it.
+// - `nonce SUBJECT` reads the subject's nonce from root's nonces.json (644), asking the guard to make
+//   one when it has none.
+// - `ask` sends any kind, for the controller-side commands that send an unsigned one.
+// Root decides what each request is worth: nothing here gives anyone more of the box.
 import type { Clock } from "../clock.ts";
 import type { BoxCtx, ErrorBody, Outcome as CmdOutcome } from "../command.ts";
 import { EXIT } from "../command.ts";
-import { argsOf, isSignedWord, NONCE, SIGNED } from "./dispatch.ts";
 import { type Rand, realRand } from "./ids.ts";
 import { currentNonce, readNonces, SUBJECT } from "./nonces.ts";
 import { rootState } from "./paths.ts";
 import { type Outcome, readOutcome, spoolProblem, writeSpoolFile } from "./spool.ts";
-import { parseStatement, splitSigned } from "./statement.ts";
+import { argsOf, parseStatement, splitSigned } from "./statement.ts";
+import { isSignedWord, NONCE, SIGNED } from "./word.ts";
 
-// How long the asker waits for the guard's answer: the guard takes the spool every 2 s tick, and a
-// signature check runs ssh-keygen. Counted in polls, so a clock step moves nothing.
+// The guard takes the spool every 2 s tick, and a signature check runs ssh-keygen. Counted in polls,
+// so a clock step moves nothing.
 export const POLL_MS = 200;
 export const POLLS = 50;
 
@@ -37,10 +33,11 @@ export interface AskDeps {
   polls?: number;
 }
 
-export const askDeps = (root: string, uid: number, clock: Pick<Clock, "now" | "sleep">): AskDeps => {
+export const askDeps = (root: string, uid: number, clock: Pick<Clock, "now" | "sleep">, rootUid = 0): AskDeps => {
   const s = rootState(root);
-  return { spool: s.agentSpool, outcomes: s.outcomes("agent"), nonces: s.nonces, uid, clock, sleep: (ms) => clock.sleep(ms) };
+  return { spool: s.agentSpool, outcomes: s.outcomes("agent"), nonces: s.nonces, uid, rootUid, clock, sleep: (ms) => clock.sleep(ms) };
 };
+const waited = (d: AskDeps) => `${((d.polls ?? POLLS) * POLL_MS) / 1000} s`;
 
 export type Asked = { id: string; outcome: Outcome | undefined } | { no: string };
 
@@ -54,39 +51,34 @@ export async function ask(d: AskDeps, kind: string, body: Record<string, unknown
   } catch (e) {
     return { no: `The request couldn't be written: ${String((e as Error)?.message ?? e).slice(0, 120)}` };
   }
-  for (let i = 0; i < (d.polls ?? POLLS); i++) {
+  for (let i = 0; i <= (d.polls ?? POLLS); i++) {
+    if (i) await d.sleep(POLL_MS);
     const o = readOutcome(d.outcomes, id, d.rootUid ?? 0);
     if (o.kind === "ok") return { id, outcome: o.value };
-    await d.sleep(POLL_MS);
   }
-  const last = readOutcome(d.outcomes, id, d.rootUid ?? 0);
-  return { id, outcome: last.kind === "ok" ? last.value : undefined };
+  return { id, outcome: undefined };
 }
 
 const FIX: Partial<Record<string, string>> = {
-  "stale-state": "Another signed request applied first: fetch the box's new nonce and sign again, once.",
+  "stale-state": "The nonce moved on: fetch the box's new nonce and sign again, once.",
   expired: "Sign again: a signature works within 5 minutes of the box's clock.",
   signature: "Sign with an approver key this box pins: taskbox key list shows them.",
 };
 
-// A signed request's outcome as the command's own answer.
-function outcomeOf(id: string, o: Outcome | undefined, what: string): CmdOutcome {
-  if (!o) {
-    const message = `The box's guard hasn't answered ${what} (${id}) within ${(POLLS * POLL_MS) / 1000} s, so it may be down.`;
-    return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message, fix: "taskbox check at the box says why.", who: "at-the-box" } };
-  }
+// A request's outcome as the command's own answer. Its line is said once, here; the footer's Did
+// line is the command's own.
+function outcomeOf(d: AskDeps, id: string, o: Outcome | undefined, what: string): { exit: number; result: Record<string, unknown>; changed?: boolean; error?: ErrorBody } {
+  if (!o) return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message: `The box's guard hasn't answered ${what} (${id}) within ${waited(d)}, so it may be down.`, fix: "taskbox check at the box says why.", who: "at-the-box" } };
   const result = { request: id, ...(o.op ? { op: o.op } : {}) };
-  if (o.ok) return { exit: EXIT.ok, changed: true, result, did: o.said };
+  if (o.ok) return { exit: EXIT.ok, changed: true, result };
   const code = o.code ?? "failed";
-  const error: ErrorBody = { code, message: o.said, fix: FIX[code] ?? null, who: null };
-  return { exit: code === "expired" ? EXIT.denied : EXIT.failed, result, error };
+  return { exit: code === "expired" ? EXIT.denied : EXIT.failed, result, error: { code, message: o.said, fix: FIX[code] ?? null, who: null } };
 }
 
-// The command's run for a line with --signed: the request goes to the guard, and its outcome is the
-// answer. Only the agent account can write its spool, so a line typed anywhere else is told so.
+// The run for a line with --signed: the request goes to the guard, and its outcome is the answer.
 export async function sendSigned(c: Pick<BoxCtx, "spec" | "args" | "opts" | "flags" | "say">, d: AskDeps): Promise<CmdOutcome> {
   const word = c.flags.signed;
-  const parts = typeof word === "string" && isSignedWord(word) ? splitSigned(word) : undefined;
+  const parts = isSignedWord(word) ? splitSigned(word) : undefined;
   if (!parts || !parseStatement(parts.statement)) {
     const message = "--signed takes the owner's statement and signature, each base64url, joined by a dot.";
     c.say(message);
@@ -98,13 +90,13 @@ export async function sendSigned(c: Pick<BoxCtx, "spec" | "args" | "opts" | "fla
     c.say(r.no);
     return { exit: EXIT.failed, error: { code: "failed", message: r.no, fix: "Send it from the controller, which runs it as the box's agent account.", who: null } };
   }
-  const out = outcomeOf(r.id, r.outcome, `the signed ${action}`);
-  c.say(typeof out !== "number" && out.error ? out.error.message : (r.outcome?.said ?? ""));
+  const out = outcomeOf(d, r.id, r.outcome, `the signed ${action}`);
+  c.say(out.error ? out.error.message : r.outcome!.said);
   if (r.outcome?.op) c.say(`Its op is ${r.outcome.op}.`);
   return out;
 }
 
-export const signedRun = (c: BoxCtx): Promise<CmdOutcome> => sendSigned(c, askDeps(c.root, c.uid, c.ops.sys));
+export const signedRun = (c: BoxCtx): Promise<CmdOutcome> => sendSigned(c, askDeps(c.root, c.uid, c.ops.sys, c.deps.rootUid));
 
 // The subject's nonce: read, or made by the guard and then read.
 export type NonceRead = { ok: true; nonce: string; made: boolean } | { ok: false; code: "not-found" | "failed"; why: string };
@@ -118,7 +110,7 @@ export async function nonceOf(d: AskDeps, subject: string): Promise<NonceRead> {
   if (have) return { ok: true, nonce: have, made: false };
   const r = await ask(d, NONCE, { subject });
   if ("no" in r) return { ok: false, code: "failed", why: r.no };
-  if (!r.outcome) return { ok: false, code: "failed", why: `The box's guard hasn't answered within ${(POLLS * POLL_MS) / 1000} s, so it may be down.` };
+  if (!r.outcome) return { ok: false, code: "failed", why: `The box's guard hasn't answered within ${waited(d)}, so it may be down.` };
   if (!r.outcome.ok) return { ok: false, code: r.outcome.code === "not-found" ? "not-found" : "failed", why: r.outcome.said };
   const made = read();
   return made ? { ok: true, nonce: made, made: true } : { ok: false, code: "failed", why: "The guard made the nonce, but nonces.json can't be read." };
@@ -126,11 +118,11 @@ export async function nonceOf(d: AskDeps, subject: string): Promise<NonceRead> {
 
 export async function nonceRun(c: BoxCtx): Promise<CmdOutcome> {
   const subject = c.args[0]!;
-  const r = await nonceOf(askDeps(c.root, c.uid, c.ops.sys), subject);
+  const r = await nonceOf(askDeps(c.root, c.uid, c.ops.sys, c.deps.rootUid), subject);
   if (!r.ok) {
     c.say(r.why);
     return { exit: EXIT.failed, error: { code: r.code, message: r.why, fix: null, who: null } };
   }
   c.say(r.nonce);
-  return { exit: EXIT.ok, changed: r.made, result: { subject, nonce: r.nonce }, did: r.made ? `Made the nonce for ${subject}.` : "Nothing changed." };
+  return { exit: EXIT.ok, changed: r.made, result: { subject, nonce: r.nonce } };
 }

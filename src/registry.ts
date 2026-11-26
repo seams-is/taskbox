@@ -5,6 +5,9 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type CommandSpec, GLOBAL_FLAGS, type GlobalFlag, parse, type Parsed } from "./command.ts";
 
+// A statement's action (core/statement.ts ACTION): a word, or two with a dot.
+const ACTION = /^[a-z][a-z0-9-]{0,31}(\.[a-z][a-z0-9-]{0,31})?$/;
+
 export const CMD_DIR = join(import.meta.dir, "cmd");
 const FILE = /^[a-z][a-z0-9-]*\.ts$/;
 const WORD = /^[a-z][a-z0-9-]{0,30}$/;
@@ -33,7 +36,12 @@ export function registryProblem(specs: readonly CommandSpec[]): string | undefin
     if (s.root && s.shell) return `taskbox ${key} can't be both root's and the agent shell's`;
     if (s.answer && !(s.flags ?? []).includes("json")) return `taskbox ${key} has an answer but no --json`;
     // A signed step reaches the guard only through the agent account's shell, and runs no handler here.
-    if ((s.flags ?? []).includes("signed") && (!s.shell || s.raw || s.early || s.first)) return `taskbox ${key} takes --signed, so it must be the agent shell's, with no raw words, early or first`;
+    if ((s.flags ?? []).includes("signed")) {
+      if (!s.shell || s.raw || s.early || s.first) return `taskbox ${key} takes --signed, so it must be the agent shell's, with no raw words, early or first`;
+      // Its path is the statement's action, and its words go in the args as words.
+      if (!ACTION.test(s.path.join("."))) return `taskbox ${key} takes --signed, and a statement can't name ${s.path.join(".")}`;
+      if ((s.options ?? []).some((o) => o.name === "--words")) return `taskbox ${key} takes --signed, so it can't have a flag named --words`;
+    }
   }
   for (const s of specs) {
     if (!s.args?.max && !s.raw) continue;
@@ -62,7 +70,7 @@ export function registry(): CommandSpec[] {
   return cached;
 }
 
-export const parseLine = (argv: readonly string[]): Parsed => parse(registry(), argv);
+export const parseLine = (argv: readonly string[], specs: readonly CommandSpec[] = registry()): Parsed => parse(specs, argv);
 
 // The commands the agent account's shell runs, and those that need root, by their paths.
 export const shellCommands = (specs = registry()) => specs.filter((s) => s.shell);

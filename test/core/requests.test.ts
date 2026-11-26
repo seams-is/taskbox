@@ -4,7 +4,7 @@
 // files, a FIFO, kinds and actions nobody registered, two requests racing for one nonce, an id answered
 // before, and a handler that throws.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeRecord } from "../../src/accounts.ts";
 import { fingerprint } from "../../src/approver.ts";
@@ -13,17 +13,19 @@ import { parse } from "../../src/command.ts";
 import { paths } from "../../src/config.ts";
 import { trustFirst, updateApprovers } from "../../src/core/approvers.ts";
 import { type AskDeps, nonceOf, sendSigned } from "../../src/core/asker.ts";
-import { type Answer, argsOf, type DispatchDeps, type Handlers, handlersProblem, type SignedHandler, takeRequest } from "../../src/core/dispatch.ts";
+import { type Answer, contractProblem, type DispatchDeps, type Handlers, handlersProblem, loadHandlers, requestHandlers, type SignedHandler, takeRequest } from "../../src/core/dispatch.ts";
 import { eventLog, readEvents } from "../../src/core/events.ts";
-import { currentNonce, readNonces } from "../../src/core/nonces.ts";
+import { currentNonce, nonceFor, readNonces, SUBJECT } from "../../src/core/nonces.ts";
+import { NAME } from "../../src/workspace/model.ts";
 import { rootStateOf } from "../../src/core/paths.ts";
 import { readOutcome, readSpoolFile, writeSpoolFile } from "../../src/core/spool.ts";
-import { type Args, CONTROL_NS, signedWord, statementFor, statementText } from "../../src/core/statement.ts";
-import { placeSpool, REFRESH, requestsJob, requestsPass } from "../../src/passes/requests.ts";
-import { registryProblem } from "../../src/registry.ts";
+import { type Args, argsOf, CONTROL_NS, signedWord, statementFor, statementText } from "../../src/core/statement.ts";
+import { PER_WINDOW, placeSpool, REFRESH, requestsJob, requestsPass, SIGNED_PER_PASS } from "../../src/passes/requests.ts";
+import { registry, registryProblem } from "../../src/registry.ts";
 import { commandFor } from "../../src/shell.ts";
 import { FakeSys } from "../fake.ts";
-import { CFG, tempRoot, testBox } from "../helpers.ts";
+import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "../helpers.ts";
+import { type CliDeps, main } from "../../src/cli.ts";
 import { keyPair, sshsig } from "../sshsig.ts";
 import { INSTALL_ID, verifyDeps } from "../ws-helpers.ts";
 
@@ -62,8 +64,10 @@ function testHandlers() {
       throw new Error("the handler broke");
     },
   };
+  const bogus: SignedHandler = { action: "bogus", subject: () => "box", apply: async () => ({ ok: false, said: "Odd.", code: "made-up" }) as unknown as Answer };
+  const hang: SignedHandler = { action: "hang", subject: () => "box", apply: () => new Promise<Answer>(() => {}) };
   const handlers: Handlers = {
-    signed: [drain, end, boom],
+    signed: [drain, end, boom, bogus, hang],
     unsigned: [{ kind: "poll", check: (b) => (Object.keys(b).join(",") === "pairing" && typeof b.pairing === "string" ? undefined : "a poll names its pairing"), async apply(_c, r) {
       unsigned.push({ kind: "poll", body: r.body, actor: r.by.actor });
       return { ok: true, said: "Seen." };
@@ -74,7 +78,7 @@ function testHandlers() {
 
 // A box: root's state folder, the agent account recorded as this test's own user, its spool, the
 // install ID and one pinned approver key. The guard's pass runs whenever the asker waits.
-async function box(o: { pin?: boolean; handlers?: Handlers } = {}) {
+async function box(o: { pin?: boolean; handlers?: Handlers; verify?: ReturnType<typeof verifyDeps>; outcomesKeep?: number; perPass?: number } = {}) {
   const root = tempRoot();
   const p = paths(root, testBox());
   const s = rootStateOf(p);
@@ -89,7 +93,7 @@ async function box(o: { pin?: boolean; handlers?: Handlers } = {}) {
   const t = o.handlers ? { handlers: o.handlers, applied: [], unsigned: [] } : testHandlers();
   const logs: string[] = [];
   const c = { sys, cfg: CFG, p, log: { write: (l: string) => void logs.push(l) }, writer: true, rootUid: me };
-  const job = requestsJob({ c, handlers: t.handlers, verify: verifyDeps(), chown: () => {} });
+  const job = requestsJob({ c, handlers: t.handlers, verify: o.verify ?? verifyDeps(), chown: () => {}, ...(o.outcomesKeep ? { outcomesKeep: o.outcomesKeep } : {}), ...(o.perPass ? { perPass: o.perPass } : {}) });
   await job(); // the first pass makes the spool
   const d: AskDeps = { spool: s.agentSpool, outcomes: s.outcomes("agent"), nonces: s.nonces, uid: me, rootUid: me, clock: sys, sleep: () => job(), polls: 3 };
   const nonce = () => {
@@ -153,26 +157,29 @@ describe("a signed request through the agent spool", () => {
   );
 
   const t1h = ["--timeout", "1h"];
-  const refusals: [string, string, (n: string) => { words: string[]; word: string }][] = [
-    ["a stale nonce", "stale-state", () => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: "b".repeat(32) }) })],
-    ["the wrong key", "signature", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: n, key: stranger }) })],
-    ["no presence flag", "signature", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: n, flags: 0 }) })],
-    ["the wrong subject", "denied", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: n, subject: "rules" }) })],
-    ["other args than the command's", "denied", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(true), nonce: n }) })],
-    ["another action than the command's", "denied", (n) => ({ words: t1h, word: signFor({ action: "workspace.end", args: { words: ["nova-1"] }, subject: "nova-1", nonce: n }) })],
-    ["a time 6 minutes off", "expired", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: n, at: T - 6 * 60_000 }) })],
+  // Each case passes every check but the one it names.
+  const refusals: [string, string, string, (n: { box: string; rules: string }) => { words: string[]; word: string }][] = [
+    ["a stale nonce", "stale-state", "nonce isn't the box's current one", () => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: "b".repeat(32) }) })],
+    ["the wrong key", "signature", "isn't signed by an approver key", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: n.box, key: stranger }) })],
+    ["no presence flag", "signature", "isn't signed by an approver key", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: n.box, flags: 0 }) })],
+    ["the wrong subject, with that subject's own nonce", "denied", "signs drain for rules", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: n.rules, subject: "rules" }) })],
+    ["other args than the command's", "denied", "arguments aren't this command's", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(true), nonce: n.box }) })],
+    ["another action than the command's", "denied", "signs boom for box", (n) => ({ words: t1h, word: signFor({ action: "boom", args: drainArgs(), nonce: n.box }) })],
+    ["a time 6 minutes off", "expired", "more than 5 minutes", (n) => ({ words: t1h, word: signFor({ action: "drain", args: drainArgs(), nonce: n.box, at: T - 6 * 60_000 }) })],
   ];
-  for (const [name, code, make] of refusals) {
+  for (const [name, code, message, make] of refusals) {
     test(
-      `refuses ${name}, applies nothing, and leaves the nonce as it was`,
+      `refuses ${name}, applies nothing, and leaves the nonces as they were`,
       async () => {
         const b = await box();
-        const n = (await nonceOf(b.d, "box")) as { nonce: string };
-        const m = make(n.nonce);
+        const n = { box: ((await nonceOf(b.d, "box")) as { nonce: string }).nonce, rules: ((await nonceOf(b.d, "rules")) as { nonce: string }).nonce };
+        const m = make(n);
         const out = await sendSigned(line({ path: ["drain"] }, m.words, m.word).c, b.d);
-        expect(out).toMatchObject({ exit: code === "expired" ? 4 : 1, error: { code } });
+        expect(out).toMatchObject({ exit: code === "expired" ? 4 : 1, error: { code, message: expect.stringContaining(message) } });
         expect(b.applied).toEqual([]);
-        expect(b.nonce()).toBe(n.nonce);
+        expect(b.nonce()).toBe(n.box);
+        const r = readNonces(b.s.nonces, me);
+        expect(r.kind === "ok" && currentNonce(r.value, "rules")).toBe(n.rules);
       },
       SLOW,
     );
@@ -239,7 +246,9 @@ describe("a signed request through the agent spool", () => {
       const b = await box();
       const n = (await nonceOf(b.d, "box")) as { nonce: string };
       const out = await sendSigned(line({ path: ["boom"], flags: ["json", "signed"] }, [], signFor({ action: "boom", args: {}, nonce: n.nonce })).c, b.d);
-      expect(out).toMatchObject({ exit: 1, error: { code: "failed", message: expect.stringContaining("the handler broke") } });
+      // The asker hears a fixed line; the handler's own words stay in root's log.
+    expect(out).toMatchObject({ exit: 1, error: { code: "failed", message: expect.stringContaining("taskbox logs at the box says why") } });
+    expect(JSON.stringify(out)).not.toContain("the handler broke");
       expect(b.nonce()).not.toBe(n.nonce);
       expect(b.logs.some((l) => l.includes("the handler broke"))).toBe(true);
     },
@@ -332,7 +341,7 @@ describe("what the agent account can plant in the spool", () => {
   test("a FIFO is removed without the guard waiting on it", async () => {
     const b = await box();
     const fifo = join(b.s.agentSpool, "rq_01JD8Q4CCCCCCCCCCCCCCCCCCC.signed.json");
-    Bun.spawnSync(["/usr/bin/mkfifo", fifo]);
+    expect(Bun.spawnSync(["/usr/bin/mkfifo", fifo]).exitCode).toBe(0);
     await b.job();
     expect(readdirSync(b.s.agentSpool)).toEqual([]);
   });
@@ -471,5 +480,268 @@ describe("the registry and the command line", () => {
     expect(commandFor("drain --signed eyJ2.c2ln.x", specs)).toMatchObject({ no: expect.stringContaining("--signed doesn't take") });
     expect(commandFor("drain --signed 'eyJ2 c2ln'", specs)).toMatchObject({ no: expect.any(String) });
     expect(commandFor("status --signed eyJ2.c2ln", specs)).toMatchObject({ no: expect.any(String) });
+  });
+});
+
+describe("the review's cases", () => {
+  // A forged word: the current nonce, a well-formed signature naming the owner's pinned key, over other bytes.
+  const forged = (nonce: string, i: number) => {
+    const st = statementFor({ box: INSTALL_ID, action: "drain", args: drainArgs(), subject: "box", nonce, now: T });
+    const other = statementFor({ box: INSTALL_ID, action: "drain", args: { timeout: `${i}h` }, subject: "box", nonce, now: T });
+    return `${signedWord(st, "x").split(".")[0]}.${signedWord(other, sshsig(owner, new TextEncoder().encode(statementText(other)), { namespace: CONTROL_NS })).split(".")[1]}`;
+  };
+  const counting = () => {
+    const v = verifyDeps();
+    const runs = { n: 0 };
+    return { runs, verify: { ...v, run: async (cmd: string, args: string[], opts?: { stdin?: string | Uint8Array; timeoutMs?: number }) => (runs.n++, v.run(cmd, args, opts)) } };
+  };
+
+  test(
+    "a flood of forged words with the current nonce: at most SIGNED_PER_PASS checks a pass, and the owner's step still applies",
+    async () => {
+      const k = counting();
+      const b = await box({ verify: k.verify });
+      const n = (await nonceOf(b.d, "box")) as { nonce: string };
+      for (let i = 0; i < 12; i++) writeSpoolFile(b.s.agentSpool, "signed", { word: forged(n.nonce, i + 2), action: "drain", args: drainArgs() }, b.sys);
+      await b.job();
+      expect(k.runs.n).toBe(SIGNED_PER_PASS);
+      expect(readdirSync(b.s.agentSpool)).toHaveLength(12 - SIGNED_PER_PASS);
+      expect(b.nonce()).toBe(n.nonce);
+      // The owner's own word, sent behind the flood, is taken in the order root saw it, and applies.
+      const out = await sendSigned(line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce })).c, { ...b.d, polls: 5 });
+      expect(out).toMatchObject({ exit: 0 });
+      expect(b.applied).toHaveLength(1);
+    },
+    SLOW,
+  );
+
+  test("a signature naming no pinned key runs no ssh-keygen at all", async () => {
+    const k = counting();
+    const b = await box({ verify: k.verify });
+    const n = (await nonceOf(b.d, "box")) as { nonce: string };
+    const out = await sendSigned(line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce, key: stranger })).c, b.d);
+    expect(out).toMatchObject({ error: { code: "signature" } });
+    expect(k.runs.n).toBe(0);
+  });
+
+  test(
+    "no ssh-keygen runs while the nonces lock is held: other nonce work goes on during a check",
+    async () => {
+      const v = verifyDeps();
+      let b!: Awaited<ReturnType<typeof box>>;
+      let during = "";
+      const verify = { ...v, run: async (cmd: string, args: string[], opts?: { stdin?: string | Uint8Array; timeoutMs?: number }) => {
+        during = await nonceFor(b.s.nonces, "rules", { rootUid: me, now: T });
+        return v.run(cmd, args, opts);
+      } };
+      b = await box({ verify });
+      const n = (await nonceOf(b.d, "box")) as { nonce: string };
+      expect(await sendSigned(line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce })).c, b.d)).toMatchObject({ exit: 0 });
+      expect(during).toMatch(/^[0-9a-f]{32}$/);
+    },
+    SLOW,
+  );
+
+  test(
+    "every request counts against the window, whatever its kind: past it, requests wait in the spool",
+    async () => {
+      const b = await box();
+      for (let i = 0; i < 40; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${i}` }, b.sys);
+      await b.job();
+      await b.job();
+      for (let i = 40; i < 70; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${i}` }, b.sys);
+      for (let i = 0; i < 5; i++) await b.job();
+      expect(b.unsigned).toHaveLength(PER_WINDOW);
+      expect(readdirSync(b.s.agentSpool)).toHaveLength(70 - PER_WINDOW);
+    },
+    SLOW,
+  );
+
+  // Which request each pass took, one a pass.
+  async function oneAPass(b: Awaited<ReturnType<typeof box>>, ids: string[], passes: number) {
+    const got: string[] = [];
+    for (let i = 0; i < passes; i++) {
+      await b.job();
+      for (const id of ids) if (!got.includes(id) && readOutcome(b.d.outcomes, id, me).kind === "ok") got.push(id);
+    }
+    return got;
+  }
+
+  test("a request back-dated by its asker doesn't jump one root saw first", async () => {
+    const b = await box({ perPass: 1 });
+    const a1 = writeSpoolFile(b.s.agentSpool, "poll", { pairing: "a" }, b.sys).id;
+    const a2 = writeSpoolFile(b.s.agentSpool, "poll", { pairing: "b" }, b.sys).id;
+    const [taken] = await oneAPass(b, [a1, a2], 1);
+    const waiting = taken === a1 ? a2 : a1;
+    const late = writeSpoolFile(b.s.agentSpool, "poll", { pairing: "c" }, b.sys);
+    utimesSync(join(b.s.agentSpool, late.file), new Date(T - 60_000), new Date(T - 60_000));
+    expect(await oneAPass(b, [waiting, late.id], 2)).toEqual([waiting, late.id]);
+  });
+
+  test("the order: signed, then nonce, then the handlers' kinds, then kinds nobody takes", async () => {
+    const b = await box({ perPass: 1 });
+    const ids = ["mystery", "poll", "nonce", "signed"].map((k) => writeSpoolFile(b.s.agentSpool, k, k === "nonce" ? { subject: "box" } : k === "signed" ? { word: "a.b", action: "drain", args: {} } : { pairing: "p" }, b.sys).id);
+    expect(await oneAPass(b, ids, 4)).toEqual([...ids].reverse());
+  });
+
+  test("a refusal code that isn't the envelope's becomes failed, and the outcome is written", async () => {
+    const b = await box();
+    const n = (await nonceOf(b.d, "box")) as { nonce: string };
+    const out = await sendSigned(line({ path: ["bogus"], flags: ["json", "signed"] }, [], signFor({ action: "bogus", args: {}, nonce: n.nonce })).c, b.d);
+    expect(out).toMatchObject({ exit: 1, error: { code: "failed", message: "Odd." } });
+  });
+
+  test("an outcome that can't be written is logged, and the pass goes on to the next request", async () => {
+    const b = await box();
+    writeSpoolFile(b.s.agentSpool, "poll", { pairing: "p1" }, b.sys);
+    await b.job();
+    chmodSync(b.d.outcomes, 0o755);
+    writeSpoolFile(b.s.agentSpool, "poll", { pairing: "p2" }, b.sys);
+    writeSpoolFile(b.s.agentSpool, "poll", { pairing: "p3" }, b.sys);
+    await b.job();
+    expect(b.unsigned.map((u) => String(u.body.pairing)).sort()).toEqual(["p1", "p2", "p3"]);
+    expect(b.logs.filter((l) => l.includes("couldn't be written"))).toHaveLength(2);
+  });
+
+  test(
+    "a handler that doesn't answer in 30 s: answered timeout, left running, and the pass fails so the row shows it",
+    async () => {
+      const b = await box();
+      const n = (await nonceOf(b.d, "box")) as { nonce: string };
+      const r = writeSpoolFile(b.s.agentSpool, "signed", { word: signFor({ action: "hang", args: {}, nonce: n.nonce }), action: "hang", args: {} }, b.sys);
+      const pass = b.job().then(() => "", (e: Error) => e.message);
+      // Fake time moves only on a sleep.
+      while (readOutcome(b.d.outcomes, r.id, me).kind === "missing") await b.sys.sleep(1_000);
+      expect(await pass).toContain("took over 30 s");
+      expect(readOutcome(b.d.outcomes, r.id, me)).toMatchObject({ kind: "ok", value: { ok: false, code: "timeout" } });
+    },
+    SLOW,
+  );
+
+  test("only the newest outcomes this guard wrote are kept past the cap", async () => {
+    const b = await box({ outcomesKeep: 3 });
+    for (let i = 0; i < 5; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${i}` }, b.sys);
+    await b.job();
+    expect(readdirSync(b.d.outcomes)).toHaveLength(3);
+  });
+
+  test("a nonce that can't be made for a reason other than its subject says failed, never not-found", async () => {
+    const b = await box();
+    writeFileSync(b.s.nonces, "{ not json");
+    const r = await nonceOf(b.d, "box");
+    expect(r).toMatchObject({ ok: false, code: "failed" });
+  });
+
+  test("every workspace name the model makes is a subject a nonce can be made for", () => {
+    for (const name of ["nova-1", "a-9", "agent16charsxxxx-999999999", "x1-42"]) {
+      expect({ name, model: NAME.test(name), subject: SUBJECT.test(name) }).toEqual({ name, model: NAME.test(name), subject: NAME.test(name) });
+    }
+  });
+});
+
+describe("the handlers' folder", () => {
+  const dir = () => {
+    const d = join(tempRoot(), "handlers");
+    mkdirSync(d, { recursive: true });
+    return d;
+  };
+  const src = (o: string) => `export const handlers = ${o};\n`;
+  test("each file's handlers are found, from every file in the folder", () => {
+    const d = dir();
+    writeFileSync(join(d, "jobs.ts"), src(`{ signed: [{ action: "job.cancel", subject: () => "box", apply: async () => ({ ok: true, said: "x" }) }] }`));
+    writeFileSync(join(d, "connect.ts"), src(`{ unsigned: [{ kind: "connect-code", check: () => undefined, apply: async () => ({ ok: true, said: "x" }) }] }`));
+    writeFileSync(join(d, "notes.md"), "not a handler file");
+    const h = loadHandlers(d);
+    expect(h.signed.map((x) => x.action)).toEqual(["job.cancel"]);
+    expect(h.unsigned.map((x) => x.kind)).toEqual(["connect-code"]);
+  });
+  test("a file that exports no handlers, or two files taking one action, is refused", () => {
+    const d = dir();
+    writeFileSync(join(d, "empty.ts"), "export const other = 1;\n");
+    expect(() => loadHandlers(d)).toThrow("src/handlers/empty.ts exports no handlers");
+    const e = dir();
+    for (const f of ["a.ts", "b.ts"]) writeFileSync(join(e, f), src(`{ signed: [{ action: "drain", subject: () => "box", apply: async () => ({ ok: true, said: "x" }) }] }`));
+    expect(() => loadHandlers(e)).toThrow("two signed handlers take drain");
+  });
+  test("every command that takes --signed has a handler for its action, and every signed handler a command", () => {
+    expect(contractProblem(registry(), requestHandlers())).toBeUndefined();
+    const h = testHandlers().handlers;
+    const drainCmd: CommandSpec = { path: ["drain"], summary: "x", who: ["owner"], flags: ["signed"], shell: true, run: async () => 0 };
+    expect(contractProblem([drainCmd], { signed: [h.signed[0]!], unsigned: [] })).toBeUndefined();
+    expect(contractProblem([drainCmd], { signed: [], unsigned: [] })).toContain("no handler takes drain");
+    expect(contractProblem([], { signed: [h.signed[0]!], unsigned: [] })).toContain("no command for it takes --signed");
+  });
+});
+
+describe("--signed through the box's command line", () => {
+  // A test-only command that takes --signed; its own run must never run for a signed line.
+  const ran: string[] = [];
+  const spec: CommandSpec = { path: ["drain"], summary: "Drain.", who: ["owner", "service"], flags: ["json", "timeout", "force", "signed"], shell: true, run: async () => (ran.push("own"), 0) };
+  async function cli(b: Awaited<ReturnType<typeof box>>, argv: string[], o: { uid?: number; service?: number } = {}) {
+    mkdirSync(b.p.app, { recursive: true });
+    writeFileSync(join(b.p.app, "taskbox.json"), readFileSync(join(import.meta.dir, "../../taskbox.example.json"), "utf8"));
+    quietBox(b.sys);
+    fakeLaunchd(b.sys);
+    // The asker's waits run the guard's pass, as the guard would beside it.
+    b.sys.sleep = async () => {
+      await b.job();
+    };
+    const said: string[] = [];
+    const deps: CliDeps = { sys: () => b.sys, uid: o.uid ?? me, serviceUid: async () => o.service ?? me + 1, env: { HOME: "/var/empty" }, tty: () => 0, user: () => "taskbox-agent", ask: async () => "", say: (l) => void said.push(l), err: () => {}, terminal: () => false, hostname: () => "taskbox-1.local", root: b.root, chown: () => {}, specs: [spec], rootUid: me };
+    const code = await main(argv, deps);
+    return { code, said };
+  }
+
+  test(
+    "the line goes through the agent spool to the guard's handler; the command's own run never runs",
+    async () => {
+      ran.length = 0;
+      const b = await box();
+      const n = (await nonceOf(b.d, "box")) as { nonce: string };
+      const word = signFor({ action: "drain", args: drainArgs(), nonce: n.nonce });
+      const r = await cli(b, ["drain", "--timeout", "1h", "--signed", word, "--json"]);
+      expect(r.code).toBe(0);
+      const env = JSON.parse(r.said.at(-1)!);
+      expect(env).toMatchObject({ command: "drain", ok: true, exit: 0, changed: true, result: { request: expect.stringMatching(/^rq_/), op: "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ" }, error: null });
+      expect(env.lines).toContain("Draining.");
+      expect(ran).toEqual([]);
+      expect(b.applied).toHaveLength(1);
+      // The text form says the outcome once.
+      const n2 = (await nonceOf(b.d, "box")) as { nonce: string };
+      const t = await cli(b, ["drain", "--timeout", "1h", "--signed", signFor({ action: "drain", args: drainArgs(), nonce: n2.nonce })]);
+      expect(t.code).toBe(0);
+      expect(t.said.filter((l) => l.includes("Draining."))).toHaveLength(1);
+    },
+    SLOW,
+  );
+
+  test(
+    "a refused signed line exits as its code says, with the envelope's error",
+    async () => {
+      const b = await box();
+      const r = await cli(b, ["drain", "--timeout", "1h", "--signed", signFor({ action: "drain", args: drainArgs(), nonce: "d".repeat(32) }), "--json"]);
+      expect(r.code).toBe(1);
+      expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ ok: false, error: { code: "stale-state" } });
+    },
+    SLOW,
+  );
+
+  test("the same command unsigned, from the agent account, is refused before its run; the service account runs it", async () => {
+    ran.length = 0;
+    const b = await box();
+    const r = await cli(b, ["drain", "--timeout", "1h", "--json"]);
+    expect(r.code).toBe(1);
+    expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
+    expect(ran).toEqual([]);
+    const s = await cli(b, ["drain", "--timeout", "1h"], { uid: me, service: me });
+    expect(s.code).toBe(0);
+    expect(ran).toEqual(["own"]);
+  });
+
+  test("a command whose path a statement can't name, or with a --words flag, can't take --signed", () => {
+    const base: CommandSpec = { path: ["connect", "github"], summary: "x", who: ["owner"], flags: ["signed"], shell: true, run: async () => 0 };
+    expect(registryProblem([base])).toBeUndefined();
+    expect(registryProblem([{ ...base, path: ["workspace", "pause", "now"] }])).toContain("a statement can't name workspace.pause.now");
+    expect(registryProblem([{ ...base, options: [{ name: "--words", value: "W" }] }])).toContain("--words");
   });
 });
