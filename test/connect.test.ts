@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Config } from "../src/config.ts";
 import { appName, conversionProblem, hookProblem, installationProblem, installationsOf, manifestFor, publicProblem, reposProblem, startPage } from "../src/connect.ts";
-import { adoptV2, applyCodeRequest, askText, cancelConnect, cleanEndedConnects, CONNECT_CODE_HANDLER, codeRequestProblem, codeWaiter, confirmPhase, openControllerConnect, v2AdoptFrom, connectGithub, connectStatus, disconnectGithub, type FlowDeps, oldKeyFiles, openConnectOp, parseAsk, readCodeInbox, takeConnectCode } from "../src/connectflow.ts";
+import { adoptV2, applyCodeRequest, askText, cancelConnect, cleanEndedConnects, CONNECT_CODE_HANDLER, codeRequestProblem, codeWaiter, confirmPhase, openControllerConnect, stateHash, v2AdoptFrom, connectGithub, connectStatus, disconnectGithub, type FlowDeps, oldKeyFiles, openConnectOp, parseAsk, readCodeInbox, takeConnectCode } from "../src/connectflow.ts";
 import { keyFileName, keysDirProblem, listKeys, placePending, promoteKey, readAdoptedKey, readHeldKey } from "../src/keys.ts";
 import { type ListenEvent, parentWatch, serveOnce, setupProblem } from "../src/listen.ts";
 import { Log } from "../src/log.ts";
@@ -693,40 +693,54 @@ describe("connect github, when things go wrong", () => {
 
 describe("the controller's code, bound to the op's state", () => {
   const ID = "op_01J0000000000000000000000A";
-  const ST = { v: 1 as const, op: ID, runner: "1".repeat(64), source: "2".repeat(64) };
-  const op = (phase: string, x: Record<string, unknown> = {}) => ({ id: ID, type: "connect", state: "running", phase, params: { from: "controller" }, ...x }) as never;
-  const req = (code: string, state = ST.runner) => ({ op: ID, state, code });
+  const RS = "1".repeat(64);
+  const SS = "2".repeat(64);
+  const HASHES = { runner: stateHash(RS), source: stateHash(SS) };
+  const op = (phase: string, x: Record<string, unknown> = {}) => ({ id: ID, type: "connect", state: "running", phase, params: { from: "controller", stateHashes: HASHES }, ...x }) as never;
+  const req = (code: string, state = RS) => ({ op: ID, state, code });
 
-  test("a code is taken only for the open op, from the controller, while it makes an App, with that App's state", () => {
-    expect(takeConnectCode([], ST, undefined, req("c"))).toEqual({ why: "no connect by that op is open on this box" });
-    expect(takeConnectCode([op("making-runner", { state: "succeeded" })], ST, undefined, req("c"))).toMatchObject({ why: expect.any(String) });
-    expect(takeConnectCode([op("making-runner", { params: { from: "box" } })], ST, undefined, req("c"))).toEqual({ why: "that connect takes its code at the box" });
-    expect(takeConnectCode([op("installing-runner")], ST, undefined, req("c"))).toEqual({ why: "the open connect isn't making an App now" });
-    expect(takeConnectCode([op("making-runner")], ST, undefined, req("c", ST.source))).toEqual({ why: "that code doesn't carry this connect's state" });
-    expect(takeConnectCode([op("making-runner")], undefined, undefined, req("c"))).toEqual({ why: "that code doesn't carry this connect's state" });
-    expect(takeConnectCode([op("making-runner")], ST, undefined, req("c"))).toEqual({ inbox: { v: 1, op: ID, role: "runner", code: "c" } });
-    expect(codeRequestProblem({ op: ID, state: ST.runner, code: "abc" })).toBeUndefined();
+  test("a code is taken only for the open op, from the controller, while it makes an App, with a state of that App's hash", () => {
+    expect(takeConnectCode([], undefined, req("c"))).toEqual({ why: "no connect by that op is open on this box" });
+    expect(takeConnectCode([op("making-runner", { state: "succeeded" })], undefined, req("c"))).toMatchObject({ why: expect.any(String) });
+    expect(takeConnectCode([op("making-runner", { params: { from: "box" } })], undefined, req("c"))).toEqual({ why: "that connect takes its code at the box" });
+    expect(takeConnectCode([op("installing-runner")], undefined, req("c"))).toEqual({ why: "the open connect isn't making an App now" });
+    expect(takeConnectCode([op("making-runner")], undefined, req("c", SS))).toEqual({ why: "that code doesn't carry this connect's state" });
+    expect(takeConnectCode([op("making-runner")], undefined, req("c", HASHES.runner))).toEqual({ why: "that code doesn't carry this connect's state" });
+    expect(takeConnectCode([op("making-runner", { params: { from: "controller" } })], undefined, req("c"))).toEqual({ why: "that code doesn't carry this connect's state" });
+    expect(takeConnectCode([op("making-runner")], undefined, req("c"))).toEqual({ inbox: { v: 1, op: ID, role: "runner", code: "c" } });
+    expect(takeConnectCode([op("making-source")], undefined, req("c", SS))).toMatchObject({ inbox: { role: "source" } });
+    expect(codeRequestProblem({ op: ID, state: RS, code: "abc" })).toBeUndefined();
     expect(codeRequestProblem({ op: ID, code: "abc" })).toBeDefined();
-    expect(codeRequestProblem({ op: ID, state: ST.runner, code: "abc", role: "runner" })).toBeDefined();
+    expect(codeRequestProblem({ op: ID, state: RS, code: "abc", role: "runner" })).toBeDefined();
+  });
+
+  test("the op keeps only the hashes the signed request carried, and one per App", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-ops-"));
+    expect(openControllerConnect({ ops: { dir, owner: me }, now: SINCE, actor: "owner", params: {}, stateHashes: { runner: HASHES.runner, source: HASHES.runner } })).toMatchObject({ why: expect.any(String) });
+    expect(openControllerConnect({ ops: { dir, owner: me }, now: SINCE, actor: "owner", params: {}, stateHashes: { runner: "x" } })).toMatchObject({ why: expect.any(String) });
+    const o = openControllerConnect({ ops: { dir, owner: me }, now: SINCE, actor: "owner", params: {}, stateHashes: HASHES });
+    if (!("op" in o)) throw new Error(o.why);
+    const text = readFileSync(join(dir, `${o.op.id}.json`), "utf8");
+    expect(JSON.parse(text).params.stateHashes).toEqual(HASHES);
+    expect(text).not.toContain(RS);
   });
 
   test("a flood of junk codes, then the real one: only the real one is taken, and GitHub is never asked", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inbox-"));
     const ops = join(dir, "ops");
     mkdirSync(ops);
-    const opened = openControllerConnect({ ops: { dir: ops, owner: me }, statesFile: join(dir, "connect-states.json"), now: SINCE, actor: "owner", params: {}, rootUid: me });
+    const opened = openControllerConnect({ ops: { dir: ops, owner: me }, now: SINCE, actor: "owner", params: {}, stateHashes: HASHES });
     if (!("op" in opened)) throw new Error(opened.why);
-    expect(lstatSync(join(dir, "connect-states.json")).mode & 0o777).toBe(0o600);
     const rec = JSON.parse(readFileSync(join(ops, `${opened.op.id}.json`), "utf8"));
     writeFileSync(join(ops, `${opened.op.id}.json`), JSON.stringify({ ...rec, phase: "making-runner" }));
     const sys = new FakeSys();
     let fetched = 0;
     sys.fetch = async () => (fetched++, json({}));
-    const o = { inbox: join(dir, "connect-code.json"), states: join(dir, "connect-states.json"), ops: { dir: ops, owner: me }, rootUid: me };
-    for (let i = 0; i < 500; i++) expect(applyCodeRequest(o, { op: opened.op.id, state: (i % 2 ? "a" : "b").repeat(64), code: `junk${i}` })).toBe("that code doesn't carry this connect's state");
+    const o = { inbox: join(dir, "connect-code.json"), ops: { dir: ops, owner: me }, rootUid: me };
+    for (let i = 0; i < 500; i++) expect(applyCodeRequest(o, { op: opened.op.id, state: (i % 3 ? "a" : i % 2 ? HASHES.runner : SS).padEnd(64, "a").slice(0, 64), code: `junk${i}` })).toBe("that code doesn't carry this connect's state");
     expect(existsSync(o.inbox)).toBe(false);
-    expect(applyCodeRequest(o, { op: opened.op.id, state: opened.states.runner, code: "real" })).toBeUndefined();
-    expect(applyCodeRequest(o, { op: opened.op.id, state: opened.states.runner, code: "second" })).toBe("this connect took a code for that App already");
+    expect(applyCodeRequest(o, { op: opened.op.id, state: RS, code: "real" })).toBeUndefined();
+    expect(applyCodeRequest(o, { op: opened.op.id, state: RS, code: "second" })).toBe("this connect took a code for that App already");
     expect(readCodeInbox(o.inbox, me)).toEqual({ v: 1, op: opened.op.id, role: "runner", code: "real" });
     expect(await codeWaiter({ sys, rootUid: me }, o.inbox, opened.op.id, sys.now() + 3000)("runner")).toEqual({ code: "real" });
     expect(fetched).toBe(0);

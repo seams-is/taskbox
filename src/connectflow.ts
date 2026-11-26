@@ -1,7 +1,7 @@
 // connect github and disconnect github: one op makes both Apps true, the runner App first. Root
 // converts the code, checks the App, hands its key to the keeper as pending, proves the install, and
 // only then keeps it. The code comes from the listener at the box or from the controller.
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { readBoxFile } from "./boxsettings.ts";
@@ -531,32 +531,27 @@ export interface OpCancelHook {
 export const CONNECT_CANCEL: OpCancelHook = { type: CONNECT_OP.type, cancel: cancelConnect };
 
 // ---- The controller's code, through the agent spool ----
-// Unsigned, so anyone with the agent account can send one. Each code must carry the state the op
-// handed the controller for that App, in the private answer to its signed connect github, compared in
-// constant time. A code without it is refused here, with no GitHub call. The first code with it is the
-// one conversion that App gets in this op.
+// Unsigned, so anyone with the agent account can send one. The controller makes one 64-hex state per
+// App and signs only their SHA-256 hashes into its connect github; the box keeps the hashes on the op
+// and never holds or hands out a state. A code is taken only with a state whose hash matches,
+// compared in constant time; any other is refused here, with no GitHub call. The first code that
+// matches is the one conversion that App gets in this op.
 export const CODE_KIND = "connect-code";
 const OP_ID = /^op_[0-9A-HJKMNP-TV-Z]{26}$/;
 const CODE_RE = /^[A-Za-z0-9_-]{1,100}$/;
-const STATE_RE = /^[0-9a-f]{64}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
 export function codeRequestProblem(body: Record<string, unknown>): string | undefined {
   if (!Object.keys(body).every((k) => k === "code" || k === "op" || k === "state")) return "a connect code carries its op, its state and its code alone";
   if (typeof body.op !== "string" || !OP_ID.test(body.op)) return "a connect code names its op";
-  if (typeof body.state !== "string" || !STATE_RE.test(body.state)) return "a connect code carries its op's state";
+  if (typeof body.state !== "string" || !HEX64.test(body.state)) return "a connect code carries its op's state";
   return typeof body.code === "string" && CODE_RE.test(body.code) ? undefined : "a connect code is one code";
 }
 
-// The op's states, one per App: root's, 600, made when a controller's connect opens.
-export type ConnectStates = { v: 1; op: string; runner: string; source: string };
-export function newConnectStates(path: string, op: string, o: { rootUid?: number; chown?: (p: string, u: number, g: number) => void; rand?: (n: number) => Buffer } = {}): ConnectStates {
-  const r = o.rand ?? randomBytes;
-  const s: ConnectStates = { v: 1, op, runner: r(32).toString("hex"), source: r(32).toString("hex") };
-  writeOwnedText(path, `${JSON.stringify(s)}\n`, { mode: 0o600, owner: o.rootUid ?? 0, ...(o.chown ? { chown: o.chown } : {}) });
-  return s;
-}
-export function readConnectStates(path: string, rootUid = 0): ConnectStates | undefined {
-  const r = readOwnedJson(path, { owner: rootUid, max: 1024 }, (v) => (isObj(v) && v.v === 1 && typeof v.op === "string" && typeof v.runner === "string" && STATE_RE.test(v.runner) && typeof v.source === "string" && STATE_RE.test(v.source) ? (v as unknown as ConnectStates) : "not states"));
-  return r.kind === "ok" ? r.value : undefined;
+// The hashes the signed request carries, as the op keeps them in its params.
+export type StateHashes = { runner: string; source: string };
+export const stateHash = (state: string) => createHash("sha256").update(state).digest("hex");
+export function stateHashesProblem(v: unknown): string | undefined {
+  return isObj(v) && Object.keys(v).length === 2 && typeof v.runner === "string" && HEX64.test(v.runner) && typeof v.source === "string" && HEX64.test(v.source) && v.runner !== v.source ? undefined : "a controller's connect carries one state hash per App";
 }
 
 export type CodeInbox = { v: 1; op: string; role: AppRole; code: string };
@@ -567,13 +562,14 @@ const sameState = (a: string, b: string) => {
   return x.length === y.length && timingSafeEqual(x, y);
 };
 
-export function takeConnectCode(running: readonly Pick<Op, "id" | "type" | "state" | "phase" | "params">[], states: ConnectStates | undefined, inbox: CodeInbox | undefined, req: { op: string; state: string; code: string }): { inbox: CodeInbox } | { why: string } {
+export function takeConnectCode(running: readonly Pick<Op, "id" | "type" | "state" | "phase" | "params">[], inbox: CodeInbox | undefined, req: { op: string; state: string; code: string }): { inbox: CodeInbox } | { why: string } {
   const op = running.find((o) => o.type === CONNECT_OP.type && o.state === "running" && o.id === req.op);
   if (!op) return { why: "no connect by that op is open on this box" };
   if (op.params.from !== "controller") return { why: "that connect takes its code at the box" };
   const role: AppRole | undefined = op.phase === "making-runner" ? "runner" : op.phase === "making-source" ? "source" : undefined;
   if (!role) return { why: "the open connect isn't making an App now" };
-  if (!states || states.op !== op.id || !sameState(req.state, states[role])) return { why: "that code doesn't carry this connect's state" };
+  const hashes = op.params.stateHashes as Record<string, unknown> | undefined;
+  if (stateHashesProblem(hashes) || !sameState(stateHash(req.state), hashes![role] as string)) return { why: "that code doesn't carry this connect's state" };
   if (inbox && inbox.op === op.id && inbox.role === role) return { why: "this connect took a code for that App already" };
   return { inbox: { v: 1, op: op.id, role, code: req.code } };
 }
@@ -733,10 +729,10 @@ export const connectRunning = (ops: Pick<OpFolder, "dir" | "owner">) => listOps(
 
 // The guard's side, for the shared request dispatcher: one connect-code request applied to the inbox
 // (root's, 600). The outcome's why, or undefined when the code was kept.
-export function applyCodeRequest(o: { inbox: string; states: string; ops: Pick<OpFolder, "dir" | "owner">; rootUid?: number; chown?: (p: string, u: number, g: number) => void }, body: Record<string, unknown>): string | undefined {
+export function applyCodeRequest(o: { inbox: string; ops: Pick<OpFolder, "dir" | "owner">; rootUid?: number; chown?: (p: string, u: number, g: number) => void }, body: Record<string, unknown>): string | undefined {
   const why = codeRequestProblem(body);
   if (why) return why;
-  const t = takeConnectCode(listOps(o.ops).ops, readConnectStates(o.states, o.rootUid ?? 0), readCodeInbox(o.inbox, o.rootUid ?? 0), { op: body.op as string, state: body.state as string, code: body.code as string });
+  const t = takeConnectCode(listOps(o.ops).ops, readCodeInbox(o.inbox, o.rootUid ?? 0), { op: body.op as string, state: body.state as string, code: body.code as string });
   if ("why" in t) return t.why;
   writeOwnedText(o.inbox, `${JSON.stringify(t.inbox)}\n`, { mode: 0o600, owner: o.rootUid ?? 0, ...(o.chown ? { chown: o.chown } : {}) });
   return undefined;
@@ -748,19 +744,22 @@ export const CONNECT_CODE_HANDLER = {
   kind: CODE_KIND,
   check: codeRequestProblem,
   async apply(c: { state: { dir: string; ops: string }; rootUid: number; chown?: (p: string, u: number, g: number) => void }, r: { body: Record<string, unknown> }) {
-    const why = applyCodeRequest({ inbox: join(c.state.dir, "connect-code.json"), states: join(c.state.dir, "connect-states.json"), ops: { dir: c.state.ops, owner: c.rootUid }, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) }, r.body);
+    const why = applyCodeRequest({ inbox: join(c.state.dir, "connect-code.json"), ops: { dir: c.state.ops, owner: c.rootUid }, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) }, r.body);
     return why ? { ok: false as const, said: why, code: "denied" as const } : { ok: true as const, said: "The box took the code." };
   },
 };
 
-// A controller's connect, opened by the guard for its signed connect github: the op's record and its
-// two states, which go back in the private answer and nowhere else. The guard then starts the child
-// (connectchild.ts) through runChild.
-export function openControllerConnect(o: { ops: OpFolder; statesFile: string; now: number; actor: string; params: Record<string, Json>; rootUid?: number; chown?: (p: string, u: number, g: number) => void; rand?: (n: number) => Buffer }): { op: Op; states: ConnectStates } | { why: string } {
-  const b = begin(listOps(o.ops).ops, CONNECT_OP, { subject: "box", params: { ...o.params, from: "controller" }, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
+// A controller's connect, opened by the guard for its signed connect github: the op's record, with
+// the state hashes its statement carried. The guard then starts the child (connectchild.ts) through
+// runChild. Nothing secret comes back.
+export function openControllerConnect(o: { ops: OpFolder; now: number; actor: string; params: Record<string, Json>; stateHashes: unknown }): { op: Op } | { why: string } {
+  const why = stateHashesProblem(o.stateHashes);
+  if (why) return { why };
+  const h = o.stateHashes as StateHashes;
+  const b = begin(listOps(o.ops).ops, CONNECT_OP, { subject: "box", params: { ...o.params, from: "controller", stateHashes: { runner: h.runner, source: h.source } }, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
   if (b.kind !== "start") return { why: b.kind === "busy" ? b.why : `A connect (${b.op.id}) is running already. taskbox op show ${b.op.id} -w follows it.` };
   writeOp(o.ops, b.op);
-  return { op: b.op, states: newConnectStates(o.statesFile, b.op.id, o) };
+  return { op: b.op };
 }
 
 // Waits for the op's record to show the keeping phase, at most a minute: the guard applies reports
