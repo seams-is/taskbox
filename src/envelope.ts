@@ -1,4 +1,4 @@
-// The answers envelope, version 4 (v3 design, §3.1). Every command with --json prints one. The box
+// The answers envelope, version 4. Every command with --json prints one. The box
 // writes it here; src/schema.ts reads it, on the box's own tests and on the laptop.
 import type { ErrorBody } from "./command.ts";
 
@@ -104,7 +104,7 @@ export function resultOf(v3: Record<string, unknown>): Record<string, unknown> {
   return rest;
 }
 
-// A version 3 error word as a v4 error (§3.5): each names its cause and who acts.
+// A version 3 error word as a v4 error: each names its cause and who acts.
 export function errorFromV3(word: unknown): ErrorBody {
   const why: Record<string, string> = {
     "state-unreadable": "The box's state can't be shown to you.",

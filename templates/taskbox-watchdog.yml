@@ -1,4 +1,4 @@
-# taskbox watchdog (docs/away-ready-design.md, "Alerts"). Made by `taskbox watchdog` from the box's
+# taskbox watchdog. Made by `taskbox template show box-check` from the box's
 # own settings: don't edit the copy in your repo; change the settings and make it again. It goes in
 # .github/workflows/taskbox-watchdog.yml of the repo whose jobs your box runs.
 #
@@ -6,7 +6,7 @@
 # screen. It fails when a job for one of the box's labels has waited longer than WAIT_MINUTES while
 # no job for the box is running, and GitHub emails you about the failed run. It needs no secret and
 # reads this repo's Actions only. Its run name carries a fingerprint of the settings it was made
-# from, so `taskbox away` can tell whether this copy matches the box.
+# from, so `taskbox check --away` can tell whether this copy matches the box.
 name: taskbox watchdog
 run-name: taskbox watchdog __FINGERPRINT__${{ inputs.test_alert && ' (test alert)' || '' }}
 

@@ -1,5 +1,5 @@
 // taskbox hello: what the laptop reads first when it pairs, and where the two agree an answers
-// version (§3.1). Internal: help leaves it out. No hostname, serial number, user name or path in the answer.
+// version. Internal: help leaves it out. No hostname, serial number, user name or path in the answer.
 import type { BoxCtx, CommandSpec } from "../command.ts";
 
 async function facts(c: BoxCtx) {

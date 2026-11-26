@@ -1,5 +1,4 @@
-// taskbox update: the newest release, or the one named. As root, through sudo. WP4 makes it the
-// update op: signed releases, phases, --check, --repair and rollback on a failed proof.
+// taskbox update: the newest release, or the one named. As root, through sudo.
 import type { CommandSpec } from "../command.ts";
 
 // A release tag: v2.6.1, or a trial's, v3.0.0-rc.1 (github.ts).

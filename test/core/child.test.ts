@@ -66,14 +66,14 @@ describe("the one-shot reload", () => {
   });
 });
 
-describe("review fixes: H1 in reports", () => {
+describe("reports", () => {
   test("a report with __proto__ anywhere isn't a report", () => {
     expect(parseReport('taskbox-report {"end":{"state":"succeeded","result":{"__proto__":{"x":1}}}}')).toBeUndefined();
     expect(parseReport('taskbox-report {"__proto__":{"phase":"x"},"progress":{"done":1}}')).toBeUndefined();
   });
 });
 
-describe("review fixes: L11", () => {
+describe("children", () => {
   test("the one-shot is written root's way, into a folder that is root's alone, or not at all", async () => {
     const { chmodSync } = await import("node:fs");
     const sys = new FakeSys();

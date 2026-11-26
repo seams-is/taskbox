@@ -1,4 +1,4 @@
-// The proof before Active (docs/workspaces-design.md, section 5.5). Before a workspace goes Active,
+// The proof before Active. Before a workspace goes Active,
 // the guard proves its fence with a control:
 // - it listens on the box's own LAN address, TCP and UDP, on its IPv6 address and its Tailscale
 //   address when it has them;

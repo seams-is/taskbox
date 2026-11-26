@@ -1,5 +1,5 @@
 // A box's own settings: /opt/taskbox-state/box.json, root's, on the box, outside every install. They
-// layer over the release's taskbox.json. docs/connect-github-design.md, sections 3, 10 and 11.
+// layer over the release's taskbox.json.
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 

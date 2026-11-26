@@ -1,7 +1,6 @@
 // Workspaces: an agent asks for the whole box, the owner approves with Touch ID, the box drains, and
 // the agent works in a pool account on the box itself. This file is the state and its rules, with no
-// I/O, so the guard, the gate, the loop and the tests all read the same rules
-// (docs/workspaces-design.md, sections 3, 5.2 and 5.6).
+// I/O, so the guard, the gate, the loop and the tests all read the same rules.
 //
 // The guard is the only writer. It applies each request from the spool with these functions, then
 // writes the state. Every step that gives an agent more of the box (approve, resume) or can lose its
@@ -325,7 +324,7 @@ export function end(s: WsState, o: { name: string }, c: Ctx): Result {
 
 // The agent is done. A request is withdrawn; anything approved is Done at once, and CI starts again.
 // It takes no signature, so an agent can end its own work, or another's under its name (an accepted
-// residual, section 6).
+// residual).
 export function release(s: WsState, o: { name: string; agent: string }, c: Ctx): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`);

@@ -1,4 +1,4 @@
-// The controller's install and `taskbox update` (owner answer 10). A laptop
+// The controller's install and `taskbox update`. A laptop
 // installs from the public repo. Each release is checked with verifyRelease before anything is
 // unpacked: the owner's signature over the statement, against the pinned signers file, then the
 // tarball's SHA-256. The screen shows the tag, the private PR, its merge date and the commit from

@@ -1,5 +1,5 @@
 #!/usr/bin/env -S /opt/taskbox/bin/bun --no-install --no-env-file --cwd=/ --config=/opt/taskbox/app/bunfig.run.toml
-// taskbox connect github's listener (connect-github design, sections 2 and 11). Run as the admin,
+// taskbox connect github's listener. Run as the admin,
 // never root, by taskbox connect: root never parses HTTP. It reads its setup as one line of JSON on
 // stdin, so no token is on a command line, serves on 127.0.0.1 only, and writes JSON lines on stdout:
 // {"port":N} once it listens, then {"code":...,"state":...} or {"timeout":true}, and ends.
@@ -12,7 +12,7 @@ import { type Clock, realClock } from "./clock.ts";
 import { manifestFor, pageHeaders, startPage } from "./connect.ts";
 
 // open: the listener opens its own start page in the admin's browser, through a private file, so the
-// page token is never on a command line any local user can read (security review, M1).
+// page token is never on a command line any local user can read.
 export type ListenSetup = { org: string; appName: string; state: string; pageToken: string; minutes: number; open?: boolean };
 export type ListenEvent = { port: number } | { code: string; state: string } | { timeout: true };
 

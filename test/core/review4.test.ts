@@ -1,5 +1,3 @@
-// The fourth review's findings (review-wp0b-4.md) outside the child runner (job.test.ts holds those),
-// with the reviewer's probes turned into what the code must do.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,15 +14,15 @@ const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-review4-"));
 const day = (k: number) => new Date(T + k * DAY).toISOString().slice(0, 10);
 const update: OpType = { type: "update", phases: ["a"], onBoot: () => "fail" };
 
-describe("L2: refused requests, by one cap", () => {
+describe("refused requests, by one cap", () => {
   const ev = () => ({ dir: join(tmp(), "ev"), owner: uid });
-  test("F2: rotating the actor's name doesn't get past it", () => {
+  test("rotating the actor's name doesn't get past it", () => {
     const e = ev();
     const log = eventLog("guard", e, { now: () => T });
     for (let i = 0; i < 500; i++) log.write({ type: "confirm.refused", actor: `a${i}`, text: "x" });
     expect(readEvents([{ ...e, writer: "guard" }]).events.filter((x) => x.type === "confirm.refused")).toHaveLength(60);
   });
-  test("F1: once the cap is reached, that is said at once, so a flood never passes unsaid", () => {
+  test("once the cap is reached, that is said at once, so a flood never passes unsaid", () => {
     const e = ev();
     const log = eventLog("guard", e, { now: () => T });
     for (let i = 0; i < 70; i++) log.write({ type: "confirm.refused", actor: "pool-3", text: "bad json" });
@@ -33,7 +31,7 @@ describe("L2: refused requests, by one cap", () => {
     flushEvents({ all: true });
     expect(readEvents([{ ...e, writer: "guard" }]).events.some((x) => x.type === "events.dropped" && x.text.startsWith("10 refused requests"))).toBe(true);
   });
-  test("F3: progress never spends the refusals' cap", () => {
+  test("progress never spends the refusals' cap", () => {
     const e = ev();
     const log = eventLog("guard", e, { now: () => T });
     for (let i = 0; i < 60; i++) log.write({ type: "op.progress", actor: "owner", text: "p" });
@@ -42,8 +40,8 @@ describe("L2: refused requests, by one cap", () => {
   });
 });
 
-describe("L5: a pass's next() that failed once", () => {
-  test("H1: is cleared once next() asks again cleanly", async () => {
+describe("a pass's next() that failed once", () => {
+  test("is cleared once next() asks again cleanly", async () => {
     let n = 0;
     const ps = new Passes([{ name: "x", at: "tick", next: () => {
       if (n++ === 0) throw new Error("once");

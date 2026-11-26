@@ -55,7 +55,7 @@ describe("the agent shell's lines", () => {
 });
 
 describe("the guard applies requests", () => {
-  test("the whole of scenario 1: queue, approve, Active, release, and CI is back", async () => {
+  test("the whole of a workspace: queue, approve, Active, release, and CI is back", async () => {
     let s = await queued();
     expect(find(s, "nova-1")!.phase).toBe("requested");
     const a = await apply(s, signedLine(statement(s, { do: "approve" })));

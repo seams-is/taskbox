@@ -1,5 +1,4 @@
-// taskbox drain: takes no new jobs, and lets running ones finish (v2's stop --drain). WP5 owns
-// availability: pause, resume, a drain's --timeout and --force.
+// taskbox drain: takes no new jobs, and lets running ones finish (v2's stop --drain).
 import type { CommandSpec } from "../command.ts";
 import { stopOrStart } from "./stop.ts";
 

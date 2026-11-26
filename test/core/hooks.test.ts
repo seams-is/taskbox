@@ -91,7 +91,7 @@ describe("in the loop", () => {
   });
 });
 
-describe("review fixes: hooks' keys", () => {
+describe("hooks' keys", () => {
   test("a hook's __proto__ key never reaches the record's prototype", async () => {
     const { d } = deps();
     const evil: JobHook = { name: "evil", afterEnd: async () => JSON.parse('{"__proto__":{"result":"forged"},"id":"j_1"}') };
@@ -102,7 +102,7 @@ describe("review fixes: hooks' keys", () => {
   });
 });
 
-describe("review fixes: a hook that never answers", () => {
+describe("a hook that never answers", () => {
   test("afterEnd gives a hook its time limit, then carries on", async () => {
     const { FakeSys } = await import("../fake.ts");
     const sys = new FakeSys();

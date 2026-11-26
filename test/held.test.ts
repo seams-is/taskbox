@@ -1,4 +1,4 @@
-// Slots held for workspaces (docs/workspaces-design.md 5.6): held(), the loop's wait, and the
+// Slots held for workspaces: held(), the loop's wait, and the
 // scheduler with fewer slots.
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../src/config.ts";

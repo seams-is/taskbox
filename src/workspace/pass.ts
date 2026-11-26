@@ -1,4 +1,4 @@
-// The guard's workspace pass (docs/workspaces-design.md, sections 5.2 and 5.5). The guard is root's
+// The guard's workspace pass. The guard is root's
 // KeepAlive LaunchDaemon (guard.ts). Its pf read runs every 2 s; this pass runs beside it, one at a
 // time, and the tick never waits for it, so nothing here can hold up pf upkeep.
 //

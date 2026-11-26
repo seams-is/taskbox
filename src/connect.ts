@@ -1,6 +1,6 @@
 // taskbox connect github: makes the box's job source App with GitHub's App manifest flow, has the
 // owner install it on the jobs repo, and keeps it in the box's own settings.
-// docs/connect-github-design.md has the design. This part is pure: the manifest, the page, and the
+// This part is pure: the manifest, the page, and the
 // checks on GitHub's answers. The listener and the steps that change the box come with them.
 
 import { createPrivateKey } from "node:crypto";

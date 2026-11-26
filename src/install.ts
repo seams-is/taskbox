@@ -231,7 +231,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if (linkWhy) throw new Stop(`${linkWhy}, so taskbox can't put its command there. Nothing was installed. Nothing to do: agents fix it.`);
 
   // 3. The key and a contents token. A key in Downloads is proved first, so a revoked key in place
-  // never stops the update that brings its replacement (P3).
+  // never stops the update that brings its replacement.
   const again = opts.first ? "sh ~/Downloads/taskbox-main/install.sh" : "taskbox update";
   const installedCfg = opts.first ? loadConfig(d.configDir) : loadConfig(d.configDir, d.paths.boxSettings, d.rootUid ?? 0);
   const took = await takeDownloadedKey(d, installedCfg, join(d.ownerHome, "Downloads"), { again, source: !opts.first, skip: !opts.first });
@@ -259,7 +259,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // What goes in root's key folder: a key from Downloads, and the runner key from before v2.8.0, which
   // stays in the service's home too, for taskbox rollback. Each key is the service's. An update places
   // them now, before the yes. A first install, or a run that makes the service, places them at step 7,
-  // so a no or a stop before it leaves the download for the next run of install.sh (P3).
+  // so a no or a stop before it leaves the download for the next run of install.sh.
   const early = !opts.first && !plan.make;
   const oldRunnerKey = fresh?.app !== "runner" && d.paths.key === d.paths.oldKey;
   const after = early ? "Nothing was installed." : `${fresh ? "The key stays in Downloads. " : ""}Type ${again} again.`;
@@ -349,7 +349,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // Passed over, so a box reads a newer release's block, but never without a word: a typo shows here.
   const unknown = unknownAccountKeys(rawAccounts).map((k) => k.replace(/[^\x20-\x7e]/g, "").slice(0, 40));
   if (unknown.length) d.say(`  This taskbox passes over keys it doesn't know in the release's taskbox.json: ${unknown.map((k) => `accounts.${k}`).join(", ")}. If one is a typo, don't type yes: an agent fixes it in a PR.`);
-  // Section 4a: a release's job source with its key on the box is kept in the box's own settings.
+  // A release's job source with its key on the box is kept in the box's own settings.
   const boxNow = readBoxFile(d.paths.boxSettings, d.rootUid ?? 0).settings;
   // Only with the source's key on the box: without it the box has no usable source to keep, and the
   // update goes on, its key line saying to type taskbox connect github (Tart run of #34, after P3).
@@ -401,7 +401,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     // The commit's own settings must be complete: loadConfig throws otherwise. From v2.6.1 a key it
     // doesn't know inside away or timings is passed over with a line.
     let config = loadConfig(src, d.paths.boxSettings, d.rootUid ?? 0, (l) => d.say(`  ${l}`));
-    // The box's own settings must work with this release (connect-github design):
+    // The box's own settings must work with this release:
     // a box file set aside here would leave the box without its source after the update.
     if (config.boxProblem) throw new Stop(`This box's own settings can't be used with this release: ${config.boxProblem}. Nothing was installed. ${BOX_FIX}`, true);
     // The tree must name the accounts read before the yes: it is the same commit.
@@ -415,7 +415,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     // The service whose state this box keeps, so a later install refuses to leave it behind.
     const rec = readRecord(d.paths.accountsRecord);
     if (rec.service !== d.paths.service) writeRecord(d, d.paths.accountsRecord, { ...rec, service: d.paths.service });
-    // Section 4a: the source is adopted from the INSTALLED settings, which hold it today, before the
+    // The source is adopted from the INSTALLED settings, which hold it today, before the
     // new release, which may drop it, is used (Tart run of #34, C.1b). A failure stops the update
     // before anything changes, so the box never loses its source.
     if (adopting) {
@@ -696,7 +696,7 @@ export async function gone(sys: InstallDeps["sys"], target: string, maxS = BOOTO
   }
 }
 
-// v2.6.1: the hop to a v3 release (docs/v3-design.md §5.7, 4 and 5; hop.ts says the order and why).
+// v2.6.1: the hop to a v3 release (hop.ts says the order and why).
 // Nothing of the v3 tree is read as settings or run before the swap.
 async function hop(d: InstallDeps, o: { own: Config; installed: Installed | undefined; tag: string }): Promise<void> {
   const repo = o.own.publicRepo;

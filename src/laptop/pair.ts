@@ -1,4 +1,4 @@
-// taskbox pair (owner answer 11): no code. Tailscale proves which box it is: the
+// taskbox pair: no code. Tailscale proves which box it is: the
 // StableNodeID and tag in the map its servers sign, and the tunnel to that node. The owner picks the
 // box by name and confirms. The controller runs hello over the key the map lists, checks role box,
 // the tag and the node, and stores the StableNodeID, the install ID and the ed25519 host key. There

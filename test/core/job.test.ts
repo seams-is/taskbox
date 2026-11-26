@@ -1,4 +1,4 @@
-// An op's child as a launchd job of its own (review-wp0b-4.md). launchd owns its processes and ends
+// An op's child as a launchd job of its own. launchd owns its processes and ends
 // them on bootout; its life is a lock it holds; its reports go one way, through its handoff file.
 // No pid is read, compared or signalled.
 import { describe, expect, test } from "bun:test";
@@ -46,7 +46,7 @@ describe("the lease", () => {
     expect(leaseHeld(p)).toBe(false);
   });
   // test.serial: more than 50 ms of work alone (test/setup.ts).
-  test.serial("A3: a second reporter for one op is refused, so numbers can't restart", () => {
+  test.serial("a second reporter for one op is refused, so numbers can't restart", () => {
     const s = setup();
     rep(s);
     expect(() => rep(s)).toThrow("holds this op");
@@ -140,7 +140,7 @@ describe("following: one path for every op, the guard reloaded or not", () => {
     const s = setup();
     await runChild(s.d, s.op, CHILD_BUN, [APP]);
     expect((await follow({ ...s.d, boot: "boot-2" }))[0]).toMatchObject({ state: "failed", why: "the box restarted" });
-    // A type that resumes is followed on the new boot as any op is (review 5, L3).
+    // A type that resumes is followed on the new boot as any op is.
     const t = setup();
     await runChild(t.d, t.op, CHILD_BUN, [APP]);
     expect(await follow({ ...t.d, boot: "boot-2", types: [{ ...update, onBoot: () => "resume" }] })).toEqual([]);

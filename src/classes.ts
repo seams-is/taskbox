@@ -1,4 +1,4 @@
-// Priority classes (v2.4.0, docs/scheduling-design.md section 2). The owner's rules rank waiting
+// Priority classes. The owner's rules rank waiting
 // jobs. The first rule that matches wins, and a job no rule matches is in the last class, jobs.
 // An event matches only when the source vouches for it: a label comes from the workflow, which a
 // pull request can change in its own copy, so a label alone never matches a rule that names events.

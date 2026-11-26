@@ -1,4 +1,4 @@
-// The child runner (design §3.3, §4.10.1). Work that takes long (an update, a connect, a key
+// The child runner. Work that takes long (an update, a connect, a key
 // rotation, settings apply) runs as a child of its own, so the pf tick is never held up, and the
 // guard alone writes the op's record and events: one writer for root's state.
 //

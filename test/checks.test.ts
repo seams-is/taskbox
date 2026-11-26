@@ -237,7 +237,7 @@ describe("the box's public address", () => {
   });
 });
 
-// The Runner group row: only the box's own runners, with its labels (connect-github design, section 10).
+// The Runner group row: only the box's own runners, with its labels.
 describe("the runner group row", () => {
   function group(runners: { name: string; labels: string[] }[]) {
     const root = tempRoot();

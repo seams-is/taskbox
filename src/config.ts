@@ -57,7 +57,7 @@ export interface Config {
   // accounts.agent, Screen Sharing is for accounts.people only, and pf keeps port 5900 to
   // tailscaled's interface.
   accounts: Accounts;
-  // Workspaces (docs/workspaces-design.md): the owner's approver key turns them on, with one pool
+  // Workspaces: the owner's approver key turns them on, with one pool
   // account. The box trusts it only once it is pinned at the box (approver.ts). approverKeyChange is
   // the old key's signed statement naming a new one.
   approverKey?: string; // shape only, not trust: approver.ts trustedKey decides
@@ -78,7 +78,7 @@ export interface Config {
   // for each kind. Until the owner makes it, the box takes turns. From v2.4.0, sources holds it; this
   // stays for the release before, whose update reads this file, and must agree with sources.
   actionsAppId?: number;
-  // v2.4.0 (docs/scheduling-design.md): where the box reads what is waiting, how it ranks it, and the
+  // v2.4.0: where the box reads what is waiting, how it ranks it, and the
   // timings its rules use. Every value is the owner's: the code names no org, repo, App or label.
   sources?: SourceSettings[];
   // Set by loadConfig, never in a file: the keys the box's own settings set, or why they were set aside.
@@ -86,7 +86,7 @@ export interface Config {
   boxProblem?: string;
   classes?: ClassRule[];
   timings?: Partial<Timings>;
-  // v2.5.0 (docs/away-ready-design.md): how the box behaves while the owner is away. Checked by checkAway.
+  // v2.5.0: how the box behaves while the owner is away. Checked by checkAway.
   away?: Partial<AwaySettings>;
   // The program that runs the VMs (src/vm.ts). "tart", the default, is the only one allowed today.
   engine?: EngineName;
@@ -134,7 +134,7 @@ export function labelsFor(cfg: Config, kind: Kind): string[] {
 
 // v2.4.0 job sources (src/source.ts). none: the box sees no queue and follows the jobs its VMs take.
 // repos: the real repo, jobsFrom, by its name; and from v2.6.0, at most one test repo for the load
-// test (docs/load-test-design.md), with a runner group of its own that lists only it.
+// test, with a runner group of its own that lists only it.
 export interface LoadRepo {
   name: string;
   role: "load";
@@ -195,7 +195,7 @@ export function sourceOf(cfg: Config): SourceSettings {
 }
 
 // The read-only App's ID when the source is GitHub Actions, else undefined.
-// The job source's key file, named by its App's ID (connect-github design), so a key and
+// The job source's key file, named by its App's ID, so a key and
 // the source naming it always agree. actions-key.pem, from before, is read while it is the only one.
 export function sourceKeyPath(p: Pick<Paths, "actionsKeyDir">, appId: number | undefined): string {
   const legacy = join(p.actionsKeyDir, "actions-key.pem");
@@ -219,7 +219,7 @@ export const CLASS_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 export const ANY_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,49}$/;
 export const RUNNER_DEFAULT_LABELS = ["self-hosted", "macos", "linux", "windows", "arm64", "x64", "arm"];
 // The labels GitHub gives each kind's runners itself: a job that asks for any other default, such as
-// windows or x64, never runs on this box (v2.4.0 review, security finding 1).
+// windows or x64, never runs on this box.
 export function runnerDefaults(kind: Kind): string[] {
   return ["self-hosted", kind === "macos" ? "macos" : "linux", "arm64"];
 }
@@ -253,7 +253,7 @@ export function pathsForKind(p: Paths, kind: Kind): Paths {
 export const DEFAULT_TUN = "utun99";
 // The agent account's login shell: taskbox's commands only (src/shell.ts).
 export const REMOTE_SHELL = "/opt/taskbox/bin/taskbox-shell";
-// The pool account's login shell: the gate (docs/workspaces-design.md, section 5.4), from the install.
+// The pool account's login shell: the gate, from the install.
 export const GATE_SHELL = "/opt/taskbox/bin/taskbox-gate";
 // The box's tag on the tailnet: the policy's rules for it are the only ones that reach it.
 export const TAILNET_TAG = "tag:taskbox";
@@ -443,7 +443,7 @@ function checkAccounts(c: Config): void {
   if (ws) throw new Error(ws);
 }
 
-// v2.5.0 away-ready settings (docs/away-ready-design.md), each with a default. publicAddress names
+// v2.5.0 away-ready settings, each with a default. publicAddress names
 // sources taskbox knows, never URLs. restartPlan has no default: it is the owner's written choice.
 export const PUBLIC_ADDRESS_SOURCES = ["cloudflare-trace", "ipify"] as const;
 export type PublicAddressSource = (typeof PUBLIC_ADDRESS_SOURCES)[number];
@@ -505,9 +505,9 @@ export function checkAway(c: Config, warn: (line: string) => void = () => {}): v
 
 // The release's taskbox.json, with the box's own source over it when boxFile is given. A box file that
 // can't be read, or whose source fails with this release, is set aside: the release's settings are
-// used alone, and boxProblem says why for taskbox check and the update (docs/connect-github-design.md).
+// used alone, and boxProblem says why for taskbox check and the update.
 // warn hears each setting taskbox passes over: from v2.6.1 an unknown key inside away or timings is
-// read past with a warning, so a later release's taskbox.json can add one (docs/v3-design.md §5.7).
+// read past with a warning, so a later release's taskbox.json can add one.
 export function loadConfig(dir: string, boxFile?: string, rootUid = 0, warn: (line: string) => void = () => {}): Config {
   return loadConfigFrom(readJson<Record<string, unknown>>(join(dir, "taskbox.json")), boxFile, rootUid, warn);
 }

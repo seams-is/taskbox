@@ -110,7 +110,7 @@ const mo = (wall: number) => ({ wall, mono: wall - 1_700_000_000_000, boot: "7C4
   });
 });
 
-describe("review fixes: L2", () => {
+describe("a pass that fails", () => {
   test("a pass whose start or next throws is logged and passed over; the others run", async () => {
     const order: string[] = [];
     const lines: string[] = [];
@@ -130,7 +130,7 @@ describe("review fixes: L2", () => {
     p.tick();
     await p.settle();
     expect(order).toEqual(["good"]);
-    // Said once; the second failure is counted (review 3).
+    // Said once; the second failure is counted.
     expect(lines).toEqual(["the bad pass failed: start"]);
     expect(p.problems()).toEqual(["the bad pass failed 2 times: next"]);
   });
@@ -170,7 +170,7 @@ describe("the ops pass", () => {
   });
 });
 
-describe("review 2: the keeping pass", () => {
+describe("the keeping pass", () => {
   function ctx() {
     const root = mkdtempSync(join(tmpdir(), "taskbox-keeping2-"));
     const s = rootState(root);
@@ -196,7 +196,7 @@ describe("review 2: the keeping pass", () => {
     expect(readdirSync(s.ops).filter((n) => n.includes(".new."))).toEqual([]);
     expect(readdirSync(s.outcomes("agent"))).toEqual([]);
   });
-  test("N1: it writes the dropped counts whose minute is over", async () => {
+  test("it writes the dropped counts whose minute is over", async () => {
     const { c, s, sys, uid } = ctx();
     const { eventLog } = await import("../../src/core/events.ts");
     const log = eventLog("guard", { dir: s.events, owner: uid }, sys);

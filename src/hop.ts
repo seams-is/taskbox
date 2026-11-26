@@ -1,4 +1,4 @@
-// The hop to v3 (v2.6.1, docs/v3-design.md §5.7). v3's releases are public and signed: each carries a
+// The hop to v3 (v2.6.1). v3's releases are public and signed: each carries a
 // tarball, a statement (one line of JSON naming the version, the tarball's SHA-256, the tree and the
 // commit) and the statement's signature, made with the owner's release key. v2.6.1 pins that key in
 // its own tree (signers/allowed_signers), merged by the owner, so nothing it
@@ -12,7 +12,7 @@
 // v2.6.1 never reads the v3 tree's settings: v3's own migration does. The new install is the v3 tree
 // beside the tools of the install in place, and its guard and loop plists.
 //
-// Before the swap, v2.6.1 places a rollback watcher, run from its own folder (§5.5). Once proving
+// Before the swap, v2.6.1 places a rollback watcher, run from its own folder. Once proving
 // passes, v3's guard removes the watcher (its plist, its launchd job and its file) or writes proved in
 // its file. If neither happens by the deadline, the watcher takes the box back to v2.6.1 with
 // v2.6.1's own undo, so a v3 whose guard never starts is still undone. A failed undo leaves it in
@@ -71,7 +71,7 @@ const VERSION = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-rc\.([
 const HEX64 = /^[0-9a-f]{64}$/;
 const range = (r: unknown) => Array.isArray(r) && r.length === 2 && r.every((n) => Number.isInteger(n) && n >= 1 && n <= 999) && r[0] <= r[1];
 
-// The statement read strictly (§5.2, 2): these fields, these shapes, nothing else, one line.
+// The statement read strictly: these fields, these shapes, nothing else, one line.
 export function parseStatement(text: string): Statement | undefined {
   if (text.length > LIMITS.statement || !text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) return undefined;
   let v: unknown;
@@ -99,7 +99,7 @@ export function parseStatement(text: string): Statement | undefined {
   return s;
 }
 
-// Why the statement can't be installed over the release in place, or undefined (§5.2, 3 to 5).
+// Why the statement can't be installed over the release in place, or undefined.
 export function statementProblem(s: Statement, tag: string, installed: string | undefined): string | undefined {
   if (s.tag !== tag) return `the signed statement is for ${s.tag}, not ${tag}`;
   if (!installed || !RELEASE_TAG.test(installed)) return "the release in place has no version taskbox reads, so it can't be compared";
@@ -111,7 +111,7 @@ export function statementProblem(s: Statement, tag: string, installed: string | 
 }
 
 // The pinned signers file: comments, and one or two lines naming PRINCIPAL for NAMESPACE, each with
-// one security key's public half (§5.1). An empty file pins no key, so nothing verifies.
+// one security key's public half. An empty file pins no key, so nothing verifies.
 export function signersProblem(text: string): string | undefined {
   const lines = text.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
   if (!lines.length) return "v2.6.1 pins no release key yet: a later v2.6.x pins it";
@@ -366,7 +366,7 @@ export async function sshVerify(sys: Sys, o: { statement: Uint8Array; signature:
   }
 }
 
-// The rollback watcher (§5.5): a LaunchDaemon run every minute from the install before, and its file.
+// The rollback watcher: a LaunchDaemon run every minute from the install before, and its file.
 export const ROLLBACK_LABEL = `${LABEL_PREFIX}.rollback-watch`;
 // v3's guard proves a release within 60 minutes (proveMinutes), so the watcher waits 10 more.
 export const ROLLBACK_AFTER_MS = 70 * 60_000;
@@ -381,11 +381,11 @@ export interface RollbackWatch {
   // up to MAX_HOLD_MS after placedAt.
   deadline: number;
   proved?: boolean; // written by v3's guard once proving passes
-  // A go-back that failed: how many, the last reason, and when the next try is (v2.6.1, M2).
+  // A go-back that failed: how many, the last reason, and when the next try is (v2.6.1).
   failures?: number;
   lastError?: string;
   nextTry?: number;
-  // The update lock held by another process for over 30 minutes, and when that was last logged (L7).
+  // The update lock held by another process for over 30 minutes, and when that was last logged.
   blocked?: string;
   blockedLogAt?: number;
   // v3 on: the monotonic clock and the boot when it was placed (core/boot.ts). v3's watcher judges the
@@ -498,7 +498,7 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
   await sys.run("/bin/launchctl", ["bootout", `system/${ROLLBACK_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
 }
 
-// launchd labels v2.6.1 knows. Undo boots out every other local.taskbox.* daemon and agent (§5.7, 6):
+// launchd labels v2.6.1 knows. Undo boots out every other local.taskbox.* daemon and agent:
 // a later release's own, which the install gone back to doesn't know.
 export const KNOWN_DAEMONS = [GUARD_LABEL, TAILSCALED_LABEL, `${LABEL_PREFIX}.tailscaled-reload`, ROLLBACK_LABEL];
 export const KNOWN_AGENTS = [AGENT_LABEL];

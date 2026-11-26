@@ -1,4 +1,4 @@
-// Job sources (v2.4.0, docs/scheduling-design.md section 1): what is waiting, as plain items the
+// Job sources: what is waiting, as plain items the
 // scheduler ranks. A source never decides priority; it reports, and the classes rank (classes.ts).
 // Two adapters: GitHub Actions, read as a read-only App the owner makes (queue.ts), and none, which
 // always answers that it can't see the queue, so the scheduler follows the jobs its own VMs take.

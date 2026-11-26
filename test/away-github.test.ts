@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 2 (docs/away-ready-design.md): GitHub failures before a VM is cloned
+// v2.5.0 away-ready: GitHub failures before a VM is cloned
 // are classed and counted for the whole box, and read Failing after a setting's number in a row,
 // naming who acts.
 import { describe, expect, test } from "bun:test";
@@ -189,7 +189,7 @@ describe("the away settings", () => {
     }
   });
 
-  // v2.6.1 (docs/v3-design.md §5.7, 3): a later release's taskbox.json may add a key inside away, so
+  // v2.6.1: a later release's taskbox.json may add a key inside away, so
   // one this release doesn't know is passed over with a line, never refused.
   test("a key it doesn't know is passed over with a warning", () => {
     const said: string[] = [];

@@ -1,5 +1,4 @@
-// The loop's read of root's workspaces state (docs/workspaces-design.md 5.2 and 5.6, build plan step
-// 7): what the state holds, failing closed. The loop asks each time a slot does, so the read is
+// The loop's read of root's workspaces state: what the state holds, failing closed. The loop asks each time a slot does, so the read is
 // cached by the file's identity for a few seconds.
 import { lstatSync } from "node:fs";
 import type { WorkspacesNow, WorkspaceView } from "../held.ts";

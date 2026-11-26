@@ -1,4 +1,4 @@
-// taskbox load start, load on --only, load off and load report (v2.6.0, docs/load-test-design.md).
+// taskbox load start, load on --only, load off and load report.
 // on and off are the service account's, at the box, like stop and start. report is anyone's,
 // remote too, read from the copies every user may read.
 import { readFileSync } from "node:fs";
@@ -51,7 +51,7 @@ export function loadWorkflowYaml(cfg: Config, template = readFileSync(join(TEMPL
   return body.replace(/__([A-Z]+)__/g, (m, k: string) => values[k] ?? m);
 }
 
-// taskbox check's row for the test repo (product review, finding 3): its runner group exists, is
+// taskbox check's row for the test repo: its runner group exists, is
 // limited to selected private repos, and lists the test repo alone. As the service account, with
 // the box's own App. Root skips it: the key's path is in that account's home, which it controls.
 export const TEST_REPO_ROW = "Test repo";
@@ -67,7 +67,7 @@ export async function testRepoRow(c: CheckContext): Promise<{ status: "OK" | "FA
     await gh.runnerGroupId(await gh.token("runners"), repo.runnerGroup, repo.name);
     return { status: "OK", detail: `${repo.name}, in runner group ${repo.runnerGroup}, which lists it alone` };
   } catch (e) {
-    return { status: "FAIL", detail: `${(e as Error).message.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}. README, Setting up the test repo, step 3` };
+    return { status: "FAIL", detail: `${(e as Error).message.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}` };
   }
 }
 
@@ -80,7 +80,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
   const shared = !asService;
   const now = d.sys.now();
   if (!repo) {
-    d.say("taskbox.json names no test repo, so there is no load test. README, Load test, has the steps.");
+    d.say("taskbox.json names no test repo, so there is no load test.");
     return 1;
   }
   if (!["status", "on", "off", "report", "workflow"].includes(sub)) {
@@ -131,7 +131,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
     if (only) {
       const seen = f.seen;
       const fresh = !!seen?.known && now - seen.at <= FRESH_MS;
-      // Ask whenever real jobs wait, and whenever the box can't say (both reviews).
+      // Ask whenever real jobs wait, and whenever the box can't say.
       if (fresh && seen!.real > 0) d.say(`${seen!.real} real job${seen!.real > 1 ? "s wait" : " waits"} on GitHub now${seen!.realMerge ? `, ${seen!.realMerge} of them merge queue jobs` : ""}. With --only they wait until the session ends.`);
       if (!fresh) d.say(`The box can't say whether real jobs wait: ${blind ?? "it can't see the queue now"}. With --only they wait until the session ends.`);
       if (!fresh || seen!.real > 0) {
@@ -188,7 +188,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
   d.say(s ? `Load test session ${s.n} is on until ${hhmm(s.until)} UTC, ${s.only ? "with the box to itself" : "beside the real repo"}.` : `No load test session is on.${last ? ` The last was session ${last.n}: taskbox load report.` : ""}`);
   const blind = s ? loadBlind(f, now) : undefined;
   if (blind) d.say(`Test jobs wait: ${blind}.`);
-  if (!s && last?.why) d.say(`The box ended session ${last.n} at ${hhmm(last.endedAt ?? last.until)} UTC: ${last.why}. README, Load test, has the steps.`);
+  if (!s && last?.why) d.say(`The box ended session ${last.n} at ${hhmm(last.endedAt ?? last.until)} UTC: ${last.why}`);
   if (f.seen?.known && f.seen.load && !s && now - f.seen.at <= FRESH_MS) d.say(`${f.seen.load} test repo job${f.seen.load > 1 ? "s are" : " is"} queued on GitHub with no session on: no VM starts for them.`);
   return 0;
 }

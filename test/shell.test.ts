@@ -83,22 +83,22 @@ describe("remote's shell", () => {
   });
 });
 
-describe("the review's points on the shell", () => {
-  // L2: a raw command whose words no parser here checks never reaches taskbox.
-  test("a raw shell command that isn't one of #47's verbs is refused", async () => {
+describe("the shell", () => {
+  // A raw command whose words no parser here checks never reaches taskbox.
+  test("a raw shell command that isn't one of the workspace agent's verbs is refused", async () => {
     const { registry } = await import("../src/registry.ts");
     const specs = [...registry(), { path: ["later"], summary: "x", who: ["agent"], shell: true, raw: true, run: async () => 0 } as never];
     expect("no" in commandFor("later anything at all", specs)).toBe(true);
   });
 
-  // L3: an old name reaches taskbox as its own words alone, so taskbox's rename line is all that runs.
+  // An old name reaches taskbox as its own words alone, so taskbox's rename line is all that runs.
   test("an old name passes as its own words, and --json, and nothing else", () => {
     expect(commandFor("jobs --anything /etc/passwd")).toEqual({ args: ["jobs"] });
     expect(commandFor("jobs 50 --json x")).toEqual({ args: ["jobs", "50", "--json"] });
     expect(commandFor("watch --once")).toEqual({ args: ["watch", "--once"] });
   });
 
-  // L7: a refusal is a usage error, exit 2, and an envelope when the line asked for --json.
+  // A refusal is a usage error, exit 2, and an envelope when the line asked for --json.
   test("a refusal is exit 2, and with --json an error envelope", () => {
     expect(refusal("status --force")).toEqual({ out: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]", code: 2 });
     const r = refusal("logs -f --json");
@@ -117,7 +117,7 @@ describe("the review's points on the shell", () => {
     }
   });
 
-  // Nit: workspace end's refusal names workspace end, not #47's release.
+  // Nit: workspace end's refusal names workspace end, not release.
   test("workspace end's refusal names its own command", () => {
     const c = commandFor("workspace end nova-1 --as x");
     expect("no" in c && c.no).toContain("taskbox workspace end");

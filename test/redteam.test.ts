@@ -1,4 +1,4 @@
-// The red-team script's forward tests (X8), run against stub ssh, nc and curl: nothing leaves the
+// The red-team script's forward tests, run against stub ssh, nc and curl: nothing leaves the
 // Mac. A forward test says inconclusive, never its pass value, unless ssh connected.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";

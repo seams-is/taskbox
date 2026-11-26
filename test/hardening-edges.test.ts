@@ -1,4 +1,4 @@
-// Edge cases of work package A found by its independent tester: an update from the last release, and
+// Edge cases found by an independent tester: an update from the last release, and
 // a restart after a stale beat.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";

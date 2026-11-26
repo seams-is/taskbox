@@ -29,7 +29,7 @@
   },
   "laptop/owner.ts": {
     "reads": 1,
-    "why": "the time a signed statement carries (§3.7); the box judges its 5 minutes"
+    "why": "the time a signed statement carries; the box judges its 5 minutes"
   },
   "laptop/pair.ts": {
     "reads": 1,
@@ -77,7 +77,7 @@
   },
   "cli.ts": {
     "reads": 3,
-    "why": "the answers envelope's at, for a usage error, a rename and every answer: a label (§3.1)"
+    "why": "the answers envelope's at, for a usage error, a rename and every answer: a label"
   },
   "ops.ts": {
     "reads": 15,
@@ -173,6 +173,6 @@
   },
   "shell.ts": {
     "reads": 1,
-    "why": "the agent shell's refusal envelope's at: a label (§3.1)"
+    "why": "the agent shell's refusal envelope's at: a label"
   }
 }

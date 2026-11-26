@@ -1,4 +1,4 @@
-// Long operations (design §3.3). An op is something a person starts that has phases: a drain, an
+// Long operations. An op is something a person starts that has phases: a drain, an
 // update, a key rotation. Each is one file, ops/<id>.json, written by the one writer that runs it
 // (the guard for root's ops, the loop for its own), at 644 so every account can follow it.
 //

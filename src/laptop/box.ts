@@ -1,4 +1,4 @@
-// The laptop's way to the box (docs/workspaces-design.md, section 5.7): Tailscale SSH as the box's
+// The laptop's way to the box: Tailscale SSH as the box's
 // agent account, whose login shell runs taskbox's own commands and nothing else (src/shell.ts).
 // Everything the box says is data. Each answer is read in a strict shape, and every string in it is
 // cut to printable ASCII and a length before anything shows it.

@@ -41,7 +41,7 @@ jobs:
             go_archive: linux-amd64
     name: build (${{ matrix.name }})
     # Guards against a mistake only. A branch can edit this line, so the
-    # owner checks the run's branch and commit on the run page (step D2).
+    # owner checks the run's branch and commit on the run page (docs/build-tailscale.md).
     if: github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
@@ -97,7 +97,7 @@ jobs:
           go version -m tailscaled | head -20
 
       - name: Upload
-        # Pinned by commit SHA (docs/build-tailscale.md, What it pins).
+        # Pinned by commit SHA (docs/build-tailscale.md).
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2, GitHub-owned
         with:
           name: tailscale-${{ matrix.name }}
@@ -140,9 +140,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The two identical builds, as one file on a draft taskbox release named tailscale-<version>
-  # (docs/build-tailscale.md, Checking a run). The owner reads the hashes in the summary above, publishes the
-  # draft, and a reviewed PR pins the file's asset URL and SHA-256 in versions.json. The pin is what
+  # The two identical builds, as one file on a draft taskbox release named tailscale-<version>-run<run ID>
+  # (docs/build-tailscale.md). The owner reads the hashes in the summary above, publishes the
+  # draft, and a reviewed PR pins the asset's ID and the SHA-256s in versions.json. The pin is what
   # the box trusts: this job can't change what an install accepts. A tailscale-* tag is never a
   # taskbox release, which is a v* tag (src/github.ts).
   release:

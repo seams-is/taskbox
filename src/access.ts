@@ -1,5 +1,4 @@
 // taskbox.json's accounts block: every account taskbox uses, named by its role. This file is pure: no Sys, no files, no commands.
-// docs/access-model-design.md has the design.
 import { approverKeyProblem, keyChangeProblem } from "./approver.ts";
 
 // macOS's short-name shape.
@@ -11,7 +10,7 @@ const RESERVED = new Set(["root", "daemon", "nobody", "admin", "wheel", "staff",
 
 export const MAX_PEOPLE = 8;
 
-// Workspaces (docs/workspaces-design.md, section 5.1): one pool account, in a group of its own. The
+// Workspaces: one pool account, in a group of its own. The
 // names are taskbox's, so no role may take them.
 export const POOL_USER = "taskbox-ws1";
 export const POOL_GROUP = "taskbox-ws";
@@ -100,7 +99,7 @@ export function validateAccounts(raw: unknown): Accounts {
 }
 
 // Old keys. remoteUser and screenSharingUsers stay accepted beside accounts for one release, when
-// they agree with it, since v2.6.x's code reads them during the update to v2.7.0 (design, section 4).
+// they agree with it, since v2.6.x's code reads them during the update to v2.7.0.
 export function oldKeyProblem(c: Record<string, unknown>): string | undefined {
   const a = c.accounts as Record<string, unknown> | undefined;
   if ("remoteUser" in c) {
@@ -117,7 +116,7 @@ export function oldKeyProblem(c: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-// approverKey turns workspaces on (docs/workspaces-design.md, section 5.1). Workspaces need the agent,
+// approverKey turns workspaces on. Workspaces need the agent,
 // whose commands ask for one. Why the settings can't have workspaces, or undefined.
 export function workspacesProblem(c: { approverKey?: unknown; approverKeyChange?: unknown; accounts: Accounts }): string | undefined {
   const key = c.approverKey; // shape, not trust

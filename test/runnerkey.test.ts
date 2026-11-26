@@ -1,4 +1,4 @@
-// P3: one key folder for both Apps. A key in the owner's Downloads is proved against the box's Apps
+// One key folder for both Apps. A key in the owner's Downloads is proved against the box's Apps
 // before the yes, and placed in root's folder once the service exists; a revoked key in place never
 // stops the update that brings its replacement.
 import { describe, expect, test } from "bun:test";
@@ -178,7 +178,7 @@ describe("the key's paths", () => {
   });
 });
 
-// Independent test of package H: an install.sh run again on a box whose service is already there.
+// an install.sh run again on a box whose service is already there.
 describe("install.sh run again over a service that is there", () => {
   test("a no at the yes, or a stop after it, never leaves the next install.sh run without a key", async () => {
     // The service is there (a run before made it, or the owner did), so plan.make is false.

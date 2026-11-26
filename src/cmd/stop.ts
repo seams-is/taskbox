@@ -1,5 +1,4 @@
 // taskbox stop and taskbox start: the loop, in the service account's session at the box.
-// (WP5 makes stop drain first, adds --force and --timeout, and lets the owner run both signed.)
 import type { BoxCtx, CommandSpec, Outcome } from "../command.ts";
 
 export async function stopOrStart(c: BoxCtx, which: "stop" | "start" | "drain"): Promise<Outcome> {
@@ -25,7 +24,7 @@ export async function stopOrStart(c: BoxCtx, which: "stop" | "start" | "drain"):
   };
   const code = which === "drain" ? await drain(c.ops) : which === "stop" ? await stop({ ...c.ops, ...cleanUp() }) : await start(c.ops);
   for (const l of footer(await stateNow(c.ops), code === 0 ? (which === "drain" ? "Started a drain." : which === "stop" ? "Stopped the loop." : "Started the loop.") : "Nothing changed.")) c.say(l);
-  // Already so is done, with nothing changed (§3.1): v2's ALREADY, 3, is now changed false.
+  // Already so is done, with nothing changed: v2's ALREADY, 3, is now changed false.
   return { exit: code === ALREADY ? 0 : code, changed: code === 0 };
 }
 

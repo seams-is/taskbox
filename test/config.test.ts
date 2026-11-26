@@ -90,7 +90,7 @@ describe("the settings", () => {
   test("timings: each a whole number within its bounds, defaults for the rest", () => {
     expect(timingsOf(load({ timings: { giveWayMinutes: 5 } })())).toEqual({ ...DEFAULT_TIMINGS, giveWayMinutes: 5 });
     expect(load({ timings: { giveWayMinutes: 0 } })).toThrow("giveWayMinutes is 1 to 60");
-    // v2.6.1 (docs/v3-design.md §5.7, 3): a key it doesn't know is passed over with a line, so a later
+    // v2.6.1: a key it doesn't know is passed over with a line, so a later
     // release's taskbox.json can add one.
     const said: string[] = [];
     expect(timingsOf(load({ timings: { speed: 1, giveWayMinutes: 5 } }, undefined, (l) => said.push(l))())).toEqual({ ...DEFAULT_TIMINGS, giveWayMinutes: 5 });

@@ -76,7 +76,7 @@ describe("verifying a release with ssh-keygen", () => {
     expect(refused.stderr).toContain("unknown key option");
   }, 20_000);
 
-  test("M2: a release must be newer than the one installed: no downgrade and no replay", async () => {
+  test("a release must be newer than the one installed: no downgrade and no replay", async () => {
     expect((await verifyRelease(real, { ...release(), installed: "v2.0.9" })).ok).toBe(true);
     expect(await verifyRelease(real, { ...release(), installed: "v2.1.0" })).toEqual({ ok: false, why: "v2.1.0 isn't newer than the installed v2.1.0" });
     expect(await verifyRelease(real, { ...release(), installed: "v2.10.0" })).toEqual({ ok: false, why: "v2.1.0 isn't newer than the installed v2.10.0" });
@@ -84,7 +84,7 @@ describe("verifying a release with ssh-keygen", () => {
     expect([compareTags("v2.1.0", "v2.0.9"), compareTags("v2.1.0", "v2.1.0"), compareTags("v2.9.0", "v2.10.0"), compareTags("v10.0.0", "v9.9.9")]).toEqual([1, 0, -1, 1]);
   }, 20_000);
 
-  test("L3: the signature on disk must be the downloaded bytes exactly", async () => {
+  test("the signature on disk must be the downloaded bytes exactly", async () => {
     const never: VerifyDeps = { run: async () => { throw new Error("ssh-keygen ran"); } };
     const r = release();
     const one = new Uint8Array(r.signature);
@@ -100,7 +100,7 @@ describe("verifying a release with ssh-keygen", () => {
     const never: VerifyDeps = { run: async () => { throw new Error("ssh-keygen ran"); } };
     expect(await verifyRelease(never, release({ pinned: "# nothing yet\n" }))).toEqual({ ok: false, why: "no release key is pinned yet" });
     expect(await verifyRelease(never, release({ pinned: `* ${keyPair().line}` }))).toEqual({ ok: false, why: "the signers file has a line taskbox doesn't take" });
-    // L1: only a security key may be pinned.
+    // Only a security key may be pinned.
     expect(await verifyRelease(never, release({ pinned: `taskbox-release namespaces="taskbox-release" ssh-ed25519 ${"A".repeat(68)}\n` }))).toEqual({ ok: false, why: "the signers file has a line taskbox doesn't take" });
     const r = release();
     expect(await verifyRelease(never, { ...r, signature: new TextEncoder().encode("other") })).toEqual({ ok: false, why: "the signature file isn't the one downloaded" });

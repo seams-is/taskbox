@@ -1,7 +1,7 @@
-// The load test (v2.6.0, docs/load-test-design.md). A test repo of the owner's own sends the box
+// The load test. A test repo of the owner's own sends the box
 // short sleep jobs while a session is on. Each `taskbox load start` starts a numbered session that ends
 // at `taskbox load stop`, or by itself at most LOAD_MAX_MS later.
-// Two files, each with one writer, so neither can undo the other's change (both reviews): load.json
+// Two files, each with one writer, so neither can undo the other's change: load.json
 // holds the sessions, written by the commands; load-seen.json holds what the job source last listed
 // and each session's numbers, written by the loop. Both are copied for every user like the loop's
 // state.
@@ -13,7 +13,7 @@ import type { Snapshot } from "./source.ts";
 
 export const LOAD_MAX_MS = 4 * 3600_000;
 export const LOAD_MIN_MS = 10 * 60_000;
-// A load job's own ceiling, whatever its workflow says (security review, finding 3).
+// A load job's own ceiling, whatever its workflow says.
 export const LOAD_JOB_MAX_MS = 20 * 60_000;
 const MAX_SESSIONS = 50;
 // A clock that went back this far past a session's start ends it.
@@ -122,7 +122,7 @@ export function readLoad(p: Paths, shared = false): LoadFile {
   const sessions = readSessions(join(dir, "load.json")).map((s) => {
     const st = sf.stats.find((x) => x.n === s.n);
     if (!st) return s;
-    // The loop's record of the end wins too: a session closed once stays closed (the Tart test, finding 1).
+    // The loop's record of the end wins too: a session closed once stays closed.
     const ends = [s.endedAt, st.failed?.at, st.closedAt].filter((x): x is number => x !== undefined);
     const endedAt = ends.length ? Math.min(...ends) : undefined;
     return {
@@ -159,7 +159,7 @@ function writeSeen(p: Paths, f: SeenFile): void {
 
 // When a session ended: off, the box, or its time. undefined while it runs. A session is never
 // longer than LOAD_MAX_MS, whatever the file says, and a clock that went back past its start ends it
-// (security review, finding 5).
+//.
 export function sessionEnd(s: LoadSession, now: number): number | undefined {
   const until = Math.min(s.until, s.startedAt + LOAD_MAX_MS);
   if (now < s.startedAt - CLOCK_BACK_MS) return Math.min(s.endedAt ?? now, now);
@@ -242,7 +242,7 @@ export function noteSeen(p: Paths, snap: Snapshot, now: number, reads?: number, 
 export const FRESH_MS = 2 * 60_000;
 
 // Why the box can't serve the test repo now, or undefined: the queue isn't seen, or the test repo
-// can't be read. Load is served only with a view of the queue (product review, finding 5).
+// can't be read. Load is served only with a view of the queue.
 export function loadBlind(f: LoadFile, now: number): string | undefined {
   const seen = f.seen;
   if (!seen || now - seen.at > FRESH_MS) return "the box hasn't read the queue in the last 2 minutes";
@@ -285,7 +285,7 @@ export function loadFailed(p: Paths, now: number, why: string): LoadSession | un
 }
 
 // Whether a runner group error means the test repo's group is set up wrong, which ends the
-// session, rather than GitHub having trouble, which is tried again (product review, finding 4).
+// session, rather than GitHub having trouble, which is tried again.
 export const groupSetupWrong = (message: string) => /^no runner group named |^runner group .* must (be limited|list) /.test(message);
 
 // "--for 2h", "90m", "1h30m": ms, or undefined.

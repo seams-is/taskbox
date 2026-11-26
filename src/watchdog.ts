@@ -1,4 +1,4 @@
-// The watchdog and canary workflows (v2.5.0, docs/away-ready-design.md, "Alerts"), made from the
+// The watchdog and canary workflows, made from the
 // box's own settings so their labels can't drift from the box. `taskbox template show box-check`
 // and `taskbox template show test-job` print them, filled in from templates/: every label the box serves, the wait, and each
 // interval as a cron line. Each run's name carries a fingerprint of those settings, and `taskbox

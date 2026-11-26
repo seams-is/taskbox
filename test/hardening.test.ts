@@ -1,4 +1,3 @@
-// The loop's hardening after the 18 Nov review (work package A). Each describe names its finding.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,7 +40,7 @@ function happyGuest(sys: FakeSys) {
   };
 }
 
-describe("R7: the log's secret set stays small", () => {
+describe("the log's secret set stays small", () => {
   // Built the way GitHub builds encoded_jit_config: base64 of a JSON object whose first key is
   // ".runner", with fake values, several KB.
   const jit = Buffer.from(
@@ -101,7 +100,7 @@ describe("R7: the log's secret set stays small", () => {
   });
 });
 
-describe("R5: a full disk never skips deleting the VM", () => {
+describe("a full disk never skips deleting the VM", () => {
   // The runner takes its job, then the disk is full by the time it exits.
   function fullAtExit(sys: FakeSys, p: { loopState: string }) {
     sys.onSpawn = (proc) => {
@@ -163,7 +162,7 @@ describe("R5: a full disk never skips deleting the VM", () => {
   });
 });
 
-describe("R3: a slow GitHub never holds a slot past its beat", () => {
+describe("a slow GitHub never holds a slot past its beat", () => {
   // GitHub that never answers: each call waits until its signal aborts. The signal's timer is the
   // fake clock's, so the clock runs on a minute while the call waits.
   class SlowSys extends FakeSys {
@@ -200,7 +199,7 @@ describe("R3: a slow GitHub never holds a slot past its beat", () => {
   });
 });
 
-describe("R2: a runner that exits without a job is a failure", () => {
+describe("a runner that exits without a job is a failure", () => {
   // The runner prints these lines, then exits.
   function runnerSays(sys: FakeSys, lines: string[]) {
     sys.onSpawn = (p) => {
@@ -246,7 +245,7 @@ const LCFG: Config = { ...CFG, linux: { label: "taskbox-linux", image: "ghcr.io/
 const guestSilent = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "exec" ? { code: 1, stdout: "", stderr: "no agent" } : undefined));
 const execs = (sys: FakeSys) => sys.calls.filter((c) => c.cmd.endsWith("/tart") && c.args[0] === "exec").length;
 
-describe("R6: the start's beat moves while its guest wait moves", () => {
+describe("the start's beat moves while its guest wait moves", () => {
   test("each try beats on the caller's slot, so a slow start is never stale", async () => {
     const sys = new FakeSys();
     guestSilent(sys);
@@ -274,7 +273,7 @@ describe("R6: the start's beat moves while its guest wait moves", () => {
   });
 });
 
-describe("R8: a VM that dies at once frees the start gate", () => {
+describe("a VM that dies at once frees the start gate", () => {
   // tart run ends as soon as it starts.
   const runDies = (sys: FakeSys) => (sys.onSpawn = (p) => p.args[0] === "run" && p.exit(1));
 
@@ -322,7 +321,7 @@ describe("R8: a VM that dies at once frees the start gate", () => {
   });
 });
 
-describe("R1: only taskbox's Softnet still root halts the box", () => {
+describe("only taskbox's Softnet still root halts the box", () => {
   const PS = "pid=,etime=,user=,ruser=,svuid=,comm=";
   const LAUNCHD = "1 9-00:00:00 root root 0 /sbin/launchd";
   // What ps answers for the Softnet check: a result, or a throw.
@@ -411,7 +410,7 @@ describe("R1: only taskbox's Softnet still root halts the box", () => {
   });
 });
 
-describe("X1: only the service and root can reach taskbox's setuid Softnet", () => {
+describe("only the service and root can reach taskbox's setuid Softnet", () => {
   // chmod for real, except the ACL calls, which name a service account this Mac may not have: those are recorded only.
   function chmods(sys: FakeSys) {
     const calls: string[] = [];
@@ -555,7 +554,7 @@ describe("X1: only the service and root can reach taskbox's setuid Softnet", () 
   });
 });
 
-describe("R4: a macOS image that won't pull never stops the box", () => {
+describe("a macOS image that won't pull never stops the box", () => {
   const LINUX = LCFG.linux!.image;
   // A box whose Tart lists the images in `on`, whose pulls of `image` act as `pulls` says (a list,
   // one per try, the last repeated), and whose free disk is `freeGB()`. The loop ends, to restart,

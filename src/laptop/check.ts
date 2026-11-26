@@ -1,7 +1,7 @@
 // taskbox check on the laptop: which Tailscale app, whether it can be read, the config and the
 // Claude tool, each with its fix. Then, for each paired box: its pairing, remote, its release, and
 // its own checks as remote sees them.
-import { claudeSetup, DENY_RULES } from "./claude.ts";
+import { binPath, claudeSetup, DENY_RULES } from "./claude.ts";
 import { boxChecks, pairedNames } from "./commands.ts";
 import { chooseBoxes, helloOf, type Connected, type Deps, helloStop, isStop, peerOrStop, type Stop, tsDeps } from "./reach.ts";
 import { knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
@@ -49,9 +49,15 @@ export async function laptopChecks(d: Deps, sel?: string): Promise<{ lines: Line
     "Claude tool",
     toolOk,
     claude.tool === "missing" ? "not added" : claude.tool === "other" ? "the user's taskbox entry runs something else" : claude.shadowed ? `${claude.shadowed} project entry named taskbox loads in its place` : !claude.disabled ? "a project's .mcp.json could load another taskbox" : "added for your user",
-    "Follow the Claude tool steps in docs/controller.md.",
+    [
+      claude.tool !== "ok" ? `${claude.tool === "other" ? "Type claude mcp remove taskbox --scope user. Then t" : "T"}ype claude mcp add --scope user taskbox -- ${binPath(d.home)} mcp.` : "",
+      claude.shadowed ? "In each project with its own entry named taskbox, type claude mcp remove taskbox --scope local." : "",
+      !claude.disabled ? 'Add "taskbox" to disabledMcpjsonServers in ~/.claude/settings.json.' : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
   );
-  add("Claude rules", claude.missingRules.length === 0, claude.missingRules.length ? `${claude.missingRules.length} of ${DENY_RULES.length} deny rules missing` : "every deny rule in place", "Follow the Claude rules step in docs/controller.md.");
+  add("Claude rules", claude.missingRules.length === 0, claude.missingRules.length ? `${claude.missingRules.length} of ${DENY_RULES.length} deny rules missing` : "every deny rule in place", `Add these to permissions.deny in ~/.claude/settings.json: ${claude.missingRules.join(", ")}.`);
 
   add("Pairing", boxes.length > 0, boxes.length ? `${boxes.length} ${boxes.length === 1 ? "box" : "boxes"}: ${boxes.map((b) => b.name).join(", ")}` : "no box paired", "Type taskbox pair.");
   const state = ts.ok && ts.state.running ? ts.state : undefined;

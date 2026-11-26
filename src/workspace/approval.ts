@@ -3,7 +3,7 @@
 // key that asks for Touch ID on each use. The box trusts only the key it pinned (src/approver.ts,
 // trustedKey), and the caller passes that key in as trusted.
 // An agent on the owner's laptop can ask the box for anything, but can't make this signature without
-// the owner's finger (docs/workspaces-design.md, section 5.3).
+// the owner's finger.
 //
 // Each statement names this box's install ID, so it can't be used on another box; the workspace's
 // nonce, which the box makes new at each change of phase, so it can't be used twice; and a time within

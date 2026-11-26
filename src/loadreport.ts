@@ -1,4 +1,4 @@
-// taskbox load report (v2.6.0, docs/load-test-design.md, What changes 6). One session, from its
+// taskbox load report. One session, from its
 // start to its end: the acceptance criteria for the real repo's jobs and the load repo's jobs apart,
 // real jobs that a load VM went ahead of and those that waited for a load job, the checklist as it
 // stood, and the source's reads.
@@ -33,7 +33,7 @@ const queuedAt = (j: JobRecord) => {
 const LAG_MS = 60_000;
 
 // Real jobs a load VM went ahead of: a load job's VM was asked for while a real job had waited past
-// the lag with no VM. Load ranks last, so this must be 0 (product review, finding 1).
+// the lag with no VM. Load ranks last, so this must be 0.
 export function aheadOfReal(real: JobRecord[], load: JobRecord[]): number | undefined {
   const timed = real.filter((j) => queuedAt(j) !== undefined);
   if (!timed.length) return undefined;
@@ -71,7 +71,7 @@ export function loadReport(cfg: Config, jobs: JobRecord[], file: LoadFile, gaveW
   const inSession = jobs.filter((j) => j.jobAt !== undefined && j.jobAt >= s.startedAt && j.jobAt <= to);
   const load = inSession.filter((j) => j.repo === repo.name);
   const real = inSession.filter((j) => j.repo !== repo.name);
-  // Each side's give-ways apart: a load VM's are the load's (product review, finding 6).
+  // Each side's give-ways apart: a load VM's are the load's.
   const gave = gaveWayLog.filter((g) => g.at >= s.startedAt && g.at <= to);
   const gaveReal = gave.filter((g) => g.role !== "load");
   const gaveLoad = gave.filter((g) => g.role === "load");
@@ -92,7 +92,7 @@ const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
 export function loadReportLines(r: LoadReport): string[] {
   const head = `taskbox load report: session ${r.session.n}, ${r.session.only ? "the test repo alone" : "beside the real repo"}, ${hhmm(r.from)} to ${hhmm(r.to)} UTC${r.running ? ", still on" : ""}.`;
   const crit = (c: Criterion[]) => c.map((x) => `  ${x.status.padEnd(13)}${x.name}: ${x.value}, ${x.id === "linux-burst" ? "at least" : "at most"} ${x.limit}`);
-  // A pass needs queue times, and a real job that ran (product review, finding 7).
+  // A pass needs queue times, and a real job that ran.
   const why = r.realJobs ? "needs the box to see the queue" : "no real job ran in the session";
   const ahead = r.ahead === undefined ? `  NOT MEASURED real jobs a load VM went ahead of: ${why}` : `  ${(r.ahead === 0 ? "PASS" : "FAIL").padEnd(13)}real jobs a load VM went ahead of: ${r.ahead}, at most 0`;
   const waited = r.waitedForLoad === undefined ? [] : [`  ${"MEASURED".padEnd(13)}real jobs that waited for a running load job: ${r.waitedForLoad}. The cost of load beside: no limit`];

@@ -39,7 +39,7 @@ describe("ids", () => {
 
 describe("an event", () => {
   const e = () => newEvent("guard", { type: "drain.started", actor: "owner (signed, key SHA256:abc)", text: "The owner started a drain.", subject: "box" }, clock(T), rand);
-  test("has the shape of §3.2, one line under 4 KB", () => {
+  test("is one line under 4 KB, in its fixed shape", () => {
     const line = eventLine(e());
     expect(line.endsWith("\n")).toBe(true);
     expect(line.indexOf("\n")).toBe(line.length - 1);
@@ -162,8 +162,8 @@ describe("one writer's ids", () => {
   });
 });
 
-describe("review fixes: M3 and the lows on events", () => {
-  test("M3: files are cut into parts in write order, and kept under the size cap by that order", () => {
+describe("events", () => {
+  test("files are cut into parts in write order, and kept under the size cap by that order", () => {
     const dir = join(tmp(), "e");
     const f = { dir, owner: uid, partMax: 10_000 };
     const log = eventLog("guard", f, clock(T), rand, { perActorPerMinute: Number.POSITIVE_INFINITY });
@@ -175,13 +175,13 @@ describe("review fixes: M3 and the lows on events", () => {
     expect(keepEvents(f, { maxBytes: 10_000 })).toEqual(parts.slice(0, 2));
     expect(readdirSync(dir)).toEqual([parts[2]!]);
   });
-  test("M3: a file events can't read is named, never passed over without a word", () => {
+  test("a file events can't read is named, never passed over without a word", () => {
     const dir = tmp();
     writeFileSync(join(dir, "00000001-2026-11-23.jsonl"), "");
     chmodSync(join(dir, "00000001-2026-11-23.jsonl"), 0o666);
     expect(readEvents([{ dir, owner: uid, writer: "guard" }]).skipped).toEqual([join(dir, "00000001-2026-11-23.jsonl")]);
   });
-  test("M3: one actor's flood is cut to a summary", () => {
+  test("one actor's flood is cut to a summary", () => {
     const dir = join(tmp(), "e");
     const t = { now: T };
     const log = eventLog("guard", { dir, owner: uid }, { now: () => t.now }, rand);
@@ -193,7 +193,7 @@ describe("review fixes: M3 and the lows on events", () => {
     expect(ev.filter((e) => e.actor === "agent nova" && e.type === "op.progress")).toHaveLength(61);
     expect(ev.find((e) => e.type === "events.dropped")).toMatchObject({ actor: "taskbox", text: "40 events from agent nova were dropped in the minute before." });
   });
-  test("L4: the loop can't shadow a guard event by copying its id", () => {
+  test("the loop can't shadow a guard event by copying its id", () => {
     const root = tmp();
     const g = { dir: join(root, "g"), owner: uid };
     const l = { dir: join(root, "l"), owner: uid };
@@ -203,7 +203,7 @@ describe("review fixes: M3 and the lows on events", () => {
     const both = readEvents([{ ...l, writer: "loop" }, { ...g, writer: "guard" }]).events;
     expect(both.map((x) => x.text).sort()).toEqual(["copy", "real"]);
   });
-  test("L5: a reader reads at most its byte cap, newest files first, and names the rest", () => {
+  test("a reader reads at most its byte cap, newest files first, and names the rest", () => {
     const dir = join(tmp(), "e");
     eventLog("guard", { dir, owner: uid }, clock(T - 86_400_000), rand).write({ type: "guard.started", actor: "taskbox", text: "old" });
     eventLog("guard", { dir, owner: uid }, clock(T), rand).write({ type: "guard.started", actor: "taskbox", text: "new" });

@@ -1,5 +1,4 @@
-// The approver key: the owner's key that signs every workspace step (docs/workspaces-design.md,
-// section 5.3). taskbox.json's approverKey turns workspaces on. The box pins the key it trusts in
+// The approver key: the owner's key that signs every workspace step. taskbox.json's approverKey turns workspaces on. The box pins the key it trusts in
 // root's own file, so a PR can change taskbox.json's key but never the one the box trusts:
 // - the first key is pinned at the box's screen, after the owner's yes, with its fingerprint shown;
 // - a new key after that needs a statement signed by the pinned key, naming the new one;
