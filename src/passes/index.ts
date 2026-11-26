@@ -2,9 +2,10 @@
 // pass adds a file here that exports its PassMaker, and one line below.
 import type { PassMaker } from "../core/passes.ts";
 import { beatPass } from "./beat.ts";
+import { endingPass } from "./ending.ts";
 import { keepingPass } from "./keeping.ts";
 import { opsPass } from "./ops.ts";
 import { probePass } from "./probe.ts";
 import { v2Passes } from "./v2.ts";
 
-export const passMakers = (): PassMaker[] => [beatPass, ...v2Passes(), probePass, keepingPass, opsPass];
+export const passMakers = (): PassMaker[] => [beatPass, ...v2Passes(), probePass, endingPass, keepingPass, opsPass];

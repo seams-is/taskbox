@@ -107,7 +107,6 @@ export function checkAway(c: Config, warn: (line: string) => void = () => {}): v
     if (!Number.isInteger(v) || (v as number) < b[0] || (v as number) > b[1]) throw new Error(`taskbox.json: away.${k} is ${b[0]} to ${b[1]}`);
   }
   if ("waitingAlarmMinutes" in a && "watchdogWaitMinutes" in a) throw new Error("taskbox.json: away.watchdogWaitMinutes is the old name of away.waitingAlarmMinutes: keep one");
-  if (a.restartPlan === "kvm" && !("kvm" in a)) throw new Error("taskbox.json: away.restartPlan kvm needs away.kvm, the KVM's tailnet name and tag");
   // The wait must be shorter than the test job's interval, so a quiet day's test job waits long
   // enough to be seen, whichever of two GitHub keeps waiting.
   if (waitingFor(c) >= canaryEvery(c)) throw new Error("taskbox.json: the hourly box check's wait (away.waitingAlarmMinutes) must be shorter than away.canaryIntervalMinutes");

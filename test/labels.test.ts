@@ -74,7 +74,8 @@ describe("the labels", () => {
   // too, the same but for the Label. The public export never copies these files.
   test("any other plist is a bridge: a neutral one under an earlier prefix, the same but for the Label", () => {
     const neutral = { loop: AGENT_LABEL, guard: GUARD_LABEL, tailscaled: TAILSCALED_LABEL };
-    for (const f of readdirSync(join(repo, "launchd")).filter((f) => !Object.values(neutral).some((l) => f === `${l}.plist`))) {
+    // guardwatch is v3's own, with no earlier name.
+    for (const f of readdirSync(join(repo, "launchd")).filter((f) => !Object.values(neutral).some((l) => f === `${l}.plist`) && f !== "local.taskbox.guardwatch.plist")) {
       const m = /^(.+)\.(loop|guard|tailscaled)\.plist$/.exec(f);
       expect(m ? `${m[1]} ${m[2]}` : f).toMatch(/^[a-z0-9.-]+ (loop|guard|tailscaled)$/);
       const [, prefix, kind] = m! as unknown as [string, string, keyof typeof neutral];

@@ -139,6 +139,10 @@
     "reads": 3,
     "why": "an op's end time and spawn time, and the 30 s a new job has to take its lease: a step only changes that grace; a free lease is the proof. Op deadlines are on mono"
   },
+  "guardwatch.ts": {
+    "reads": 1,
+    "why": "a beat's wall time, for the lines people read only: every age is judged on mono"
+  },
   "guard.ts": {
     "reads": 7,
     "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too"

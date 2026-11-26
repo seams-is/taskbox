@@ -85,7 +85,8 @@ describe("the settings", () => {
     for (const bad of [{ holdLeaseHours: 13 }, { holdLeaseHours: 0 }, { holdAlarmHours: 0 }, { requestAlertMinutes: 5 }]) expect(() => checkAway(cfg(bad))).toThrow(/^taskbox.json: away/);
     expect(() => checkAway(cfg({ restartPlan: "kvm", kvm: { tailnetName: "box-kvm", tag: "tag:kvm" } }))).not.toThrow();
     for (const kvm of [{ tailnetName: "Box KVM", tag: "tag:kvm" }, { tailnetName: "box-kvm", tag: "kvm" }, { tailnetName: "box-kvm" }, { tailnetName: "box-kvm", tag: "tag:kvm", url: "x" }]) expect(() => checkAway(cfg({ kvm }))).toThrow(/away.kvm/);
-    expect(() => checkAway(cfg({ restartPlan: "kvm" }))).toThrow(/needs away.kvm/);
+    // A kvm plan with no KVM named still reads: the KVM row says what is missing.
+    expect(() => checkAway(cfg({ restartPlan: "kvm" }))).not.toThrow();
   });
 });
 
