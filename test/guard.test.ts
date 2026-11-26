@@ -785,6 +785,13 @@ describe("the Tailscale row", () => {
     expect((await tailscaleRow(c)).detail).toContain("every user can read tailscaled's log");
     chmodSync(c.paths.tailscaledLog, 0o640);
     expect(await tailscaleRow(c)).toEqual({ status: "OK", detail: "signed in as tag:taskbox, with Tailscale SSH" });
+    // A box with its own tag wants that one.
+    c.cfg = { ...c.cfg, tailnetTag: "tag:taskbox-studio" };
+    expect((await tailscaleRow(c)).detail).toContain("isn't tagged tag:taskbox-studio");
+    status = { BackendState: "Running", Self: { Tags: ["tag:taskbox-studio"] } };
+    expect(await tailscaleRow(c)).toEqual({ status: "OK", detail: "signed in as tag:taskbox-studio, with Tailscale SSH" });
+    c.cfg = { ...c.cfg, tailnetTag: undefined };
+    status = { BackendState: "Running", Self: { Tags: ["tag:taskbox"] } };
     const good = env;
     for (const bad of [good.replace("TS_SSH_DISABLE_SFTP => true", "TS_SSH_DISABLE_SFTP => false"), good.replace(/\t\tSHELL.*\n/, ""), `${good}\t\tTS_DEBUG_ENV_FILE => /tmp/x\n`, good.replace("TS_SSH_DISABLE_FORWARDING => true", "TS_SSH_DISABLE_FORWARDING => 1")]) {
       env = bad;
@@ -832,6 +839,23 @@ describe("the Tailscale row", () => {
     const said: string[] = [];
     await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1");
     expect(sys.spawned[0]!.args.slice(1)).toEqual(["up", "--ssh", "--accept-dns=false", "--accept-routes=false", "--exit-node=", "--advertise-routes=", "--advertise-exit-node=false", "--advertise-connector=false", "--advertise-tags=tag:taskbox", "--hostname=taskbox-1", "--timeout=15m"]);
+  });
+  test("a box's own tag: signed in with it; signed in again when the box carries another", async () => {
+    const { tailscaleUp } = await import("../src/install.ts");
+    for (const [tags, again] of [[["tag:taskbox"], true], [["tag:taskbox-studio"], false]] as const) {
+      const sys = new FakeSys();
+      sys.responders.unshift((cmd, args) => (cmd.endsWith("/tailscale") && args.includes("status") ? { code: 0, stdout: JSON.stringify({ BackendState: "Running", Self: { Tags: tags } }), stderr: "" } : undefined));
+      sys.responders.push((cmd, args) => (cmd.endsWith("/tailscale") && args.includes("set") ? { code: 0, stdout: "", stderr: "" } : undefined));
+      sys.onSpawn = (p) => queueMicrotask(() => p.exit(0));
+      const said: string[] = [];
+      await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1", "tag:taskbox-studio");
+      expect(sys.spawned.length).toBe(again ? 1 : 0);
+      if (again) {
+        expect(sys.spawned[0]!.args).toContain("--advertise-tags=tag:taskbox-studio");
+        expect(said[0]).toBe("The box is on the tailnet with another tag than tag:taskbox-studio, so it signs in again with tag:taskbox-studio.");
+        expect(said).toContain('  "tag:taskbox-studio": ["OWNER"]');
+      }
+    }
   });
   // v2.2.1: the update restarts tailscaled, so the first status read may say Starting. A box already
   // signed in waits it out and is never asked to sign in again.

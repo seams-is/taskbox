@@ -50,7 +50,9 @@ export const AGENT = /^[a-z][a-z0-9]{0,15}$/;
 // A workspace's name: its agent and a number the box never gives twice.
 export const NAME = /^[a-z][a-z0-9]{0,15}-[1-9][0-9]{0,8}$/;
 export const NAME_SEQ_MAX = 999_999_999;
-export const POOL_USER = /^taskbox-ws[1-9]$/;
+// A pool account's name: accounts.workspaces.pool then 1 to 8 (access.ts poolNames). Only a shape:
+// root's pool.json says which accounts are taskbox's.
+export const POOL_USER = /^[A-Za-z][A-Za-z0-9._-]{0,30}[1-8]$/;
 export const NONCE = /^[0-9a-f]{32}$/;
 // The boot stamp: kern.bootsessionuuid, new at each boot.
 export const BOOT = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;

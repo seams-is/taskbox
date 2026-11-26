@@ -32,7 +32,7 @@ import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from
 import { rows } from "./rows/index.ts";
 import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./actionskey.ts";
 import { type EngineName, kitFor } from "./vm.ts";
-import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
+import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, tagOf, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
 import { compareTags, GitHub, type Head, mergeDate, RELEASE_TAG, repoMissing } from "./github.ts";
 import { gitTreeSha, gunzippedSize, hopTag, HopStop, placeRollbackWatch, publicRelease, parseStatement, removeRollbackWatch, ROLLBACK_AFTER_MS, SAFE_UNTAR, SIGNERS_IN_TREE, statementProblem, TARBALL_LIMIT, tarListProblem, UNPACKED_LIMIT, verifySignature } from "./hop.ts";
 import { clean } from "./progress.ts";
@@ -378,7 +378,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // Tailscale refuses the box's tag until the policy names its owner, so the owner saves it first.
   if (opts.first) {
     d.say(`  Before you type yes: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
-    d.say(`    "${TAILNET_TAG}": ["OWNER"]`);
+    d.say(`    "${tagOf(relCfg ?? {})}": ["OWNER"]`);
   }
   // Who may log in by Tailscale SSH: the console holds the rules, so a change is the owner's step.
   if (!opts.first) {
@@ -610,7 +610,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     const sockWhy = await keepSocket(d.sys, d.paths, newSocketMemory(), d.rootUid ?? 0).catch((e: Error) => e.message);
     if (sockWhy) d.say(`  tailscaled's socket folder: ${sockWhy}. The guard puts it right on its next pass, and taskbox check says so.`);
     await loadDaemon(d, TAILSCALED_LABEL, d.paths.tailscaledPlist, "tailscaled");
-    await tailscaleUp(d, cfg.runnerNamePrefix);
+    await tailscaleUp(d, cfg.runnerNamePrefix, tagOf(cfg));
 
     // 7. The service's home, then, unless the update placed them, the keys in root's folder.
     if (opts.first) await makeServiceHome(d);
@@ -1026,16 +1026,19 @@ const printable = (t: string) => t.replace(/[^\x20-\x7e]/g, " ").trim();
 // default rule for a user's own devices, which allows root. Its key doesn't expire. The owner opens the link it prints.
 // MagicDNS's answers stay off the box (--accept-dns=false): the box's DNS is what every VM asks, and
 // no VM learns the tailnet's names. The box's tailnet name is never written to GitHub.
-export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<void> {
+export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string = TAILNET_TAG): Promise<void> {
   const ts = (args: string[]) => d.sys.run(d.paths.tailscale, [`--socket=${d.paths.tailscaleSocket}`, ...args], { timeoutMs: 20_000 });
   // tailscaled may have restarted a moment ago, for this update. Wait while it is still starting, so a
   // box already signed in isn't taken for one that needs to sign in (v2.2.1).
   let state = "";
+  let tags: unknown;
   const until = d.sys.now() + TAILSCALE_SETTLE_MS;
   for (;;) {
     const r = await ts(["status", "--json"]);
     try {
-      state = (JSON.parse(r.stdout) as { BackendState?: string }).BackendState ?? "";
+      const j = JSON.parse(r.stdout) as { BackendState?: string; Self?: { Tags?: unknown } };
+      state = j.BackendState ?? "";
+      tags = j.Self?.Tags;
     } catch {}
     if ((state && !TAILSCALE_STARTING.includes(state)) || d.sys.now() >= until) break;
     await d.sys.sleep(2000);
@@ -1045,7 +1048,12 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
     d.say("Tailscale is still starting, so its settings weren't checked. Type taskbox update again in a few minutes.");
     return;
   }
-  if (state === "Running") {
+  // Signed in with another tag (tailnetTag changed): signed in again below, with the new tag, so the
+  // policy's rules for it are the ones that reach the box. Not checked: whether Tailscale asks for a
+  // new sign-in to change a tag.
+  const retag = state === "Running" && Array.isArray(tags) && tags.length > 0 && !tags.includes(tag);
+  if (retag) d.say(`The box is on the tailnet with another tag than ${tag}, so it signs in again with ${tag}.`);
+  if (state === "Running" && !retag) {
     // Already signed in: make sure SSH is on and DNS is off, and that the box takes no routes and
     // offers none, with no exit node, app connector or web client, without signing in again. These
     // are what the Tailscale row checks. accept-routes is on by default on macOS (Tailscale 1.104.5,
@@ -1057,11 +1065,11 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
   // Tailscale refuses the tag until the policy names its owner (tailscale.com/kb/1068), so that
   // entry goes in first. The rest of the policy comes after the sign-in: taskbox policy show prints it.
   d.say(`Before the box signs in: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
-  d.say(`  "${TAILNET_TAG}": ["OWNER"]`);
+  d.say(`  "${tag}": ["OWNER"]`);
   // A line for the owner only when Tailscale gives a link: a box that signs in without one needs nothing.
   let asked = false;
   let approve = false;
-  const p = d.sys.spawn(d.paths.tailscale, [`--socket=${d.paths.tailscaleSocket}`, "up", "--ssh", "--accept-dns=false", ...TAILSCALE_OFF, `--advertise-tags=${TAILNET_TAG}`, `--hostname=${hostname}`, "--timeout=15m"], {
+  const p = d.sys.spawn(d.paths.tailscale, [`--socket=${d.paths.tailscaleSocket}`, "up", "--ssh", "--accept-dns=false", ...TAILSCALE_OFF, `--advertise-tags=${tag}`, `--hostname=${hostname}`, "--timeout=15m"], {
     onLine: (l) => {
       const login = LOGIN_LINK.exec(l)?.[0];
       if (login) {
@@ -1080,7 +1088,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
   });
   const code = await p.exited;
   if (code === 0) d.say("The box is on the tailnet, with Tailscale SSH.");
-  else d.say(`The box didn't sign in to Tailscale. Check that "tagOwners" has "${TAILNET_TAG}", then type taskbox update again${asked ? ", and open the link it prints" : approve ? ", once the box is approved" : ""}.`);
+  else d.say(`The box didn't sign in to Tailscale. Check that "tagOwners" has "${tag}", then type taskbox update again${asked ? ", and open the link it prints" : approve ? ", once the box is approved" : ""}.`);
 }
 
 // Writes a LaunchDaemon's plist from the install and loads it again, so it runs the new code.

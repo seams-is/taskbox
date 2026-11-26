@@ -6,7 +6,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node
 import { readSeen } from "./logins.ts";
 import { dirname, join, relative } from "node:path";
 import { AWAY_ROWS } from "./awaychecks.ts";
-import { awayOf, type Config, DEFAULT_AWAY, GATE_SHELL, type PublicAddressSource, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, sourceKeyPath, sourceOf } from "./config.ts";
+import { awayOf, type Config, DEFAULT_AWAY, GATE_SHELL, type PublicAddressSource, REMOTE_SHELL, tagOf, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, sourceKeyPath, sourceOf } from "./config.ts";
 import { readInstallId, text } from "./answers.ts";
 import { adminState } from "./elevate.ts";
 import { canUnlock, poolProblem, readRecord, recordName, UNLOCK_UNKNOWN, uidOf, userKey } from "./accounts.ts";
@@ -774,7 +774,8 @@ export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">
     tags = j.Self?.Tags;
   } catch {}
   if (state !== "Running") return fail(`tailscaled isn't signed in (${state || "no answer"}). As your admin user, type taskbox update, and open the link it prints.`);
-  if (!Array.isArray(tags) || !tags.includes(TAILNET_TAG)) return fail(`the box isn't tagged ${TAILNET_TAG} on the tailnet, so the tailnet's rules for your own devices reach it. Nothing to do: agents fix it.`);
+  const tag = tagOf(c.cfg);
+  if (!Array.isArray(tags) || !tags.includes(tag)) return fail(`the box isn't tagged ${tag} on the tailnet, so the tailnet's rules for your own devices reach it. Nothing to do: agents fix it.`);
   const prefs = await ts(["debug", "prefs"]);
   let p: { RunSSH?: boolean; CorpDNS?: boolean; RouteAll?: boolean; ExitNodeID?: string; ExitNodeIP?: string; AdvertiseRoutes?: unknown[] | null; AdvertiseServices?: unknown[] | null; RunWebClient?: boolean; AppConnector?: { Advertise?: boolean } } = {};
   try {
@@ -831,7 +832,7 @@ export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">
   // A move in the last day is said, since it means the log was open to every user for a while.
   const moved = readSeen(c.paths)?.logMovedAt;
   const movedNote = moved && c.sys.now() - moved < 86_400_000 ? `. The guard moved aside a log every user could read at ${new Date(moved).toTimeString().slice(0, 5)}, and restarted tailscaled` : "";
-  return ok(`signed in as ${TAILNET_TAG}, with Tailscale SSH${underOld ? ", under its old name" : ""}${movedNote}`);
+  return ok(`signed in as ${tag}, with Tailscale SSH${underOld ? ", under its old name" : ""}${movedNote}`);
 }
 
 // Between the first update to the new labels, which the install before runs and which keeps every

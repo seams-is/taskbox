@@ -24,7 +24,7 @@
 import { randomBytes } from "node:crypto";
 import { lstatSync, renameSync, statfsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { POOL_USER, poolOf } from "../access.ts";
+import { poolNames, poolOf } from "../access.ts";
 import { readRecord, uidOf } from "../accounts.ts";
 import { readInstallId } from "../answers.ts";
 import { trustedKey } from "../approver.ts";
@@ -92,13 +92,18 @@ export interface PassReport {
 
 type PoolAccount = { name: string; uid: number };
 
-// The pool accounts to fence: those pool.json records. A pool.json that can't be read leaves only an
-// account named taskbox-ws1 with a hidden user ID, fenced but never given a workspace.
+// The pool accounts to fence: those pool.json records. A pool.json that can't be read leaves each
+// account the settings name (<pool>1 to <pool><size>) that has a hidden user ID, fenced but never
+// given a workspace.
 async function poolAccounts(d: WsDeps): Promise<{ list: PoolAccount[]; sure: boolean }> {
   const rec = readPoolRecord(d.p.poolRecord, d.rootUid ?? 0);
   if (rec !== "bad") return { list: Object.entries(rec.made).filter(([n]) => POOL_NAME.test(n)).map(([name, m]) => ({ name, uid: m.uid })), sure: true };
-  const uid = await uidOf(d.sys, POOL_USER).catch(() => undefined);
-  return { list: uid !== undefined && uid >= FIRST_HIDDEN_ID && uid <= LAST_HIDDEN_ID ? [{ name: POOL_USER, uid }] : [], sure: false };
+  const list: PoolAccount[] = [];
+  for (const name of poolNames(d.cfg.accounts)) {
+    const uid = await uidOf(d.sys, name).catch(() => undefined);
+    if (uid !== undefined && uid >= FIRST_HIDDEN_ID && uid <= LAST_HIDDEN_ID) list.push({ name, uid });
+  }
+  return { list, sure: false };
 }
 
 // The agent account's user ID: the one root's accounts.json records for accounts.agent, and only

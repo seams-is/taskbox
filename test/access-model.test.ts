@@ -316,3 +316,21 @@ test("the fixture box's record file stays root's 0644 JSON", () => {
   writeFileSync(p.accountsRecord, "{not json");
   expect(readRecord(p.accountsRecord)).toEqual({ made: {} });
 });
+
+describe("a box's own tag, tailnetTag", () => {
+  test("tag:taskbox or tag:taskbox-<name>; anything else is refused", async () => {
+    const { checkAccounts } = await import("../src/settings/accounts.ts");
+    const { tagOf } = await import("../src/config.ts");
+    const c = (tag: unknown) => ({ ...CFG, accounts: { service: "taskbox", people: [] }, tailnetTag: tag }) as never;
+    for (const t of ["tag:taskbox", "tag:taskbox-studio", "tag:taskbox-box-2"]) expect(() => checkAccounts(c(t))).not.toThrow();
+    for (const t of ["tag:other", "tag:taskbox-", "tag:taskbox-Studio", "autogroup:member", 3, `tag:taskbox-${"a".repeat(60)}`]) expect(() => checkAccounts(c(t))).toThrow(/tailnetTag is tag:taskbox/);
+    expect(tagOf({})).toBe("tag:taskbox");
+    expect(tagOf({ tailnetTag: "tag:taskbox-studio" })).toBe("tag:taskbox-studio");
+  });
+  test("the policy row compares against the box's own tag's rules", async () => {
+    const cfg = { accounts: validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), tailnetTag: "tag:taskbox-studio" };
+    const c = checkCtx(new Dir(), { cfg });
+    c.sys.responders.unshift((cmd, args) => (cmd === c.paths.tailscale && args.includes("netmap") ? { code: 0, stdout: JSON.stringify({ SSHPolicy: { rules: [{ sshUsers: { "taskbox-agent": "=" }, action: { accept: true } }] } }), stderr: "" } : undefined));
+    expect((await tailnetPolicyRow(c)).status).toBe("OK");
+  });
+});

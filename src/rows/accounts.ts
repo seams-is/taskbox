@@ -4,7 +4,7 @@ import { poolOf, SYSTEM_USERS } from "../access.ts";
 import { otherTaskboxShells, readRecord, systemProblem, uidOf } from "../accounts.ts";
 import { trustedKey } from "../approver.ts";
 import type { Check, CheckContext } from "../checks.ts";
-import { REMOTE_SHELL } from "../config.ts";
+import { REMOTE_SHELL, tagOf } from "../config.ts";
 import type { Row } from "../core/rows.ts";
 import { readPin } from "../pin.ts";
 import { policyFor } from "../policy.ts";
@@ -100,7 +100,7 @@ export async function tailnetPolicyRow(c: CheckContext): Promise<Out> {
   const live = liveSshUsers(netmap);
   if (!live) return skip("taskbox can't see the tailnet's SSH rules for this box, so it can't compare them with the settings. On the controller, type taskbox policy show --box all, and check what you pasted");
   const pool = poolOf(c.cfg.accounts, trustedKey(c.cfg.approverKey, readPin(c.paths.approverPin, c.rootUid ?? 0)));
-  const want = policyFor(c.cfg.accounts, {}, pool).ssh;
+  const want = policyFor(c.cfg.accounts, { tag: tagOf(c.cfg) }, pool).ssh;
   const users = (action: string) => want.filter((x) => x.action === action).flatMap((x) => x.users as string[]);
   const diff = policyDiff(live, { accept: users("accept"), check: users("check") });
   if (diff.length) return fail(`the tailnet's rules for this box differ from the settings (${diff.slice(0, 4).join("; ")}): on the controller, type taskbox policy show --box all, then paste it`);

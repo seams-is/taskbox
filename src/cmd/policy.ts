@@ -19,7 +19,7 @@ export const commands: CommandSpec[] = [
     file: (c) => c.opts.whole === true,
     did: "Printed the policy. Nothing changed.",
     async run(c) {
-      const { loadConfig } = await import("../config.ts");
+      const { loadConfig, tagOf } = await import("../config.ts");
       const { adminsOf, adminState } = await import("../elevate.ts");
       const { named, poolOf } = await import("../access.ts");
       const { uidOf } = await import("../accounts.ts");
@@ -50,7 +50,7 @@ export const commands: CommandSpec[] = [
       }
       let pol;
       try {
-        pol = policyFor(cfg.accounts, { ...(owner !== undefined ? { owner } : {}), admins: [...admins] }, pool);
+        pol = policyFor(cfg.accounts, { ...(owner !== undefined ? { owner } : {}), admins: [...admins], tag: tagOf(cfg) }, pool);
       } catch (e) {
         c.say(`${(e as Error).message}. Nothing printed.`);
         return 1;

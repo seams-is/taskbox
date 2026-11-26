@@ -68,6 +68,7 @@ export interface Config {
   // when it equals accounts.people; v2.7.0's code never reads it.
   screenSharingUsers?: string[];
   tailscaleTun?: string; // tailscaled's --tun: a fixed utun number, so pf can name it
+  tailnetTag?: string; // the box's own tag on the tailnet (config.ts tagOf); tag:taskbox when left out
   // v2.1.0: a second VM kind, an arm64 Ubuntu VM with Docker, for jobs labelled linux.label. The
   // top-level label, image and size are the macOS kind's, so an update run by v2.0's install code
   // still reads them.

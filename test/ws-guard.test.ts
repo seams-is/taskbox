@@ -1131,3 +1131,43 @@ describe("the card's notes", () => {
     expect(whyWaiting(s, w, box({ jobs: [{ name: "app/test", leftMs: 6 * 60_000 }] }))).toBe("app/test (about 6 m left)");
   });
 });
+
+describe("every pool account, 1 to N", () => {
+  // Three accounts, the settings' workspaces.size: each one's processes stopped while no workspace is
+  // open in it, whether pool.json names them or, unreadable, the settings do.
+  const three = (b: ReturnType<typeof wsBox>) => {
+    const procs: Record<number, number> = { [POOL_UID + 1]: 2, [POOL_UID + 2]: 2 };
+    b.sys.responders.unshift((cmd, args) => {
+      const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
+      const uid = cmd === "/usr/bin/pgrep" || cmd === "/usr/bin/pkill" ? Number(args[cmd === "/usr/bin/pkill" ? 2 : 1]) : NaN;
+      if (cmd === "/usr/bin/id" && args[0] === "-u" && (args[1] === "taskbox-ws2" || args[1] === "taskbox-ws3")) return out(`${POOL_UID + Number(args[1].slice(-1)) - 1}\n`);
+      if (cmd === "/usr/bin/sudo" && /^-n -u taskbox-ws[23] -- \/bin\/kill -9 -1$/.test(args.join(" "))) {
+        procs[POOL_UID + Number(args[2]!.slice(-1)) - 1] = 0;
+        return out("");
+      }
+      if (procs[uid] === undefined) return undefined;
+      if (cmd === "/usr/bin/pgrep") return args.includes("-f") ? out("", 1) : procs[uid]! > 0 ? out("123\n") : out("", 1);
+      if (args[0] === "-KILL") procs[uid] = 0;
+      return out("");
+    });
+    return procs;
+  };
+  test("pool.json's three accounts are all fenced", async () => {
+    const b = wsBox();
+    b.d.cfg = { ...b.d.cfg, accounts: { ...b.d.cfg.accounts, workspaces: { pool: "taskbox-ws", size: 3 } } };
+    writePoolRecord({ chown: () => {}, rootUid: me }, b.p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID }, "taskbox-ws2": { uid: POOL_UID + 1 }, "taskbox-ws3": { uid: POOL_UID + 2 } }, groups: {} });
+    const procs = three(b);
+    b.box.procs = 2;
+    await fencePass(b.d, newWsMemory());
+    expect([b.box.procs, procs[POOL_UID + 1], procs[POOL_UID + 2]]).toEqual([0, 0, 0]);
+  });
+  test("with pool.json unreadable, each account the settings name that has a hidden ID is fenced", async () => {
+    const b = wsBox();
+    b.d.cfg = { ...b.d.cfg, accounts: { ...b.d.cfg.accounts, workspaces: { pool: "taskbox-ws", size: 3 } } };
+    writeFileSync(b.p.poolRecord, "{not json");
+    const procs = three(b);
+    b.box.procs = 2;
+    await fencePass(b.d, newWsMemory());
+    expect([b.box.procs, procs[POOL_UID + 1], procs[POOL_UID + 2]]).toEqual([0, 0, 0]);
+  });
+});

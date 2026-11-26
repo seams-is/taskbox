@@ -1,6 +1,6 @@
 # The tailnet policy
 
-The box signs in to your tailnet as the tagged device `tag:taskbox`. Your tailnet policy alone decides who reaches it. It replaces Tailscale's default allow-all rule.
+The box signs in to your tailnet as the tagged device `tag:taskbox`, or the tag in `tailnetTag`, such as `tag:taskbox-studio`. Give each box its own tag when you have more than one, so each keeps its own rules. Your tailnet policy alone decides who reaches it. It replaces Tailscale's default allow-all rule.
 
 It allows your own devices to reach the box by Tailscale SSH as the agent account and the workspace accounts, and by Screen Sharing for the accounts in `accounts.people`. A person given as `{ "user": "sam", "tailnet": "sam@example.com" }` is reached from that Tailscale login only. Nothing reaches root, the service account or the admin users. The box reaches nothing on the tailnet.
 
