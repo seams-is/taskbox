@@ -334,3 +334,18 @@ describe("a box's own tag, tailnetTag", () => {
     expect((await tailnetPolicyRow(c)).status).toBe("OK");
   });
 });
+
+describe("remove and taskbox's own accounts", () => {
+  test("named for what they are, deleted with their groups", async () => {
+    const { remove } = await import("../src/ops.ts");
+    const s = setup(new Dir(), []);
+    await placeSystem(s.d, "_taskboxgh", s.p.accountsRecord);
+    const asked: string[] = [];
+    s.sys.responders.push((cmd) => (cmd === "/usr/bin/du" ? { code: 0, stdout: "0\t/x\n", stderr: "" } : cmd === "/bin/launchctl" || cmd === "/sbin/pfctl" || cmd === "/usr/bin/sudo" ? { code: 0, stdout: "", stderr: "" } : undefined));
+    const said: string[] = [];
+    await remove({ sys: s.sys, paths: s.p, uid: 0, serviceUid: 502, say: (l) => said.push(l), ask: async (q) => (asked.push(q), "yes"), rootUid: ME }, { serviceUid: 502, people: [], yes: true });
+    expect(asked).toContain("Delete _taskboxgh, taskbox's account for the GitHub key keeper, and its home folder? Type yes to delete it: ");
+    expect(s.dir.users._taskboxgh).toBeUndefined();
+    expect(s.dir.groups._taskboxgh).toBeUndefined();
+  });
+});

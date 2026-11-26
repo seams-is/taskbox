@@ -919,7 +919,7 @@ async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown
       missed.push(`the account ${name} (${logged.known ? "it is logged in" : "taskbox can't tell whether it is logged in"}: log it out, then delete it in System Settings, Users & Groups)`);
       continue;
     }
-    const what = role === "service" ? "the account that ran jobs" : "the account agents reached over Tailscale SSH";
+    const what = role === "service" ? "the account that ran jobs" : role === "agent" ? "the account agents reached over Tailscale SSH" : role === "net" ? "taskbox's account for network capture" : role === "gh" ? "taskbox's account for the GitHub key keeper" : "an account taskbox made";
     if ((await d.ask(`Delete ${name}, ${what}, and its home folder? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
       done.push(`kept the account ${name}`);
       continue;
@@ -931,6 +931,14 @@ async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown
     } else missed.push(`the account ${name} (sysadminctl exit ${r.code})`);
   }
   for (const l of left) missed.push(`the account ${l}, left as it is`);
+  // Each made account's own group, once its account is gone: only one the record names, with its ID.
+  // sysadminctl takes a group of the user's own name with the user; what it left goes here.
+  for (const [group, g] of Object.entries(rec.groups ?? {})) {
+    if (rec.made[group]) continue;
+    const why = await removeGroup(d.sys, { made: {}, groups: { [group]: g } }, group);
+    if (why) missed.push(`the group ${why}, left as it is`);
+    else delete rec.groups![group];
+  }
   // The workspace account and its group, from their own record.
   const pool = await removePool(d, o, logged, done, missed);
   // The agent account taskbox placed but didn't make, as boxes from before v2.7.0 have. Its shell is
@@ -964,9 +972,9 @@ async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown
   // The service, when taskbox didn't make it: its account stays, the owner's to delete.
   if (!rec.made[d.paths.service] && !offer.some((x) => x.name === d.paths.service)) byHand.unshift(d.paths.service);
   // The record stays while any account it names is still there, so a later remove still finds it.
-  const kept = Object.keys(rec.made).length > 0 || pool.kept.length > 0 || ss.failed.length > 0;
+  const kept = Object.keys(rec.made).length > 0 || Object.keys(rec.groups ?? {}).length > 0 || pool.kept.length > 0 || ss.failed.length > 0;
   try {
-    if (kept) writeRecord({ chown: o.chown ?? (() => {}), rootUid: 0 }, d.paths.accountsRecord, { made: rec.made, ...(ss.failed.length ? { screenSharing: { added: ss.failed } } : {}) });
+    if (kept) writeRecord({ chown: o.chown ?? (() => {}), rootUid: 0 }, d.paths.accountsRecord, { made: rec.made, ...(rec.groups && Object.keys(rec.groups).length ? { groups: rec.groups } : {}), ...(ss.failed.length ? { screenSharing: { added: ss.failed } } : {}) });
     else if (lstatExists(d.paths.accountsRecord)) rmSync(d.paths.accountsRecord, { force: true });
   } catch (e) {
     missed.push(`the accounts record (${noControl((e as Error).message).slice(0, 80)})`);
