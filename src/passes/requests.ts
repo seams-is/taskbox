@@ -22,6 +22,7 @@ import type { PassCtx, PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { drainSpool, type Entry, newSpoolMemory, type Outcome, readRequest, readSpoolFile, recordOutcome, REQUEST_FOR_MS, REQUEST_NAME, type SpoolReport } from "../core/spool.ts";
 import { pinnedKeys, readApprovers } from "../core/approvers.ts";
+import { currentNonce, readNonces } from "../core/nonces.ts";
 import { parseStatement, SIGNED_FOR_MS, signsInProcess, splitSigned } from "../core/statement.ts";
 import { isSignedWord } from "../core/word.ts";
 import { asNobody, type VerifyDeps, verifyFolder } from "../workspace/approval.ts";
@@ -54,7 +55,6 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
   const rank = rankOf(d.handlers);
   const said = new Set<string>();
   const seen = new Map<string, number>(); // name: the pass root first saw it in
-  const trusted = new Map<string, boolean>(); // signed name: whether it could be the owner's
   const written: string[] = []; // outcome ids, oldest first
   let boot: string | undefined;
   let agent: number | undefined;
@@ -82,30 +82,43 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     };
     const firstSeen = (e: Entry) => seen.get(e.name) ?? pass;
     const now = c.sys.now();
-    // Whether a signed request could be the owner's: its word passes every check but ssh-keygen's.
-    const keys = (() => {
-      const a = readApprovers(s.approvers, root);
-      return a.kind === "ok" ? pinnedKeys(a.value) : [];
-    })();
-    const installId = readInstallId(c.p.installId, root);
-    const plausible = (name: string): boolean => {
+    // The word a signed request carries, when it could be the owner's step still to apply: it passes
+    // every check but ssh-keygen's, and names its subject's current nonce. Read only when the spool is
+    // over its cap.
+    const pending = (name: string, keys: readonly string[], installId: string | undefined, nonces: ReturnType<typeof readNonces>): string | undefined => {
       const f = readSpoolFile(join(s.agentSpool, name), agent!);
-      if (!f) return false;
+      if (!f) return undefined;
       const rr = readRequest(name, f, { owner: agent!, now, kinds: { [SIGNED]: (b) => (isSignedWord(b.word) ? undefined : "no word") } });
-      if (!rr.ok) return false;
-      const parts = splitSigned(String(rr.request.body.word));
+      if (!rr.ok) return undefined;
+      const word = String(rr.request.body.word);
+      const parts = splitSigned(word);
       const st = parts && parseStatement(parts.statement);
-      if (!parts || !st || st.box !== installId || Math.abs(now - Date.parse(st.at)) > SIGNED_FOR_MS) return false;
-      return keys.some((k) => signsInProcess(k, parts.statement, parts.signature));
+      if (!parts || !st || st.box !== installId || Math.abs(now - Date.parse(st.at)) > SIGNED_FOR_MS) return undefined;
+      if (nonces.kind !== "ok" || currentNonce(nonces.value, st.subject) !== st.nonce) return undefined;
+      return keys.some((k) => signsInProcess(k, parts.statement, parts.signature)) ? word : undefined;
+    };
+    // Over the cap, signed requests are ranked once a pass, in the order root saw them: the first copy
+    // of each pending word goes last; forged words, used ones and later copies go first.
+    let owners: Set<string> | undefined;
+    const ranked = (): Set<string> => {
+      if (owners) return owners;
+      owners = new Set();
+      const a = readApprovers(s.approvers, root);
+      const keys = a.kind === "ok" ? pinnedKeys(a.value) : [];
+      const installId = readInstallId(c.p.installId, root);
+      const nonces = readNonces(s.nonces, root);
+      const words = new Set<string>();
+      const names = [...seen.keys()].filter((n) => REQUEST_NAME.exec(n)?.[2] === SIGNED).sort((x, y) => seen.get(x)! - seen.get(y)! || (x < y ? -1 : 1));
+      for (const n of names) {
+        const w = pending(n, keys, installId, nonces);
+        if (w === undefined || words.has(w)) continue;
+        words.add(w);
+        owners.add(n);
+      }
+      return owners;
     };
     const BIG = 1e12;
-    const age = (e: Entry): number => {
-      const kind = REQUEST_NAME.exec(e.name)?.[2];
-      if (kind !== SIGNED) return firstSeen(e);
-      let p = trusted.get(e.name);
-      if (p === undefined) trusted.set(e.name, (p = plausible(e.name)));
-      return firstSeen(e) + (p ? BIG : -BIG);
-    };
+    const age = (e: Entry): number => (REQUEST_NAME.exec(e.name)?.[2] !== SIGNED ? firstSeen(e) : firstSeen(e) + (ranked().has(e.name) ? BIG : -BIG));
     const note = (name: string, code: "busy" | "expired", said: string) => {
       const id = REQUEST_NAME.exec(name)?.[1];
       if (!id) return;
@@ -123,7 +136,6 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     const order = (entries: readonly Entry[], perPass: number): string[] => {
       const here = new Set(entries.map((e) => e.name));
       for (const n of [...seen.keys()]) if (!here.has(n)) seen.delete(n);
-      for (const n of [...trusted.keys()]) if (!here.has(n)) trusted.delete(n);
       for (const e of entries) if (!seen.has(e.name)) seen.set(e.name, pass);
       const sorted = entries
         .map((e) => ({ e, m: REQUEST_NAME.exec(e.name) }))

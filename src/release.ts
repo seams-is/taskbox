@@ -3,6 +3,7 @@
 // merge date and commit it came from. The owner signs the statement with an SSH key in the Secure
 // Enclave of their Mac (taskbox sign), and the signers file in this repo pins that key's public half.
 // ssh-keygen -Y verify checks the signature; then the tarball must hash to what the statement says.
+import { skFlags as readFlags } from "./core/sshsig.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -68,39 +69,7 @@ export function signersProblem(text: string): string | undefined {
 // a signature whatever its flags, and allowed_signers takes no verify-required (ran, see the tests),
 // so taskbox checks them itself.
 export function skFlags(armoured: Uint8Array): number | undefined {
-  const m = /^-----BEGIN SSH SIGNATURE-----\n([A-Za-z0-9+/=\n]+)-----END SSH SIGNATURE-----\n?$/.exec(new TextDecoder().decode(armoured));
-  if (!m) return undefined;
-  const b = Buffer.from(m[1]!.replace(/\n/g, ""), "base64");
-  let off = 0;
-  const take = (n: number) => {
-    if (off + n > b.length) throw new Error("short");
-    const v = b.subarray(off, off + n);
-    off += n;
-    return v;
-  };
-  const str = () => take(take(4).readUInt32BE(0));
-  try {
-    if (take(6).toString("latin1") !== "SSHSIG" || take(4).readUInt32BE(0) !== 1) return undefined;
-    str(); // public key
-    str(); // namespace
-    str(); // reserved
-    str(); // hash
-    const sig = str();
-    if (off !== b.length) return undefined;
-    let o = 0;
-    const s1 = () => {
-      const n = sig.readUInt32BE(o);
-      const v = sig.subarray(o + 4, o + 4 + n);
-      o += 4 + n;
-      return v;
-    };
-    if (s1().toString("latin1") !== "sk-ecdsa-sha2-nistp256@openssh.com") return undefined;
-    s1(); // the ECDSA signature
-    if (o + 5 !== sig.length) return undefined;
-    return sig[o]!;
-  } catch {
-    return undefined;
-  }
+  return readFlags(armoured);
 }
 
 // -1, 0 or 1, comparing two release tags by their numbers.

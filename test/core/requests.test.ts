@@ -586,6 +586,38 @@ describe("the review's cases", () => {
   );
 
   test(
+    "copies of a word already used never push out the owner's next one",
+    async () => {
+      const b = await box();
+      const n1 = (await nonceOf(b.d, "box")) as { nonce: string };
+      const used = signFor({ action: "drain", args: drainArgs(), nonce: n1.nonce });
+      expect(await sendSigned(line({ path: ["drain"] }, ["--timeout", "1h"], used).c, b.d)).toMatchObject({ exit: 0 });
+      const n2 = (await nonceOf(b.d, "box")) as { nonce: string };
+      const body = (word: string) => ({ word, action: "drain", args: drainArgs() });
+      let c = 0;
+      const low = (k: number) => {
+        const r = new Uint8Array(k);
+        r[k - 1] = ++c;
+        return r;
+      };
+      const high = (k: number) => new Uint8Array(k).fill(255);
+      // Six copies of the used word and the owner's next request, seen in one pass. The pass takes
+      // five, and the owner's, last by name, waits.
+      for (let i = 0; i < 6; i++) writeSpoolFile(b.s.agentSpool, "signed", body(used), b.sys, low);
+      const next = writeSpoolFile(b.s.agentSpool, "signed", body(signFor({ action: "drain", args: drainArgs(), nonce: n2.nonce })), b.sys, high).id;
+      await b.job();
+      expect(readOutcome(b.d.outcomes, next, me).kind).toBe("missing");
+      // A flood of copies past the cap, seen later: the owner's is now the oldest that could be the
+      // owner's, but the copies' nonce is used, so they go first.
+      for (let i = 0; i < 55; i++) writeSpoolFile(b.s.agentSpool, "signed", body(used), b.sys);
+      await b.job();
+      expect(readOutcome(b.d.outcomes, next, me)).toMatchObject({ kind: "ok", value: { ok: true } });
+      expect(b.applied).toHaveLength(2);
+    },
+    SLOW,
+  );
+
+  test(
     "a request root removes unread tells its asker why",
     async () => {
       const b = await box();
@@ -851,5 +883,28 @@ describe("the in-process first check of a signature", () => {
     expect(signsInProcess(owner.key, msg, sig({ namespace: "taskbox-release" }))).toBe(false);
     expect(signsInProcess(owner.key, msg, sig({ flags: 0x04 }))).toBe(false);
     expect(signsInProcess(owner.key, msg, "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n")).toBe(false);
+  });
+});
+
+describe("a real Secure Enclave signature", () => {
+  const fx = (n: string) => join(import.meta.dir, "../fixtures/se-signature", n);
+  const key = readFileSync(fx("key.pub"), "utf8").trim();
+  const message = readFileSync(fx("message.txt"));
+  const sig = readFileSync(fx("message.txt.sig"), "utf8");
+  const keygen = (m: Uint8Array) => {
+    const dir = join(tempRoot(), "se");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "signers"), `taskbox-release namespaces="taskbox-release" ${key}\n`);
+    writeFileSync(join(dir, "sig"), sig);
+    return Bun.spawnSync(["/usr/bin/ssh-keygen", "-Y", "verify", "-f", join(dir, "signers"), "-I", "taskbox-release", "-n", "taskbox-release", "-s", join(dir, "sig")], { stdin: new Blob([m]), env: { PATH: "/usr/bin:/bin" } }).exitCode === 0;
+  };
+  test("the in-process check and ssh-keygen agree on it, and on other bytes", () => {
+    expect(keygen(message)).toBe(true);
+    expect(signsInProcess(key, message, sig, "taskbox-release")).toBe(true);
+    const other = Buffer.concat([message, Buffer.from("x")]);
+    expect(keygen(other)).toBe(false);
+    expect(signsInProcess(key, other, sig, "taskbox-release")).toBe(false);
+    // Its namespace is the release's, so it never passes as a control step.
+    expect(signsInProcess(key, message, sig)).toBe(false);
   });
 });
