@@ -192,7 +192,9 @@ describe("the command line", () => {
     expect([r.code, r.said]).toEqual([2, ["taskbox remove asks for a typed yes, and there is no terminal here. Add --yes to answer it."]]);
     // unlock's fdesetup asks at the terminal, so it has no --yes.
     const u = await run(["unlock"], CALLERS["root via sudo"], { terminal: false });
-    expect([u.code, u.said]).toEqual([2, ["taskbox unlock asks for a typed yes, and there is no terminal here. Run it at the box's own terminal."]]);
+    expect([u.code, u.said]).toEqual([2, ["taskbox unlock asks for a password at the terminal, and there is no terminal here. Run it at the box's own terminal."]]);
+    // And -y can't stand in for the terminal: unlock takes no -y at all.
+    expect((await run(["unlock", "-y"], CALLERS["root via sudo"], { terminal: false })).code).toBe(2);
     const j = await run(["workspace", "clear", "nova"], CALLERS["root via sudo"], { terminal: false });
     expect(j.code).toBe(2);
   });

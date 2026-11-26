@@ -336,8 +336,10 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   const trusted = "key" in approver ? approver.key : undefined;
   // The rest of the accounts: the pool, taskbox's own two, people to make, and the agent named before.
   const step = await planAccountsStep(d.sys, d.paths, relAccounts, poolOf(relAccounts, trusted), d.paths.agent, REMOTE_SHELL, d.rootUid ?? 0);
+  // Screen Sharing's list of users, from accounts.people, with any person made after the yes.
+  const list = await planScreenSharing(d.sys, relAccounts.people, readRecord(d.paths.accountsRecord), step.people);
   // Screen Sharing's list of users, from accounts.people: planned now, changed after the yes.
-  const list = await planScreenSharing(d.sys, relAccounts.people, readRecord(d.paths.accountsRecord));
+
   d.say("This installs:");
   for (const line of describe(head, changed)) d.say(line);
   // The update that moves the services' names: said before the yes, so a same-release update with no
@@ -406,7 +408,6 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
 
   const work = mkdtempSync(join(d.workRoot, "taskbox-"));
   chmodSync(work, 0o700);
-  const madePeople: string[] = [];
   try {
     // 5. The commit's files, then each pinned tool checked against the commit's pins.
     writeFileSync(join(work, "src.tar.gz"), await gh.tarball(token, head.sha));
@@ -448,7 +449,6 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     const stepDone = await applyAccountsStep(accountDeps(d), d.paths, step, { poolShell: GATE_SHELL, event: accountEvent(d) });
     for (const l of stepDone.said) d.say(`  ${l}`);
     if (stepDone.stop) throw new Stop(stepDone.stop, true);
-    madePeople.push(...stepDone.people);
     if (approver.change === "first" || approver.change === "rotate") writePin(d, d.paths.approverPin, { key: approver.key, gen: approver.gen, cleared: approver.cleared });
     const versions = loadVersions(src);
     const files: Record<string, string> = {};
@@ -569,13 +569,8 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     rmSync(d.paths.pathsD, { force: true }); // the command link below does its job
     placeCommandLink(d.paths, (path, uid, gid) => d.chown(path, uid, gid));
     const cfg = loadConfig(d.paths.app, d.paths.boxSettings, d.rootUid ?? 0);
-    // Read again, so a person made after the yes goes on the list too. Only what was said before the
-    // yes, and those people, change.
-    const listNow = typeof list === "string" ? list : await planScreenSharing(d.sys, relAccounts.people, readRecord(d.paths.accountsRecord));
-    const said = typeof list === "string" ? [] : [...list.add, ...madePeople];
-    const listDo = typeof listNow === "string" || typeof list === "string" ? listNow : { ...listNow, add: listNow.add.filter((n) => said.includes(n)), drop: listNow.drop.filter((n) => list.drop.includes(n)) };
-    if (typeof listDo !== "string" && (listDo.make || listDo.add.length || listDo.drop.length)) {
-      const failed = await applyScreenSharing(accountDeps(d), listDo, d.paths.accountsRecord);
+    if (typeof list !== "string" && (list.make || list.add.length || list.drop.length)) {
+      const failed = await applyScreenSharing(accountDeps(d), list, d.paths.accountsRecord);
       d.say(failed.length ? `  Screen Sharing's list: ${failed.join("; ")}. taskbox check says what's on it.` : "  Screen Sharing's list: changed as above.");
     }
     // tailscaled's log, before any tailscaled plist that names it is written: root's, group admin,
@@ -1106,6 +1101,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
   });
   const code = await p.exited;
   if (code === 0) d.say("The box is on the tailnet, with Tailscale SSH.");
+  else if (retag) d.say(`The box didn't move to ${tag} on the tailnet: Tailscale may not take a new tag on a box already signed in. Check that "tagOwners" has "${tag}", then type taskbox update again. If it stays so, sign the box out of Tailscale's admin console (Machines), and update again to sign it in with ${tag}.`);
   else d.say(`The box didn't sign in to Tailscale. Check that "tagOwners" has "${tag}", then type taskbox update again${asked ? ", and open the link it prints" : approve ? ", once the box is approved" : ""}.`);
 }
 

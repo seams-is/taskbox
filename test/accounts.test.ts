@@ -77,12 +77,12 @@ describe("the accounts record", () => {
     expect(readRecord(p)).toEqual({ made: { ok: { role: "agent", uid: 471 } } });
   });
 
-  test("the service in use is inUse.service, or service at the top as the first records had it", () => {
+  test("the service in use is inUse.service only: no release wrote any other", () => {
     const p = recordPath();
     mkdirSync(join(p, ".."), { recursive: true });
     writeFileSync(p, JSON.stringify({ service: "ci", made: {} }));
-    expect(readRecord(p).inUse).toEqual({ service: "ci" });
-    writeFileSync(p, JSON.stringify({ inUse: { service: "taskbox" }, service: "ci", made: {} }));
+    expect(readRecord(p).inUse).toBeUndefined();
+    writeFileSync(p, JSON.stringify({ inUse: { service: "taskbox" }, made: {} }));
     expect(readRecord(p).inUse).toEqual({ service: "taskbox" });
   });
 

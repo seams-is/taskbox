@@ -860,6 +860,15 @@ describe("the Tailscale row", () => {
       }
     }
   });
+  test("a tag move that Tailscale doesn't take names the tag move, not a first sign-in", async () => {
+    const { tailscaleUp } = await import("../src/install.ts");
+    const sys = new FakeSys();
+    sys.responders.unshift((cmd, args) => (cmd.endsWith("/tailscale") && args.includes("status") ? { code: 0, stdout: JSON.stringify({ BackendState: "Running", Self: { Tags: ["tag:taskbox"] } }), stderr: "" } : undefined));
+    sys.onSpawn = (p) => queueMicrotask(() => p.exit(1));
+    const said: string[] = [];
+    await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1", "tag:taskbox-studio");
+    expect(said.at(-1)).toMatch(/^The box didn't move to tag:taskbox-studio on the tailnet/);
+  });
   // v2.2.1: the update restarts tailscaled, so the first status read may say Starting. A box already
   // signed in waits it out and is never asked to sign in again.
   test("an update waits while Tailscale starts, then finds the box signed in", async () => {

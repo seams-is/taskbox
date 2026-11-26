@@ -57,7 +57,7 @@ const GUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
 
 export function readRecord(path: string): AccountsRecord {
   // Root's file in root's own folder: a second link to it gives nobody more (readStateJson's oneLink).
-  const r = readStateJson<Partial<AccountsRecord> & { service?: unknown; made?: Record<string, { role?: unknown; uid?: unknown; guid?: unknown }> }>(path, 1_000_000, false);
+  const r = readStateJson<Partial<AccountsRecord> & { made?: Record<string, { role?: unknown; uid?: unknown; guid?: unknown }> }>(path, 1_000_000, false);
   const made: Record<string, Made> = {};
   const unknown: Record<string, unknown> = {};
   for (const [name, m] of Object.entries(r?.made ?? {})) {
@@ -76,8 +76,7 @@ export function readRecord(path: string): AccountsRecord {
   }
   const ss = r?.screenSharing;
   const added = Array.isArray(ss?.added) ? ss.added.filter((n): n is string => typeof n === "string" && USER_NAME.test(n)) : [];
-  // inUse.service, or service at the top as the first records had it.
-  const service = typeof r?.inUse?.service === "string" ? r.inUse.service : r?.service;
+  const service = r?.inUse?.service;
   return {
     ...(typeof service === "string" && USER_NAME.test(service) ? { inUse: { service } } : {}),
     made,
@@ -375,13 +374,19 @@ export const ADMIN_GROUP_GUID = "ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050";
 // What the install changes in the list: it adds each person who is a standard account and isn't on
 // it, and takes off anyone taskbox added who is no longer a person. Anyone else on it is left, and
 // taskbox check names them. Nothing changes here.
-export async function planScreenSharing(sys: Sys, people: readonly string[], rec: AccountsRecord): Promise<ListPlan | string> {
+// willMake: people with no account yet, whom the install offers to make after the yes. Each is
+// planned onto the list, and put on it only once made (applyScreenSharing reads the account again).
+export async function planScreenSharing(sys: Sys, people: readonly string[], rec: AccountsRecord, willMake: readonly string[] = []): Promise<ListPlan | string> {
   const now = await screenSharingList(sys);
   if (!now) return "taskbox can't read Screen Sharing's list of users";
   const added = rec.screenSharing?.added ?? [];
   const add: string[] = [];
   for (const p of people) {
     if (now.members.includes(p)) continue;
+    if (willMake.includes(p)) {
+      add.push(p);
+      continue;
+    }
     if ((await uidOf(sys, p)) === undefined || (await adminState(sys, p)) !== "standard") continue;
     add.push(p);
   }
@@ -412,6 +417,8 @@ export async function applyScreenSharing(d: AccountDeps, p: ListPlan, recordPath
     else failed.push("Screen Sharing's list couldn't be made");
   }
   for (const n of p.add) {
+    // A person the owner chose not to make, or whose account isn't standard, stays off.
+    if ((await uidOf(d.sys, n)) === undefined || (await adminState(d.sys, n)) !== "standard") continue;
     if ((await dse(["-o", "edit", "-a", n, "-t", "user", SCREEN_SHARING_GROUP])).code === 0) {
       if (!ss.added.includes(n)) ss.added.push(n);
     } else failed.push(`${n} couldn't be added to Screen Sharing's list`);
@@ -680,33 +687,17 @@ export async function placePool(d: AccountDeps, p: PoolPaths, name: string, grou
   const home = poolHomeOf(p, name);
   const gid = await placeGroup(d, group, poolStore(d, p.poolRecord));
   if (typeof gid === "string") return gid;
-  let uid = await uidOf(d.sys, name);
-  const made = uid === undefined;
-  if (uid === undefined) {
-    const free = await freeHidden(d.sys, "/Users", d.recorded?.() ?? []);
-    if (free === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
-    if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
-    const rec = poolRec(d, p.poolRecord);
-    if (typeof rec === "string") return rec;
-    writePoolRecord(d, p.poolRecord, { ...rec, made: { ...rec.made, [name]: { uid: free } } });
-    uid = free;
-  } else {
-    const rec = poolRec(d, p.poolRecord);
-    if (typeof rec === "string") return rec;
-    if (!rec.made[name]) return `${name} is an account taskbox didn't make. Nothing else was installed. Nothing to do: agents fix it.`;
-  }
-  const why = await poolKeys(d, name, shell, home, gid);
-  if (why) return why;
-  if (made) {
-    if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`, "UniqueID", String(uid)], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't set ${name}'s UniqueID. Nothing else was installed. ${againOf(d)}.`;
-    if ((await uidOf(d.sys, name)) !== uid) return `${name} was made, but its ID reads back wrong. Nothing else was installed. Nothing to do: agents fix it.`;
-    const guid = await guidOf(d.sys, name);
-    const rec = poolRec(d, p.poolRecord);
-    if (typeof rec === "string") return rec;
-    if (!guid) return `${name} was made, but its GeneratedUID can't be read, so taskbox couldn't record which account it made. Nothing else was installed. ${againOf(d)}.`;
-    writePoolRecord(d, p.poolRecord, { ...rec, made: { ...rec.made, [name]: { uid, guid } } });
-  }
-  if ((await adminState(d.sys, name)) !== "standard") return `${name} isn't a standard user. Nothing else was installed. Nothing to do: agents fix it.`;
+  const uid = await placeHidden(d, name, gid, [shell, home, "taskbox workspace"], {
+    ours: () => {
+      const rec = poolRec(d, p.poolRecord);
+      return typeof rec === "string" ? rec : !!rec.made[name];
+    },
+    record: (made) => {
+      const rec = poolRec(d, p.poolRecord);
+      if (typeof rec !== "string") writePoolRecord(d, p.poolRecord, { ...rec, made: { ...rec.made, [name]: made } });
+    },
+  });
+  if (typeof uid === "string") return uid;
   // Never staff: a file another user left readable by staff stays out of a workspace's reach.
   const staff = await d.sys.run("/usr/bin/dscl", [".", "-read", `/Groups/${STAFF}`, "GroupMembership"], { timeoutMs: 5_000 });
   if ((/^GroupMembership:(.*)$/m.exec(staff.stdout)?.[1] ?? "").trim().split(/\s+/).includes(name)) {
@@ -839,28 +830,14 @@ export async function placeSystem(d: AccountDeps, name: (typeof SYSTEM_USERS)[nu
   const real = `taskbox ${SYSTEM_WHAT[role]}`;
   const gid = await placeGroup(d, name, accountsStore(d, recordPath), real);
   if (typeof gid === "string") return gid;
-  let uid = await uidOf(d.sys, name);
-  const made = uid === undefined;
-  if (uid === undefined) {
-    const free = await freeHidden(d.sys, "/Users", d.recorded?.() ?? []);
-    if (free === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
-    if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
-    // Recorded as soon as the record exists, so remove finds it even if a later key fails.
-    const rec = readRecord(recordPath);
-    writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role, uid: free } } });
-    uid = free;
-  } else if (readRecord(recordPath).made[name]?.role !== role) return `${name} is an account taskbox didn't make. Nothing else was installed. Nothing to do: agents fix it.`;
-  const why = await poolKeys(d, name, SYSTEM_SHELL, SYSTEM_HOME, gid, real);
-  if (why) return why;
-  if (made) {
-    if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`, "UniqueID", String(uid)], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't set ${name}'s UniqueID. Nothing else was installed. ${againOf(d)}.`;
-    if ((await uidOf(d.sys, name)) !== uid) return `${name} was made, but its ID reads back wrong. Nothing else was installed. Nothing to do: agents fix it.`;
-    const guid = await guidOf(d.sys, name);
-    const rec = readRecord(recordPath);
-    if (!guid) return `${name} was made, but its GeneratedUID can't be read, so taskbox couldn't record which account it made. Nothing else was installed. ${againOf(d)}.`;
-    writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role, uid, guid } } });
-  }
-  if ((await adminState(d.sys, name)) !== "standard") return `${name} isn't a standard user. Nothing else was installed. Nothing to do: agents fix it.`;
+  const uid = await placeHidden(d, name, gid, [SYSTEM_SHELL, SYSTEM_HOME, real], {
+    ours: () => readRecord(recordPath).made[name]?.role === role,
+    record: (made) => {
+      const rec = readRecord(recordPath);
+      writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role, ...made } } });
+    },
+  });
+  if (typeof uid === "string") return uid;
   const shared = await idsShared(d.sys, name, uid, gid);
   if (shared) return shared;
   return uid;
@@ -1110,4 +1087,37 @@ export function recordedIds(accountsPath: string, poolPath: string, rootUid = 0)
   const rec = readRecord(accountsPath);
   const pool = readPoolRecord(poolPath, rootUid);
   return [...Object.values(rec.made).map((m) => m.uid), ...Object.values(rec.groups ?? {}).map((g) => g.gid), ...(pool === "bad" ? [] : [...Object.values(pool.made).map((m) => m.uid), ...Object.values(pool.groups).map((g) => g.gid)])];
+}
+
+// A hidden account, made or put back: a free hidden ID when it isn't there, recorded the moment its
+// record exists; no password and hidden first, then its keys; its ID last, then its GeneratedUID
+// recorded beside it; and a standard user. ours says whether an account by that name is taskbox's
+// (or why its record can't be read); record writes its entry. Its ID, or why not.
+async function placeHidden(d: AccountDeps, name: string, gid: number, [shell, home, realName]: [string, string, string], r: { ours(): boolean | string; record(made: { uid: number; guid?: string }): void }): Promise<number | string> {
+  let uid = await uidOf(d.sys, name);
+  const made = uid === undefined;
+  if (uid === undefined) {
+    const free = await freeHidden(d.sys, "/Users", d.recorded?.() ?? []);
+    if (free === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
+    if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
+    const ok = r.ours();
+    if (typeof ok === "string") return ok;
+    r.record({ uid: free });
+    uid = free;
+  } else {
+    const ok = r.ours();
+    if (typeof ok === "string") return ok;
+    if (!ok) return `${name} is an account taskbox didn't make. Nothing else was installed. Nothing to do: agents fix it.`;
+  }
+  const why = await poolKeys(d, name, shell, home, gid, realName);
+  if (why) return why;
+  if (made) {
+    if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`, "UniqueID", String(uid)], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't set ${name}'s UniqueID. Nothing else was installed. ${againOf(d)}.`;
+    if ((await uidOf(d.sys, name)) !== uid) return `${name} was made, but its ID reads back wrong. Nothing else was installed. Nothing to do: agents fix it.`;
+    const guid = await guidOf(d.sys, name);
+    if (!guid) return `${name} was made, but its GeneratedUID can't be read, so taskbox couldn't record which account it made. Nothing else was installed. ${againOf(d)}.`;
+    r.record({ uid, guid });
+  }
+  if ((await adminState(d.sys, name)) !== "standard") return `${name} isn't a standard user. Nothing else was installed. Nothing to do: agents fix it.`;
+  return uid;
 }

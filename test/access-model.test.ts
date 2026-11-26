@@ -491,3 +491,22 @@ describe("the exact calls, and no password on any command line", () => {
     expect(s.sys.calls.filter((c) => c.cmd === "/usr/bin/fdesetup")).toEqual([]);
   });
 });
+
+describe("Screen Sharing's list and people made after the yes", () => {
+  test("planned before the yes; put on only once made, so a no leaves them off", async () => {
+    const { planScreenSharing, applyScreenSharing } = await import("../src/accounts.ts");
+    const s = setup(new Dir().group("com.apple.access_screensharing", 398), ["yes", "no"]);
+    s.dir.groups["com.apple.access_screensharing"]!.attrs = {};
+    const plan = await planScreenSharing(s.sys, ["pat", "sam"], readRecord(s.p.accountsRecord), ["pat", "sam"]);
+    if (typeof plan === "string") throw new Error(plan);
+    expect(plan.add).toEqual(["pat", "sam"]);
+    await makePerson(s.d, "pat", s.p.accountsRecord);
+    s.sys.responders.unshift((cmd, args) => {
+      if (cmd !== "/usr/sbin/dseditgroup" || args[1] !== "edit" || args[2] !== "-a") return undefined;
+      s.dir.groups["com.apple.access_screensharing"]!.members.push(args[3]!);
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    expect(await applyScreenSharing(s.d, plan, s.p.accountsRecord)).toEqual([]);
+    expect(s.dir.groups["com.apple.access_screensharing"]!.members).toEqual(["pat"]);
+  });
+});
