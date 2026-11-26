@@ -23,6 +23,7 @@ type Acct = { uid?: number; guid?: string; attrs: Record<string, string>; admin?
 // failCreate and stuck make one step fail; deleteMissingExit is dscl's exit for a key that isn't there.
 class Dir {
   users: Record<string, Acct> = {};
+  groups: Record<string, { gid?: number }> = {};
   failCreate?: string;
   stuck?: string;
   fdesetupWorks = true;
@@ -56,7 +57,16 @@ class Dir {
         return out("");
       }
       if (cmd !== "/usr/bin/dscl") return undefined;
+      if (args[1] === "-list" && args[2] === "/Groups") return out(Object.entries(this.groups).filter(([, g]) => g.gid !== undefined).map(([n, g]) => `${n} ${g.gid}`).join("\n"));
+      if (args[1] === "-list" && args[3] === "PrimaryGroupID") return out(Object.entries(this.users).filter(([, u]) => u.attrs.PrimaryGroupID !== undefined).map(([n, u]) => `${n} ${u.attrs.PrimaryGroupID}`).join("\n"));
       if (args[1] === "-list") return out(Object.entries(this.users).filter(([, u]) => u.uid !== undefined).map(([n, u]) => `${n} ${u.uid}`).join("\n"));
+      if (args[2]?.startsWith("/Groups/")) {
+        const g = this.groups[args[2].slice(8)];
+        if (args[1] === "-read") return !g ? { code: 56, stdout: "", stderr: "<dscl_cmd> DS Error: -14136 (eDSRecordNotFound)" } : g.gid !== undefined ? out(`PrimaryGroupID: ${g.gid}\n`) : out("No such key: PrimaryGroupID\n");
+        if (args[1] === "-create" && args[3] === undefined) this.groups[args[2].slice(8)] ??= {};
+        else if (args[1] === "-create" && args[3] === "PrimaryGroupID" && g) g.gid = Number(args[4]);
+        return out("");
+      }
       const name = args[2]?.startsWith("/Users/") ? args[2].slice(7) : undefined;
       if (name === undefined) return undefined;
       const u = this.users[name];
@@ -122,10 +132,13 @@ describe("a missing agent is made", () => {
     };
     expect(await planAgent(sys, AGENT, { made: {} }, REMOTE_SHELL)).toEqual({});
     await placeAgent(d, AGENT, p.agentHome);
-    expect(steps(sys)).toEqual(["-create", "-create Password", "-create IsHidden", "-create UserShell", "-create NFSHomeDirectory", "-delete AuthenticationAuthority", "-delete ShadowHashData", "-create UniqueID", "-create PrimaryGroupID", "-create RealName"]);
+    // Its own group comes after the steps that take its password, before its ID.
+    expect(steps(sys)).toEqual(["-create", "-create Password", "-create IsHidden", "-create UserShell", "-create NFSHomeDirectory", "-delete AuthenticationAuthority", "-delete ShadowHashData", "-create", "-create PrimaryGroupID", "-create Password", "-create RealName", "-create UniqueID", "-create PrimaryGroupID", "-create RealName"]);
+    expect(dir.groups[AGENT]).toEqual({ gid: 470 });
+    expect(readRecord(p.accountsRecord).groups).toEqual({ [AGENT]: { gid: 470 } });
     expect(recordedAtPassword?.made[AGENT]).toEqual({ role: "agent", uid: 470 });
     expect(readRecord(p.accountsRecord).made[AGENT]).toEqual({ role: "agent", uid: 470, guid: guidFor(470) });
-    expect(dir.users[AGENT]!.attrs).toEqual({ Password: "*", IsHidden: "1", UserShell: REMOTE_SHELL, NFSHomeDirectory: p.agentHome!, PrimaryGroupID: "20", RealName: "taskbox agent" });
+    expect(dir.users[AGENT]!.attrs).toEqual({ Password: "*", IsHidden: "1", UserShell: REMOTE_SHELL, NFSHomeDirectory: p.agentHome!, PrimaryGroupID: "470", RealName: "taskbox agent" });
   });
 
   for (const key of ["Password", "IsHidden", "UserShell", "NFSHomeDirectory", "UniqueID", "PrimaryGroupID", "RealName"]) {

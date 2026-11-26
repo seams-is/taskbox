@@ -11,7 +11,6 @@
 //   nothing into root's. Root then removes the empty folder.
 import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { POOL_GROUP } from "../access.ts";
 import { uidOf } from "../accounts.ts";
 import { readPoolRecord } from "../pin.ts";
 import type { Sys } from "../sys.ts";
@@ -85,7 +84,8 @@ async function target(d: ClearDeps, agent: string): Promise<Target | { no: strin
   if (rec === "bad") return { no: "taskbox's record of its workspace accounts can't be read, so nothing was cleared." };
   const made = rec.made[user];
   if (!made) return { no: `${user} isn't an account taskbox made, so nothing was cleared.` };
-  const gid = rec.groups[POOL_GROUP]?.gid;
+  // Each workspace account is in a group of its own, by its own name.
+  const gid = rec.groups[user]?.gid;
   if (gid === undefined) return { no: `taskbox's record has no group for ${user}, so nothing was cleared.` };
   const now = await uidOf(d.sys, user).catch(() => undefined);
   if (now !== made.uid) return { no: `${user}'s user ID isn't the one taskbox recorded, so nothing was cleared.` };

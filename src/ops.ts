@@ -21,7 +21,6 @@ import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { halfMade, readRecord, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
 import { readBoxFile } from "./boxsettings.ts";
-import { POOL_GROUP } from "./access.ts";
 import { fingerprint } from "./approver.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "./pin.ts";
 import { adminState } from "./elevate.ts";
@@ -998,13 +997,14 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
       if (why) missed.push(`${name}'s line in ${f} (${why})`);
     }
   }
-  // The group, once no account taskbox made is left to be in it.
-  if (rec.groups[POOL_GROUP] && Object.keys(rec.made).length === 0) {
-    const why = await removeGroup(d.sys, rec, POOL_GROUP);
+  // Each account's own group, once the account taskbox made in it is gone.
+  for (const group of Object.keys(rec.groups)) {
+    if (rec.made[group]) continue;
+    const why = await removeGroup(d.sys, rec, group);
     if (why) missed.push(`the group ${why}, left as it is`);
     else {
-      delete rec.groups[POOL_GROUP];
-      done.push(`deleted the group ${POOL_GROUP}`);
+      delete rec.groups[group];
+      done.push(`deleted the group ${group}`);
     }
   }
   const kept = [...Object.keys(rec.made), ...Object.keys(rec.groups).map((g) => `the group ${g}`)];

@@ -737,7 +737,7 @@ describe("the install", () => {
       const sys = new FakeSys();
       // The service is this test's own user, so the key's checks hold in a temp folder. The agent is
       // healthyBox's, made by the install.
-      sys.responders.push((cmd, args) => (cmd === "/usr/bin/id" && !args.includes("taskbox-agent") ? { code: 0, stdout: `${me}\n`, stderr: "" } : undefined));
+      sys.responders.push((cmd, args) => (cmd === "/usr/bin/id" && !args.some((a) => /^(taskbox-agent|_taskboxnet|_taskboxgh)$/.test(a)) && args[0] !== "-nu" ? { code: 0, stdout: `${me}\n`, stderr: "" } : undefined));
       healthyBox(sys);
       // The release's whole taskbox.json, read before the yes.
       githubRoutes(sys, { settings: { ...CFG } });

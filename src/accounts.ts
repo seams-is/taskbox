@@ -1,26 +1,33 @@
 // The accounts taskbox makes on the box: the service, which runs the loop, the agent, which
-// agents and laptops reach over Tailscale SSH, and the pool account, where a workspace runs. People's accounts are never made, changed or deleted.
-// Each account taskbox makes is recorded by name and user ID in /opt/taskbox-state/accounts.json,
-// root's, so remove offers to delete only those, and only while the ID still matches.
-import { type Stats, chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
-import { dirname } from "node:path";
-import { USER_NAME } from "./access.ts";
+// agents and laptops reach over Tailscale SSH, the pool accounts, where workspaces run, and two
+// accounts for taskbox's own parts. A person's account is made only when the owner asks at the box,
+// and is never changed or deleted.
+// Each account taskbox makes is recorded by name, user ID and GeneratedUID in
+// /opt/taskbox-state/accounts.json, root's, so remove offers to delete only those, and only while
+// both IDs still match. The pool's record is pool.json (pin.ts), which the gate reads.
+import { type Stats, chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { SYSTEM_USERS, USER_NAME } from "./access.ts";
 import { type PoolRecord, readPoolRecord, writePoolRecord } from "./pin.ts";
 import { readStateJson } from "./config.ts";
 import { adminState } from "./elevate.ts";
 import type { Sys } from "./sys.ts";
 
-// pool: the workspace account. Its record is pool.json (pin.ts), never accounts.json, since releases
-// from before workspaces rewrite accounts.json without the roles they don't know.
-export type MadeRole = "service" | "agent" | "pool";
-const RECORD_ROLES: readonly MadeRole[] = ["service", "agent"];
+// pool: a workspace account, whose record is pool.json. person: an account taskbox made for a name
+// in accounts.people, which is never deleted. net and gh: network capture's and the key broker's.
+export type MadeRole = "service" | "agent" | "pool" | "person" | "net" | "gh";
+const RECORD_ROLES: readonly MadeRole[] = ["service", "agent", "person", "net", "gh"];
 export type Made = { role: MadeRole; uid: number; guid?: string };
 export type AccountsRecord = {
   // The service whose state is on this box: the install refuses another while that state exists.
-  service?: string;
+  inUse?: { service?: string };
   made: Record<string, Made>;
+  // The groups taskbox made, each for the account of the same name.
+  groups?: Record<string, { gid: number }>;
   // Who taskbox put on Screen Sharing's list, and whether it made the list. remove takes back only these.
   screenSharing?: { added: string[]; groupMade?: boolean };
+  // Entries in a role this release doesn't know, from a later one: kept as they are, never acted on.
+  unknown?: Record<string, unknown>;
 };
 
 export type AccountDeps = {
@@ -41,31 +48,48 @@ const againOf = (d: Pick<AccountDeps, "again">) => d.again ?? "Type taskbox upda
 // login window and out of the box's list of people.
 export const FIRST_HIDDEN_UID = 470;
 export const LAST_HIDDEN_UID = 499;
-// A hidden account's group: staff, as any standard user.
-const STAFF_GID = 20;
+
+const GUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
 
 export function readRecord(path: string): AccountsRecord {
   // Root's file in root's own folder: a second link to it gives nobody more (readStateJson's oneLink).
-  const r = readStateJson<Partial<AccountsRecord>>(path, 1_000_000, false);
+  const r = readStateJson<Partial<AccountsRecord> & { service?: unknown; made?: Record<string, { role?: unknown; uid?: unknown; guid?: unknown }> }>(path, 1_000_000, false);
   const made: Record<string, Made> = {};
+  const unknown: Record<string, unknown> = {};
   for (const [name, m] of Object.entries(r?.made ?? {})) {
-    if (!USER_NAME.test(name) || !m || !RECORD_ROLES.includes(m.role) || !Number.isInteger(m.uid) || m.uid < 1) continue;
-    made[name] = { role: m.role, uid: m.uid, ...(typeof m.guid === "string" && /^[0-9A-F-]{36}$/.test(m.guid) ? { guid: m.guid } : {}) };
+    if (!USER_NAME.test(name) || !m || typeof m !== "object") continue;
+    // A later release's role: kept for that release, and never offered for deletion here.
+    if (typeof m.role === "string" && /^[a-z]{1,16}$/.test(m.role) && !(RECORD_ROLES as readonly string[]).includes(m.role) && m.role !== "pool") {
+      unknown[name] = m;
+      continue;
+    }
+    if (!(RECORD_ROLES as readonly unknown[]).includes(m.role) || !Number.isInteger(m.uid) || (m.uid as number) < 1) continue;
+    made[name] = { role: m.role as MadeRole, uid: m.uid as number, ...(typeof m.guid === "string" && GUID.test(m.guid) ? { guid: m.guid } : {}) };
+  }
+  const groups: Record<string, { gid: number }> = {};
+  for (const [name, g] of Object.entries((r?.groups ?? {}) as Record<string, { gid?: unknown }>)) {
+    if (USER_NAME.test(name) && g && Number.isInteger(g.gid) && (g.gid as number) >= FIRST_HIDDEN_UID && (g.gid as number) <= LAST_HIDDEN_UID) groups[name] = { gid: g.gid as number };
   }
   const ss = r?.screenSharing;
   const added = Array.isArray(ss?.added) ? ss.added.filter((n): n is string => typeof n === "string" && USER_NAME.test(n)) : [];
+  // inUse.service, or service at the top as the first records had it.
+  const service = typeof r?.inUse?.service === "string" ? r.inUse.service : r?.service;
   return {
-    ...(typeof r?.service === "string" && USER_NAME.test(r.service) ? { service: r.service } : {}),
+    ...(typeof service === "string" && USER_NAME.test(service) ? { inUse: { service } } : {}),
     made,
+    ...(Object.keys(groups).length ? { groups } : {}),
     ...(ss && typeof ss === "object" ? { screenSharing: { added, ...(ss.groupMade === true ? { groupMade: true } : {}) } } : {}),
+    ...(Object.keys(unknown).length ? { unknown } : {}),
   };
 }
 
-// Root's file, 0644, written whole and renamed into place.
+// Root's file, 0644, written whole and renamed into place. A later release's entries go back in made.
 export function writeRecord(d: Pick<AccountDeps, "chown" | "rootUid">, path: string, rec: AccountsRecord): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
   const tmp = `${path}.new`;
-  writeFileSync(tmp, `${JSON.stringify(rec, null, 2)}\n`, { mode: 0o644 });
+  const { unknown, ...rest } = rec;
+  const out = { ...rest, made: { ...(unknown ?? {}), ...rec.made } };
+  writeFileSync(tmp, `${JSON.stringify(out, null, 2)}\n`, { mode: 0o644 });
   d.chown(tmp, d.rootUid ?? 0, 0);
   chmodSync(tmp, 0o644);
   renameSync(tmp, path);
@@ -97,7 +121,8 @@ export type ServicePlan = { make: true } | { make: false; uid: number; ask?: str
 // stateIn lists the accounts whose home holds taskbox's state for this project. Before v2.7.0 there
 // is no record, so that state is what says which service is in use.
 export async function planService(d: Pick<AccountDeps, "sys">, name: string, rec: AccountsRecord, stateExists: (service: string) => boolean, stateIn: () => string[] = () => []): Promise<ServicePlan | string> {
-  const inUse = rec.service ? (stateExists(rec.service) ? [rec.service] : []) : stateIn();
+  const was = rec.inUse?.service;
+  const inUse = was ? (stateExists(was) ? [was] : []) : stateIn();
   const other = inUse.find((s) => s !== name);
   if (other !== undefined) {
     return `taskbox.json names ${name} as the service account, but ${other}'s taskbox state is on this box, and it would be left behind. Nothing was installed. To keep ${other}, put "service": "${other}" in accounts in taskbox.json. To change it, type taskbox remove first.`;
@@ -125,7 +150,7 @@ export async function makeService(d: AccountDeps, name: string, recordPath: stri
   const rec = readRecord(recordPath);
   const guid = await guidOf(d.sys, name);
   rec.made[name] = { role: "service", uid, ...(guid ? { guid } : {}) };
-  rec.service = name;
+  rec.inUse = { service: name };
   writeRecord(d, recordPath, rec);
   // Had sysadminctl taken "-" as the password itself, "-" would now log in (not checked that it asks).
   const dash = await d.sys.run("/usr/bin/dscl", [".", "-authonly", name, "-"], { timeoutMs: 10_000 });
@@ -144,19 +169,29 @@ export async function makeService(d: AccountDeps, name: string, recordPath: stri
 // password, then the service's (as taskbox unlock does). Whether it can unlock is read as the check
 // row reads it: its GeneratedUID among the disk's unlock users. Ran on a Tart Mac (macOS 27): after
 // fdesetup the account unlocks the disk, while -secureTokenStatus still says DISABLED.
-export async function canUnlock(sys: Sys, name: string): Promise<boolean> {
-  const guid = await guidOf(sys, name);
-  if (!guid) return false;
+// "unknown" when the list or the account's ID can't be read: never read as "no".
+export type Unlock = "yes" | "no" | "unknown";
+export const UNLOCK_UNKNOWN = "unknown: couldn't read the disk's unlock list";
+
+export async function canUnlock(sys: Sys, name: string): Promise<Unlock> {
+  // An account with no GeneratedUID yet (one taskbox is making) can't be on a list kept by it.
+  const key = await userKey(sys, name, "GeneratedUID");
+  if (key === undefined) return "no";
+  const guid = key === null ? undefined : /^[0-9A-F-]{36}$/i.exec(key)?.[0]?.toUpperCase();
+  if (!guid) return "unknown";
   const r = await sys.run("/usr/sbin/diskutil", ["apfs", "listCryptoUsers", "/"], { timeoutMs: 10_000 });
-  return r.code === 0 && r.stdout.toUpperCase().includes(guid);
+  if (r.code !== 0) return "unknown";
+  return r.stdout.toUpperCase().includes(guid) ? "yes" : "no";
 }
 
 export async function ensureUnlock(d: AccountDeps, name: string): Promise<string | undefined> {
   const has = () => canUnlock(d.sys, name);
-  if (await has()) return undefined;
+  const now = await has();
+  if (now === "yes") return undefined;
+  if (now === "unknown") return `taskbox can't tell whether ${name} can unlock the disk (${UNLOCK_UNKNOWN}). ${againOf(d)}.`;
   d.say(`${name} can't unlock the disk yet. macOS asks for an admin's name and password, then for ${name}'s password.`);
   const code = d.tty(["/usr/bin/fdesetup", "add", "-usertoadd", name]);
-  if (await has()) return undefined;
+  if ((await has()) === "yes") return undefined;
   return `${name} still can't unlock the disk (fdesetup ended with ${code}). ${againOf(d)}. If it fails twice, delete ${name} in System Settings, Users & Groups, make it again there as a Standard user, and run it again.`;
 }
 
@@ -216,9 +251,11 @@ export async function planAgent(sys: Sys, name: string, rec: AccountsRecord, she
 // there to work from. Password "*" alone leaves ShadowHashData, which still logs in, so both go.
 // Each step is done when it reads back so. A line naming the step that wasn't, or nothing.
 export async function agentSteps(d: AccountDeps, name: string, shell: string, home: string): Promise<string | undefined> {
-  if (await canUnlock(d.sys, name)) {
+  const before = await canUnlock(d.sys, name);
+  if (before === "unknown") return `taskbox can't tell whether ${name} can unlock the disk (${UNLOCK_UNKNOWN}). Nothing else was installed. ${againOf(d)}.`;
+  if (before === "yes") {
     const r = await d.sys.run("/usr/bin/fdesetup", ["remove", "-user", name], { timeoutMs: 60_000 });
-    if (await canUnlock(d.sys, name)) return `taskbox couldn't take ${name} off the disk's unlock list (fdesetup ended with ${r.code}). Nothing else was installed. If ${name} is the last account that unlocks the disk, add your admin user first: as your admin user, type taskbox unlock.`;
+    if ((await canUnlock(d.sys, name)) !== "no") return `taskbox couldn't take ${name} off the disk's unlock list (fdesetup ended with ${r.code}). Nothing else was installed. If ${name} is the last account that unlocks the disk, add your admin user first: as your admin user, type taskbox unlock.`;
   }
   const dscl = (args: string[]) => d.sys.run("/usr/bin/dscl", [".", ...args], { timeoutMs: 10_000 });
   for (const [k, v] of [["Password", "*"], ["IsHidden", "1"], ["UserShell", shell], ["NFSHomeDirectory", home]] as const) {
@@ -231,12 +268,28 @@ export async function agentSteps(d: AccountDeps, name: string, shell: string, ho
   return undefined;
 }
 
-// The first free hidden ID, or undefined.
-async function freeHiddenUid(sys: Sys): Promise<number | undefined> {
-  const r = await sys.run("/usr/bin/dscl", [".", "-list", "/Users", "UniqueID"], { timeoutMs: 10_000 });
-  if (r.code !== 0) return undefined;
-  const used = new Set(r.stdout.split("\n").map((l) => Number(l.trim().split(/\s+/)[1])));
-  for (let u = FIRST_HIDDEN_UID; u <= LAST_HIDDEN_UID; u++) if (!used.has(u)) return u;
+// The first free hidden ID from FIRST_HIDDEN_UID, or undefined. Free means two readers agree: the
+// local directory's list, and the system's own lookup, which also sees any other directory the Mac
+// is bound to. A user ID is asked of id; a group ID of dscacheutil, and no user may have it as its
+// primary group either. A lookup that fails for any other reason counts the ID as taken.
+export async function freeHidden(sys: Sys, kind: "/Users" | "/Groups"): Promise<number | undefined> {
+  const list = async (k: string, key: string) => {
+    const r = await sys.run("/usr/bin/dscl", [".", "-list", k, key], { timeoutMs: 10_000 });
+    return r.code === 0 ? r.stdout.split("\n").map((l) => Number(l.trim().split(/\s+/).pop())) : undefined;
+  };
+  const lists = kind === "/Users" ? [await list("/Users", "UniqueID")] : [await list("/Groups", "PrimaryGroupID"), await list("/Users", "PrimaryGroupID")];
+  if (lists.some((l) => l === undefined)) return undefined;
+  const used = new Set(lists.flat() as number[]);
+  for (let n = FIRST_HIDDEN_UID; n <= LAST_HIDDEN_UID; n++) {
+    if (used.has(n)) continue;
+    if (kind === "/Users") {
+      const r = await sys.run("/usr/bin/id", ["-nu", String(n)], { timeoutMs: 5_000 });
+      if (r.code !== 0 && /no such user/i.test(r.stderr)) return n;
+    } else {
+      const r = await sys.run("/usr/bin/dscacheutil", ["-q", "group", "-a", "gid", String(n)], { timeoutMs: 5_000 });
+      if (r.code === 0 && r.stdout.trim() === "") return n;
+    }
+  }
   return undefined;
 }
 
@@ -244,7 +297,7 @@ async function freeHiddenUid(sys: Sys): Promise<number | undefined> {
 // needs none and nobody logs in as it at the screen. agentSteps comes before its ID, so an account
 // left half made by a failed step can't be logged in to.
 export async function makeAgent(d: AccountDeps, name: string, shell: string, home: string, recordPath: string): Promise<number | string> {
-  const uid = await freeHiddenUid(d.sys);
+  const uid = await freeHidden(d.sys, "/Users");
   if (uid === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
   if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
   // Recorded as soon as the record exists, so remove finds it even if a later key fails.
@@ -253,7 +306,10 @@ export async function makeAgent(d: AccountDeps, name: string, shell: string, hom
   writeRecord(d, recordPath, rec);
   const why = await agentSteps(d, name, shell, home);
   if (why) return why;
-  for (const [k, v] of [["UniqueID", String(uid)], ["PrimaryGroupID", String(STAFF_GID)], ["RealName", "taskbox agent"]] as const) {
+  // A group of its own, so the agent isn't in staff with the box's people.
+  const gid = await placeGroup(d, name, accountsStore(d, recordPath), "taskbox agent");
+  if (typeof gid === "string") return gid;
+  for (const [k, v] of [["UniqueID", String(uid)], ["PrimaryGroupID", String(gid)], ["RealName", "taskbox agent"]] as const) {
     if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`, k, v], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't set ${name}'s ${k}. Nothing else was installed. ${againOf(d)}.`;
   }
   if ((await uidOf(d.sys, name)) !== uid) return `${name} was made, but its ID reads back wrong. Nothing else was installed. Nothing to do: agents fix it.`;
@@ -274,7 +330,7 @@ export async function removable(sys: Sys, rec: AccountsRecord, people: readonly 
   for (const [name, m] of Object.entries(rec.made)) {
     if ((await uidOf(sys, name)) === undefined) continue;
     if (!(await stillMade(sys, name, m))) out.left.push(`${name} (its ID isn't the one taskbox made)`);
-    else if (lower.includes(name.toLowerCase())) out.left.push(`${name} (a person's account)`);
+    else if (m.role === "person" || lower.includes(name.toLowerCase())) out.left.push(`${name} (a person's account)`);
     else if ((await adminState(sys, name)) !== "standard") out.left.push(`${name} (not a standard user)`);
     else out.delete.push({ name, role: m.role });
   }
@@ -404,34 +460,45 @@ export async function planPool(sys: Sys, rec: PoolRecord | "bad", name: string, 
 // The pool's paths, from Paths.
 export type PoolPaths = { poolRecord: string; poolHome: string; cronDeny: string; atDeny: string; cronAllow: string; atAllow: string };
 
-// The first free ID from FIRST_HIDDEN_UID in a dscl -list, or undefined.
-async function freeHidden(sys: Sys, kind: "/Users" | "/Groups", key: string): Promise<number | undefined> {
-  const r = await sys.run("/usr/bin/dscl", [".", "-list", kind, key], { timeoutMs: 10_000 });
-  if (r.code !== 0) return undefined;
-  const used = new Set(r.stdout.split("\n").map((l) => Number(l.trim().split(/\s+/).pop())));
-  for (let u = FIRST_HIDDEN_UID; u <= LAST_HIDDEN_UID; u++) if (!used.has(u)) return u;
-  return undefined;
-}
-
 const poolRec = (d: Pick<AccountDeps, "rootUid">, path: string): PoolRecord | string => {
   const r = readPoolRecord(path, d.rootUid ?? 0);
   return r === "bad" ? `${path} isn't root's plain file. Nothing else was installed. Nothing to do: agents fix it.` : r;
 };
 
-// The pool's group: made and recorded when it isn't there. Its ID, or why not.
-async function placeGroup(d: AccountDeps, group: string, recordPath: string): Promise<number | string> {
-  const rec = poolRec(d, recordPath);
-  if (typeof rec === "string") return rec;
+// Where the groups taskbox made are recorded: pool.json for the pool's, accounts.json for the rest.
+type GroupStore = { groups(): Record<string, { gid: number }> | string; record(group: string, gid: number): void };
+const poolStore = (d: Pick<AccountDeps, "chown" | "rootUid">, path: string): GroupStore => ({
+  groups: () => {
+    const r = poolRec(d, path);
+    return typeof r === "string" ? r : r.groups;
+  },
+  record: (group, gid) => {
+    const r = poolRec(d, path);
+    if (typeof r !== "string") writePoolRecord(d, path, { ...r, groups: { ...r.groups, [group]: { gid } } });
+  },
+});
+const accountsStore = (d: Pick<AccountDeps, "chown" | "rootUid">, path: string): GroupStore => ({
+  groups: () => readRecord(path).groups ?? {},
+  record: (group, gid) => {
+    const r = readRecord(path);
+    writeRecord(d, path, { ...r, groups: { ...(r.groups ?? {}), [group]: { gid } } });
+  },
+});
+
+// An account's own group, by its name: made and recorded when it isn't there. Its ID, or why not.
+async function placeGroup(d: AccountDeps, group: string, store: GroupStore, realName = "taskbox workspace"): Promise<number | string> {
+  const groups = store.groups();
+  if (typeof groups === "string") return groups;
   const now = await groupGid(d.sys, group);
   if (now === null) return `taskbox can't read the group ${group}. Nothing else was installed. ${againOf(d)}.`;
-  if (now !== undefined) return rec.groups[group]?.gid === now ? now : `${group} is a group taskbox didn't make. Nothing else was installed. Nothing to do: agents fix it.`;
-  const gid = await freeHidden(d.sys, "/Groups", "PrimaryGroupID");
+  if (now !== undefined) return groups[group]?.gid === now ? now : `${group} is a group taskbox didn't make. Nothing else was installed. Nothing to do: agents fix it.`;
+  const gid = await freeHidden(d.sys, "/Groups");
   if (gid === undefined) return `there is no free hidden group ID for ${group}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
   const dscl = (args: string[]) => d.sys.run("/usr/bin/dscl", [".", ...args], { timeoutMs: 10_000 });
   if ((await dscl(["-create", `/Groups/${group}`])).code !== 0) return `dscl didn't make the group ${group}. Nothing else was installed. ${againOf(d)}.`;
   // Recorded at once, so a key that fails after this still leaves the group taskbox's.
-  writePoolRecord(d, recordPath, { ...rec, groups: { ...rec.groups, [group]: { gid } } });
-  for (const [k, v] of [["PrimaryGroupID", String(gid)], ["Password", "*"], ["RealName", "taskbox workspaces"]] as const) {
+  store.record(group, gid);
+  for (const [k, v] of [["PrimaryGroupID", String(gid)], ["Password", "*"], ["RealName", realName]] as const) {
     if ((await dscl(["-create", `/Groups/${group}`, k, v])).code !== 0) return `dscl didn't set the group ${group}'s ${k}. Nothing else was installed. ${againOf(d)}.`;
   }
   return (await groupGid(d.sys, group)) === gid ? gid : `the group ${group} was made, but its ID reads back wrong. Nothing else was installed. Nothing to do: agents fix it.`;
@@ -439,9 +506,9 @@ async function placeGroup(d: AccountDeps, group: string, recordPath: string): Pr
 
 // The pool account's keys as they should be. Each is read first and written only when it differs.
 // No password and hidden come first, so an account a failed step leaves half made can't be logged in to.
-async function poolKeys(d: AccountDeps, name: string, shell: string, home: string, gid: number): Promise<string | undefined> {
+async function poolKeys(d: AccountDeps, name: string, shell: string, home: string, gid: number, realName = "taskbox workspace"): Promise<string | undefined> {
   const dscl = (args: string[]) => d.sys.run("/usr/bin/dscl", [".", ...args], { timeoutMs: 10_000 });
-  for (const [k, v] of [["Password", "*"], ["IsHidden", "1"], ["UserShell", shell], ["NFSHomeDirectory", home], ["PrimaryGroupID", String(gid)], ["RealName", "taskbox workspace 1"]] as const) {
+  for (const [k, v] of [["Password", "*"], ["IsHidden", "1"], ["UserShell", shell], ["NFSHomeDirectory", home], ["PrimaryGroupID", String(gid)], ["RealName", realName]] as const) {
     if ((await userKey(d.sys, name, k)) === v) continue;
     if ((await dscl(["-create", `/Users/${name}`, k, v])).code !== 0 || (await userKey(d.sys, name, k)) !== v) return `dscl didn't set ${name}'s ${k}. Nothing else was installed. ${againOf(d)}.`;
   }
@@ -591,13 +658,17 @@ export function undenyIn(d: Pick<AccountDeps, "chown" | "rootUid">, path: string
 
 // After the yes: makes the pool account or puts it back, with its group, home and deny lists.
 // planPool has left alone any account or group taskbox didn't make. The pool's ID, or why not.
+// A pool account's home: /Users/<name>, beside the first one's in Paths.
+export const poolHomeOf = (p: Pick<PoolPaths, "poolHome">, name: string) => join(dirname(p.poolHome), name);
+
 export async function placePool(d: AccountDeps, p: PoolPaths, name: string, group: string, shell: string): Promise<number | string> {
-  const gid = await placeGroup(d, group, p.poolRecord);
+  const home = poolHomeOf(p, name);
+  const gid = await placeGroup(d, group, poolStore(d, p.poolRecord));
   if (typeof gid === "string") return gid;
   let uid = await uidOf(d.sys, name);
   const made = uid === undefined;
   if (uid === undefined) {
-    const free = await freeHidden(d.sys, "/Users", "UniqueID");
+    const free = await freeHidden(d.sys, "/Users");
     if (free === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
     if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
     const rec = poolRec(d, p.poolRecord);
@@ -609,7 +680,7 @@ export async function placePool(d: AccountDeps, p: PoolPaths, name: string, grou
     if (typeof rec === "string") return rec;
     if (!rec.made[name]) return `${name} is an account taskbox didn't make. Nothing else was installed. Nothing to do: agents fix it.`;
   }
-  const why = await poolKeys(d, name, shell, p.poolHome, gid);
+  const why = await poolKeys(d, name, shell, home, gid);
   if (why) return why;
   if (made) {
     if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`, "UniqueID", String(uid)], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't set ${name}'s UniqueID. Nothing else was installed. ${againOf(d)}.`;
@@ -627,8 +698,8 @@ export async function placePool(d: AccountDeps, p: PoolPaths, name: string, grou
   }
   const groups = await groupsProblem(d.sys, name, gid);
   if (groups) return `${groups}. Nothing else was installed. Take it out in System Settings, Users & Groups, then type taskbox update again.`;
-  const home = placeHome(d, p.poolHome, uid, gid);
-  if (home) return home;
+  const placed = placeHome(d, home, uid, gid);
+  if (placed) return placed;
   // Its cron and at jobs would run after its workspace closes.
   for (const f of [p.cronDeny, p.atDeny]) {
     const w = denyIn(d, f, name);
@@ -657,6 +728,7 @@ async function sharing(sys: Sys, name: string, group: string, uid: number, gid: 
 // homeStat reads the home without following a link; tests give one that stands in for the pool's ID.
 export async function poolProblem(sys: Sys, rec: PoolRecord | "bad", p: PoolPaths, name: string, group: string, shell: string, asRoot: boolean, rootUid = 0, homeStat: (path: string) => Stats = lstatSync): Promise<string | undefined> {
   const fix = "As your admin user, type taskbox update.";
+  const home = poolHomeOf(p, name);
   if (rec === "bad") return `${p.poolRecord} isn't root's plain file, so taskbox can't tell which account it made. Nothing to do: agents fix it.`;
   const uid = await uidOf(sys, name);
   if (uid === undefined) return `${name}, the workspace account, isn't on this Mac. ${fix}`;
@@ -675,14 +747,14 @@ export async function poolProblem(sys: Sys, rec: PoolRecord | "bad", p: PoolPath
   if (shared.length) return `${shared.join("; ")}, so it can reach ${name}'s files. Nothing to do: agents fix it.`;
   const groups = await groupsProblem(sys, name, gid);
   if (groups) return `${groups}. Take it out in System Settings, Users & Groups, then type taskbox update as your admin user.`;
-  if ((await read("NFSHomeDirectory")) !== p.poolHome) return `${name}'s home isn't ${p.poolHome}. ${fix}`;
+  if ((await read("NFSHomeDirectory")) !== home) return `${name}'s home isn't ${home}. ${fix}`;
   let st;
   try {
-    st = homeStat(p.poolHome);
+    st = homeStat(home);
   } catch {
-    return `${p.poolHome} isn't there. ${fix}`;
+    return `${home} isn't there. ${fix}`;
   }
-  if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== uid || (st.mode & 0o7777) !== 0o700) return `${p.poolHome} isn't ${name}'s own folder at mode 700. ${fix}`;
+  if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== uid || (st.mode & 0o7777) !== 0o700) return `${home} isn't ${name}'s own folder at mode 700. ${fix}`;
   for (const f of [p.cronDeny, p.atDeny]) if (listsUser(f, name, rootUid) !== true) return `${f} doesn't list ${name}, so its cron or at jobs could run after a workspace closes. ${fix}`;
   // An allow list overrides the deny list: with one, cron and at take only who it names.
   for (const f of [p.cronAllow, p.atAllow]) {
@@ -720,4 +792,244 @@ export async function stopProcesses(sys: Sys, uid: number): Promise<boolean> {
   await sys.run("/usr/bin/pkill", ["-KILL", "-U", String(uid)], { timeoutMs: 5_000 });
   await sys.sleep(1000);
   return !(await left());
+}
+
+// taskbox's own accounts, for network capture and the GitHub key broker: hidden, standard, no
+// password, no shell, no home, each in a group of its own by its name. Made and recorded in
+// accounts.json as the pool's are in pool.json: read each key, write the ones that differ. One by
+// that name that taskbox didn't make is left alone, and that part stays off.
+export const SYSTEM_SHELL = "/usr/bin/false";
+export const SYSTEM_HOME = "/var/empty";
+export const SYSTEM_ROLE: Record<(typeof SYSTEM_USERS)[number], MadeRole> = { _taskboxnet: "net", _taskboxgh: "gh" };
+const SYSTEM_WHAT: Record<string, string> = { net: "network capture", gh: "the GitHub key keeper" };
+
+export async function planSystem(sys: Sys, rec: AccountsRecord, name: (typeof SYSTEM_USERS)[number]): Promise<PoolPlan> {
+  const what = SYSTEM_WHAT[SYSTEM_ROLE[name]]!;
+  const leave = `so taskbox leaves it alone, and ${what} stays off. taskbox check says so.`;
+  const gid = await groupGid(sys, name);
+  if (gid === null) return { leave: `taskbox can't read the group ${name}, ${leave}` };
+  if (gid !== undefined && rec.groups?.[name]?.gid !== gid) return { leave: `${name} is a group taskbox didn't make, ${leave}` };
+  if ((await uidOf(sys, name)) === undefined) return { make: true };
+  const m = rec.made[name];
+  if (!m || m.role !== SYSTEM_ROLE[name] || !(await stillMade(sys, name, m))) return { leave: `${name} is an account taskbox didn't make, ${leave}` };
+  const a = await adminState(sys, name);
+  if (a !== "standard") return { leave: `${name} ${a === "admin" ? "is an administrator" : "may be an administrator"}, ${leave}` };
+  return { make: false };
+}
+
+// After the yes: makes the account or puts it back. Its ID, or why not.
+export async function placeSystem(d: AccountDeps, name: (typeof SYSTEM_USERS)[number], recordPath: string): Promise<number | string> {
+  const role = SYSTEM_ROLE[name];
+  const real = `taskbox ${SYSTEM_WHAT[role]}`;
+  const gid = await placeGroup(d, name, accountsStore(d, recordPath), real);
+  if (typeof gid === "string") return gid;
+  let uid = await uidOf(d.sys, name);
+  const made = uid === undefined;
+  if (uid === undefined) {
+    const free = await freeHidden(d.sys, "/Users");
+    if (free === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
+    if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
+    // Recorded as soon as the record exists, so remove finds it even if a later key fails.
+    const rec = readRecord(recordPath);
+    writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role, uid: free } } });
+    uid = free;
+  } else if (readRecord(recordPath).made[name]?.role !== role) return `${name} is an account taskbox didn't make. Nothing else was installed. Nothing to do: agents fix it.`;
+  const why = await poolKeys(d, name, SYSTEM_SHELL, SYSTEM_HOME, gid, real);
+  if (why) return why;
+  if (made) {
+    if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`, "UniqueID", String(uid)], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't set ${name}'s UniqueID. Nothing else was installed. ${againOf(d)}.`;
+    if ((await uidOf(d.sys, name)) !== uid) return `${name} was made, but its ID reads back wrong. Nothing else was installed. Nothing to do: agents fix it.`;
+    const guid = await guidOf(d.sys, name);
+    const rec = readRecord(recordPath);
+    if (guid) writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role, uid, guid } } });
+  }
+  if ((await adminState(d.sys, name)) !== "standard") return `${name} isn't a standard user. Nothing else was installed. Nothing to do: agents fix it.`;
+  return uid;
+}
+
+// taskbox check's view of one of taskbox's own accounts: why it isn't as placeSystem leaves it, or undefined.
+export async function systemProblem(sys: Sys, rec: AccountsRecord, name: (typeof SYSTEM_USERS)[number], asRoot: boolean): Promise<string | undefined> {
+  const fix = "As your admin user, type taskbox update.";
+  const uid = await uidOf(sys, name);
+  if (uid === undefined) return `${name}, the account for ${SYSTEM_WHAT[SYSTEM_ROLE[name]]}, isn't on this Mac. ${fix}`;
+  const m = rec.made[name];
+  if (!m || m.role !== SYSTEM_ROLE[name] || !(await stillMade(sys, name, m))) return `${name} isn't the account taskbox made, so taskbox leaves it alone. Delete ${name} with dscl as your admin user, then type taskbox update.`;
+  const a = await adminState(sys, name);
+  if (a !== "standard") return a === "admin" ? `${name} is an admin. Nothing to do: agents fix it.` : `taskbox can't tell whether ${name} is an admin. Nothing to do: agents fix it.`;
+  const read = (k: string) => userKey(sys, name, k);
+  if (!/^(1|YES)$/i.test((await read("IsHidden")) ?? "")) return `${name} shows on the login window. ${fix}`;
+  if (typeof (await read("AuthenticationAuthority")) === "string" || (asRoot && (await read("ShadowHashData")) !== undefined)) return `${name} has a password. ${fix}`;
+  if ((await read("UserShell")) !== SYSTEM_SHELL) return `${name} has a login shell. ${fix}`;
+  if ((await read("NFSHomeDirectory")) !== SYSTEM_HOME) return `${name} has a home. ${fix}`;
+  const gid = rec.groups?.[name]?.gid;
+  if (gid === undefined || (await groupGid(sys, name)) !== gid || (await read("PrimaryGroupID")) !== String(gid)) return `${name}'s group isn't ${name}, the group taskbox made for it. ${fix}`;
+  return undefined;
+}
+
+// A person's account, made only when the owner asks at the box. sysadminctl asks for its password at
+// the terminal, so the person, or the owner, types it there and it is never on a command line. It is
+// recorded as a person's, which remove never deletes. Its ID, or why not.
+export async function makePerson(d: AccountDeps, name: string, recordPath: string): Promise<number | string> {
+  d.say(`Making the account ${name}. Type its password when asked: the person it is for, or you, types it.`);
+  const code = d.tty(["/usr/sbin/sysadminctl", "-addUser", name, "-fullName", name, "-password", "-"]);
+  const uid = await uidOf(d.sys, name);
+  if (code !== 0 || uid === undefined) return `sysadminctl didn't make ${name} (exit ${code}). Make ${name} in System Settings, Users & Groups, as a Standard user.`;
+  const rec = readRecord(recordPath);
+  const guid = await guidOf(d.sys, name);
+  writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role: "person", uid, ...(guid ? { guid } : {}) } } });
+  // Had sysadminctl taken "-" as the password itself, "-" would now log in.
+  if ((await d.sys.run("/usr/bin/dscl", [".", "-authonly", name, "-"], { timeoutMs: 10_000 })).code === 0) {
+    return `sysadminctl gave ${name} the password "-" instead of asking for one. Change ${name}'s password in System Settings, Users & Groups, now.`;
+  }
+  if ((await adminState(d.sys, name)) !== "standard") return `${name} was made, but isn't a standard user. Make ${name} a Standard user in System Settings, Users & Groups.`;
+  return uid;
+}
+
+// The agent accounts.agent named before, once it names another. With taskbox's shell still on it:
+// one taskbox made is deleted, after a yes of its own; one it placed gets its shell set back to
+// /usr/bin/false and its home back to /Users/<name>. Either way its empty home goes. A person's
+// account, an admin, or one with another shell is left, and taskbox check names it.
+export type OldAgent = { name: string; act: "delete" | "shell" | "home"; line?: string };
+
+export async function planOldAgent(sys: Sys, old: string | undefined, now: string | undefined, rec: AccountsRecord, shell: string, people: readonly string[]): Promise<OldAgent | undefined> {
+  if (old === undefined || old.toLowerCase() === now?.toLowerCase()) return undefined;
+  if ((await uidOf(sys, old)) === undefined) return { name: old, act: "home" };
+  if (people.some((p) => p.toLowerCase() === old.toLowerCase())) return undefined;
+  if ((await userKey(sys, old, "UserShell")) !== shell) return { name: old, act: "home" };
+  if ((await adminState(sys, old)) !== "standard") return undefined;
+  const m = rec.made[old];
+  if (m?.role === "agent" && (await stillMade(sys, old, m))) return { name: old, act: "delete", line: `It deletes ${old}, the agent account taskbox made, after a yes of its own: accounts.agent no longer names it.` };
+  return { name: old, act: "shell", line: `It sets ${old}'s login shell back to /usr/bin/false, so Tailscale SSH no longer reaches taskbox as ${old}. The account stays.` };
+}
+
+// After the yes. home: the old agent's own folder (/private/var/taskbox-<name>), removed when empty.
+// Lines for what was done, and for what wasn't.
+export async function applyOldAgent(d: AccountDeps, plan: OldAgent, home: string, recordPath: string): Promise<{ done: string[]; missed: string[] }> {
+  const out = { done: [] as string[], missed: [] as string[] };
+  const { name } = plan;
+  let act = plan.act;
+  if (act === "delete" && (await d.ask(`Delete ${name}, the old agent account taskbox made? Type yes to delete it, or anything else to keep it with no shell: `)).trim().toLowerCase() !== "yes") act = "shell";
+  if (act === "delete") {
+    const uid = await uidOf(d.sys, name);
+    if (uid !== undefined && !(await stopProcesses(d.sys, uid))) out.missed.push(`${name}'s processes didn't stop, so it wasn't deleted`);
+    else if ((await d.sys.run("/usr/sbin/sysadminctl", ["-deleteUser", name], { timeoutMs: 120_000 })).code !== 0 || (await uidOf(d.sys, name)) !== undefined) out.missed.push(`sysadminctl didn't delete ${name}`);
+    else {
+      const rec = readRecord(recordPath);
+      delete rec.made[name];
+      writeRecord(d, recordPath, rec);
+      out.done.push(`Deleted the old agent account ${name}.`);
+    }
+    if (out.missed.length) act = "shell";
+  }
+  if (act === "shell") {
+    const dscl = (k: string, v: string) => d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`, k, v], { timeoutMs: 10_000 });
+    if ((await dscl("UserShell", SYSTEM_SHELL)).code === 0 && (await userKey(d.sys, name, "UserShell")) === SYSTEM_SHELL) {
+      await dscl("NFSHomeDirectory", `/Users/${name}`);
+      out.done.push(`Set ${name}'s login shell back to ${SYSTEM_SHELL}.`);
+    } else out.missed.push(`${name}'s login shell is still taskbox's`);
+  }
+  // Its own empty folder, root's. One with anything in it, or not root's, stays.
+  try {
+    const st = lstatSync(home);
+    if (st.isDirectory() && !st.isSymbolicLink() && st.uid === (d.rootUid ?? 0) && readdirSync(home).length === 0) {
+      rmdirSync(home);
+      out.done.push(`Removed ${name}'s empty home ${home}.`);
+    } else out.missed.push(`${home} isn't an empty folder of root's, so it stays`);
+  } catch {}
+  return out;
+}
+
+// Accounts with taskbox's agent shell that aren't the agent, from one dscl list. undefined when it
+// can't be read.
+export async function otherTaskboxShells(sys: Sys, shell: string, agent: string | undefined): Promise<string[] | undefined> {
+  const r = await sys.run("/usr/bin/dscl", [".", "-list", "/Users", "UserShell"], { timeoutMs: 10_000 });
+  if (r.code !== 0) return undefined;
+  return r.stdout
+    .split("\n")
+    .map((l) => l.trim().split(/\s+/))
+    .filter((x) => x.length === 2 && x[1] === shell && x[0] !== agent)
+    .map((x) => x[0]!.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32));
+}
+
+// The install's accounts step for the accounts beyond the service and the agent: the pool, taskbox's
+// own two, the people the owner asks to make at the box, and the agent accounts.agent named before.
+// Planned before the yes, with a line for each change; applied after it, before anything is installed.
+export type StepPaths = PoolPaths & { accountsRecord: string };
+export type AccountEvent = (type: "account.made" | "account.placed" | "account.deleted", subject: string, text: string) => void;
+export type AccountsPlan = {
+  lines: string[];
+  pool: { name: string; plan: PoolPlan }[];
+  system: { name: (typeof SYSTEM_USERS)[number]; plan: PoolPlan }[];
+  people: string[]; // named in accounts.people, with no account yet
+  oldAgent?: OldAgent;
+};
+
+export async function planAccountsStep(sys: Sys, p: StepPaths, a: { agent?: string; people: readonly string[] }, pool: readonly string[], oldAgent: string | undefined, agentShell: string, rootUid = 0): Promise<AccountsPlan> {
+  const rec = readRecord(p.accountsRecord);
+  const poolRec = readPoolRecord(p.poolRecord, rootUid);
+  const out: AccountsPlan = { lines: [], pool: [], system: [], people: [] };
+  for (const name of pool) out.pool.push({ name, plan: await planPool(sys, poolRec, name, name) });
+  const making = out.pool.filter((x) => "make" in x.plan && x.plan.make).map((x) => x.name);
+  for (const x of out.pool) if ("leave" in x.plan) out.lines.push(x.plan.leave);
+  if (making.length) out.lines.push(`It also makes ${making.join(", ")}, ${making.length === 1 ? "the account a workspace runs in" : "the accounts workspaces run in"}: hidden, standard, with no password, each in a group of its own, and denied cron and at. ${making.length === 1 ? "Its" : "Their"} shell opens nothing until a workspace is approved.`);
+  for (const name of SYSTEM_USERS) out.system.push({ name, plan: await planSystem(sys, rec, name) });
+  for (const x of out.system) if ("leave" in x.plan) out.lines.push(x.plan.leave);
+  const sysMaking = out.system.filter((x) => "make" in x.plan && x.plan.make).map((x) => x.name);
+  if (sysMaking.length) out.lines.push(`It also makes ${sysMaking.join(" and ")}, taskbox's own ${sysMaking.length === 1 ? "account" : "accounts"} for ${sysMaking.map((n) => SYSTEM_WHAT[SYSTEM_ROLE[n]]).join(" and ")}: hidden, with no password, no shell and no home.`);
+  for (const n of a.people) if ((await uidOf(sys, n)) === undefined) out.people.push(n);
+  if (out.people.length) out.lines.push(`accounts.people names ${out.people.join(" and ")}, with no account on this Mac. After the yes, taskbox asks whether to make each one, as a Standard user whose password is typed at the prompt.`);
+  const old = await planOldAgent(sys, oldAgent, a.agent, rec, agentShell, a.people);
+  if (old) {
+    out.oldAgent = old;
+    if (old.line) out.lines.push(old.line);
+  }
+  return out;
+}
+
+// After the yes. The step's lines, or a throwable line for a step that didn't take.
+export async function applyAccountsStep(d: AccountDeps, p: StepPaths, plan: AccountsPlan, o: { poolShell: string; oldAgentHome?: string; event?: AccountEvent }): Promise<{ said: string[]; stop?: string; people: string[] }> {
+  const said: string[] = [];
+  const ev: AccountEvent = (t, s, x) => {
+    try {
+      o.event?.(t, s, x);
+    } catch {}
+  };
+  for (const { name, plan: pl } of plan.pool) {
+    if ("leave" in pl) continue;
+    const placed = await placePool(d, p, name, name, o.poolShell);
+    if (typeof placed === "string") return { said, stop: placed, people: [] };
+    if (pl.make) {
+      said.push(`Made the account ${name}, for workspaces. It has no password, and its shell opens nothing yet.`);
+      ev("account.made", name, `Made the workspace account ${name}.`);
+    }
+  }
+  for (const { name, plan: pl } of plan.system) {
+    if ("leave" in pl) continue;
+    const placed = await placeSystem(d, name, p.accountsRecord);
+    if (typeof placed === "string") return { said, stop: placed, people: [] };
+    if (pl.make) {
+      said.push(`Made the account ${name}, for ${SYSTEM_WHAT[SYSTEM_ROLE[name]]}. It has no password, no shell and no home.`);
+      ev("account.made", name, `Made taskbox's account ${name}.`);
+    }
+  }
+  const people: string[] = [];
+  for (const n of plan.people) {
+    if ((await d.ask(`Make the account ${n}, for a person? Type yes, then its password when asked: `)).trim().toLowerCase() !== "yes") {
+      said.push(`${n} wasn't made. taskbox check says so until it is, or until accounts.people no longer names it.`);
+      continue;
+    }
+    const made = await makePerson(d, n, p.accountsRecord);
+    if (typeof made === "string") said.push(made);
+    else {
+      people.push(n);
+      said.push(`Made the account ${n}, a Standard user.`);
+      ev("account.made", n, `Made the person's account ${n}.`);
+    }
+  }
+  if (plan.oldAgent) {
+    const r = await applyOldAgent(d, plan.oldAgent, o.oldAgentHome ?? "", p.accountsRecord);
+    said.push(...r.done, ...r.missed.map((m) => `${m}. taskbox check says so.`));
+    if (r.done.some((l) => l.startsWith("Deleted"))) ev("account.deleted", plan.oldAgent.name, `Deleted the old agent account ${plan.oldAgent.name}.`);
+  }
+  return { said, people };
 }

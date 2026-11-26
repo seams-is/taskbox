@@ -37,10 +37,12 @@ import { compareTags, GitHub, type Head, mergeDate, RELEASE_TAG, repoMissing } f
 import { gitTreeSha, gunzippedSize, hopTag, HopStop, placeRollbackWatch, publicRelease, parseStatement, removeRollbackWatch, ROLLBACK_AFTER_MS, SAFE_UNTAR, SIGNERS_IN_TREE, statementProblem, TARBALL_LIMIT, tarListProblem, UNPACKED_LIMIT, verifySignature } from "./hop.ts";
 import { clean } from "./progress.ts";
 import { commandLinkProblem, linkTarget, placeCommandLink, prune, relink, swapIn, withUpdateLock } from "./layout.ts";
-import { POOL_GROUP, POOL_USER, poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
+import { poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
 import { BOX_FIX, readBoxFile } from "./boxsettings.ts";
 import { adoptSource, type ConnectDeps } from "./connectflow.ts";
-import { type AccountDeps, agentSteps, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAgent, placePool, planPool, planScreenSharing, planService, readRecord, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
+import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
+import { eventLog } from "./core/events.ts";
+import { rootStateOf } from "./core/paths.ts";
 import { adminState } from "./elevate.ts";
 import { readActionsKey } from "./queue.ts";
 import { placeTailscaledLog } from "./logins.ts";
@@ -186,6 +188,11 @@ const stateIn = (d: InstallDeps) => () => {
 // A first install has no taskbox command yet, so its lines say to run install.sh again.
 type AgentDeps = Pick<InstallDeps, "sys" | "paths" | "say" | "ask" | "tty" | "chown" | "rootUid" | "bootstrap">;
 const accountDeps = (d: AgentDeps): AccountDeps => ({ sys: d.sys, say: d.say, ask: d.ask, tty: d.tty, chown: d.chown, rootUid: d.rootUid ?? 0, again: d.bootstrap ? "Run sh ~/Downloads/taskbox-main/install.sh again" : "Type taskbox update again" });
+// account.made, account.placed and account.deleted, in root's event log.
+const accountEvent = (d: Pick<InstallDeps, "sys" | "paths" | "rootUid">): AccountEvent => {
+  const log = eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys);
+  return (type, subject, text) => void log.write({ type, subject, actor: "install", text });
+};
 // Where an agent's empty home goes: /private/var/taskbox-<agent>, beside the install's own root.
 const agentHomeFor = (d: Pick<InstallDeps, "paths">, user: string) => join(dirname(dirname(d.paths.opt)), "private/var", `taskbox-${user}`);
 
@@ -327,7 +334,8 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // The pool account, while the box trusts the release's key, or pins it at this yes. One taskbox
   // didn't make is left alone.
   const trusted = "key" in approver ? approver.key : undefined;
-  const pool = poolOf(trusted).length ? await planPool(d.sys, readPoolRecord(d.paths.poolRecord, d.rootUid ?? 0), POOL_USER, POOL_GROUP) : undefined;
+  // The rest of the accounts: the pool, taskbox's own two, people to make, and the agent named before.
+  const step = await planAccountsStep(d.sys, d.paths, relAccounts, poolOf(relAccounts, trusted), d.paths.agent, REMOTE_SHELL, d.rootUid ?? 0);
   // Screen Sharing's list of users, from accounts.people: planned now, changed after the yes.
   const list = await planScreenSharing(d.sys, relAccounts.people, readRecord(d.paths.accountsRecord));
   d.say("This installs:");
@@ -344,8 +352,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if (keyLine) d.say(`  ${keyLine}`);
   for (const l of trustFilesLine(changes)) d.say(`  ${l}`);
   if (opts.first) for (const l of earlierWorkspaces(pinNow, readPoolRecord(d.paths.poolRecord, d.rootUid ?? 0))) d.say(`  ${l}`);
-  if (pool && "leave" in pool) d.say(`  ${pool.leave}`);
-  else if (pool?.make) d.say(`  It also makes ${POOL_USER}, the account a workspace runs in: hidden, standard, with no password, in a group of its own, and denied cron and at. Its shell opens nothing until a later release.`);
+  for (const l of step.lines) d.say(`  ${l}`);
   // Passed over, so a box reads a newer release's block, but never without a word: a typo shows here.
   const unknown = unknownAccountKeys(rawAccounts).map((k) => k.replace(/[^\x20-\x7e]/g, "").slice(0, 40));
   if (unknown.length) d.say(`  This taskbox passes over keys it doesn't know in the release's taskbox.json: ${unknown.map((k) => `accounts.${k}`).join(", ")}. If one is a typo, don't type yes: an agent fixes it in a PR.`);
@@ -391,6 +398,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
 
   const work = mkdtempSync(join(d.workRoot, "taskbox-"));
   chmodSync(work, 0o700);
+  const madePeople: string[] = [];
   try {
     // 5. The commit's files, then each pinned tool checked against the commit's pins.
     writeFileSync(join(work, "src.tar.gz"), await gh.tarball(token, head.sha));
@@ -414,7 +422,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     if (unlockWhy) throw new Stop(`${unlockWhy} Nothing else was installed.`, true);
     // The service whose state this box keeps, so a later install refuses to leave it behind.
     const rec = readRecord(d.paths.accountsRecord);
-    if (rec.service !== d.paths.service) writeRecord(d, d.paths.accountsRecord, { ...rec, service: d.paths.service });
+    if (rec.inUse?.service !== d.paths.service) writeRecord(d, d.paths.accountsRecord, { ...rec, inUse: { service: d.paths.service } });
     // The source is adopted from the INSTALLED settings, which hold it today, before the
     // new release, which may drop it, is used (Tart run of #34, C.1b). A failure stops the update
     // before anything changes, so the box never loses its source.
@@ -428,12 +436,11 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     // The agent, before anything is installed, so a step that doesn't take leaves the old release
     // current and running. The tree's accounts are relAccounts, proved above.
     if (relAccounts.agent !== undefined) await placeAgent(d, relAccounts.agent, agentHomeFor(d, relAccounts.agent));
-    // The pool account, then the approver key, both before anything is installed.
-    if (pool && !("leave" in pool)) {
-      const placed = await placePool(accountDeps(d), d.paths, POOL_USER, POOL_GROUP, GATE_SHELL);
-      if (typeof placed === "string") throw new Stop(placed, true);
-      if (pool.make) d.say(`  Made the account ${POOL_USER}, for workspaces. It has no password, and its shell opens nothing yet.`);
-    }
+    // The rest of the accounts, then the approver key, all before anything is installed.
+    const stepDone = await applyAccountsStep(accountDeps(d), d.paths, step, { poolShell: GATE_SHELL, ...(d.paths.agent !== undefined ? { oldAgentHome: agentHomeFor(d, d.paths.agent) } : {}), event: accountEvent(d) });
+    for (const l of stepDone.said) d.say(`  ${l}`);
+    if (stepDone.stop) throw new Stop(stepDone.stop, true);
+    madePeople.push(...stepDone.people);
     if (approver.change === "first" || approver.change === "rotate") writePin(d, d.paths.approverPin, { key: approver.key, gen: approver.gen, cleared: approver.cleared });
     const versions = loadVersions(src);
     const files: Record<string, string> = {};
@@ -478,7 +485,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     placeInstallId(d.paths, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
     // The workspace spool, while the box has its pool account: the agent's, where agent commands
     // leave requests for the guard.
-    if (pool && !("leave" in pool) && relAccounts.agent !== undefined) {
+    if (step.pool.some((x) => !("leave" in x.plan)) && relAccounts.agent !== undefined) {
       const agentUid = await uidOf(d, relAccounts.agent);
       if (agentUid === undefined) throw new Stop(`${relAccounts.agent} isn't there, so the workspace spool can't be made. Type taskbox update again.`, true);
       placeSpool(d, agentUid);
@@ -554,8 +561,13 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     rmSync(d.paths.pathsD, { force: true }); // the command link below does its job
     placeCommandLink(d.paths, (path, uid, gid) => d.chown(path, uid, gid));
     const cfg = loadConfig(d.paths.app, d.paths.boxSettings, d.rootUid ?? 0);
-    if (typeof list !== "string" && (list.make || list.add.length || list.drop.length)) {
-      const failed = await applyScreenSharing(accountDeps(d), list, d.paths.accountsRecord);
+    // Read again, so a person made after the yes goes on the list too. Only what was said before the
+    // yes, and those people, change.
+    const listNow = typeof list === "string" ? list : await planScreenSharing(d.sys, relAccounts.people, readRecord(d.paths.accountsRecord));
+    const said = typeof list === "string" ? [] : [...list.add, ...madePeople];
+    const listDo = typeof listNow === "string" || typeof list === "string" ? listNow : { ...listNow, add: listNow.add.filter((n) => said.includes(n)), drop: listNow.drop.filter((n) => list.drop.includes(n)) };
+    if (typeof listDo !== "string" && (listDo.make || listDo.add.length || listDo.drop.length)) {
+      const failed = await applyScreenSharing(accountDeps(d), listDo, d.paths.accountsRecord);
       d.say(failed.length ? `  Screen Sharing's list: ${failed.join("; ")}. taskbox check says what's on it.` : "  Screen Sharing's list: changed as above.");
     }
     // tailscaled's log, before any tailscaled plist that names it is written: root's, group admin,

@@ -360,7 +360,7 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
   const ctx: Ctx = { now, nonce: () => randomBytes(16).toString("hex") };
   const pool = await poolAccounts(d);
   const trusted = trustedKey(cfg.approverKey, readPin(p.approverPin, root));
-  const names = pool.sure ? poolOf(trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
+  const names = pool.sure ? poolOf(cfg.accounts, trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
   const on = trusted !== undefined && cfg.accounts.agent !== undefined && names.length > 0;
   const uids = pool.list.map((a) => a.uid);
   const closeAll = async () => {
@@ -505,7 +505,7 @@ export async function fencePass(d: WsDeps, mem: WsMemory): Promise<PassReport> {
   const r: PassReport = { did: [], problems: [] };
   const pool = await poolAccounts(d);
   const trusted = trustedKey(d.cfg.approverKey, readPin(d.p.approverPin, d.rootUid ?? 0));
-  const names = pool.sure ? poolOf(trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
+  const names = pool.sure ? poolOf(d.cfg.accounts, trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
   const on = trusted !== undefined && d.cfg.accounts.agent !== undefined && names.length > 0;
   const read = readStateFile(d.p.workspaces, d.rootUid ?? 0);
   const f = await keepAnchor(d.sys, pool.list.map((a) => a.uid), on);

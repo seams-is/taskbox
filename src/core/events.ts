@@ -17,7 +17,7 @@ export type Writer = "guard" | "loop";
 
 // The closed list of event families per writer. A type is <family>.<word>.
 export const FAMILIES: Record<Writer, readonly string[]> = {
-  guard: ["events", "op", "drain", "pause", "resume", "stop", "start", "update", "rollback", "remove", "workspace", "key", "connect", "login", "guard", "check", "settings", "confirm", "takeover", "self-test"],
+  guard: ["events", "op", "drain", "pause", "resume", "stop", "start", "update", "rollback", "remove", "workspace", "key", "connect", "login", "guard", "check", "settings", "account", "confirm", "takeover", "self-test"],
   loop: ["events", "op", "job", "vm", "image", "selftest", "self-test", "tool", "net", "check", "load"],
 };
 const TYPE = /^([a-z][a-z-]{0,15})\.([a-z][a-z-]{0,23})$/;

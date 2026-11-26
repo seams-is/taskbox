@@ -88,7 +88,7 @@ function namesFor(spec: CommandSpec, dir: string, app: string): { project: strin
       try {
         const project = readJson<{ project?: unknown }>(join(app, "taskbox.json")).project;
         if (typeof project === "string" && PROJECT_NAME.test(project)) {
-          const recorded = readRecord("/opt/taskbox-state/accounts.json").service;
+          const recorded = readRecord("/opt/taskbox-state/accounts.json").inUse?.service;
           if (recorded) return { project, service: recorded };
           const owners = readdirSync("/Users").filter((n) => {
             if (n.startsWith(".") || n === "Shared") return false;

@@ -43,7 +43,7 @@ function loopService(c: Ctx): string {
   try {
     return boxNames(c.app).service;
   } catch {
-    return readRecord(join(c.root, "opt/taskbox-state/accounts.json")).service ?? V2_SERVICE;
+    return readRecord(join(c.root, "opt/taskbox-state/accounts.json")).inUse?.service ?? V2_SERVICE;
   }
 }
 

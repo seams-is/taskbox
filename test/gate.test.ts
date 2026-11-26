@@ -30,7 +30,7 @@ function inPhase(phase: Phase): WsState {
 
 const inputs = (o: Partial<GateInputs> = {}): GateInputs => ({
   uid: POOL_UID,
-  pool: { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } },
+  pool: { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } },
   folderOk: true,
   read: { kind: "ok", state: inPhase("active") },
   boot: BOOT1,
@@ -137,7 +137,7 @@ function plantedBox(state: WsState | string | null, o: { stateMode?: number } = 
   const stateFile = join(stateDir, "workspaces.json");
   if (state !== null) writeFileSync(stateFile, typeof state === "string" ? state : stateText(state), { mode: o.stateMode ?? 0o644 });
   if (o.stateMode !== undefined) chmodSync(stateFile, o.stateMode);
-  writePoolRecord({ chown: () => {}, rootUid: me }, join(stateDir, "pool.json"), { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } });
+  writePoolRecord({ chown: () => {}, rootUid: me }, join(stateDir, "pool.json"), { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } });
   return { dir, home, marker, evil, stateFile, poolRecord: join(stateDir, "pool.json") };
 }
 

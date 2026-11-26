@@ -40,7 +40,7 @@ function wsBox(o: { pin?: string | null } = {}) {
   const w = { chown: () => {}, rootUid: me };
   mkdirSync(dirname(p.workspaces), { recursive: true, mode: 0o755 });
   if (o.pin !== null) writePin(w, p.approverPin, { key: o.pin ?? owner.key, gen: 1, cleared: [] });
-  writePoolRecord(w, p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } });
+  writePoolRecord(w, p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } });
   writeRecord(w, p.accountsRecord, { made: { "taskbox-agent": { role: "agent", uid: me } } });
   mkdirSync(p.workspaceSpool, { mode: 0o700 });
   chmodSync(p.workspaceSpool, 0o700);
@@ -743,7 +743,7 @@ describe("the boot pass", () => {
       expect(stateLine(find(b.state(), "nova-1")!)).toBe("Paused while workspaces were off");
       // Back on: still paused.
       if (how === "key") writePin({ chown: () => {}, rootUid: me }, b.p.approverPin, { key: owner.key, gen: 3, cleared: [] });
-      else writePoolRecord({ chown: () => {}, rootUid: me }, b.p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } });
+      else writePoolRecord({ chown: () => {}, rootUid: me }, b.p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } });
       await b.pass();
       expect([how, find(b.state(), "nova-1")!.phase]).toEqual([how, "paused"]);
     }

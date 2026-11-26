@@ -37,7 +37,7 @@ export const commands: CommandSpec[] = [
       }
       const admins = new Set([...listed, ...extra]);
       // The pool account only while the box trusts a key: the settings' key, pinned at the box.
-      const pool = poolOf(trustedKey(cfg.approverKey, readPin(c.p.approverPin)));
+      const pool = poolOf(cfg.accounts, trustedKey(cfg.approverKey, readPin(c.p.approverPin)));
       for (const name of [...named(cfg.accounts).map((n) => n.name), ...pool]) {
         if ((await uidOf(c.ops.sys, name)) === undefined) continue;
         const a = await adminState(c.ops.sys, name);

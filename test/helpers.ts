@@ -12,6 +12,7 @@ import { GitHub } from "../src/github.ts";
 import { Log } from "../src/log.ts";
 import type { LoopDeps } from "../src/loop.ts";
 import type { RunResult } from "../src/sys.ts";
+import { Dir } from "./fake-dir.ts";
 import { FakeSys, NETSTAT_CLEAN, githubRoutes } from "./fake.ts";
 
 export const { privateKey: PEM, publicKey: PUB } = generateKeyPairSync("rsa", {
@@ -176,9 +177,15 @@ export { unknownCommands } from "./setup.ts";
 
 // A box that passes the install's preflight: the service there already, and not an admin, able to
 // unlock the disk. The agent isn't there until the install makes it, with its ID. No other user is made.
-export function healthyBox(sys: FakeSys): void {
+export function healthyBox(sys: FakeSys): Dir {
   quietAccounts(sys);
-  let agentUid: number | undefined;
+  const dir = new Dir().user("root", { uid: 0, attrs: {} }).user("taskbox", { uid: 502, attrs: { PrimaryGroupID: "20" } });
+  const made = /^(\/Users\/|\/Groups\/)?(taskbox-agent|_taskboxnet|_taskboxgh)$/;
+  const mine = (cmd: string, args: string[]) =>
+    (["/usr/bin/dscl", "/usr/bin/id", "/usr/sbin/dseditgroup", "/usr/sbin/sysadminctl"].includes(cmd) && args.some((a) => made.test(a))) ||
+    (cmd === "/usr/bin/dscl" && args[1] === "-list") ||
+    (cmd === "/usr/bin/id" && args[0] === "-nu") ||
+    cmd === "/usr/bin/dscacheutil";
   sys.responders.push((cmd, args) => {
     if (cmd === "/usr/bin/sw_vers") return out("27.1\n");
     if (cmd.endsWith("socketfilterfw")) return out(args[0] === "--getglobalstate" ? "Firewall is enabled. (State = 1)" : "Firewall stealth mode is on");
@@ -189,13 +196,9 @@ export function healthyBox(sys: FakeSys): void {
     if (cmd === "/usr/sbin/netstat") return out(NETSTAT_CLEAN);
     // tailscaled's socket folder, as the install leaves it (tssocket.ts): root's, 700, with one entry for the service.
     if (cmd === "/bin/ls" && args[0] === "-led" && args[1]?.endsWith("/taskbox-tailscale")) return out(`drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:taskbox allow search\n`);
-    if (args.includes("taskbox-agent") || args.includes("/Users/taskbox-agent")) {
-      if (cmd === "/usr/bin/id") return agentUid === undefined ? { code: 1, stdout: "", stderr: "no such user" } : out(`${agentUid}\n`);
-      if (cmd === "/usr/bin/dscl" && args[1] === "-create" && args[3] === "UniqueID") agentUid = Number(args[4]);
-      if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "GeneratedUID") return agentUid === undefined ? { code: 56, stdout: "", stderr: "" } : out(`GeneratedUID: 0F0F0F0F-0000-0000-0000-000000000${agentUid}\n`);
-      // The install's writes to the agent's record take.
-      if (cmd === "/usr/bin/dscl" && args[1] !== "-read") return out("");
-    }
+    // The accounts the install makes: the agent and taskbox's own two, with their groups, in a local
+    // directory that starts with root and the service only.
+    if (mine(cmd, args)) return dir.responder()(cmd, args);
     // The service's ID is the test's own, so what the install gives the service is the test's to give.
     if (cmd === "/usr/bin/id") return args[1] === "taskbox" ? out(`${process.getuid!()}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user\n` };
     // The service can unlock the disk: its GeneratedUID is in the disk's unlock list.
@@ -213,6 +216,7 @@ export function healthyBox(sys: FakeSys): void {
     if (cmd === "/bin/launchctl" && args[0] === "print" && args[1]?.startsWith("gui/")) return { code: 113, stdout: "", stderr: `Could not find service "${args[1]}"\n` };
     return undefined;
   });
+  return dir;
 }
 
 // The install's deps on a temp root, a Mac's own folders in it: the owner's Downloads holds the App
