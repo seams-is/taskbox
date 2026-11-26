@@ -1,26 +1,14 @@
-// guardwatch: a second root LaunchDaemon, run by launchd every 60 s (StartInterval), that restarts
-// the guard when the guard's beat has stood still on two runs in a row, and the key broker the same
-// way. It keeps no state of its own: each run reads the beats and launchd, and acts or doesn't.
-//
-// A beat is { v, boot, mono, pid, at }: this boot's uuid and the monotonic clock (core/boot.ts) when
-// it was written, and the writer's pid. The guard writes one when it starts and every few ticks
-// (passes/beat.ts), so a beat that stands still means its pf tick has stopped. Ages are read on the
-// monotonic clock only, so no step of the wall clock restarts anything.
-//
-// It acts on two labels, both constants, in launchd's system domain, and on nothing else:
-// - launchd must say the label is running with a process. A label booted out (an update's reload,
-//   remove) is left alone;
-// - the beat's own process still running and its beat older than STALE_MS plus one run: it was
-//   stale on the run before too. restart it with kickstart -k;
-// - a newer process that hasn't beaten yet (it beats within a second of starting): only once the
-//   last beat is NEW_PROCESS_MS old, since nothing says when that process started;
-// - a beat from another boot, or a clock it can't read: nothing can be told, so nothing is done. The
-//   "Guard beat" check row says so.
-// Lines go to the guard's own log, beside the guard's.
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
+// guardwatch: a root LaunchDaemon run every 60 s (StartInterval) that restarts the guard, and the
+// key broker once installed, with kickstart -k when its beat stands still on two runs in a row, or
+// when a process never beats within two runs of being first seen. At most RESTARTS_PER_HOUR a
+// daemon; past that it stops and says so, and the beat rows and status fail. Ages are on the
+// monotonic clock in one boot. Its record (which pid it first saw when, and its restarts) is root's,
+// in /var/run, gone at a restart of the box. It acts on two constant labels and nothing else.
+import { appendFileSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { GUARD_LABEL, LABEL_PREFIX } from "./config.ts";
 import { bootId, isBootId, monoNow } from "./core/boot.ts";
+import { isObj, readOwnedJson, writeOwnedText } from "./core/rootfile.ts";
 import type { Sys } from "./sys.ts";
 
 export const GUARDWATCH_LABEL = `${LABEL_PREFIX}.guardwatch`;
@@ -28,8 +16,8 @@ export const BROKER_LABEL = `${LABEL_PREFIX}.broker`;
 export const BROKER_ACCOUNT = "_taskboxgh";
 export const RUN_MS = 60_000; // the plist's StartInterval
 export const STALE_MS = 2 * 60_000; // a beat this old is stale: the guard's slowest full pass fits well inside
-export const NEW_PROCESS_MS = 10 * 60_000;
-const BEAT_MAX = 1024;
+export const RESTARTS_PER_HOUR = 3;
+const HOUR = 3_600_000;
 const LAUNCHCTL_MS = 10_000;
 
 export interface Beat {
@@ -40,42 +28,49 @@ export interface Beat {
   at: number; // the wall clock, for the lines people read only
 }
 
-// Where each beat is: the guard's in root's /var/run; the broker's in its own folder, since it
-// isn't root.
-export function beatPaths(root: string): { guard: string; broker: string } {
-  return { guard: join(root, "private/var/run/taskbox-guard.beat"), broker: join(root, "private/var/db/taskbox-broker/broker.beat") };
+// Where everything is, from the box's paths: the guard's beat and guardwatch's record beside the
+// guard's own record; the broker's beat in its own folder, since it isn't root; both plists beside
+// the guard's.
+export function watchPaths(p: { guardState: string; guardPlist: string }) {
+  const run = dirname(p.guardState);
+  const daemons = dirname(p.guardPlist);
+  return {
+    guardBeat: join(run, "taskbox-guard.beat"),
+    brokerBeat: join(dirname(run), "db/taskbox-broker/broker.beat"),
+    record: join(run, "taskbox-guardwatch.json"),
+    plist: join(daemons, `${GUARDWATCH_LABEL}.plist`),
+    brokerPlist: join(daemons, `${BROKER_LABEL}.plist`),
+    log: join(dirname(run), "log/taskbox-guard.log"),
+  };
 }
-export const guardwatchPlist = (root: string) => join(root, "Library/LaunchDaemons", `${GUARDWATCH_LABEL}.plist`);
-export const brokerPlist = (root: string) => join(root, "Library/LaunchDaemons", `${BROKER_LABEL}.plist`);
-export const guardLogOf = (root: string) => join(root, "private/var/log/taskbox-guard.log");
+// The same from / alone, for guardwatch, which reads no settings.
+export const rootPaths = (root: string): ReturnType<typeof watchPaths> => watchPaths({ guardState: join(root, "private/var/run/taskbox-guard.json"), guardPlist: join(root, "Library/LaunchDaemons/local.taskbox.guard.plist") });
 
-// A beat, written by its daemon: a temporary name, then a rename, 644. boot and mono undefined
-// (unread) write nothing, so a beat never carries a time it doesn't know.
-export function writeBeat(file: string, b: Omit<Beat, "v">): void {
-  const tmp = `${file}.new`;
-  writeFileSync(tmp, JSON.stringify({ v: 1, ...b }), { mode: 0o644 });
-  renameSync(tmp, file);
+export function writeBeat(file: string, b: Omit<Beat, "v">, owner = 0): void {
+  writeOwnedText(file, JSON.stringify({ v: 1, ...b }), { mode: 0o644, owner });
 }
 
-// One beat, read without following a link: a regular file of the owner's, writable by no one else,
-// small, of the right shape. Anything else is no beat.
+const beatOf = (b: unknown): Beat | string => (isObj(b) && b.v === 1 && isBootId(b.boot) && Number.isSafeInteger(b.mono) && Number.isSafeInteger(b.pid) && (b.pid as number) > 0 && Number.isSafeInteger(b.at) ? { v: 1, boot: b.boot, mono: b.mono as number, pid: b.pid as number, at: b.at as number } : "out of shape");
 export function readBeat(file: string, owner: number): Beat | undefined {
-  let fd: number | undefined;
-  try {
-    if (!lstatSync(file).isFile()) return undefined;
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const st = fstatSync(fd);
-    if (!st.isFile() || st.uid !== owner || (st.mode & 0o022) !== 0 || st.size > BEAT_MAX) return undefined;
-    const buf = Buffer.alloc(st.size);
-    const n = readSync(fd, buf, 0, st.size, 0);
-    const b = JSON.parse(buf.subarray(0, n).toString("utf8")) as Record<string, unknown>;
-    if (b.v !== 1 || !isBootId(b.boot) || !Number.isSafeInteger(b.mono) || !Number.isSafeInteger(b.pid) || (b.pid as number) <= 0 || !Number.isSafeInteger(b.at)) return undefined;
-    return { v: 1, boot: b.boot, mono: b.mono as number, pid: b.pid as number, at: b.at as number };
-  } catch {
-    return undefined;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
+  const r = readOwnedJson(file, { owner, max: 1024 }, beatOf);
+  return r.kind === "ok" ? r.value : undefined;
+}
+
+// guardwatch's record, per label: the pid it first saw and when, and its restarts this hour.
+interface Seen {
+  pid: number;
+  mono: number;
+}
+export interface WatchRecord {
+  boot: string;
+  seen: Record<string, Seen>;
+  restarts: Record<string, number[]>;
+  gaveUp: Record<string, boolean>;
+}
+const recordOf = (v: unknown): WatchRecord | string => (isObj(v) && isBootId(v.boot) && isObj(v.seen) && isObj(v.restarts) && isObj(v.gaveUp) ? (v as unknown as WatchRecord) : "out of shape");
+export function readRecord(file: string, owner: number, boot: string): WatchRecord {
+  const r = readOwnedJson(file, { owner, max: 8192 }, recordOf);
+  return r.kind === "ok" && r.value.boot === boot ? r.value : { boot, seen: {}, restarts: {}, gaveUp: {} };
 }
 
 // launchctl print's pid, when the job is running with a process.
@@ -85,60 +80,76 @@ export function runningPid(print: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-export type Verdict = { act: "restart"; why: string } | { act: "none"; why?: string };
+export type Verdict = { act: "restart"; why: string } | { act: "none"; why?: string; gaveUp?: true };
 
-// What one run does for one daemon, from what it read. pid: launchd's running process, or undefined.
-export function judge(beat: Beat | undefined, now: { boot?: string; mono?: number }, pid: number | undefined, what: string): Verdict {
+// What one run does for one daemon. pid: launchd's running process. firstSeen: the mono at which a
+// run first saw that pid. restarts: this hour's, on mono.
+export function judge(beat: Beat | undefined, now: { boot: string; mono: number }, pid: number | undefined, firstSeen: number, restarts: number[], what: string): Verdict {
   if (pid === undefined) return { act: "none" };
-  if (now.boot === undefined || now.mono === undefined) return { act: "none", why: "this boot's clock can't be read" };
-  if (!beat || beat.boot !== now.boot) return { act: "none", why: `${what} hasn't beaten since the box started` };
-  const age = now.mono - beat.mono;
-  if (age < 0) return { act: "none" };
+  const mine = beat && beat.boot === now.boot && beat.pid === pid ? beat : undefined;
+  const age = mine ? now.mono - mine.mono : now.mono - firstSeen;
   const secs = Math.round(age / 1000);
-  if (beat.pid === pid) {
-    if (age > STALE_MS + RUN_MS) return { act: "restart", why: `${what} hasn't moved for ${secs} s, on two runs in a row` };
-    if (age > STALE_MS) return { act: "none", why: `${what} hasn't moved for ${secs} s; if it still hasn't on the next run, it is restarted` };
-    return { act: "none" };
-  }
-  if (age > NEW_PROCESS_MS) return { act: "restart", why: `${what} started again and hasn't beaten, and its last beat is ${secs} s old` };
-  return { act: "none" };
+  const limit = mine ? STALE_MS + RUN_MS : STALE_MS;
+  if (age <= limit) return age > STALE_MS ? { act: "none", why: `${what} hasn't moved for ${secs} s; if it still hasn't on the next run, it is restarted` } : { act: "none" };
+  const why = mine ? `${what} hasn't moved for ${secs} s, on two runs in a row` : `${what} has run for ${secs} s without writing a beat`;
+  if (restarts.filter((t) => now.mono - t < HOUR).length >= RESTARTS_PER_HOUR) return { act: "none", gaveUp: true, why: `${why}, but guardwatch has restarted it ${RESTARTS_PER_HOUR} times this hour, so it leaves it alone. At the box: as your admin user, type taskbox update` };
+  return { act: "restart", why };
 }
 
 export interface WatchDeps {
   sys: Pick<Sys, "run" | "now">;
   root: string; // / on a box
   rootUid?: number; // 0 but in tests
-  log: (line: string) => void;
 }
 
-// One run: the guard, then the broker when its LaunchDaemon is installed. Returns what it did.
+// One run: the guard, then the broker when its LaunchDaemon is installed. Returns its lines, which
+// also go to the guard's log.
 export async function guardwatchOnce(d: WatchDeps): Promise<string[]> {
   const boot = await bootId(d.sys);
   const mono = await monoNow(d.sys);
-  const beats = beatPaths(d.root);
-  const did: string[] = [];
-  const daemons: { label: string; what: string; beat: string; owner: () => Promise<number | undefined> }[] = [{ label: GUARD_LABEL, what: "the guard", beat: beats.guard, owner: async () => d.rootUid ?? 0 }];
-  let brokerThere = false;
-  try {
-    brokerThere = lstatSync(brokerPlist(d.root)).isFile();
-  } catch {}
-  if (brokerThere) daemons.push({ label: BROKER_LABEL, what: "the key broker", beat: beats.broker, owner: () => uidOf(d.sys, BROKER_ACCOUNT) });
+  if (!boot || mono === undefined) return [];
+  const w = rootPaths(d.root);
+  const owner = d.rootUid ?? 0;
+  const rec = readRecord(w.record, owner, boot);
+  const before = JSON.stringify(rec);
+  const said: string[] = [];
+  const daemons: { label: string; what: string; beat: string; owner: () => Promise<number | undefined> }[] = [{ label: GUARD_LABEL, what: "the guard", beat: w.guardBeat, owner: async () => owner }];
+  if (isFile(w.brokerPlist)) daemons.push({ label: BROKER_LABEL, what: "the key broker", beat: w.brokerBeat, owner: () => uidOf(d.sys, BROKER_ACCOUNT) });
   for (const x of daemons) {
     const print = await d.sys.run("/bin/launchctl", ["print", `system/${x.label}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: 1, stdout: "", stderr: "" }));
     const pid = print.code === 0 ? runningPid(print.stdout) : undefined;
-    const owner = await x.owner();
-    const v = judge(owner === undefined ? undefined : readBeat(x.beat, owner), { ...(boot ? { boot } : {}), ...(mono !== undefined ? { mono } : {}) }, pid, x.what);
+    if (pid === undefined) continue;
+    if (rec.seen[x.label]?.pid !== pid) rec.seen[x.label] = { pid, mono };
+    const uid = await x.owner();
+    const restarts = (rec.restarts[x.label] ?? []).filter((t) => mono - t >= 0 && mono - t < HOUR);
+    const v = judge(uid === undefined ? undefined : readBeat(x.beat, uid), { boot, mono }, pid, rec.seen[x.label]!.mono, restarts, x.what);
+    rec.gaveUp[x.label] = v.act === "none" && v.gaveUp === true;
+    rec.restarts[x.label] = restarts;
     if (v.act === "none") {
-      if (v.why && pid !== undefined) d.log(`guardwatch: ${v.why}.`);
+      if (v.why) said.push(`guardwatch: ${v.why}.`);
       continue;
     }
     const k = await d.sys.run("/bin/launchctl", ["kickstart", "-k", `system/${x.label}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: 1, stdout: "", stderr: "" }));
-    const line = `guardwatch: ${v.why}, so it was restarted${k.code === 0 ? "" : `, but launchctl refused (exit ${k.code})`}.`;
-    d.log(line);
-    did.push(line);
+    restarts.push(mono);
+    delete rec.seen[x.label];
+    said.push(`guardwatch: ${v.why}, so it was restarted${k.code === 0 ? "" : `, but launchctl refused (exit ${k.code})`}.`);
   }
-  return did;
+  if (JSON.stringify(rec) !== before) writeOwnedText(w.record, JSON.stringify(rec), { mode: 0o644, owner });
+  // One append per line, beside the guard's own; the guard's Log rotates the file.
+  for (const l of said)
+    try {
+      appendFileSync(w.log, `${new Date(d.sys.now()).toISOString()} ${l}\n`);
+    } catch {}
+  return said;
 }
+
+const isFile = (path: string) => {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
+};
 
 async function uidOf(sys: Pick<Sys, "run">, user: string): Promise<number | undefined> {
   const r = await sys.run("/usr/bin/id", ["-u", user], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
@@ -153,15 +164,22 @@ export async function beatNow(sys: Pick<Sys, "run" | "now">, pid: number, boot?:
   return b && mono !== undefined ? { boot: b, mono, pid, at: sys.now() } : undefined;
 }
 
-// The guard's beat beside its record, for code that has the box's paths.
-export const guardBeatOf = (p: { guardState: string }) => join(dirname(p.guardState), "taskbox-guard.beat");
-
-// When the guard's beat last moved, if it has stood still past STALE_MS in this boot: for status.
-// A missing beat, another boot's, or a clock it can't read says nothing here; check's row says it.
-export async function guardStaleSince(sys: Pick<Sys, "run">, p: { guardState: string }, rootUid = 0): Promise<number | undefined> {
-  const b = readBeat(guardBeatOf(p), rootUid);
-  if (!b) return undefined;
+// The guard's beat now, for status and the check rows: its age on mono in this boot, or why there
+// is none to judge, and whether guardwatch has stopped restarting it.
+export type BeatNow = { age: number; at: number; gaveUp: boolean } | { none: string; gaveUp: boolean };
+export async function beatState(sys: Pick<Sys, "run">, file: string, owner: number | undefined, record: string, label: string, rootUid = 0): Promise<BeatNow> {
   const boot = await bootId(sys);
   const mono = await monoNow(sys);
-  return boot === b.boot && mono !== undefined && mono - b.mono > STALE_MS ? b.at : undefined;
+  if (!boot || mono === undefined) return { none: "this boot's clock can't be read", gaveUp: false };
+  const gaveUp = readRecord(record, rootUid, boot).gaveUp[label] === true;
+  const b = owner === undefined ? undefined : readBeat(file, owner);
+  if (!b || b.boot !== boot) return { none: b ? "it hasn't written a beat since the box started" : "it has written no beat", gaveUp };
+  return { age: Math.max(0, mono - b.mono), at: b.at, gaveUp };
+}
+
+// When the guard's beat last moved, if it has stood still past STALE_MS in this boot: for status.
+export async function guardStaleSince(sys: Pick<Sys, "run">, p: { guardState: string; guardPlist: string }, rootUid = 0): Promise<number | undefined> {
+  const w = watchPaths(p);
+  const s = await beatState(sys, w.guardBeat, rootUid, w.record, GUARD_LABEL, rootUid);
+  return "age" in s && s.age > STALE_MS ? s.at : undefined;
 }

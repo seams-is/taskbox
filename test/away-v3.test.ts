@@ -8,7 +8,7 @@ import { brokerBeatRow, confirmRow, guardBeatRow, kvmRow, powerHistoryRow, power
 import { type Config, paths } from "../src/config.ts";
 import { rootStateOf } from "../src/core/paths.ts";
 import { raise, updatePending } from "../src/core/pending.ts";
-import { beatPaths, brokerPlist, guardwatchPlist, STALE_MS, writeBeat } from "../src/guardwatch.ts";
+import { rootPaths, STALE_MS, writeBeat } from "../src/guardwatch.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, testBox } from "./helpers.ts";
 
@@ -32,27 +32,33 @@ function box(o: { uid?: number; cfg?: Partial<Config> } = {}) {
 }
 
 describe("the guard's beat and the broker's", () => {
-  test("a fresh beat with guardwatch installed is OK; a stale one, none, or no guardwatch fail with who acts", async () => {
+  test("each reason has its own words and who acts", async () => {
     const b = box();
-    expect(await guardBeatRow(b.c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/written no beat.*Waits by itself: guardwatch restarts it/) });
-    writeBeat(beatPaths(b.root).guard, { boot: b.sys.bootUuid, mono: b.mono() - 5_000, pid: 9, at: b.sys.now() });
-    expect(await guardBeatRow(b.c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/guardwatch, which restarts a stuck guard, isn't installed/) });
-    mkdirSync(dirname(guardwatchPlist(b.root)), { recursive: true });
-    writeFileSync(guardwatchPlist(b.root), "<plist/>");
-    expect(await guardBeatRow(b.c)).toEqual({ status: "OK", detail: "the guard beat 5 s ago, and guardwatch watches it" });
-    writeBeat(beatPaths(b.root).guard, { boot: b.sys.bootUuid, mono: b.mono() - STALE_MS - 1_000, pid: 9, at: Date.parse("2026-11-23T14:02:00") });
+    const w = rootPaths(b.root);
+    expect(await guardBeatRow(b.c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/^the guard: it has written no beat, so nothing shows it moves\. Waits by itself: guardwatch restarts a process that doesn't beat/) });
+    writeBeat(w.guardBeat, { boot: b.sys.bootUuid, mono: b.mono() - 5_000, pid: 9, at: b.sys.now() }, me);
+    expect(await guardBeatRow(b.c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/guardwatch, which restarts it when stuck, isn't installed/) });
+    mkdirSync(dirname(w.plist), { recursive: true });
+    writeFileSync(w.plist, "<plist/>");
+    expect(await guardBeatRow(b.c)).toEqual({ status: "OK", detail: "the guard beat 5 s ago" });
+    writeBeat(w.guardBeat, { boot: b.sys.bootUuid, mono: b.mono() - STALE_MS - 1_000, pid: 9, at: Date.parse("2031-03-04T14:02:00") }, me);
     expect(await guardBeatRow(b.c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/^the guard hasn't moved since 14:02\. Waits by itself/) });
+    writeFileSync(w.record, JSON.stringify({ boot: b.sys.bootUuid, seen: {}, restarts: {}, gaveUp: { "local.taskbox.guard": true } }));
+    expect(await guardBeatRow(b.c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/guardwatch has restarted it 3 times this hour, so it has stopped\. At the box: as your admin user, type taskbox update$/) });
   });
 
   test("the broker: SKIP until its LaunchDaemon is installed, then its own account's beat", async () => {
     const b = box();
+    const w = rootPaths(b.root);
     expect((await brokerBeatRow(b.c)).status).toBe("SKIP");
-    mkdirSync(dirname(brokerPlist(b.root)), { recursive: true });
-    writeFileSync(brokerPlist(b.root), "<plist/>");
+    mkdirSync(dirname(w.brokerPlist), { recursive: true });
+    writeFileSync(w.brokerPlist, "<plist/>");
     expect((await brokerBeatRow(b.c)).status).toBe("FAIL");
-    mkdirSync(dirname(beatPaths(b.root).broker), { recursive: true });
-    writeBeat(beatPaths(b.root).broker, { boot: b.sys.bootUuid, mono: b.mono() - 1_000, pid: 9, at: b.sys.now() });
+    mkdirSync(dirname(w.brokerBeat), { recursive: true });
+    writeBeat(w.brokerBeat, { boot: b.sys.bootUuid, mono: b.mono() - 1_000, pid: 9, at: b.sys.now() }, me);
     expect(await brokerBeatRow(b.c)).toEqual({ status: "OK", detail: "the key broker beat 1 s ago" });
+    b.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args[1] === "_taskboxgh" ? { code: 1, stdout: "", stderr: "no such user" } : undefined));
+    expect(await brokerBeatRow(b.c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/the key broker's account isn't on the box/) });
   });
 });
 
@@ -74,10 +80,12 @@ describe("lasting changes waiting for confirm", () => {
 
 describe("the tailnet name and the KVM", () => {
   const status = (peers: Record<string, unknown> = {}) => JSON.stringify({ BackendState: "Running", Self: { DNSName: "taskbox-1.example-tailnet.ts.example." }, CurrentTailnet: { Name: "example-tailnet" }, Peer: peers });
-  test("the box's name in its tailnet, for root and the service account only", async () => {
+  test("the box's name in its tailnet, the one its settings give it, for root and the service account only", async () => {
     const b = box();
     b.ts.out = status();
     expect(await tailnetRow(b.c)).toEqual({ status: "OK", detail: "the box is taskbox-1.example-tailnet.ts.example, in the tailnet example-tailnet" });
+    b.ts.out = status().replace("taskbox-1.", "mac-mini.");
+    expect(await tailnetRow(b.c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/^the box is mac-mini in its tailnet, but its settings name it taskbox-1/) });
     expect((await tailnetRow(box({ uid: me + 1 }).c)).status).toBe("SKIP");
   });
 
@@ -98,16 +106,16 @@ describe("the tailnet name and the KVM", () => {
 });
 
 describe("the power-loss history", () => {
-  const now = Date.parse("2026-11-26T12:00:00Z");
+  const now = Date.parse("2031-03-26T12:00:00Z");
   const log = [
-    "2026-11-20 03:12:44 +0000 Shutdown Cause        \tShutdown Cause: 0",
-    "2026-11-21 09:00:00 +0000 Shutdown Cause        \tShutdown Cause: 5",
-    "2026-11-22 10:00:00 +0100 Shutdown Cause        \tShutdown Cause: -128",
-    "2026-09-01 10:00:00 +0000 Shutdown Cause        \tShutdown Cause: 0",
-    "2026-11-24 10:00:00 +0000 Sleep  \tEntering Sleep state",
+    "2031-03-20 03:12:44 +0000 Shutdown Cause        \tShutdown Cause: 0",
+    "2031-03-21 09:00:00 +0000 Shutdown Cause        \tShutdown Cause: 5",
+    "2031-03-22 10:00:00 +0100 Shutdown Cause        \tShutdown Cause: -128",
+    "2031-01-01 10:00:00 +0000 Shutdown Cause        \tShutdown Cause: 0",
+    "2031-03-24 10:00:00 +0000 Sleep  \tEntering Sleep state",
   ].join("\n");
   test("the last 30 days' unexpected shutdowns, never one asked for", () => {
-    expect(powerLosses(log, now)).toEqual([Date.parse("2026-11-20T03:12:44Z"), Date.parse("2026-11-22T09:00:00Z")]);
+    expect(powerLosses(log, now)).toEqual([Date.parse("2031-03-20T03:12:44Z"), Date.parse("2031-03-22T09:00:00Z")]);
   });
   test("a WARN, never a FAIL; an unreadable log is SKIP", async () => {
     const b = box();
@@ -123,20 +131,40 @@ describe("the power-loss history", () => {
 });
 
 describe("source failures counted", () => {
-  test("each failed read once, however many slots ask; a read that sees the queue starts again; 3 in a row fail", async () => {
-    const { noteSeen } = await import("../src/load.ts");
+  test("each failed read once, however many slots ask; at sourceFailures in a row the row fails, status says so, and one event; a good read clears it", async () => {
+    const { sourceStep, sourceWords } = await import("../src/sourcefail.ts");
     const { sourceRow } = await import("../src/awaychecks.ts");
-    const b = box({ cfg: { sources: { github: { type: "github-actions" } } } as never });
+    const { writeLoopState } = await import("../src/loop.ts");
+    const { readLoop } = await import("../src/watch.ts");
+    const b = box();
     mkdirSync(b.p.projectState, { recursive: true });
-    const down = (at: number) => noteSeen(b.p, { known: false, at, why: "GitHub answered 502" }, b.sys.now());
     const c = { ...b.c, cfg: { ...b.c.cfg, jobsFrom: "example-org/app", actionsAppId: 4242 } as Config };
+    let events = 0;
+    const read = (snap: Parameters<typeof sourceStep>[1]) => {
+      const s = sourceStep(readLoop(b.p.loopState), snap, 3);
+      if (!s) return;
+      writeLoopState(b.p, { ...s.patch });
+      if (s.failing) events++;
+    };
+    const down = (at: number) => read({ known: false, at, why: "GitHub answered 502" });
     down(1);
     down(1);
     down(2);
     expect(await sourceRow(c)).toMatchObject({ status: "OK", detail: expect.stringMatching(/last read failed \(GitHub answered 502\)/) });
-    down(3);
-    expect(await sourceRow(c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/^the job source couldn't be read 3 times in a row \(GitHub answered 502\).*Waits by itself/) });
-    noteSeen(b.p, { known: true, at: 4, items: [] }, b.sys.now());
+    expect(sourceWords(readLoop(b.p.loopState))).toBeUndefined();
+    down(Date.parse("2031-03-04T14:02:00"));
+    down(Date.parse("2031-03-04T14:03:00"));
+    expect(await sourceRow(c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/^the job source couldn't be read 4 times in a row \(GitHub answered 502\).*Waits by itself/) });
+    expect(sourceWords(readLoop(b.p.loopState))).toBe("choosing without the job source since 14:02 (GitHub answered 502)");
+    expect(events).toBe(1);
+    read({ known: true, at: 9, items: [] });
     expect(await sourceRow(c)).toEqual({ status: "OK", detail: "the job source's last read saw the queue" });
+    expect(sourceWords(readLoop(b.p.loopState))).toBeUndefined();
+  });
+
+  test("status adds the line to the box's state", async () => {
+    const { computeState } = await import("../src/state.ts");
+    const s = computeState({ now: 0, loop: { slot: "waiting", waitingFor: "a job" }, sourceLine: "choosing without the job source since 14:02 (x)" });
+    expect(s.detail).toBe("a job; choosing without the job source since 14:02 (x)");
   });
 });

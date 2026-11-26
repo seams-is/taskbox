@@ -714,6 +714,22 @@ describe("the rollback watcher and undo", () => {
     }
   });
 
+  test("an install that doesn't ship guardwatch, as v2.6.1's, has it booted out on the way back", async () => {
+    const { bootOutUnknown, KNOWN_DAEMONS, shippedDaemons } = await import("../src/hop.ts");
+    const app = mkdtempSync(join(tmpdir(), "v261-app-"));
+    mkdirSync(join(app, "launchd"));
+    for (const l of [GUARD_LABEL, TAILSCALED_LABEL, "local.taskbox.loop"]) writeFileSync(join(app, "launchd", `${l}.plist`), "x");
+    expect(shippedDaemons(app)).not.toContain("local.taskbox.guardwatch");
+    const sys = new FakeSys();
+    sys.responders.push((cmd) => (cmd === "/bin/launchctl" ? { code: 0, stdout: "", stderr: "" } : undefined));
+    const root = mkdtempSync(join(tmpdir(), "v261-box-"));
+    const daemons = join(root, "Library/LaunchDaemons");
+    mkdirSync(daemons, { recursive: true });
+    writeFileSync(join(daemons, "local.taskbox.guardwatch.plist"), "v3's");
+    const gone = await bootOutUnknown(sys, { guardPlist: join(daemons, `${GUARD_LABEL}.plist`), agentPlist: join(root, "Library/LaunchAgents/x.plist") }, [...KNOWN_DAEMONS, ...shippedDaemons(app)]);
+    expect(gone).toEqual(["local.taskbox.guardwatch"]);
+  });
+
   test.serial("undo by hand boots out daemons the install gone back to doesn't ship, and keeps its own", async () => {
     const h = await hopBox();
     const daemons = dirname(h.d.paths.guardPlist);

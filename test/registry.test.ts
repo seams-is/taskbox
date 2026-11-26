@@ -511,8 +511,8 @@ describe("--json: one envelope per command", () => {
   });
 
   test("a command with no v3 answer still answers one envelope, from its text", async () => {
-    const r = await run(["template", "show", "test-job", "--json"]);
-    // template show takes no --json: refused, as one envelope.
+    const r = await run(["unlock", "--json"]);
+    // unlock takes no --json: refused, as one envelope.
     expect(r.code).toBe(2);
     expect(JSON.parse(r.said[0]!).error.code).toBe("usage");
     const h = await run(["hello", "--json"]);

@@ -22,20 +22,23 @@ export interface AwaySettings {
   // The hourly box check and the test job (taskbox template show box-check, test-job): how often
   // each runs. 0 runs the hourly box check by hand only.
   watchdogIntervalMinutes: number;
-  canaryIntervalMinutes?: number; // unset: the first interval longer than the wait (canaryEvery)
+  canaryIntervalMinutes: number;
   // How long a job for the box may wait, with no hold current, before the hourly box check fails.
-  // Unset: update.drainMinutes plus 30 (waitingFor). watchdogWaitMinutes is its name before v3.
+  // Unset: update.drainMinutes plus 30, kept shorter than the test job's interval (waitingFor).
+  // watchdogWaitMinutes is its name before v3.
   waitingAlarmMinutes?: number;
   watchdogWaitMinutes?: number;
   holdLeaseHours: number; // how far ahead a hold lease runs; a lease further ahead counts as none
   holdAlarmHours: number; // a hold standing this long since it began fails the hourly box check
   requestAlertMinutes: number; // a workspace request waiting this long fails the hourly box check
+  sourceFailures: number; // the job source's failed reads in a row before status and check say so
 }
 export const MAX_LEASE_HOURS = 12;
-export const DEFAULT_AWAY: AwaySettings = { githubFailures: 3, heartbeatGraceMinutes: 5, proofRetryMinutes: 15, publicAddress: ["cloudflare-trace", "ipify"], watchdogIntervalMinutes: 60, holdLeaseHours: MAX_LEASE_HOURS, holdAlarmHours: 24, requestAlertMinutes: 60 };
-type AwayNumber = "githubFailures" | "heartbeatGraceMinutes" | "proofRetryMinutes" | "waitingAlarmMinutes" | "watchdogWaitMinutes" | "holdLeaseHours" | "holdAlarmHours" | "requestAlertMinutes";
+export const DEFAULT_AWAY: AwaySettings = { githubFailures: 3, heartbeatGraceMinutes: 5, proofRetryMinutes: 15, publicAddress: ["cloudflare-trace", "ipify"], watchdogIntervalMinutes: 60, canaryIntervalMinutes: 60, holdLeaseHours: MAX_LEASE_HOURS, holdAlarmHours: 24, requestAlertMinutes: 60, sourceFailures: 3 };
+type AwayNumber = "githubFailures" | "sourceFailures" | "heartbeatGraceMinutes" | "proofRetryMinutes" | "waitingAlarmMinutes" | "watchdogWaitMinutes" | "holdLeaseHours" | "holdAlarmHours" | "requestAlertMinutes";
 const AWAY_BOUNDS: Record<AwayNumber, [number, number]> = {
   githubFailures: [1, 20],
+  sourceFailures: [1, 20],
   heartbeatGraceMinutes: [1, 60],
   proofRetryMinutes: [5, 240],
   waitingAlarmMinutes: [10, 720],
@@ -55,23 +58,15 @@ export function awayOf(cfg: Config | undefined): AwaySettings {
   return { ...DEFAULT_AWAY, ...((cfg?.base ?? cfg)?.away ?? {}) };
 }
 
-// The wait before the hourly box check fails for jobs waiting with no hold current.
+// The wait before the hourly box check fails for jobs waiting with no hold current: set, or a
+// nightly update's drain plus 30, and shorter than the test job's interval, so a quiet day's test
+// job waits long enough to be seen.
 export function waitingFor(cfg: Config | undefined): number {
   const a = awayOf(cfg);
-  if (a.waitingAlarmMinutes !== undefined) return a.waitingAlarmMinutes;
-  if (a.watchdogWaitMinutes !== undefined) return a.watchdogWaitMinutes;
+  const set = a.waitingAlarmMinutes ?? a.watchdogWaitMinutes;
+  if (set !== undefined) return set;
   const drain = ((cfg?.base ?? cfg) as { update?: { drainMinutes?: unknown } } | undefined)?.update?.drainMinutes;
-  return (Number.isSafeInteger(drain) && (drain as number) > 0 ? (drain as number) : DRAIN_MINUTES) + 30;
-}
-
-// The test job's interval: set, or the first one longer than the wait. A newer test job takes the
-// place of one still waiting (its concurrency group), so one that came sooner than the wait would
-// never wait long enough to be seen.
-export function canaryEvery(cfg: Config | undefined): number {
-  const a = awayOf(cfg);
-  if (a.canaryIntervalMinutes !== undefined) return a.canaryIntervalMinutes;
-  const wait = waitingFor(cfg);
-  return CRON_INTERVALS.find((m) => m > wait) ?? 1440;
+  return Math.max(10, Math.min((Number.isSafeInteger(drain) && (drain as number) > 0 ? (drain as number) : DRAIN_MINUTES) + 30, a.canaryIntervalMinutes - 10));
 }
 
 export function checkAway(c: Config, warn: (line: string) => void = () => {}): void {
@@ -107,7 +102,8 @@ export function checkAway(c: Config, warn: (line: string) => void = () => {}): v
     if (!Number.isInteger(v) || (v as number) < b[0] || (v as number) > b[1]) throw new Error(`taskbox.json: away.${k} is ${b[0]} to ${b[1]}`);
   }
   if ("waitingAlarmMinutes" in a && "watchdogWaitMinutes" in a) throw new Error("taskbox.json: away.watchdogWaitMinutes is the old name of away.waitingAlarmMinutes: keep one");
-  // The wait must be shorter than the test job's interval, so a quiet day's test job waits long
-  // enough to be seen, whichever of two GitHub keeps waiting.
-  if (waitingFor(c) >= canaryEvery(c)) throw new Error("taskbox.json: the hourly box check's wait (away.waitingAlarmMinutes) must be shorter than away.canaryIntervalMinutes");
+  // A wait set by hand must be shorter than the test job's interval, so a quiet day's test job waits
+  // long enough to be seen. A wait left to its default is kept so.
+  const set = (a.waitingAlarmMinutes ?? a.watchdogWaitMinutes) as number | undefined;
+  if (set !== undefined && set >= awayOf(c).canaryIntervalMinutes) throw new Error("taskbox.json: away.waitingAlarmMinutes must be shorter than away.canaryIntervalMinutes");
 }

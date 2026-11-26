@@ -1,14 +1,10 @@
-# The test job. Made by `taskbox template show test-job` from the box's own settings: don't edit
-# the copy in your repo; change the settings and make it again, or type `taskbox template apply` on
-# the controller. It goes in .github/workflows/taskbox-canary.yml of the repo whose jobs your box
-# runs, beside the hourly box check.
-#
-# It asks the box for one tiny job per kind of VM, so on a quiet day the hourly box check still has
-# a job to watch: if the box is dead, the test job waits, and the hourly box check fails. It runs on the box: each one
-# starts a fresh VM and takes that slot for a few minutes, so it can delay a real job by as much.
-# It uses no hosted minutes, holds no secret and gets no token.
-name: taskbox canary
-run-name: taskbox canary __FINGERPRINT__
+# The test job for one box. Made from the box's settings by taskbox (template show test-job, or
+# template apply on the controller): don't edit the copy in your repo. It asks the box for one tiny
+# job per kind of VM, so on a quiet day the hourly box check still has a job to watch: if the box is
+# dead, the test job waits, and the hourly box check fails. Each one takes a VM slot for a few
+# minutes. It uses no hosted minutes, holds no secret and gets no token.
+name: taskbox test job (__BOX__)
+run-name: taskbox test job __BOX__ __FINGERPRINT__
 
 on:
 __SCHEDULE__

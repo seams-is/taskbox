@@ -32,7 +32,7 @@ import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from
 import { rows } from "./rows/index.ts";
 import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./actionskey.ts";
 import { type EngineName, kitFor } from "./vm.ts";
-import { GUARDWATCH_LABEL } from "./guardwatch.ts";
+import { GUARDWATCH_LABEL, watchPaths } from "./guardwatch.ts";
 import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
 import { compareTags, GitHub, type Head, mergeDate, RELEASE_TAG, repoMissing } from "./github.ts";
 import { gitTreeSha, gunzippedSize, hopTag, HopStop, placeRollbackWatch, publicRelease, parseStatement, removeRollbackWatch, ROLLBACK_AFTER_MS, SAFE_UNTAR, SIGNERS_IN_TREE, statementProblem, TARBALL_LIMIT, tarListProblem, UNPACKED_LIMIT, verifySignature } from "./hop.ts";
@@ -589,7 +589,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     }
     if (boot.code !== 0) d.say(`The guard didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Keep Screen Sharing off, and type taskbox update again.`);
     // guardwatch, which restarts a guard whose beat has stood still (guardwatch.ts), after the guard.
-    await loadDaemon(d, GUARDWATCH_LABEL, join(dirname(d.paths.guardPlist), `${GUARDWATCH_LABEL}.plist`), "guardwatch");
+    await loadDaemon(d, GUARDWATCH_LABEL, watchPaths(d.paths).plist, "guardwatch");
 
     // tailscaled, loaded again so it runs the new binary. Its state stays in root's folder. A reload
     // LaunchDaemon an undo left (ops.ts, reloadPlist) goes first, so it can't load tailscaled again

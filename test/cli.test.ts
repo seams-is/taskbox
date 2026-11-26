@@ -134,6 +134,20 @@ describe("the copies every user reads", () => {
 });
 
 describe("ci's answers for a controller", () => {
+  test("template list --json: each template, whether its copy matches, and why", async () => {
+    const r = await run(["template", "list", "--json"], CALLERS.ci);
+    const e = JSON.parse(r.said[0]!);
+    expect(readEnvelopes(r.said[0]!, { command: "template.list" }).ok).toBe(true);
+    expect((e.result.templates as { name: string; matches: unknown }[]).map((t) => [t.name, t.matches])).toEqual([["box-check", null], ["test-job", null], ["load", null]]);
+  });
+
+  test("template show box-check --json gives the box's values alone, which a controller checks", async () => {
+    const { checkValues } = await import("../src/watchdog.ts");
+    const r = await run(["template", "show", "box-check", "--json"], CALLERS.ci);
+    const e = JSON.parse(r.said[0]!);
+    expect(typeof checkValues(e.result.values)).toBe("object");
+  });
+
   test("check --away --json is version 4: command check, result.away, every row and the verdict's exit", async () => {
     // Every row's system read fails: each reads SKIP or FAIL, and the envelope still carries them all.
     const sys = new FakeSys();

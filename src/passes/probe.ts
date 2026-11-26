@@ -1,40 +1,47 @@
-// tailscaled's liveness, the guard's pass beside the v2 one that loads a tailscaled left unloaded:
-// each minute it asks `tailscale status --json` through the socket, with a 5 s limit, and checks the
-// backend is Running and the box is online in its own view. After PROBE_FAILURES in a row it
-// restarts tailscaled with kickstart -k, at most once in PROBE_GAP_MS on the monotonic clock, and
-// writes guard.tailscaled-restarted. Never while a key rotation's re-auth of Tailscale runs, nor
-// while tailscaled isn't loaded. Minutes are counted in ticks, so no clock step moves them. By the
-// one writer only.
+// tailscaled's liveness, each minute (counted in ticks): `tailscale status --json` through the
+// socket, with a 5 s limit. Only what a restart can fix restarts it: no answer from the socket, or a
+// backend stuck starting, PROBE_FAILURES times in a row, at most once in PROBE_GAP_MS on the
+// monotonic clock across guard restarts (root's record), never during a Tailscale re-auth, and only
+// while tailscaled is loaded. A needed login, a stopped backend or a control server that doesn't see
+// the box is reported once, as guard.tailscaled-unwell, and left alone. By the one writer only.
 import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { LAUNCHCTL_MS, TAILSCALED_LABEL } from "../config.ts";
-import { monoNow } from "../core/boot.ts";
+import { bootId, isBootId, monoNow } from "../core/boot.ts";
 import { eventLog } from "../core/events.ts";
 import { listOps } from "../core/ops.ts";
 import type { PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
+import { isObj, readOwnedJson, writeOwnedText } from "../core/rootfile.ts";
 import { GUARD_FULL_MS, GUARD_TICK_MS } from "../guard.ts";
 
 export const PROBE_FAILURES = 3;
 export const PROBE_GAP_MS = 15 * 60_000;
 export const PROBE_TIMEOUT_MS = 5_000;
 
-// Whether tailscaled answers as a box online in its tailnet: why not, or undefined when it does.
-export function probeProblem(code: number, stdout: string): string | undefined {
-  if (code !== 0) return `tailscale status exited ${code}`;
+// What one probe found: fine, stuck (a restart may fix it), or unwell (a restart can't).
+export type Probe = { is: "fine" } | { is: "stuck" | "unwell"; why: string };
+export function probeOf(code: number, stdout: string): Probe {
+  if (code !== 0) return { is: "stuck", why: `tailscale status exited ${code}` };
+  let st: { BackendState?: unknown; Self?: { Online?: unknown } };
   try {
-    const st = JSON.parse(stdout) as { BackendState?: unknown; Self?: { Online?: unknown } };
-    if (st.BackendState !== "Running") return `its state is ${typeof st.BackendState === "string" && /^[A-Za-z]{1,20}$/.test(st.BackendState) ? st.BackendState : "not known"}`;
-    if (st.Self?.Online !== true) return "it doesn't see the box online";
-    return undefined;
+    st = JSON.parse(stdout);
   } catch {
-    return "its status couldn't be read";
+    return { is: "stuck", why: "its status couldn't be read" };
   }
+  const state = typeof st.BackendState === "string" && /^[A-Za-z]{1,20}$/.test(st.BackendState) ? st.BackendState : "not known";
+  if (state === "Starting" || state === "NoState") return { is: "stuck", why: `its state is ${state}` };
+  if (state !== "Running") return { is: "unwell", why: state === "NeedsLogin" || state === "NeedsMachineAuth" ? `it needs a login (${state}). From away: type taskbox key rotate tailscale` : `its state is ${state}` };
+  if (st.Self?.Online !== true) return { is: "unwell", why: "Tailscale's control server doesn't see the box online, which a restart can't change" };
+  return { is: "fine" };
 }
 
 // A key rotation that re-authenticates Tailscale, running now (key rotate tailscale).
 export function reauthRunning(ops: { type: string; state: string; subject: string; params: Record<string, unknown> }[]): boolean {
   return ops.some((o) => o.state === "running" && o.type === "key-rotate" && (o.subject === "tailscale" || o.params.key === "tailscale" || o.params.which === "tailscale"));
 }
+
+export const probeRecord = (p: { guardState: string }) => join(dirname(p.guardState), "taskbox-tailscaled-restart.json");
 
 export const probePass: PassMaker = {
   name: "tailscaled-probe",
@@ -43,33 +50,40 @@ export const probePass: PassMaker = {
     const s = rootStateOf(c.p);
     const root = c.rootUid ?? 0;
     const events = eventLog("guard", { dir: s.events, owner: root }, c.sys);
+    const record = probeRecord(c.p);
     let ticks = 0;
-    let failures = 0;
-    let restartedAt: number | undefined; // mono
+    let stuck = 0;
+    let told = "";
     const job = async () => {
-      if (!existsSync(c.p.tailscaledPlist)) return void (failures = 0);
+      if (!existsSync(c.p.tailscaledPlist)) return void (stuck = 0);
       const loaded = await c.sys.run("/bin/launchctl", ["print", `system/${TAILSCALED_LABEL}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: 1 }));
-      // Not loaded is the v2 pass's to put right; this one judges a loaded tailscaled only.
-      if (loaded.code !== 0) return void (failures = 0);
+      if (loaded.code !== 0) return void (stuck = 0);
       const r = await c.sys.run(c.p.tailscale, [`--socket=${c.p.tailscaleSocket}`, "status", "--json"], { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => ({ code: 1, stdout: "" }));
-      const why = probeProblem(r.code, r.stdout);
-      if (!why) {
-        if (failures >= PROBE_FAILURES) c.log.write("tailscaled answers again.");
-        failures = 0;
-        return;
+      const probe = probeOf(r.code, r.stdout);
+      const now = probe.is === "unwell" ? probe.why : "";
+      if (now !== told) {
+        told = now;
+        c.log.write(now ? `tailscaled is unwell, and a restart can't fix it: ${now}.` : "tailscaled answers as it should.");
+        if (now)
+          try {
+            events.write({ type: "guard.tailscaled-unwell", actor: "taskbox", text: `tailscaled is unwell: ${now}.` });
+          } catch {}
       }
-      failures += 1;
-      if (failures < PROBE_FAILURES) return;
+      if (probe.is !== "stuck") return void (stuck = 0);
+      stuck += 1;
+      if (stuck < PROBE_FAILURES) return;
+      const boot = await bootId(c.sys);
       const mono = await monoNow(c.sys);
       // With no monotonic clock the 15 minutes can't be kept, so nothing is restarted.
-      if (mono === undefined) return;
-      if (restartedAt !== undefined && mono - restartedAt >= 0 && mono - restartedAt < PROBE_GAP_MS) return;
+      if (!boot || mono === undefined) return;
+      const last = readOwnedJson(record, { owner: root, max: 256 }, (v) => (isObj(v) && isBootId(v.boot) && Number.isSafeInteger(v.mono) ? { boot: v.boot, mono: v.mono as number } : "out of shape"));
+      if (last.kind === "ok" && last.value.boot === boot && mono - last.value.mono >= 0 && mono - last.value.mono < PROBE_GAP_MS) return;
       if (reauthRunning(listOps({ dir: s.ops, owner: root }).ops)) return;
+      writeOwnedText(record, JSON.stringify({ boot, mono }), { mode: 0o644, owner: root });
       const k = await c.sys.run("/bin/launchctl", ["kickstart", "-k", `system/${TAILSCALED_LABEL}`], { timeoutMs: LAUNCHCTL_MS }).catch(() => ({ code: 1 }));
-      restartedAt = mono;
-      const text = `tailscaled failed ${failures} probes in a row (${why}), so the guard restarted it${k.code === 0 ? "" : `, but launchctl refused (exit ${k.code})`}.`;
+      const text = `tailscaled failed ${stuck} probes in a row (${probe.why}), so the guard restarted it${k.code === 0 ? "" : `, but launchctl refused (exit ${k.code})`}.`;
       c.log.write(text);
-      failures = 0;
+      stuck = 0;
       try {
         events.write({ type: "guard.tailscaled-restarted", actor: "taskbox", text });
       } catch {}
@@ -79,7 +93,7 @@ export const probePass: PassMaker = {
       at: "after",
       next() {
         ticks += 1;
-        // Read here, not at load: guard.ts imports the pass registry.
+        // guard.ts imports this registry, so its constants are read when the pass runs.
         if (ticks < GUARD_FULL_MS / GUARD_TICK_MS) return undefined;
         ticks = 0;
         return job;

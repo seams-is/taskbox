@@ -316,6 +316,18 @@ describe("taskbox rollback", () => {
 });
 
 describe("taskbox remove", () => {
+  test("guardwatch goes first, before the guard, so it never restarts the guard on its way out", async () => {
+    const { d, sys } = ops({ answers: ["yes"] });
+    const plist = join(d.paths.guardPlist, "..", "local.taskbox.guardwatch.plist");
+    mkdirSync(join(plist, ".."), { recursive: true });
+    writeFileSync(plist, "<plist/>");
+    await remove(d, { serviceUid: 502, people: [] });
+    const outs = sys.calls.filter((c) => c.cmd === "/bin/launchctl" && c.args[0] === "bootout").map((c) => c.args[1]);
+    expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeGreaterThanOrEqual(0);
+    expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeLessThan(outs.indexOf("system/local.taskbox.guard"));
+    expect(existsSync(plist)).toBe(false);
+  });
+
   test("no: nothing removed", async () => {
     const { d, p, said } = ops({ answers: ["no"] });
     expect(await remove(d, {})).toBe(1);

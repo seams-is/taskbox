@@ -503,6 +503,15 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
 export const KNOWN_DAEMONS = [GUARD_LABEL, TAILSCALED_LABEL, `${LABEL_PREFIX}.tailscaled-reload`, ROLLBACK_LABEL];
 export const KNOWN_AGENTS = [AGENT_LABEL];
 
+// The daemons an install ships: the labels of its launchd/ plists.
+export function shippedDaemons(app: string): string[] {
+  try {
+    return readdirSync(join(app, "launchd")).flatMap((n) => /^(local\.taskbox\.[A-Za-z0-9.-]{1,60})\.plist$/.exec(n)?.[1] ?? []);
+  } catch {
+    return [];
+  }
+}
+
 // agentsUid: whose gui domain the agents run in (ci's); with none, their plists still go.
 // v3's op jobs (core/child.ts) have their plists in root's ops folder, outside these folders, so with
 // an ops folder there, every op job launchd lists is booted out too.

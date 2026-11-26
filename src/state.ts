@@ -38,6 +38,7 @@ export interface StateInputs {
   service?: string; // accounts.service, for the lines that name it
   serviceAway?: boolean; // read as anyone but the service: the service has no login session, so the loop can't be running
   guardStaleSince?: number; // the guard's beat has stood still since then (guardwatch.ts)
+  sourceLine?: string; // the box chooses without its job source (sourcefail.ts)
 }
 
 // Another logged-in user's apps share the box's memory and disk with the VM, so the state says so.
@@ -56,6 +57,10 @@ export const softnetFix = () => `As ${serviceName()}, type taskbox start to run 
 
 // While a drain runs (taskbox drain), Running and Waiting say it, and what comes next.
 export function computeState(i: StateInputs): State {
+  const s = stateOf(i);
+  return i.sourceLine && ["Running", "Waiting", "Ready"].includes(s.word) ? { ...s, detail: `${s.detail}; ${i.sourceLine}` } : s;
+}
+function stateOf(i: StateInputs): State {
   const s = withHold(baseState(i), i.loop);
   const since = i.loop.drainingSince;
   if (since === undefined || (s.word !== "Running" && s.word !== "Waiting" && s.word !== "Downloading")) return s;

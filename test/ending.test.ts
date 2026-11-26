@@ -1,6 +1,6 @@
 // A loop frozen while ending on purpose (src/passes/ending.ts, loop.ts markEnding): the marker
 // carries until; past it plus 5 minutes on the monotonic clock, the guard ends the loop, SIGTERM then
-// SIGKILL after 30 s, once, and writes guard.loop-forced-end with the op that asked.
+// SIGKILL after 30 s, once, and writes guard.loop-forced-end. A marker with no until gets a ceiling.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,14 +11,13 @@ import { makePasses, Passes } from "../src/core/passes.ts";
 import { rootStateOf } from "../src/core/paths.ts";
 import { GUARD_FULL_MS, GUARD_TICK_MS } from "../src/guard.ts";
 import { ENDING_CLEANUP_MS, markEnding, writeLoopState } from "../src/loop.ts";
-import { ENDING_GRACE_MS, endingPass } from "../src/passes/ending.ts";
+import { ENDING_CEILING_MS, ENDING_GRACE_MS, endingPass } from "../src/passes/ending.ts";
 import { readLoop } from "../src/watch.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, testBox } from "./helpers.ts";
 
 const me = process.getuid!();
 const M = 60_000;
-const OP = "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ";
 
 function box() {
   const root = mkdtempSync(join(tmpdir(), "ending-"));
@@ -67,9 +66,9 @@ describe("the ending marker", () => {
 });
 
 describe("a loop frozen while ending", () => {
-  const ending = (b: ReturnType<typeof box>, untilMs = 10 * M) => writeLoopState(b.p, { endingAt: b.sys.now(), endingUntil: b.sys.now() + untilMs, endingOp: OP });
+  const ending = (b: ReturnType<typeof box>, untilMs = 10 * M) => writeLoopState(b.p, { endingAt: b.sys.now(), endingUntil: b.sys.now() + untilMs });
 
-  test("left alone until past until plus 5 minutes, then SIGTERM, once, with the op told", async () => {
+  test("left alone until past until plus 5 minutes, then SIGTERM, once, with an event", async () => {
     const b = box();
     ending(b);
     await b.minutes((10 * M + ENDING_GRACE_MS) / M);
@@ -77,7 +76,7 @@ describe("a loop frozen while ending", () => {
     await b.minutes(2);
     expect(b.st.signals).toEqual(["SIGTERM"]);
     expect(b.lines.at(-1)).toContain("the loop was forced to end");
-    expect(b.events().map((e) => e.op)).toEqual([OP]);
+    expect(b.events()).toHaveLength(1);
     b.st.pid = 901;
     await b.minutes(5);
     expect(b.st.signals).toEqual(["SIGTERM"]);
@@ -110,11 +109,12 @@ describe("a loop frozen while ending", () => {
     expect(live.st.signals).toEqual([]);
   });
 
-  test("an op the loop's file names is passed on only when it is an op id", async () => {
+  test("a marker with no until, from an older loop, is ended past the ceiling", async () => {
     const b = box();
-    writeLoopState(b.p, { endingAt: b.sys.now(), endingUntil: b.sys.now(), endingOp: "op; rm -rf /" });
-    await b.minutes(7);
-    expect(b.events()).toHaveLength(1);
-    expect(b.events()[0]!.op).toBeUndefined();
-  });
+    writeLoopState(b.p, { endingAt: b.sys.now() });
+    await b.minutes((ENDING_CEILING_MS + ENDING_GRACE_MS) / M);
+    expect(b.st.signals).toEqual([]);
+    await b.minutes(2);
+    expect(b.st.signals).toEqual(["SIGTERM"]);
+  }, 60_000);
 });

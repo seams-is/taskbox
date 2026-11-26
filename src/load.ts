@@ -46,9 +46,6 @@ export interface Seen {
   load: number;
   reads?: number;
   loadProblem?: string; // why the test repo couldn't be read
-  readAt?: number; // the source's read this is from
-  failures?: number; // the source's reads in a row that couldn't see the queue
-  why?: string; // why the last of them couldn't
 }
 
 export interface LoadFile {
@@ -100,7 +97,7 @@ function readSeenFile(file: string): SeenFile {
   const se = raw?.seen as Record<string, unknown> | undefined;
   const seen =
     se && num(se.at) && typeof se.known === "boolean" && num(se.real) && num(se.realMerge) && num(se.load)
-      ? ({ at: se.at, known: se.known, real: se.real, realMerge: se.realMerge, load: se.load, ...(num(se.reads) ? { reads: se.reads } : {}), ...(typeof se.loadProblem === "string" ? { loadProblem: clean(se.loadProblem, 160) } : {}), ...(num(se.readAt) ? { readAt: se.readAt } : {}), ...(num(se.failures) ? { failures: se.failures } : {}), ...(typeof se.why === "string" ? { why: clean(se.why, 160) } : {}) } as Seen)
+      ? ({ at: se.at, known: se.known, real: se.real, realMerge: se.realMerge, load: se.load, ...(num(se.reads) ? { reads: se.reads } : {}), ...(typeof se.loadProblem === "string" ? { loadProblem: clean(se.loadProblem, 160) } : {}) } as Seen)
       : undefined;
   const stats = (Array.isArray(raw?.stats) ? raw!.stats : [])
     .filter((x): x is Stats => !!x && typeof x === "object" && Number.isInteger((x as Stats).n))
@@ -203,9 +200,6 @@ export function noteSeen(p: Paths, snap: Snapshot, now: number, reads?: number, 
     load: items.filter((i) => i.role === "load").length,
     ...(reads !== undefined ? { reads } : {}),
     ...(loadProblem ? { loadProblem: clean(loadProblem, 160) } : {}),
-    // Failed reads in a row, each read counted once, however many slots asked (check --away's row).
-    // A read that saw the queue carries none of these: no failures.
-    ...(!snap.known ? { readAt: snap.at, failures: f.seen?.readAt === snap.at ? (f.seen.failures ?? 1) : (f.seen?.failures ?? 0) + 1, why: clean(snap.why, 160) } : {}),
   };
   let changed = false;
   let stats = f.stats;
@@ -237,7 +231,7 @@ export function noteSeen(p: Paths, snap: Snapshot, now: number, reads?: number, 
     }
   }
   const o = f.seen;
-  const same = !!o && o.known === seen.known && o.real === seen.real && o.realMerge === seen.realMerge && o.load === seen.load && o.loadProblem === seen.loadProblem && o.failures === seen.failures && (seen.reads ?? 0) >= (o.reads ?? 0) && now - o.at < 60_000;
+  const same = !!o && o.known === seen.known && o.real === seen.real && o.realMerge === seen.realMerge && o.load === seen.load && o.loadProblem === seen.loadProblem && (seen.reads ?? 0) >= (o.reads ?? 0) && now - o.at < 60_000;
   if (same && !changed) return;
   try {
     writeSeen(p, { v: 1, seen: same ? o : seen, stats });

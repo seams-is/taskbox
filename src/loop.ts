@@ -32,6 +32,8 @@ import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWo
 import { clean, mirrorPull, PullRecorder, writeReady } from "./progress.ts";
 import { clearRequests } from "./requests.ts";
 import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from "./load.ts";
+import { sourceStep } from "./sourcefail.ts";
+import type { Snapshot } from "./source.ts";
 import { mirrorJson } from "./shared.ts";
 import { clearStopped, markStopped } from "./stopstart.ts";
 import type { Sys } from "./sys.ts";
@@ -144,6 +146,17 @@ export function noteGuardRestart(d: Pick<LoopDeps, "paths" | "log"> & { rootUid?
   }
   d.log.write(`the guard restarted the loop at ${new Date(k.at).toTimeString().slice(0, 5)}: slot ${k.slot} hadn't moved since ${new Date(k.beatAt).toTimeString().slice(0, 5)} (${k.phase})`);
   countRestart(d.paths, now, { watchKickSeen: k.at });
+}
+
+// The job source's failures in a row (sourcefail.ts), with one job.source-failing event.
+function noteSource(d: Pick<LoopDeps, "paths" | "sys" | "cfg">, s: Snapshot): void {
+  const step = sourceStep(readLoop(d.paths.loopState), s, awayOf(d.cfg).sourceFailures);
+  if (!step) return;
+  writeLoopState(d.paths, { ...step.patch });
+  if (step.failing)
+    try {
+      eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys).write({ type: "job.source-failing", actor: "taskbox", text: `The job source couldn't be read ${awayOf(d.cfg).sourceFailures} times in a row (${step.patch.sourceWhy}), so the box chooses without it.` });
+    } catch {}
 }
 
 // The loop is ending on purpose: the guard's watcher leaves it alone, as checkSelf does. until is
@@ -1569,7 +1582,10 @@ export async function runLoop(d: LoopDeps): Promise<number> {
         load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now()) : undefined),
         // The slots held for workspaces, read each time a slot asks: the scheduler sees the rest.
         held: () => heldNow({ ...d, box }),
-        seen: (s) => noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.()),
+        seen: (s) => {
+          noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.());
+          noteSource(d, s);
+        },
       }),
   };
   // One worker per slot. A worker that throws stops the others' waiting VMs; their running jobs

@@ -44,8 +44,11 @@ export interface LoopView {
   selfRestartCount?: number; // v2.5.0: the loop's restarts for a stale beat, since selfRestartSince
   selfRestartSince?: number;
   endingAt?: number; // v2.5.0: the loop is ending on purpose (a halt), so nothing restarts it
+  sourceReadAt?: number; // the job source's failed reads in a row (sourcefail.ts)
+  sourceFailures?: number;
+  sourceFailingSince?: number;
+  sourceWhy?: string;
   endingUntil?: number; // the latest it should take to end; past it, the guard ends it (passes/ending.ts)
-  endingOp?: string; // the op that asked it to end, when one did
   watchKickSeen?: number; // v2.5.0: the last restart by the guard that the loop has counted (loopwatch.ts)
 }
 
