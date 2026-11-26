@@ -207,6 +207,13 @@ describe("the guard's beat", () => {
   });
 });
 
+describe("a guard with no watcher", () => {
+  test("status says so, with who acts", () => {
+    const s = computeState({ now: 0, loop: {}, unwatched: true });
+    expect([s.word, s.detail, s.next]).toEqual(["Needs you", "guardwatch isn't installed, so nothing restarts the guard if it sticks", "Switch to your admin user and type taskbox update."]);
+  });
+});
+
 describe("its LaunchDaemon", () => {
   test("root's, every 60 s, no KeepAlive, running taskbox guardwatch", () => {
     const x = readFileSync(new URL("../launchd/local.taskbox.guardwatch.plist", import.meta.url), "utf8");

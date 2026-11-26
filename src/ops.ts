@@ -148,6 +148,7 @@ async function stateFrom(d: OpsDeps): Promise<State> {
     others: await otherLogins(d.sys, d.paths.service, typist()),
     unfinished: updateUnfinished(d.paths),
     guardStaleSince: await guardStaleSince(d.sys, d.paths, d.rootUid ?? 0).catch(() => undefined),
+    unwatched: existsSync(d.paths.guardPlist) && !existsSync(watchPaths(d.paths).plist),
   });
 }
 

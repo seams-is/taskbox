@@ -714,11 +714,10 @@ describe("the rollback watcher and undo", () => {
     }
   });
 
-  test("an install record's tag says which v3 daemons it keeps: a v2 install none", async () => {
+  test("only a tag that says v2 drops guardwatch; a missing or unreadable tag keeps it, so the guard stays watched", async () => {
     const { laterDaemons } = await import("../src/hop.ts");
-    expect(laterDaemons("v3.0.0-rc.1")).toEqual(["local.taskbox.guardwatch"]);
-    expect(laterDaemons("v4.0.0")).toEqual(["local.taskbox.guardwatch"]);
-    for (const t of ["v2.6.1", undefined, "", 3, "3.0.0"]) expect(laterDaemons(t)).toEqual([]);
+    for (const t of ["v3.0.0-rc.1", "v4.0.0", undefined, "", 3, "3.0.0", "taskbox"]) expect(laterDaemons(t)).toEqual(["local.taskbox.guardwatch"]);
+    for (const t of ["v2.6.1", "v2.0.0"]) expect(laterDaemons(t)).toEqual([]);
   });
 
   test.serial("undo by hand boots out daemons the install gone back to doesn't know, and keeps its own", async () => {
