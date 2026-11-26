@@ -55,7 +55,9 @@ export type GateDecision = { open: true; user: string; ws: Workspace } | { open:
 // The pool account pool.json records with this user ID, if any.
 export function poolUserOf(pool: PoolRecord | "bad", uid: number): string | undefined {
   if (pool === "bad" || uid < FIRST_HIDDEN_ID || uid > LAST_HIDDEN_ID) return undefined;
-  return Object.entries(pool.made).find(([n, m]) => m.uid === uid && POOL_USER.test(n))?.[0];
+  // Two names on one ID could open one workspace's shell in another's: none is taken.
+  const names = Object.entries(pool.made).filter(([n, m]) => m.uid === uid && POOL_USER.test(n));
+  return names.length === 1 ? names[0]![0] : undefined;
 }
 
 // The gate's decision. Pure, and closed unless every check passes.

@@ -18,6 +18,10 @@ export const REMOTE_SHELL = "/opt/taskbox/bin/taskbox-shell";
 export const GATE_SHELL = "/opt/taskbox/bin/taskbox-gate";
 // The box's tag on the tailnet: the policy's rules for it are the only ones that reach it.
 export const TAILNET_TAG = "tag:taskbox";
+// A box's own tag, tailnetTag: tag:taskbox or tag:taskbox-<name>, so two boxes' SSH rules stay apart
+// and a controller still finds every box by the tag:taskbox start.
+export const TAILNET_TAG_SHAPE = /^tag:taskbox(-[a-z0-9]+)*$/;
+export const tagOf = (c: { tailnetTag?: string }): string => c.tailnetTag ?? TAILNET_TAG;
 
 export interface Pin {
   version: string;

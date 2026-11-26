@@ -1,12 +1,13 @@
 // v2.5.0 away-ready: job VMs left behind while the loop runs
-// are deleted on idle passes; a VM a slot or the proof records, a young one and an image never are.
+// are deleted on idle passes; a VM a slot or the proof records, one seen once only and an image never are.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
-import { cleanLeakedVms, LEAK_MIN_AGE_MS, oneJob, Slots, vmName, vmNameTime } from "../src/loop.ts";
+import { jobOfVm } from "../src/jobs.ts";
+import { cleanLeakedVms, oneJob, Slots, vmName } from "../src/loop.ts";
 import { FakeSys } from "./fake.ts";
 import { loopDeps, tempRoot } from "./helpers.ts";
 
-const nameAt = (ms: number, hex = "abc123") => `job-${ms.toString(36)}-${hex}`;
+const nameAt = (n: number) => `job-j_${String(n).padStart(8, "0")}`;
 
 // The VMs are in the fake Tart itself, so tart delete answers as Tart does: it refuses a VM it
 // doesn't hold, and the clean-up counts only what it removed.
@@ -19,32 +20,54 @@ function boxWith(vms: string[] = [], images: string[] = []) {
 }
 
 describe("a VM's name", () => {
-  test("carries the time it was made", () => {
-    const sys = new FakeSys();
-    expect(vmNameTime(vmName(sys))).toBe(sys.now());
-    for (const n of ["job-x", "job-zzz-abc12", "builder-1", "job-" + "z".repeat(20) + "-abc123"]) expect(vmNameTime(n)).toBeUndefined();
+  test("is its job's id", () => {
+    const a = vmName();
+    expect(a).toMatch(/^job-j_[0-9a-z]{8}$/);
+    expect(jobOfVm(a)).toBe(a.slice(4));
+    expect(vmName()).not.toBe(a);
+    for (const n of ["job-x", "job-mi3k2-abc123", "builder-1", "job-j_ABCDEFGH", "job-j_0000000i"]) expect(jobOfVm(n)).toBeUndefined();
   });
 });
 
 describe("the idle cleanup", () => {
-  test("deletes an old job VM no slot records, and nothing else", async () => {
+  test("deletes a job VM no slot records on two looks in a row, and nothing else", async () => {
     const now = new FakeSys().now();
-    const orphan = nameAt(now - 10 * 60_000);
-    const young = nameAt(now - LEAK_MIN_AGE_MS + 1000, "def456");
-    const booting = nameAt(now - 20 * 60_000, "111111");
-    const proof = nameAt(now - 30 * 60_000, "222222");
-    const { sys, d, box } = boxWith([orphan, young, booting, proof, "builder"], ["ghcr.io/x/y@sha256:0"]);
+    const orphan = nameAt(1);
+    const booting = nameAt(3);
+    const proof = nameAt(4);
+    const old = "job-mi3k2xy-abc123"; // a name from before v3
+    const { sys, d, box } = boxWith([orphan, booting, proof, old, "builder"], ["ghcr.io/x/y@sha256:0"]);
     box.held.set(1, { slot: 1, kind: "macos", labels: [], job: false, name: booting });
     box.held.set(2, { slot: 2, kind: "linux", labels: [], job: true, up: true, name: proof });
-    const gone = await cleanLeakedVms({ ...d, box });
-    expect(gone).toEqual([orphan]);
-    expect(sys.tartCalls().filter((c) => c.startsWith("delete"))).toEqual([`delete ${orphan}`]);
+    expect(await cleanLeakedVms({ ...d, box })).toEqual([]);
     expect(box.leakCheckAt).toBe(now);
+    // A VM that appears between the looks, or one a slot took since, waits for the next look.
+    const young = nameAt(2);
+    sys.vms.set(young, { ip: "" });
+    const gone = await cleanLeakedVms({ ...d, box });
+    expect(gone.sort()).toEqual([old, orphan].sort());
+    expect(sys.tartCalls().filter((c) => c.startsWith("delete")).sort()).toEqual([`delete ${old}`, `delete ${orphan}`].sort());
+    expect(sys.vms.has(young)).toBe(true);
+    expect(await cleanLeakedVms({ ...d, box })).toEqual([young]);
+  });
+
+  test("a VM a slot names between the looks is kept", async () => {
+    const vm = nameAt(5);
+    const { sys, d, box } = boxWith([vm]);
+    expect(await cleanLeakedVms({ ...d, box })).toEqual([]);
+    box.held.set(1, { slot: 1, kind: "macos", labels: [], job: false, name: vm });
+    expect(await cleanLeakedVms({ ...d, box })).toEqual([]);
+    box.held.delete(1);
+    // Held at the last look, so it counts from this one.
+    expect(await cleanLeakedVms({ ...d, box })).toEqual([]);
+    expect(await cleanLeakedVms({ ...d, box })).toEqual([vm]);
+    expect(sys.vms.has(vm)).toBe(false);
   });
 
   test("two slots at once clean each VM once", async () => {
-    const orphan = nameAt(new FakeSys().now() - 10 * 60_000);
+    const orphan = nameAt(6);
     const { d, box } = boxWith([orphan]);
+    await cleanLeakedVms({ ...d, box });
     const [a, b] = await Promise.all([cleanLeakedVms({ ...d, box }), cleanLeakedVms({ ...d, box })]);
     expect([...a, ...b]).toEqual([orphan]);
   });

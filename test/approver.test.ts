@@ -108,22 +108,28 @@ describe("workspacesProblem and the pool's name", () => {
   const accounts = validateAccounts({ service: "taskbox", agent: "taskbox-agent" });
   test("no key: no workspaces, and no pool account", () => {
     expect(workspacesProblem({ accounts })).toBeUndefined();
-    expect(poolOf(undefined)).toEqual([]);
+    expect(poolOf(accounts, undefined)).toEqual([]);
   });
   test("a key turns them on, with one pool account", () => {
     expect(workspacesProblem({ approverKey: A, accounts })).toBeUndefined();
-    expect(poolOf(A)).toEqual([POOL_USER]);
+    expect(poolOf(accounts, A)).toEqual([POOL_USER]);
   });
   test("a key needs the agent", () => expect(workspacesProblem({ approverKey: A, accounts: { service: "taskbox", people: [] } })).toMatch(/accounts\.agent is needed/));
   test("a bad key is refused", () => expect(workspacesProblem({ approverKey: "ssh-rsa AAAA", accounts })).toMatch(/^taskbox\.json: approverKey is one ssh public key line/));
   test("a change with no key is refused", () => expect(workspacesProblem({ approverKeyChange: { statement: "a", signature: "b" }, accounts })).toMatch(/approverKey is needed beside it/));
   test("a bad change is refused", () => expect(workspacesProblem({ approverKey: A, approverKeyChange: "x", accounts })).toMatch(/approverKeyChange is/));
-  for (const name of ["taskbox-ws1", "Taskbox-WS1", "taskbox-ws"]) {
+  for (const name of ["taskbox-ws1", "Taskbox-WS1"]) {
     test(`no role may be ${name}`, () => {
-      expect(() => validateAccounts({ service: "taskbox", agent: name })).toThrow(/taskbox's workspace account/);
-      expect(() => validateAccounts({ service: "taskbox", people: [name] })).toThrow(/taskbox's workspace account/);
+      expect(() => validateAccounts({ service: "taskbox", agent: name })).toThrow(/a workspace account's name \(taskbox-ws1\)/);
+      expect(() => validateAccounts({ service: "taskbox", people: [name] })).toThrow(/a workspace account's name/);
     });
   }
+  test("the pool's own names count, at its own size", () => {
+    expect(() => validateAccounts({ service: "taskbox", agent: "ws3", workspaces: { pool: "ws", size: 3 } })).toThrow(/a workspace account's name \(ws3\)/);
+    expect(validateAccounts({ service: "taskbox", agent: "ws3", workspaces: { pool: "ws", size: 2 } }).agent).toBe("ws3");
+    // The old shared group's name is free now: each pool account has its own group.
+    expect(validateAccounts({ service: "taskbox", agent: "taskbox-ws" }).agent).toBe("taskbox-ws");
+  });
   test("loadConfig reads approverKey, and refuses a bad one", () => {
     const write = (c: Record<string, unknown>) => {
       const dir = mkdtempSync(join(tmpdir(), "taskbox-cfg-"));

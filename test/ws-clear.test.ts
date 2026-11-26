@@ -29,7 +29,7 @@ function clearBox(o: { state?: WsState | string | null; procs?: string; pgrepCod
   const done = ok(end(advance(approvedState(c), box(), c.nonce), { name: "nova-1" }, c));
   const st = o.state === undefined ? done : o.state;
   if (st !== null) writeFileSync(stateFile, typeof st === "string" ? st : stateText({ ...st, beat: T }));
-  if (o.record !== false) writePoolRecord({ chown: () => {}, rootUid: me }, poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } });
+  if (o.record !== false) writePoolRecord({ chown: () => {}, rootUid: me }, poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } });
   const users = join(root, "Users");
   const home = join(users, "taskbox-ws1");
   mkdirSync(join(home, "Project/Saved"), { recursive: true });

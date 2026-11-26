@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AccountDeps, applyScreenSharing, ensureUnlock, makeAgent, makeService, planScreenSharing, planService, readRecord, removable, screenSharingLines, undoScreenSharing, writeRecord } from "../src/accounts.ts";
@@ -8,25 +8,39 @@ import { FakeSys } from "./fake.ts";
 
 // A box's accounts, as the fake answers for them: name to user ID, admins, and spellings.
 // unlocks: the accounts the disk's unlock list has. Each account's GeneratedUID is made from its ID.
-type Box = { uids: Record<string, number>; admins?: string[]; spelled?: Record<string, string>; unlocks?: string[]; dashLogsIn?: boolean };
+type Box = { uids: Record<string, number>; gids?: Record<string, number>; admins?: string[]; spelled?: Record<string, string>; unlocks?: string[]; dashLogsIn?: boolean };
 const guid = (uid: number) => `00000000-0000-0000-0000-${String(uid).padStart(12, "0")}`;
 function boxSys(b: Box): FakeSys {
   const sys = new FakeSys();
   sys.responders.push((cmd, args) => {
     const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
-    if (cmd === "/usr/bin/id") return b.uids[args[1]!] !== undefined ? out(`${b.uids[args[1]!]}\n`) : out("", 1);
+    if (cmd === "/usr/bin/id" && args[0] === "-nu") {
+      const n = Object.entries(b.uids).find(([, u]) => String(u) === args[1])?.[0];
+      return n ? out(`${n}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user` };
+    }
+    if (cmd === "/usr/bin/id") return b.uids[args[1]!] !== undefined ? out(`${b.uids[args[1]!]}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user` };
     if (cmd === "/usr/sbin/dseditgroup") return out("", (b.admins ?? []).includes(args[3]!) ? 0 : 67);
     if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "RecordName") return out(`RecordName: ${b.spelled?.[args[2]!.slice(7)] ?? args[2]!.slice(7)}\n`);
+    if (cmd === "/usr/bin/dscl" && args[1] === "-list" && args[2] === "/Groups") return out(Object.entries(b.gids ?? {}).map(([n, g]) => `${n} ${g}`).join("\n"));
+    if (cmd === "/usr/bin/dscl" && args[1] === "-list" && args[3] === "PrimaryGroupID") return out("");
     if (cmd === "/usr/bin/dscl" && args[1] === "-list") return out(Object.entries(b.uids).map(([n, u]) => `${n} ${u}`).join("\n"));
     // "-" is never the password, unless a test says so.
     if (cmd === "/usr/bin/dscl" && args[1] === "-authonly") return out("", b.dashLogsIn ? 0 : 1);
     if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "GeneratedUID") {
       const u = b.uids[args[2]!.slice(7)];
-      return u === undefined ? out("", 56) : out(`GeneratedUID: ${guid(u)}\n`);
+      // An account made but not yet given its ID has no GeneratedUID here.
+      return u === undefined ? out("No such key: GeneratedUID\n") : out(`GeneratedUID: ${guid(u)}\n`);
     }
     if (cmd === "/usr/sbin/diskutil") return out((b.unlocks ?? []).filter((n) => b.uids[n] !== undefined).map((n) => `+-- ${guid(b.uids[n]!)}\n    Type: Local Open Directory User\n`).join(""));
     // macOS 27 says DISABLED here even for an account fdesetup added (ran on a Tart Mac), so taskbox never asks it.
     if (cmd === "/usr/sbin/sysadminctl" && args[0] === "-secureTokenStatus") return { code: 0, stdout: "", stderr: `Secure token is DISABLED for user ${args[1]}` };
+    // Groups: none until one is made; its ID reads back as set.
+    if (cmd === "/usr/bin/dscl" && args[2]?.startsWith("/Groups/")) {
+      const g = args[2].slice(8);
+      if (args[1] === "-read") return b.gids?.[g] !== undefined ? out(`PrimaryGroupID: ${b.gids[g]}\n`) : { code: 56, stdout: "", stderr: "DS Error: -14136 (eDSRecordNotFound)" };
+      if (args[1] === "-create" && args[3] === "PrimaryGroupID") (b.gids ??= {})[g] = Number(args[4]);
+      return out("");
+    }
     // Writes to an account's record, and deleting an account, take.
     if (cmd === "/usr/bin/dscl" && (args[1] === "-create" || args[1] === "-delete")) return out("");
     // A key an account doesn't have reads "No such key", with exit 0 (dscl-output.test.ts).
@@ -49,9 +63,9 @@ const noState = () => false;
 describe("the accounts record", () => {
   test("is written whole, root's at 0644, and read back", () => {
     const p = recordPath();
-    writeRecord({ chown: () => {}, rootUid: process.getuid!() }, p, { service: "taskbox", made: { taskbox: { role: "service", uid: 502 } } });
+    writeRecord({ chown: () => {}, rootUid: process.getuid!() }, p, { inUse: { service: "taskbox" }, made: { taskbox: { role: "service", uid: 502 } } });
     expect(statSync(p).mode & 0o777).toBe(0o644);
-    expect(readRecord(p)).toEqual({ service: "taskbox", made: { taskbox: { role: "service", uid: 502 } } });
+    expect(readRecord(p)).toEqual({ inUse: { service: "taskbox" }, made: { taskbox: { role: "service", uid: 502 } } });
     expect(existsSync(`${p}.new`)).toBe(false);
   });
 
@@ -59,8 +73,30 @@ describe("the accounts record", () => {
     expect(readRecord("/nonexistent/accounts.json")).toEqual({ made: {} });
     const p = recordPath();
     mkdirSync(join(p, ".."), { recursive: true });
-    writeFileSync(p, JSON.stringify({ service: "bad name", made: { "../x": { role: "service", uid: 1 }, ok: { role: "agent", uid: 471 }, admin: { role: "owner", uid: 501 }, zero: { role: "agent", uid: 0 } } }));
+    writeFileSync(p, JSON.stringify({ service: "bad name", made: { "../x": { role: "service", uid: 1 }, ok: { role: "agent", uid: 471 }, zero: { role: "agent", uid: 0 }, bad: { role: "Not A Role", uid: 9 }, pooled: { role: "pool", uid: 472 } } }));
     expect(readRecord(p)).toEqual({ made: { ok: { role: "agent", uid: 471 } } });
+  });
+
+  test("the service in use is inUse.service only: no release wrote any other", () => {
+    const p = recordPath();
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, JSON.stringify({ service: "ci", made: {} }));
+    expect(readRecord(p).inUse).toBeUndefined();
+    writeFileSync(p, JSON.stringify({ inUse: { service: "taskbox" }, made: {} }));
+    expect(readRecord(p).inUse).toEqual({ service: "taskbox" });
+  });
+
+  test("an entry in a role a later release made is kept as it is, and never offered to remove", async () => {
+    const p = recordPath();
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, JSON.stringify({ made: { ok: { role: "agent", uid: 471 }, later: { role: "cache", uid: 480, extra: true } } }));
+    const rec = readRecord(p);
+    expect(rec.made).toEqual({ ok: { role: "agent", uid: 471 } });
+    expect(rec.unknown).toEqual({ later: { role: "cache", uid: 480, extra: true } });
+    writeRecord({ chown: () => {}, rootUid: process.getuid!() }, p, rec);
+    expect(JSON.parse(readFileSync(p, "utf8")).made.later).toEqual({ role: "cache", uid: 480, extra: true });
+    const sys = boxSys({ uids: { ok: 471, later: 480 } });
+    expect((await removable(sys, rec, [])).delete.map((x) => x.name)).toEqual(["ok"]);
   });
 });
 
@@ -87,11 +123,11 @@ describe("planService, before the yes", () => {
   });
 
   test("another service's state on the box stops it, so the state isn't left behind", async () => {
-    const why = await planService(deps(boxSys({ uids: {} })), "taskbox", { service: "ci", made: {} }, (s) => s === "ci");
+    const why = await planService(deps(boxSys({ uids: {} })), "taskbox", { inUse: { service: "ci" }, made: {} }, (s) => s === "ci");
     expect(why).toMatch(/ci's taskbox state is on this box/);
     expect(why).toMatch(/taskbox remove first/);
     // With that state gone, the new name is made.
-    expect(await planService(deps(boxSys({ uids: {} })), "taskbox", { service: "ci", made: {} }, noState)).toEqual({ make: true });
+    expect(await planService(deps(boxSys({ uids: {} })), "taskbox", { inUse: { service: "ci" }, made: {} }, noState)).toEqual({ make: true });
   });
 });
 
@@ -105,7 +141,7 @@ describe("makeService, after the yes", () => {
     const p = recordPath();
     expect(await makeService(d, "taskbox", p)).toBe(502);
     expect(d.ran).toEqual([["/usr/sbin/sysadminctl", "-addUser", "taskbox", "-fullName", "taskbox", "-password", "-"]]);
-    expect(readRecord(p)).toEqual({ service: "taskbox", made: { taskbox: { role: "service", uid: 502, guid: guid(502) } } });
+    expect(readRecord(p)).toEqual({ inUse: { service: "taskbox" }, made: { taskbox: { role: "service", uid: 502, guid: guid(502) } } });
     expect(d.said[0]).toContain("Type its password when asked");
     expect(d.said[0]).not.toContain("twice");
   });
@@ -176,11 +212,17 @@ describe("makeAgent", () => {
       ["/Users/taskbox-agent", "IsHidden", "1"],
       ["/Users/taskbox-agent", "UserShell", "/opt/taskbox/bin/taskbox-shell"],
       ["/Users/taskbox-agent", "NFSHomeDirectory", "/private/var/taskbox-taskbox-agent"],
+      // Its own group, with the first free hidden group ID.
+      ["/Groups/taskbox-agent"],
+      ["/Groups/taskbox-agent", "PrimaryGroupID", "470"],
+      ["/Groups/taskbox-agent", "Password", "*"],
+      ["/Groups/taskbox-agent", "RealName", "taskbox agent"],
       ["/Users/taskbox-agent", "UniqueID", "471"],
-      ["/Users/taskbox-agent", "PrimaryGroupID", "20"],
+      ["/Users/taskbox-agent", "PrimaryGroupID", "470"],
       ["/Users/taskbox-agent", "RealName", "taskbox agent"],
     ]);
     expect(readRecord(p).made).toEqual({ "taskbox-agent": { role: "agent", uid: 471, guid: guid(471) } });
+    expect(readRecord(p).groups).toEqual({ "taskbox-agent": { gid: 470 } });
   });
 
   test("no free hidden ID: nothing is made", async () => {

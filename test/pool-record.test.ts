@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { POOL_GROUP, POOL_USER } from "../src/access.ts";
+import { POOL_USER } from "../src/access.ts";
 import { type AccountDeps, placePool, planPool, readRecord, writeRecord } from "../src/accounts.ts";
 import { GATE_SHELL, paths } from "../src/config.ts";
 import { type PoolRecord, readPoolRecord } from "../src/pin.ts";
@@ -32,8 +32,8 @@ describe("a release from before workspaces, after an undo", () => {
   test("its Screen Sharing and remove rewrites of accounts.json leave pool.json as it was, and the next install still sees the pool as taskbox's", async () => {
     const { p, sys, d } = box();
     // The box with workspaces: the service and agent in accounts.json, the pool in pool.json.
-    writeRecord(d, p.accountsRecord, { service: "taskbox", made: { taskbox: { role: "service", uid: 502 }, "taskbox-agent": { role: "agent", uid: 470 } } });
-    expect(await placePool(d, p, POOL_USER, POOL_GROUP, GATE_SHELL)).toBe(471);
+    writeRecord(d, p.accountsRecord, { inUse: { service: "taskbox" }, made: { taskbox: { role: "service", uid: 502 }, "taskbox-agent": { role: "agent", uid: 470 } } });
+    expect(await placePool(d, p, POOL_USER, POOL_USER, GATE_SHELL)).toBe(471);
     const before = readFileSync(p.poolRecord, "utf8");
 
     // The older release's install changes Screen Sharing's list, with its own code.
@@ -46,17 +46,17 @@ describe("a release from before workspaces, after an undo", () => {
     expect(readFileSync(p.poolRecord, "utf8")).toBe(before);
     expect(readRecord(p.accountsRecord).made).toEqual({ taskbox: { role: "service", uid: 502 }, "taskbox-agent": { role: "agent", uid: 470 } });
     // The update back: the pool is taskbox's, and nothing about it changes.
-    expect(await planPool(sys, readPoolRecord(p.poolRecord, ME), POOL_USER, POOL_GROUP)).toEqual({ make: false });
+    expect(await planPool(sys, readPoolRecord(p.poolRecord, ME), POOL_USER, POOL_USER)).toEqual({ make: false });
     const n = sys.calls.length;
-    expect(await placePool(d, p, POOL_USER, POOL_GROUP, GATE_SHELL)).toBe(471);
+    expect(await placePool(d, p, POOL_USER, POOL_USER, GATE_SHELL)).toBe(471);
     expect(sys.calls.slice(n).filter((c) => c.cmd === "/usr/bin/dscl" && (c.args[1] === "-create" || c.args[1] === "-delete"))).toEqual([]);
-    expect((readPoolRecord(p.poolRecord, ME) as PoolRecord).groups).toEqual({ [POOL_GROUP]: { gid: 470 } });
+    expect((readPoolRecord(p.poolRecord, ME) as PoolRecord).groups).toEqual({ [POOL_USER]: { gid: 470 } });
   });
 
   test("why: that code drops any role it doesn't know from accounts.json", async () => {
     const { p, d } = box();
     mkdirSync(dirname(p.accountsRecord), { recursive: true });
-    writeFileSync(p.accountsRecord, JSON.stringify({ made: { taskbox: { role: "service", uid: 502 }, [POOL_USER]: { role: "pool", uid: 471 } }, groups: { [POOL_GROUP]: { gid: 471 } } }));
+    writeFileSync(p.accountsRecord, JSON.stringify({ made: { taskbox: { role: "service", uid: 502 }, [POOL_USER]: { role: "pool", uid: 471 } }, groups: { [POOL_USER]: { gid: 471 } } }));
     await old.applyScreenSharing({ ...d } as old.AccountDeps, { make: false, add: ["pat"], drop: [], others: [], nested: false }, p.accountsRecord);
     const after = JSON.parse(readFileSync(p.accountsRecord, "utf8"));
     expect(Object.keys(after.made)).toEqual(["taskbox"]);

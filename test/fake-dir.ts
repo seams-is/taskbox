@@ -31,6 +31,14 @@ export class Dir {
   responder(): Responder {
     return (cmd, args) => {
       const out = (stdout: string, code = 0, stderr = "") => ({ code, stdout, stderr });
+      if (cmd === "/usr/bin/id" && args[0] === "-nu") {
+        const n = Object.entries(this.users).find(([, u]) => u.uid !== undefined && String(u.uid) === args[1]);
+        return n ? out(`${n[0]}\n`) : out("", 1, `id: ${args[1]}: no such user\n`);
+      }
+      if (cmd === "/usr/bin/dscacheutil" && args[1] === "group" && args[3] === "gid") {
+        const g = Object.entries(this.groups).find(([, x]) => x.gid !== undefined && String(x.gid) === args[4]);
+        return out(g ? `name: ${g[0]}\npassword: *\ngid: ${args[4]}\n\n` : "");
+      }
       if (cmd === "/usr/bin/id") {
         const u = this.users[args[1]!];
         if (u?.uid === undefined) return out("", 1, "no such user");

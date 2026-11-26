@@ -40,7 +40,7 @@ function wsBox(o: { pin?: string | null } = {}) {
   const w = { chown: () => {}, rootUid: me };
   mkdirSync(dirname(p.workspaces), { recursive: true, mode: 0o755 });
   if (o.pin !== null) writePin(w, p.approverPin, { key: o.pin ?? owner.key, gen: 1, cleared: [] });
-  writePoolRecord(w, p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } });
+  writePoolRecord(w, p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } });
   writeRecord(w, p.accountsRecord, { made: { "taskbox-agent": { role: "agent", uid: me } } });
   mkdirSync(p.workspaceSpool, { mode: 0o700 });
   chmodSync(p.workspaceSpool, 0o700);
@@ -743,7 +743,7 @@ describe("the boot pass", () => {
       expect(stateLine(find(b.state(), "nova-1")!)).toBe("Paused while workspaces were off");
       // Back on: still paused.
       if (how === "key") writePin({ chown: () => {}, rootUid: me }, b.p.approverPin, { key: owner.key, gen: 3, cleared: [] });
-      else writePoolRecord({ chown: () => {}, rootUid: me }, b.p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } });
+      else writePoolRecord({ chown: () => {}, rootUid: me }, b.p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } });
       await b.pass();
       expect([how, find(b.state(), "nova-1")!.phase]).toEqual([how, "paused"]);
     }
@@ -1129,5 +1129,72 @@ describe("the card's notes", () => {
     const w = find(s, "nova-1")!;
     expect(whyWaiting(s, w, box({ jobs: [{ name: "app/test", leftMs: 6 * 60_000, atMost: true }] }))).toBe("app/test (at most 6 m left)");
     expect(whyWaiting(s, w, box({ jobs: [{ name: "app/test", leftMs: 6 * 60_000 }] }))).toBe("app/test (about 6 m left)");
+  });
+});
+
+describe("every pool account, 1 to N", () => {
+  // Three accounts, the settings' workspaces.size: each one's processes stopped while no workspace is
+  // open in it, whether pool.json names them or, unreadable, the settings do.
+  const three = (b: ReturnType<typeof wsBox>, pre = "taskbox-ws") => {
+    const procs: Record<number, number> = { [POOL_UID + 1]: 2, [POOL_UID + 2]: 2 };
+    const kills: string[] = [];
+    b.sys.responders.unshift((cmd, args) => {
+      const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
+      const uid = cmd === "/usr/bin/pgrep" || cmd === "/usr/bin/pkill" ? Number(args[cmd === "/usr/bin/pkill" ? 2 : 1]) : NaN;
+      if (cmd === "/usr/bin/id" && args[0] === "-u" && (args[1] === `${pre}2` || args[1] === `${pre}3`)) return out(`${POOL_UID + Number(args[1].slice(-1)) - 1}\n`);
+      if (cmd === "/usr/bin/sudo" && args.join(" ") === `-n -u ${args[2]} -- /bin/kill -9 -1` && (args[2] === `${pre}2` || args[2] === `${pre}3`)) {
+        kills.push(args[2]!);
+        procs[POOL_UID + Number(args[2]!.slice(-1)) - 1] = 0;
+        return out("");
+      }
+      if (procs[uid] === undefined) return undefined;
+      if (cmd === "/usr/bin/pgrep") return args.includes("-f") ? out("", 1) : procs[uid]! > 0 ? out("123\n") : out("", 1);
+      // pkill alone leaves a process that forks: only the one-call kill stops it here.
+      return out("");
+    });
+    return Object.assign(procs, { kills });
+  };
+  test("pool.json's three accounts are all fenced", async () => {
+    const b = wsBox();
+    b.d.cfg = { ...b.d.cfg, accounts: { ...b.d.cfg.accounts, workspaces: { pool: "taskbox-ws", size: 3 } } };
+    writePoolRecord({ chown: () => {}, rootUid: me }, b.p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID }, "taskbox-ws2": { uid: POOL_UID + 1 }, "taskbox-ws3": { uid: POOL_UID + 2 } }, groups: {} });
+    const procs = three(b);
+    b.box.procs = 2;
+    await fencePass(b.d, newWsMemory());
+    expect([b.box.procs, procs[POOL_UID + 1], procs[POOL_UID + 2]]).toEqual([0, 0, 0]);
+  });
+  test("with pool.json unreadable, each account the settings name that has a hidden ID is fenced", async () => {
+    const b = wsBox();
+    b.d.cfg = { ...b.d.cfg, accounts: { ...b.d.cfg.accounts, workspaces: { pool: "taskbox-ws", size: 3 } } };
+    writeFileSync(b.p.poolRecord, "{not json");
+    const procs = three(b);
+    b.box.procs = 2;
+    await fencePass(b.d, newWsMemory());
+    expect([b.box.procs, procs[POOL_UID + 1], procs[POOL_UID + 2]]).toEqual([0, 0, 0]);
+  });
+});
+
+describe("a pool with its own prefix", () => {
+  test("studio1 to studio3 are fenced, each by the one-call kill as itself", async () => {
+    const b = wsBox();
+    b.d.cfg = { ...b.d.cfg, accounts: { ...b.d.cfg.accounts, workspaces: { pool: "studio", size: 3 } } };
+    writePoolRecord({ chown: () => {}, rootUid: me }, b.p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID }, studio2: { uid: POOL_UID + 1 }, studio3: { uid: POOL_UID + 2 } }, groups: {} });
+    const procs: Record<number, number> = { [POOL_UID + 1]: 2, [POOL_UID + 2]: 2 };
+    const kills: string[] = [];
+    b.sys.responders.unshift((cmd, args) => {
+      const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
+      if (cmd === "/usr/bin/sudo" && /^-n -u studio[23] -- \/bin\/kill -9 -1$/.test(args.join(" "))) {
+        kills.push(args[2]!);
+        procs[POOL_UID + Number(args[2]!.slice(-1)) - 1] = 0;
+        return out("");
+      }
+      const uid = cmd === "/usr/bin/pgrep" || cmd === "/usr/bin/pkill" ? Number(args[cmd === "/usr/bin/pkill" ? 2 : 1]) : NaN;
+      if (procs[uid] === undefined) return undefined;
+      if (cmd === "/usr/bin/pgrep") return args.includes("-f") ? out("", 1) : procs[uid]! > 0 ? out("123\n") : out("", 1);
+      return out("");
+    });
+    await fencePass(b.d, newWsMemory());
+    expect(kills.sort()).toEqual(["studio2", "studio3"]);
+    expect([procs[POOL_UID + 1], procs[POOL_UID + 2]]).toEqual([0, 0]);
   });
 });

@@ -56,6 +56,9 @@ export class FakeSys implements Sys {
     // The box's two clocks that a wall clock step doesn't move, unless a test answers them itself.
     if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.monotonicclock_usecs") return { code: 0, stdout: `${(this.clock + this.monoOffset) * 1000} 1\n`, stderr: "" };
     if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.bootsessionuuid") return { code: 0, stdout: `${this.bootUuid}\n`, stderr: "" };
+    // The system's own lookup of a hidden ID agrees with dscl's list, unless a test answers it.
+    if (cmd === "/usr/bin/id" && args[0] === "-nu" && /^\d+$/.test(args[1] ?? "")) return { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user\n` };
+    if (cmd === "/usr/bin/dscacheutil" && args[0] === "-q" && args[1] === "group") return { code: 0, stdout: "", stderr: "" };
     // 10 logical CPUs, as the box the numbers in the sizes' settings come from, unless a test says otherwise.
     if (cmd === "/usr/sbin/sysctl" && args[1] === "hw.logicalcpu") return { code: 0, stdout: "10\n", stderr: "" };
     // Plenty of room unless a test says otherwise: 500 GB.

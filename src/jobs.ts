@@ -4,10 +4,12 @@
 // A job controls its own name and the runner's lines, so every text field is cleaned when written
 // and again when shown. Times, numbers and results come from the loop.
 import { type JobUsage, usageLine, validUsage } from "./usage.ts";
-import { appendFileSync, chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { dirname } from "node:path";
-import type { Paths } from "./config.ts";
+import { randomBytes } from "node:crypto";
+import { appendFileSync, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { Config, Paths } from "./config.ts";
 import { clean } from "./progress.ts";
+import type { JobSource, Snapshot } from "./source.ts";
 
 // A wait before a VM started: why (the guard, memory, or a hold before v2.2.0) and for how long.
 export interface Wait {
@@ -51,6 +53,15 @@ export interface JobRecord {
   // v2.5.0: the labels the VM's runner took, label first, and what the job used (usage.ts).
   labels?: string[];
   usage?: JobUsage;
+  // v3: the box's id, the VM it named, and GitHub's job and run, when GitHub tied them (hooks/identity.ts).
+  id?: string;
+  vm?: string;
+  githubJob?: number;
+  githubRun?: number;
+  event?: string; // GitHub's word for what started the run
+  state?: JobState;
+  reason?: FailReason;
+  stoppedBy?: string;
 }
 
 // The runner's own word for a job's end, from "Job <name> completed with result: <Result>".
@@ -68,7 +79,30 @@ export function appendJob(p: Paths, r: JobRecord): void {
   chmodSync(p.jobsFile, 0o644); // whatever the service's umask
 }
 
-const RESULTS = new Set(["passed", "failed", "cancelled", "finished", "stopped", "no job", "box failure"]);
+// v3's job states and failure reasons.
+export const JOB_STATES = ["queued", "starting", "running", "succeeded", "failed", "stopped", "cancelled"] as const;
+export type JobState = (typeof JOB_STATES)[number];
+export const ENDED: readonly JobState[] = ["succeeded", "failed", "stopped", "cancelled"];
+export const REASONS = ["timed-out", "prestart", "vm", "runner", "lost"] as const;
+export type FailReason = (typeof REASONS)[number];
+// Who stopped a job: words taskbox writes itself, never a job's text.
+export const STOPPED_BY = /^[a-z][a-z0-9 ,.()-]{0,59}$/;
+const ghId = (v: unknown) => Number.isSafeInteger(v) && (v as number) > 0;
+const V3_FIELDS: Record<string, (v: unknown) => boolean> = {
+  id: (v) => typeof v === "string" && JOB_ID.test(v),
+  vm: (v) => typeof v === "string" && /^job-[A-Za-z0-9_-]{1,40}$/.test(v),
+  githubJob: ghId,
+  githubRun: ghId,
+  event: (v) => typeof v === "string" && /^[a-z][a-z_]{0,40}$/.test(v),
+  state: (v) => ENDED.includes(v as JobState),
+  reason: (v) => (REASONS as readonly unknown[]).includes(v),
+  stoppedBy: (v) => typeof v === "string" && STOPPED_BY.test(v),
+};
+
+export const RESULT_WORDS: readonly JobRecord["result"][] = ["passed", "failed", "cancelled", "finished", "stopped", "no job", "box failure"];
+const RESULTS = new Set<string>(RESULT_WORDS);
+// A GitHub repo, as owner/name.
+export const REPO_SHAPE = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 const GUARDS = new Set(["ok", "rules went missing at start", "not read"]);
 const str = (v: unknown) => v === undefined || typeof v === "string";
 const count = (v: unknown) => v === undefined || (Number.isInteger(v) && (v as number) >= 0 && (v as number) < 1e6);
@@ -101,6 +135,7 @@ export function validJob(r: unknown): r is JobRecord {
     (j.labels === undefined || validLabels(j.labels)) &&
     (j.usage === undefined || validUsage(j.usage)) &&
     [j.job, j.why, j.workflow, j.trigger, j.run, j.commit].every(str) &&
+    Object.entries(V3_FIELDS).every(([k, ok]) => j[k] === undefined || ok(j[k])) &&
     count(j.cpus) &&
     count(j.memoryMB) &&
     (j.beside === undefined || (Array.isArray(j.beside) && j.beside.length <= 10 && j.beside.every((b) => typeof b === "string"))) &&
@@ -145,6 +180,8 @@ export function readJobs(p: Paths, serviceUid: number | undefined, maxBytes = 5_
         // v2.5.0: so do a use record or labels out of their shape: a guest that lied can't hide its job.
         if (r && typeof r === "object" && "usage" in r && !validUsage((r as { usage?: unknown }).usage)) delete (r as { usage?: unknown }).usage;
         if (r && typeof r === "object" && "labels" in r && !validLabels((r as { labels?: unknown }).labels)) delete (r as { labels?: unknown }).labels;
+        // v3: so does an id or a GitHub field out of its shape.
+        if (r && typeof r === "object") for (const [k, ok] of Object.entries(V3_FIELDS)) if (k in r && !ok((r as Record<string, unknown>)[k])) delete (r as Record<string, unknown>)[k];
         if (validJob(r)) out.push(r);
       } catch {}
     }
@@ -221,10 +258,450 @@ export function jobLines(r: JobRecord, repoWidth = 16): string[] {
 }
 
 
-export function jobsScreen(all: JobRecord[], limit: number | "all"): string[] {
-  const shown = limit === "all" ? all : all.slice(0, limit);
-  if (!all.length) return ["taskbox job list: no jobs yet."];
-  const more = shown.length < all.length ? ` Type taskbox job list --all for every one.` : "";
-  const repoWidth = Math.max(16, ...shown.map((r) => clean(r.repo).slice(0, 40).length + 2));
-  return [`taskbox job list: ${shown.length} of ${all.length}, newest first.${more}`, "", ...shown.flatMap((r) => [...jobLines(r, repoWidth), ""])].slice(0, -1);
+
+// ---- v3: jobs with an identity ----
+
+// The box's id for a job: j_ and 8 base32 characters (40 random bits), made when a slot starts a VM.
+// It names the VM, job-<id>, so cleanup and the id agree.
+export const JOB_ID = /^j_[0-9abcdefghjkmnpqrstvwxyz]{8}$/;
+// What every job command takes: the box's id, GitHub's job id, or the VM's name.
+export const JOB_REF = /^(j_[0-9abcdefghjkmnpqrstvwxyz]{8}|[1-9][0-9]{0,15}|job-j_[0-9abcdefghjkmnpqrstvwxyz]{8})$/;
+const B32 = "0123456789abcdefghjkmnpqrstvwxyz";
+export function newJobId(bytes: Uint8Array = randomBytes(5)): string {
+  let n = 0n;
+  for (const b of bytes.subarray(0, 5)) n = (n << 8n) | BigInt(b);
+  let out = "";
+  for (let i = 0; i < 8; i++) out = B32[Number((n >> BigInt(i * 5)) & 31n)]! + out;
+  return `j_${out}`;
+}
+export const vmOfJob = (id: string) => `job-${id}`;
+export const jobOfVm = (vm: string): string | undefined => (vm.startsWith("job-") && JOB_ID.test(vm.slice(4)) ? vm.slice(4) : undefined);
+// The runner's name on GitHub: the prefix, the slot, and the id's 8 characters, in the letters, digits
+// and hyphens runner names have always had. GitHub names the runner on the job it gives, which is how
+// the job is tied to GitHub's ids (hooks/identity.ts).
+export const runnerNameFor = (cfg: Pick<Config, "runnerNamePrefix">, slot: number, vm: string) => `${cfg.runnerNamePrefix}-${slot}-${vm.slice(6)}`;
+
+// A job's state and reason. A v2 line has neither, so its result and the loop's why are mapped when
+// read; its line stays as written.
+export function stateOf(r: Pick<JobRecord, "result" | "why" | "jobAt" | "state" | "reason" | "stoppedBy">): { state: JobState; reason?: FailReason; stoppedBy?: string } {
+  if (r.state && ENDED.includes(r.state)) return { state: r.state, ...(r.reason ? { reason: r.reason } : {}), ...(r.stoppedBy ? { stoppedBy: r.stoppedBy } : {}) };
+  if (r.why === "ceiling") return { state: "failed", reason: "timed-out" };
+  if (r.why === "prestart-failed") return { state: "failed", reason: "prestart" };
+  if (r.result === "passed") return { state: "succeeded" };
+  if (r.result === "failed") return { state: "failed" };
+  if (r.result === "cancelled") return { state: "cancelled" };
+  // The runner ended after it took a job, with no word on how it went.
+  if (r.result === "finished") return { state: "failed", reason: "lost" };
+  if (r.result === "box failure") return { state: "failed", reason: r.jobAt === undefined && r.why === "failed" ? "runner" : "vm" };
+  return { state: "stopped", stoppedBy: r.why && /^[a-z][a-z-]{0,20}$/.test(r.why) ? `taskbox (${r.why})` : "taskbox" };
+}
+
+// The files beside jobs.jsonl, each the service's: a job on a VM now (live/<id>.json) and a stop asked
+// for (stops/<id>.json), which every user may read, and what the source last saw waiting
+// (queued.json). GitHub's log of an ended job (logs/<id>.log) is job content: the service's and
+// root's alone.
+export const jobsDir = (p: Pick<Paths, "jobsFile">) => dirname(p.jobsFile);
+const liveDir = (p: Pick<Paths, "jobsFile">) => join(jobsDir(p), "live");
+const stopsDir = (p: Pick<Paths, "jobsFile">) => join(jobsDir(p), "stops");
+export const logsDir = (p: Pick<Paths, "jobsFile">) => join(jobsDir(p), "logs");
+const queuedFile = (p: Pick<Paths, "jobsFile">) => join(jobsDir(p), "queued.json");
+export const LIVE_MAX = 4096;
+export const LOG_MAX = 2_000_000;
+export const LOGS_KEPT = 200;
+// A queued line older than this is left out: the source has stopped reading.
+export const QUEUED_FRESH_MS = 5 * 60_000;
+
+// A folder made with its mode, or one already there that its owner alone writes and, for a private
+// one, that nobody else reads.
+function folder(dir: string, mode: 0o755 | 0o700): void {
+  try {
+    const st = lstatSync(dir);
+    if (!st.isDirectory() || (st.mode & (mode === 0o700 ? 0o077 : 0o022)) !== 0) throw new Error(`${dir} isn't a folder of the right mode`);
+    return;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  mkdirSync(dir, { mode });
+  chmodSync(dir, mode);
+}
+
+// Written whole and renamed into place, at its mode whatever the service's umask.
+function writeWhole(file: string, text: string, mode: 0o644 | 0o600 = 0o644): void {
+  folder(dirname(file), mode === 0o600 ? 0o700 : 0o755);
+  const tmp = `${file}.new.${process.pid}`;
+  writeFileSync(tmp, text, { mode });
+  chmodSync(tmp, mode);
+  renameSync(tmp, file);
+}
+
+// A file a reader trusts: its folder and the file the service's, written by it alone, not a link; for a
+// private one, read by nobody else. undefined when absent or not to be trusted.
+function readOwned(file: string, serviceUid: number | undefined, max: number, priv = false): string | undefined {
+  if (serviceUid === undefined) return undefined;
+  const others = priv ? 0o077 : 0o022;
+  try {
+    const dir = lstatSync(dirname(file));
+    if (!dir.isDirectory() || dir.uid !== serviceUid || (dir.mode & others) !== 0) return undefined;
+  } catch {
+    return undefined;
+  }
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.uid !== serviceUid || (st.mode & others) !== 0) return undefined;
+    const len = Math.min(st.size, max);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, st.size - len);
+    return buf.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+const parse = (text: string | undefined): unknown => {
+  try {
+    return text === undefined ? undefined : JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+};
+const names = (dir: string): string[] => {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+};
+
+// A job a runner has taken, as the identity hook keeps it until the job's line is written.
+export interface LiveJob {
+  v: 1;
+  id: string;
+  vm: string;
+  slot: number;
+  kind: "macos" | "linux";
+  labels: string[];
+  className?: string;
+  repo: string;
+  state: "running";
+  at: number; // when the runner took it
+  job?: string; // the runner's name for the job, cleaned
+  githubJob?: number;
+  githubRun?: number;
+  workflow?: string;
+  event?: string;
+}
+export function validLive(v: unknown): v is LiveJob {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const j = v as Record<string, unknown>;
+  return (
+    j.v === 1 &&
+    typeof j.id === "string" &&
+    JOB_ID.test(j.id) &&
+    j.vm === vmOfJob(j.id) &&
+    Number.isInteger(j.slot) &&
+    (j.slot as number) >= 1 &&
+    (j.slot as number) <= 99 &&
+    (j.kind === "macos" || j.kind === "linux") &&
+    validLabels(j.labels) &&
+    (j.className === undefined || (typeof j.className === "string" && /^[a-z][a-z0-9-]{0,30}$/.test(j.className))) &&
+    typeof j.repo === "string" &&
+    REPO_SHAPE.test(j.repo) &&
+    j.state === "running" &&
+    Number.isFinite(j.at) &&
+    (j.job === undefined || typeof j.job === "string") &&
+    (j.githubJob === undefined || ghId(j.githubJob)) &&
+    (j.githubRun === undefined || ghId(j.githubRun)) &&
+    (j.workflow === undefined || typeof j.workflow === "string") &&
+    (j.event === undefined || V3_FIELDS.event!(j.event))
+  );
+}
+export function writeLive(p: Pick<Paths, "jobsFile">, j: LiveJob): void {
+  const line: LiveJob = { ...j, ...(j.job !== undefined ? { job: clean(j.job).slice(0, 120) } : {}), ...(j.workflow !== undefined ? { workflow: clean(j.workflow).slice(0, 120) } : {}) };
+  writeWhole(join(liveDir(p), `${j.id}.json`), JSON.stringify(line));
+}
+export function readLiveOne(p: Pick<Paths, "jobsFile">, id: string, serviceUid: number | undefined): LiveJob | undefined {
+  if (!JOB_ID.test(id)) return undefined;
+  const v = parse(readOwned(join(liveDir(p), `${id}.json`), serviceUid, LIVE_MAX));
+  return validLive(v) && v.id === id ? v : undefined;
+}
+export function readLive(p: Pick<Paths, "jobsFile">, serviceUid: number | undefined): LiveJob[] {
+  const out: LiveJob[] = [];
+  for (const n of names(liveDir(p)).slice(0, 200)) {
+    const id = /^(j_[0-9a-z]{8})\.json$/.exec(n)?.[1];
+    const j = id ? readLiveOne(p, id, serviceUid) : undefined;
+    if (j) out.push(j);
+  }
+  return out;
+}
+export function removeLive(p: Pick<Paths, "jobsFile">, id: string): void {
+  if (JOB_ID.test(id)) rmSync(join(liveDir(p), `${id}.json`), { force: true });
+}
+// At the loop's start no job runs, so every live file and stop left by a loop that ended goes, and the
+// kept logs get their modes again (700 and 600), whatever an earlier build left. A link or anything
+// but a plain file among them goes.
+export function startJobFiles(p: Pick<Paths, "jobsFile">): void {
+  for (const dir of [liveDir(p), stopsDir(p)]) for (const n of names(dir)) rmSync(join(dir, n), { force: true });
+  const logs = logsDir(p);
+  try {
+    if (!lstatSync(logs).isDirectory()) return void rmSync(logs, { force: true });
+    chmodSync(logs, 0o700);
+    for (const n of names(logs)) {
+      const f = join(logs, n);
+      if (lstatSync(f).isFile()) chmodSync(f, 0o600);
+      else rmSync(f, { recursive: true, force: true });
+    }
+  } catch {
+    // Not the service's to change: readers refuse such a folder, and writes fail closed.
+  }
+}
+
+// A stop asked for: job cancel, or a forced drain. The identity hook reads it at the job's end, so the
+// line records who stopped it.
+export interface StopMark {
+  v: 1;
+  by: string;
+  at: number;
+}
+export function markStop(p: Pick<Paths, "jobsFile">, id: string, by: string, at: number): void {
+  if (!JOB_ID.test(id) || !STOPPED_BY.test(by)) throw new Error("a stop needs a job's id and taskbox's own words for who asked");
+  writeWhole(join(stopsDir(p), `${id}.json`), JSON.stringify({ v: 1, by, at } satisfies StopMark));
+}
+export function readStop(p: Pick<Paths, "jobsFile">, id: string, serviceUid: number | undefined): StopMark | undefined {
+  if (!JOB_ID.test(id)) return undefined;
+  const v = parse(readOwned(join(stopsDir(p), `${id}.json`), serviceUid, LIVE_MAX)) as Partial<StopMark> | undefined;
+  return v && v.v === 1 && typeof v.by === "string" && STOPPED_BY.test(v.by) && Number.isFinite(v.at) ? (v as StopMark) : undefined;
+}
+export function removeStop(p: Pick<Paths, "jobsFile">, id: string): void {
+  if (JOB_ID.test(id)) rmSync(join(stopsDir(p), `${id}.json`), { force: true });
+}
+
+// What the job source last saw waiting: GitHub's job id, the labels and when it was queued.
+export interface QueuedJob {
+  githubJob: number;
+  repo?: string;
+  labels: string[];
+  queuedAt: number;
+}
+export function writeQueued(p: Pick<Paths, "jobsFile">, at: number, jobs: QueuedJob[]): void {
+  writeWhole(queuedFile(p), JSON.stringify({ v: 1, at, jobs: jobs.slice(0, 500) }));
+}
+// Only a read from the last QUEUED_FRESH_MS counts.
+export function readQueued(p: Pick<Paths, "jobsFile">, serviceUid: number | undefined, now: number): QueuedJob[] {
+  const v = parse(readOwned(queuedFile(p), serviceUid, 1_000_000)) as { v?: unknown; at?: unknown; jobs?: unknown } | undefined;
+  if (!v || v.v !== 1 || !Number.isFinite(v.at) || Math.abs(now - (v.at as number)) > QUEUED_FRESH_MS || !Array.isArray(v.jobs)) return [];
+  return v.jobs.filter((j): j is QueuedJob => !!j && typeof j === "object" && ghId(j.githubJob) && (j.repo === undefined || (typeof j.repo === "string" && REPO_SHAPE.test(j.repo))) && validLabels(j.labels) && Number.isFinite(j.queuedAt));
+}
+
+// GitHub's log of an ended job: printable text only, with secrets' usual shapes taken out.
+const SECRETS = [
+  /gh[pousr]_[A-Za-z0-9]{20,}/g,
+  /github_pat_[A-Za-z0-9_]{20,}/g,
+  /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+  /\b(AKIA|ASIA)[A-Z0-9]{16}\b/g,
+  /\bnpm_[A-Za-z0-9]{30,}/g,
+  /\bxox[abposr]-[A-Za-z0-9-]{10,}/g,
+  /(?<=[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+(?=@)/gi, // a password in a URL
+];
+export function cleanLog(text: string): string[] {
+  // A private key, from its BEGIN line to its END line, goes whole.
+  let inKey = false;
+  const lines = text.split(/\r?\n/).map((raw) => {
+    const l = clean(raw.replace(/\t/g, "  ").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")).replace(/[^\x20-\x7e]/g, "?").slice(0, 400);
+    if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(l)) inKey = true;
+    if (inKey) {
+      if (/-----END [A-Z ]*PRIVATE KEY-----/.test(l)) inKey = false;
+      return "[redacted]";
+    }
+    return SECRETS.reduce((x, re) => x.replace(re, "[redacted]"), l);
+  });
+  while (lines.length && lines.at(-1) === "") lines.pop();
+  return lines;
+}
+export function writeJobLog(p: Pick<Paths, "jobsFile">, id: string, text: string): void {
+  if (!JOB_ID.test(id)) throw new Error("not a job's id");
+  writeWhole(join(logsDir(p), `${id}.log`), `${cleanLog(text).join("\n")}\n`, 0o600);
+}
+export function readJobLog(p: Pick<Paths, "jobsFile">, id: string, serviceUid: number | undefined): string[] | undefined {
+  if (!JOB_ID.test(id)) return undefined;
+  const text = readOwned(join(logsDir(p), `${id}.log`), serviceUid, LOG_MAX + 100_000, true);
+  return text === undefined ? undefined : cleanLog(text);
+}
+// Keeps the logs of the jobs in keep, and removes every other file there. No clock decides it.
+export function keepJobLogs(p: Pick<Paths, "jobsFile">, keep: ReadonlySet<string>): void {
+  for (const n of names(logsDir(p))) {
+    const id = /^(j_[0-9a-z]{8})\.log$/.exec(n)?.[1];
+    if (!id || !keep.has(id)) rmSync(join(logsDir(p), n), { force: true });
+  }
+}
+
+// One job as every command shows it: a line in jobs.jsonl, a job a runner has now, or one GitHub has
+// queued that no VM has taken.
+export interface JobView {
+  id?: string;
+  githubJob?: number;
+  githubRun?: number;
+  repo: string;
+  workflow?: string;
+  job?: string;
+  event?: string;
+  kind: "macos" | "linux";
+  size?: string;
+  labels?: string[];
+  className?: string;
+  state: JobState;
+  reason?: FailReason;
+  stoppedBy?: string;
+  result?: JobRecord["result"];
+  at: number; // when it was queued, or its VM started, or its runner took it
+  jobAt?: number;
+  endedAt?: number;
+  phases?: Phases;
+  usage?: JobUsage;
+  vm?: string;
+  slot?: number;
+  record?: JobRecord;
+}
+const SIZE = /^[a-z][a-z0-9-]{0,30}$/;
+export function viewOfRecord(r: JobRecord): JobView {
+  const size = (r as { size?: unknown }).size;
+  const { kind: _k, vmKind, startedAt, ...rest } = r;
+  return { ...rest, kind: vmKind ?? "macos", ...(typeof size === "string" && SIZE.test(size) ? { size } : { size: undefined }), ...stateOf(r), at: startedAt, ...(r.vm || !r.id ? {} : { vm: vmOfJob(r.id) }), record: r };
+}
+export const viewOfLive = ({ v: _v, ...j }: LiveJob): JobView => ({ ...j, jobAt: j.at });
+const viewOfQueued = (q: QueuedJob, repo: string, kind: "macos" | "linux"): JobView => ({ githubJob: q.githubJob, repo: q.repo ?? repo, kind, labels: q.labels, state: "queued", at: q.queuedAt });
+
+// Every job the box knows, newest first. A job both live and in the record is the record's; a queued
+// job a runner has taken is the runner's.
+export function allJobs(p: Pick<Paths, "jobsFile">, serviceUid: number | undefined, repo: string, now: number, kindOf?: (labels: string[]) => "macos" | "linux" | undefined): JobView[] | undefined {
+  const records = readJobs(p as Paths, serviceUid);
+  if (records === undefined) return undefined;
+  const ended = new Set(records.map((r) => r.id).filter((x): x is string => !!x));
+  const live = readLive(p, serviceUid).filter((j) => !ended.has(j.id));
+  const taken = new Set([...live.map((j) => j.githubJob), ...records.slice(0, 500).map((r) => r.githubJob)].filter((x): x is number => !!x));
+  const queued = readQueued(p, serviceUid, now).filter((q) => !taken.has(q.githubJob)).map((q) => viewOfQueued(q, repo, kindOf?.(q.labels) ?? "macos"));
+  return [...live.map(viewOfLive), ...queued, ...records.map(viewOfRecord)].sort((a, b) => b.at - a.at);
+}
+
+// The job a word names. Several jobs with one GitHub id are refused: the caller names the box's id.
+export type Found = { job: JobView } | { none: true } | { several: JobView[] };
+export function findJob(all: readonly JobView[], ref: string): Found {
+  const hits = JOB_ID.test(ref) ? all.filter((j) => j.id === ref) : ref.startsWith("job-") ? all.filter((j) => j.vm === ref) : /^[1-9][0-9]*$/.test(ref) ? all.filter((j) => j.githubJob === Number(ref)) : [];
+  if (!hits.length) return { none: true };
+  if (hits.length > 1 && new Set(hits.map((j) => j.id ?? "")).size > 1) return { several: hits };
+  return { job: hits[0]! };
+}
+
+export interface JobFilter {
+  state?: string;
+  kind?: string;
+  size?: string;
+  className?: string;
+  result?: string;
+  since?: number; // ms, the earliest at
+}
+export function filterJobs(all: readonly JobView[], f: JobFilter): JobView[] {
+  return all.filter(
+    (j) =>
+      (f.state === undefined || j.state === f.state) &&
+      (f.kind === undefined || j.kind === f.kind) &&
+      (f.size === undefined || j.size === f.size) &&
+      (f.className === undefined || j.className === f.className) &&
+      (f.result === undefined || j.result === f.result) &&
+      (f.since === undefined || j.at >= f.since),
+  );
+}
+
+// GitHub's own page for a job, from ids GitHub gave.
+export function githubLink(j: Pick<JobView, "repo" | "githubJob" | "githubRun">): string | undefined {
+  if (!REPO_SHAPE.test(j.repo) || !j.githubRun) return undefined;
+  return `https://github.com/${j.repo}/actions/runs/${j.githubRun}${j.githubJob ? `/job/${j.githubJob}` : ""}`;
+}
+
+const secs = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+};
+const KIND_NAME = { macos: "macOS", linux: "Linux" } as const;
+export const stateWords = (j: Pick<JobView, "state" | "reason">) => `${j.state}${j.reason ? ` (${j.reason})` : ""}`;
+
+// What each phase took, short: from the record's phases, or how long a live job has gone on.
+function phasesShort(j: JobView, now: number): string {
+  if (j.state === "queued") return `queued ${secs(now - j.at)}`;
+  if (j.state === "running") return `running ${secs(now - j.at)}`;
+  const p = j.phases;
+  if (p?.runnerStarted !== undefined) return `boot ${secs(p.runnerStarted)}${p.jobStarted === undefined ? ", no job" : p.jobDone !== undefined ? `, ran ${secs(p.jobDone - p.jobStarted)}` : ""}`;
+  return j.endedAt !== undefined ? `took ${secs(j.endedAt - (j.jobAt ?? j.at))}` : "-";
+}
+
+// One line per job: id, GitHub job, kind and size, state, phases, used.
+export function jobListLine(j: JobView, now: number): string {
+  const size = j.size ?? (j.record?.cpus && j.record.memoryMB ? `${j.record.cpus} CPUs ${Math.round(j.record.memoryMB / 1024)} GB` : "");
+  const used = j.usage ? `mem ${(j.usage.memPeakMB / 1024).toFixed(1)} GB cpu ${j.usage.cpuPeak.toFixed(1)}` : "-";
+  return [pad(j.id ?? "-", 12), pad(j.githubJob ? String(j.githubJob) : "-", 13), pad(`${KIND_NAME[j.kind]}${size ? ` ${size}` : ""}`, 20), pad(stateWords(j), 20), pad(phasesShort(j, now), 24), used].join("").trimEnd();
+}
+export function jobListScreen(shown: readonly JobView[], total: number, now: number): string[] {
+  if (!total) return ["taskbox job list: no jobs yet."];
+  if (!shown.length) return [`taskbox job list: none of ${total} match.`];
+  const more = shown.length < total ? " Type taskbox job list --all for every one." : "";
+  return [`taskbox job list: ${shown.length} of ${total}, newest first.${more}`, "", `${pad("ID", 12)}${pad("GITHUB JOB", 13)}${pad("KIND", 20)}${pad("STATE", 20)}${pad("PHASES", 24)}USED`, ...shown.map((j) => jobListLine(j, now))];
+}
+
+// Every field of one job.
+export function jobShowLines(j: JobView, now: number): string[] {
+  const link = githubLink(j);
+  const what = [j.workflow, j.job].filter((x): x is string => !!x).map((x) => clean(x).slice(0, 60)).join(" / ");
+  return [
+    `Job ${j.id ?? "with no box id (written before v3)"}: ${stateWords(j)}${j.stoppedBy ? `, stopped by ${clean(j.stoppedBy)}` : ""}.`,
+    j.githubJob ? `GitHub: job ${j.githubJob}${j.githubRun ? ` in run ${j.githubRun}` : ""}${link ? `, ${link}` : ""}.` : "GitHub: its job and run aren't known.",
+    `What: ${what || "not known"}, in ${clean(j.repo).slice(0, 60)}${j.event ? `, from a ${j.event} event` : ""}.`,
+    `Kind: ${KIND_NAME[j.kind]}${j.size ? `, size ${j.size}` : ""}${j.labels?.length ? `, labels ${j.labels.join(", ")}` : ""}${j.className ? `, class ${j.className}` : ""}.`,
+    ...(j.vm ? [`VM: ${j.vm}${j.slot ? `, slot ${j.slot}` : ""}${j.record ? (j.record.vmDeleted ? ", deleted" : ", NOT deleted") : ""}.`] : []),
+    `Times: ${phasesShort(j, now)}.`,
+    ...(j.record ? jobLines(j.record).slice(1) : []),
+  ];
+}
+
+// The job cancel API: stops a job's VM on the box. The VM's own slot deletes it and writes the job's
+// line, and the identity hook records who stopped it. Needs no GitHub permission and no network. A
+// stop that fails leaves no mark, so the job's own end is never recorded as a stop.
+export interface StopDeps {
+  paths: Pick<Paths, "jobsFile">;
+  engine: { stop(vm: string, seconds: number): Promise<{ code: number; stderr: string }> };
+  now(): number;
+}
+export async function stopJob(d: StopDeps, j: Pick<LiveJob, "id" | "vm">, by: string): Promise<{ stopped: boolean; why?: string }> {
+  markStop(d.paths, j.id, by, d.now());
+  const r = await d.engine.stop(j.vm, 10).catch((e: Error) => ({ code: -1, stderr: e.message }));
+  if (r.code === 0) return { stopped: true };
+  removeStop(d.paths, j.id);
+  return { stopped: false, why: clean(r.stderr).slice(0, 160) || `tart stop answered ${r.code}` };
+}
+
+// The job source, with what it last saw waiting kept for job list's queued lines: GitHub's own job
+// ids only (the GitHub adapter's keys, gh-<id>), from a read that knew the queue.
+export function recordQueued(src: JobSource, p: Pick<Paths, "jobsFile">): JobSource {
+  let last = "";
+  const read = async (now: number): Promise<Snapshot> => {
+    const snap = await src.read(now);
+    if (!snap.known) return snap;
+    const jobs = snap.items.flatMap((it): QueuedJob[] => {
+      const id = /^gh-([1-9][0-9]{0,15})$/.exec(it.key)?.[1];
+      return id && validLabels(it.labels) ? [{ githubJob: Number(id), labels: it.labels, queuedAt: it.queuedAt, ...(it.repo ? { repo: it.repo } : {}) }] : [];
+    });
+    // Written again on a change, and once a minute, so a reader can tell the source still reads.
+    const text = `${JSON.stringify(jobs)} ${Math.floor(snap.at / 60_000)}`;
+    if (text !== last) {
+      try {
+        writeQueued(p, snap.at, jobs);
+        last = text;
+      } catch {}
+    }
+    return snap;
+  };
+  return { id: src.id, read, ...(src.reads ? { reads: () => src.reads!() } : {}), ...(src.loadProblem ? { loadProblem: () => src.loadProblem!() } : {}) };
 }

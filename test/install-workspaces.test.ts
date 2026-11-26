@@ -6,54 +6,24 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { POOL_GROUP, POOL_USER } from "../src/access.ts";
+import { POOL_USER } from "../src/access.ts";
 import { readPin, readPoolRecord, type PoolRecord, writePin, writePoolRecord } from "../src/pin.ts";
-import { fingerprint, keyChangeText, ROTATE_ASK, type Verifier } from "../src/approver.ts";
+import { APPROVER_NAMESPACE, fingerprint, keyChangeText, ROTATE_ASK, type Verifier } from "../src/approver.ts";
 import { earlierWorkspaces, install, type InstallDeps, TRUST_FILES, trustFilesLine } from "../src/install.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
 import { Dir } from "./fake-dir.ts";
 import { CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
-import { laptopMain } from "../src/laptop/main.ts";
-import { keyDir, writeLaptop } from "../src/laptop/settings.ts";
-import { SSH } from "../src/laptop/box.ts";
-import { SSH_KEYGEN } from "../src/laptop/owner.ts";
 import { boxFacts, workspacesJson } from "../src/workspace/show.ts";
 import { approver, realKeygen } from "./ws-helpers.ts";
-import { keyChangeVerifier } from "../src/workspace/approval.ts";
+import { keyChangeVerifier, toB64url } from "../src/workspace/approval.ts";
 
-// The block taskbox approver --rotate prints on the laptop, from old to next at the box's gen. signer:
-// a key that signs in old's place; flags: the signature's user-presence flags.
+// The block that rotates the approver key in the box's taskbox.json, from old to next at the box's
+// gen: the old key signs the box's own key-change text. signer: a key that signs in old's place;
+// flags: the signature's user-presence flags.
 async function rotateBlock(old: ReturnType<typeof approver>, next: ReturnType<typeof approver>, gen: number, signer = old, flags?: number, namespace?: string) {
-  const home = mkdtempSync(join(tmpdir(), "rotate-home-"));
-  mkdirSync(keyDir(home), { recursive: true, mode: 0o700 });
-  const h = join(keyDir(home), "id_ecdsa_sk_rk");
-  writeFileSync(h, "handle\n");
-  writeFileSync(`${h}.pub`, `${old.key}\n`);
-  writeFileSync(join(home, "new.pub"), `${next.key}\n`);
-  writeLaptop(home, { v: 1, box: "taskbox-1", agent: "taskbox-agent", key: h, next: null });
-  const out: string[] = [];
-  const code = await laptopMain(
-    {
-      home,
-      isTty: true,
-      now: () => 0,
-      sleep: async () => {},
-      ask: async () => "",
-      tty: async () => 0,
-      out: (l) => out.push(l),
-      run: async (argv, o) => {
-        if (argv[0] === SSH) return { code: 0, stdout: workspacesJson({ read: { kind: "missing" }, now: 0, disk: () => undefined, word: () => undefined, box: boxFacts(BOX, { state: "pinned", key: old.key, gen, cleared: [] }) }), stderr: "" };
-        if (argv[0] === SSH_KEYGEN) {
-          expect(argv.slice(1, 5)).toEqual(["-Y", "sign", "-n", "taskbox-approver"]);
-          return { code: 0, stdout: signer.sign(o!.stdin!, { flags, namespace: namespace ?? argv[4] }), stderr: "" };
-        }
-        throw new Error(argv.join(" "));
-      },
-    },
-    ["approver", "--rotate", join(home, "new.pub")],
-  );
-  if (code !== 0) throw new Error(out.join("\n"));
-  return JSON.parse(`{${out.filter((l) => l.startsWith('  "approver')).join("")}}`) as { approverKey: string; approverKeyChange: { statement: string; signature: string } };
+  const text = keyChangeText(BOX, gen, fingerprint(old.key), next.key);
+  const sig = signer.sign(text, { flags, namespace: namespace ?? APPROVER_NAMESPACE });
+  return { approverKey: next.key, approverKeyChange: { statement: toB64url(text), signature: toB64url(sig) } };
 }
 
 const str = (b: Buffer | string) => {
@@ -284,7 +254,7 @@ describe("a first install on a box an earlier install left workspace files on", 
   test("names the pinned key and the pool account it keeps, each on its own line before the yes", async () => {
     const sys = new FakeSys();
     healthyBox(sys);
-    poolDir(sys, new Dir().user(POOL_USER, { uid: 471, attrs: {} }).group(POOL_GROUP, 471));
+    poolDir(sys, new Dir().user(POOL_USER, { uid: 471, attrs: {} }).group(POOL_USER, 471));
     githubRoutes(sys, { settings: { accounts: ACCOUNTS, approverKey: A } });
     const { d } = installDeps(sys, "no");
     const said: string[] = [];
@@ -292,7 +262,7 @@ describe("a first install on a box an earlier install left workspace files on", 
     d.say = (l) => said.push(l);
     d.ask = async () => ((before ??= [...said]), "no");
     writePin({ chown: () => {}, rootUid: process.getuid!() }, d.paths.approverPin, { key: A, gen: 2, cleared: [] });
-    writePoolRecord({ chown: () => {}, rootUid: process.getuid!() }, d.paths.poolRecord, { made: { [POOL_USER]: { uid: 471 } }, groups: { [POOL_GROUP]: { gid: 471 } } });
+    writePoolRecord({ chown: () => {}, rootUid: process.getuid!() }, d.paths.poolRecord, { made: { [POOL_USER]: { uid: 471 } }, groups: { [POOL_USER]: { gid: 471 } } });
     expect(await install(d, { first: true }).then(() => "", (e: Error) => e.message)).toMatch(/You typed "no"/);
     expect(before).toContain(`  Approver key: an earlier install on this box pinned ${fingerprint(A)}, and this install keeps it. If that isn't your key, type no, then taskbox key reset approver once taskbox is installed.`);
     expect(before).toContain(`  The workspace account ${POOL_USER}, from an earlier install, stays, and keeps its files.`);
@@ -379,7 +349,7 @@ describe("after the yes", () => {
     expect(readPin(d.paths.approverPin, process.getuid!())).toEqual({ state: "pinned", key: A, gen: 1, cleared: [] });
     const rec = readPoolRecord(d.paths.poolRecord, process.getuid!()) as PoolRecord;
     expect(rec.made[POOL_USER]).toBeDefined();
-    expect(rec.groups[POOL_GROUP]).toBeDefined();
+    expect(rec.groups[POOL_USER]).toBeDefined();
     expect(dir.users[POOL_USER]!.attrs.UserShell).toBe("/opt/taskbox/bin/taskbox-gate");
     // The pool took its own hidden ID, never the agent's.
     expect(dir.users[POOL_USER]!.uid).not.toBe(dir.users["taskbox-agent"]!.uid);

@@ -1,8 +1,9 @@
 // taskbox policy show: the tailnet policy's entries for this box, from its accounts. It prints; the
-// owner applies it in the admin console.
+// owner applies it in the admin console. Its result is the policy itself, with the box's install ID,
+// which the controller reads with policyOfAnswer and joins into one block for every box (policyBlock).
+import { TAILNET_LOGIN as LOGIN } from "../access.ts";
 import type { CommandSpec } from "../command.ts";
 
-const LOGIN = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$/;
 const SHORT = /^[A-Za-z_][A-Za-z0-9._-]{0,31}$/;
 
 export const commands: CommandSpec[] = [
@@ -10,21 +11,24 @@ export const commands: CommandSpec[] = [
     path: ["policy", "show"],
     summary: "The tailnet policy's entries for this box. --whole prints a whole policy file.",
     who: ["anyone"],
+    flags: ["json"],
     options: [
       { name: "--owner", value: "LOGIN", check: (v) => LOGIN.test(v) },
       { name: "--admin", value: "NAME", check: (v) => SHORT.test(v), repeat: true },
       { name: "--whole" },
     ],
     file: (c) => c.opts.whole === true,
+    // The controller reads --json, and its answer must name the real owner, never a placeholder.
+    check: ({ opts, flags }) => (flags.json !== undefined && typeof opts.owner !== "string" ? "policy show --json needs --owner with your Tailscale login, which the controller passes." : undefined),
     did: "Printed the policy. Nothing changed.",
     async run(c) {
-      const { loadConfig } = await import("../config.ts");
+      const { loadConfig, tagOf } = await import("../config.ts");
       const { adminsOf, adminState } = await import("../elevate.ts");
       const { named, poolOf } = await import("../access.ts");
-      const { uidOf } = await import("../accounts.ts");
+      const { ownAccess, readRecord, uidOf } = await import("../accounts.ts");
       const { trustedKey } = await import("../approver.ts");
-      const { readPin } = await import("../pin.ts");
-      const { policyEntries, policyFor, policyText } = await import("../policy.ts");
+      const { readPin, readPoolRecord } = await import("../pin.ts");
+      const { policyAnswer, policyEntries, policyFor, policyText } = await import("../policy.ts");
       const owner = typeof c.opts.owner === "string" ? c.opts.owner : undefined;
       const extra = Array.isArray(c.opts.admin) ? c.opts.admin : [];
       const cfg = loadConfig(c.p.app, c.p.boxSettings);
@@ -37,7 +41,16 @@ export const commands: CommandSpec[] = [
       }
       const admins = new Set([...listed, ...extra]);
       // The pool account only while the box trusts a key: the settings' key, pinned at the box.
-      const pool = poolOf(trustedKey(cfg.approverKey, readPin(c.p.approverPin)));
+      const named0 = poolOf(cfg.accounts, trustedKey(cfg.approverKey, readPin(c.p.approverPin)));
+      // Only the accounts taskbox made get SSH accept: a settings name alone gives nothing.
+      const own = await ownAccess(c.ops.sys, cfg.accounts.agent, named0, readRecord(c.p.accountsRecord), readPoolRecord(c.p.poolRecord));
+      if ("refuse" in own) {
+        c.say(`${own.refuse}. Nothing printed. As your admin user, type taskbox update, and check what it says about that account.`);
+        return 1;
+      }
+      const pool = own.pool;
+      const accounts = { ...cfg.accounts };
+      if (own.agent === undefined) delete accounts.agent;
       for (const name of [...named(cfg.accounts).map((n) => n.name), ...pool]) {
         if ((await uidOf(c.ops.sys, name)) === undefined) continue;
         const a = await adminState(c.ops.sys, name);
@@ -49,7 +62,7 @@ export const commands: CommandSpec[] = [
       }
       let pol;
       try {
-        pol = policyFor(cfg.accounts, { ...(owner !== undefined ? { owner } : {}), admins: [...admins] }, pool);
+        pol = policyFor(accounts, { ...(owner !== undefined ? { owner } : {}), admins: [...admins], tag: tagOf(cfg) }, pool);
       } catch (e) {
         c.say(`${(e as Error).message}. Nothing printed.`);
         return 1;
@@ -63,8 +76,18 @@ export const commands: CommandSpec[] = [
         c.say("");
         print(policyEntries(pol));
       }
+      if (own.notYet.length) (c.opts.whole ? c.err : c.say)(`${own.notYet.join(" and ")} ${own.notYet.length === 1 ? "isn't" : "aren't"} made yet, so the policy leaves ${own.notYet.length === 1 ? "it" : "them"} out. Type this again after taskbox update.`);
       if (owner === undefined) (c.opts.whole ? c.err : c.say)("Put your Tailscale login in place of OWNER, or type taskbox policy show --owner <your login>.");
-      return 0;
+      // The controller builds one block for every paired box from each box's result.
+      const { readInstallId } = await import("../answers.ts");
+      const installId = readInstallId(c.own.installId);
+      if (!c.flags.json) return 0;
+      try {
+        return { exit: 0, result: policyAnswer(pol, installId) };
+      } catch (e) {
+        c.say(`${(e as Error).message}. Nothing printed.`);
+        return 1;
+      }
     },
   },
 ];
