@@ -131,7 +131,8 @@ describe("the writers", () => {
     d.log = log;
     d.log.write(`a line naming ${d.paths.serviceHome}/.taskbox and the key ${PEM}`);
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("done");
-    for (const name of readdirSync(d.paths.shared)) {
+    for (const name of readdirSync(d.paths.shared, { recursive: true }) as string[]) {
+      if (statSync(join(d.paths.shared, name)).isDirectory()) continue;
       const text = readFileSync(join(d.paths.shared, name), "utf8");
       expect(text).not.toContain(d.paths.serviceHome);
       expect(text).not.toMatch(/BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|jitconfig|encoded_jit_config/i);

@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { checkAnswer, helloAnswer, jobsAnswer, logAnswer, statusAnswer } from "../src/answers.ts";
 import { agree, capLines, cleanLine, envelope, errorFromV3, gapError, LINES_MAX, nextOf, resultOf, versionsOf } from "../src/envelope.ts";
-import { readAnswer } from "../src/laptop/schema.ts";
+import { readAnswer } from "../src/controller/schema.ts";
 import { parseLine, pathOf } from "../src/registry.ts";
 import { ENVELOPE, readEnvelopes } from "../src/schema.ts";
 import type { State } from "../src/state.ts";

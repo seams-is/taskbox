@@ -6,11 +6,11 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node
 import { readSeen } from "./logins.ts";
 import { dirname, join, relative } from "node:path";
 import { AWAY_ROWS } from "./awaychecks.ts";
-import { awayOf, type Config, DEFAULT_AWAY, GATE_SHELL, type PublicAddressSource, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, sourceKeyPath, sourceOf, vmsAtMostOf } from "./config.ts";
+import { awayOf, type Config, DEFAULT_AWAY, GATE_SHELL, type PublicAddressSource, REMOTE_SHELL, tagOf, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, sourceKeyPath, sourceOf, vmsAtMostOf } from "./config.ts";
 import { readInstallId, text } from "./answers.ts";
 import { adminState } from "./elevate.ts";
-import { canUnlock, poolProblem, readRecord, recordName, uidOf, userKey } from "./accounts.ts";
-import { POOL_GROUP, POOL_USER } from "./access.ts";
+import { canUnlock, poolProblem, readRecord, recordName, UNLOCK_UNKNOWN, uidOf, userKey } from "./accounts.ts";
+import { poolNames } from "./access.ts";
 import { fingerprint, trustedKey } from "./approver.ts";
 import { readPin, readPoolRecord } from "./pin.ts";
 import { proveActionsKey } from "./actionskey.ts";
@@ -517,7 +517,7 @@ export async function serviceUnlocksDisk(c: CheckContext): Promise<Omit<Check, "
   const uuid = /GeneratedUID:\s*([0-9A-F-]{36})/i.exec(id.stdout)?.[1]?.toUpperCase();
   if (!uuid) return fail(`could not read ${s}'s ID. ${UNLOCK_FIX}`);
   const users = await c.sys.run("/usr/sbin/diskutil", ["apfs", "listCryptoUsers", "/"]);
-  if (users.code !== 0) return fail(`could not read who can unlock the disk. ${UNLOCK_FIX}`);
+  if (users.code !== 0) return fail(`${UNLOCK_UNKNOWN}. ${UNLOCK_FIX}`);
   return users.stdout.toUpperCase().includes(uuid)
     ? ok(`after a restart, type ${s}'s password once at the FileVault screen`)
     : fail(`${s} can't unlock the disk, so a restart needs your password, then ${s}'s. ${UNLOCK_FIX}`);
@@ -655,7 +655,9 @@ export async function agentRow(c: CheckContext): Promise<Omit<Check, "name">> {
   // ShadowHashData reads as there only to root, so another user's check reads AuthenticationAuthority alone.
   if (!/^(1|YES)$/i.test((await read("IsHidden")) ?? "")) return fail(`${u} shows on the login window. As your admin user, type taskbox update.`);
   if (typeof (await read("AuthenticationAuthority")) === "string" || (c.uid === 0 && (await read("ShadowHashData")) !== undefined)) return fail(`${u} has a password. As your admin user, type taskbox update.`);
-  if (await canUnlock(c.sys, u)) return fail(`${u} can unlock the disk, so its password works at the FileVault screen. As your admin user, type taskbox update.`);
+  const unlock = await canUnlock(c.sys, u);
+  if (unlock === "unknown") return fail(`${UNLOCK_UNKNOWN}, so taskbox can't tell whether ${u} can unlock the disk. Nothing to do: agents fix it.`);
+  if (unlock === "yes") return fail(`${u} can unlock the disk, so its password works at the FileVault screen. As your admin user, type taskbox update.`);
   const shell = await read("UserShell");
   if (shell !== REMOTE_SHELL) return fail(`${u}'s login shell isn't taskbox's, so a Tailscale SSH login gets a full shell. As your admin user, type taskbox update.`);
   const home = await read("NFSHomeDirectory");
@@ -682,9 +684,13 @@ export async function approverRow(c: CheckContext): Promise<Omit<Check, "name">>
 // The pool account, as the install leaves it (accounts.ts, placePool).
 export async function poolRow(c: CheckContext): Promise<Omit<Check, "name">> {
   if (c.cfg.approverKey === undefined /* not trust: whether to look at all */) return { status: "SKIP", detail: "taskbox.json names no approver key, so there is no workspace account" };
-  const why = await poolProblem(c.sys, readPoolRecord(c.paths.poolRecord, c.rootUid ?? 0), c.paths, POOL_USER, POOL_GROUP, GATE_SHELL, c.uid === 0, c.rootUid ?? 0);
-  if (why) return fail(why);
-  return ok(`${POOL_USER}, a hidden standard user with no password, in its own group alone, its home at mode 700, the gate as its shell, and denied cron and at`);
+  const names = poolNames(c.cfg.accounts);
+  const rec = readPoolRecord(c.paths.poolRecord, c.rootUid ?? 0);
+  for (const name of names) {
+    const why = await poolProblem(c.sys, rec, c.paths, name, name, GATE_SHELL, c.uid === 0, c.rootUid ?? 0);
+    if (why) return fail(why);
+  }
+  return ok(`${names.join(", ")}: ${names.length === 1 ? "a hidden standard user" : "hidden standard users"} with no password, each in its own group alone, its home at mode 700, the gate as its shell, and denied cron and at`);
 }
 
 // The workspaces fence, as the guard last found it (workspace/pass.ts): root's state, fresh, saying
@@ -769,7 +775,8 @@ export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">
     tags = j.Self?.Tags;
   } catch {}
   if (state !== "Running") return fail(`tailscaled isn't signed in (${state || "no answer"}). As your admin user, type taskbox update, and open the link it prints.`);
-  if (!Array.isArray(tags) || !tags.includes(TAILNET_TAG)) return fail(`the box isn't tagged ${TAILNET_TAG} on the tailnet, so the tailnet's rules for your own devices reach it. Nothing to do: agents fix it.`);
+  const tag = tagOf(c.cfg);
+  if (!Array.isArray(tags) || !tags.includes(tag)) return fail(`the box isn't tagged ${tag} on the tailnet, so the tailnet's rules for your own devices reach it. Nothing to do: agents fix it.`);
   const prefs = await ts(["debug", "prefs"]);
   let p: { RunSSH?: boolean; CorpDNS?: boolean; RouteAll?: boolean; ExitNodeID?: string; ExitNodeIP?: string; AdvertiseRoutes?: unknown[] | null; AdvertiseServices?: unknown[] | null; RunWebClient?: boolean; AppConnector?: { Advertise?: boolean } } = {};
   try {
@@ -826,7 +833,7 @@ export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">
   // A move in the last day is said, since it means the log was open to every user for a while.
   const moved = readSeen(c.paths)?.logMovedAt;
   const movedNote = moved && c.sys.now() - moved < 86_400_000 ? `. The guard moved aside a log every user could read at ${new Date(moved).toTimeString().slice(0, 5)}, and restarted tailscaled` : "";
-  return ok(`signed in as ${TAILNET_TAG}, with Tailscale SSH${underOld ? ", under its old name" : ""}${movedNote}`);
+  return ok(`signed in as ${tag}, with Tailscale SSH${underOld ? ", under its old name" : ""}${movedNote}`);
 }
 
 // Between the first update to the new labels, which the install before runs and which keeps every

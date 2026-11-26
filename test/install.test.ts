@@ -186,6 +186,35 @@ describe("install", () => {
   });
 });
 
+describe("the agent accounts.agent named before", () => {
+  test.serial("is left as it is when a later step stops the install: only an install that ends puts it back", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys);
+    // The old agent, made by taskbox, with taskbox's shell: the release names another.
+    sys.responders.unshift((cmd, args) => {
+      const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
+      if (!args.some((a) => a === "old-agent" || a === "/Users/old-agent")) return undefined;
+      if (cmd === "/usr/bin/id") return out("480\n");
+      if (cmd === "/usr/sbin/dseditgroup") return out("", 67);
+      if (cmd === "/usr/bin/dscl" && args[3] === "UserShell") return out("UserShell: /opt/taskbox/bin/taskbox-shell\n");
+      if (cmd === "/usr/bin/dscl" && args[3] === "GeneratedUID") return out("GeneratedUID: 0F0F0F0F-0000-0000-0000-000000000480\n");
+      return undefined;
+    });
+    stageRelease(sys, CFG, (v) => (v.tailscale = { version: "1.104.5", url: "", sha256: "", files: { tailscale: "", tailscaled: "" } }));
+    const { d, root, said } = installDeps(sys, "yes");
+    d.paths = paths(root, { ...testBox(), agent: "old-agent" });
+    mkdirSync(dirname(d.paths.accountsRecord), { recursive: true });
+    writeFileSync(d.paths.accountsRecord, JSON.stringify({ made: { "old-agent": { role: "agent", uid: 480, guid: "0F0F0F0F-0000-0000-0000-000000000480" } } }));
+    await expect(install(d, { first: true })).rejects.toThrow("tailscaled has no download pinned yet");
+    // Planned and said before the yes, and never done: the install stopped first.
+    expect(said.some((l) => l.includes("It deletes old-agent"))).toBe(true);
+    const touched = sys.calls.filter((c) => c.args.some((a) => a === "old-agent" || a === "/Users/old-agent") && (c.cmd === "/usr/sbin/sysadminctl" || (c.cmd === "/usr/bin/dscl" && (c.args[1] === "-create" || c.args[1] === "-delete")) || c.cmd === "/usr/bin/pkill"));
+    expect(touched).toEqual([]);
+    expect(JSON.parse(readFileSync(d.paths.accountsRecord, "utf8")).made["old-agent"]).toBeDefined();
+  });
+});
+
 describe("an install run to the end", () => {
   // What launchd was asked, in order, with where /opt/taskbox pointed at each bootstrap.
   function launchdLog(sys: FakeSys, opt: string): string[] {
@@ -370,9 +399,10 @@ describe("an install run to the end", () => {
     });
     const said: string[] = [];
     const code = await undo({ sys, paths: paths(root, testBox()), uid: 0, serviceUid: process.getuid!(), rootUid: process.getuid!(), say: (l) => said.push(l), ask: async () => "yes" });
-    expect([code, said.at(-2)]).toEqual([0, "Did: Back to #2 feat: install the box. The loop moves to it once the current job or download ends."]);
+    // The kept install has no v3 tag, so guardwatch, which it doesn't know, is stopped.
+    expect([code, said.at(-2)]).toEqual([0, "Did: Back to #2 feat: install the box. The loop moves to it once the current job or download ends. Stopped local.taskbox.guardwatch, which this install doesn't run."]);
     // The kept install has the new names, so nothing moves back: the guard restarts on the old code.
-    expect(seen).toEqual([`kickstart system/${GUARD_LABEL} on ${before}`]);
+    expect(seen).toEqual([`bootout system/${GUARDWATCH_LABEL} on ${before}`, `kickstart system/${GUARD_LABEL} on ${before}`]);
     expect(basename(linkTarget(d.paths.prev)!)).toBe(now);
   });
 
@@ -395,7 +425,7 @@ describe("an install run to the end", () => {
     const said: string[] = [];
     const p = paths(root, testBox(OLD));
     expect(await undo({ sys, paths: p, uid: 0, serviceUid: process.getuid!(), rootUid: process.getuid!(), say: (l) => said.push(l), ask: async () => "yes" })).toBe(0);
-    expect(seen).toEqual([`bootout ${GUARD_LABEL} on ${before}`, `bootstrap ${OLD}.guard on ${before}`, `bootout ${TAILSCALED_LABEL} on ${before}`, `bootstrap ${OLD}.tailscaled on ${before}`]);
+    expect(seen).toEqual([`bootout ${GUARDWATCH_LABEL} on ${before}`, `bootout ${GUARD_LABEL} on ${before}`, `bootstrap ${OLD}.guard on ${before}`, `bootout ${TAILSCALED_LABEL} on ${before}`, `bootstrap ${OLD}.tailscaled on ${before}`]);
     expect(said.at(-2)).toContain("The guard and tailscaled run under their old names again.");
   });
 });
@@ -543,6 +573,26 @@ describe("the service account", () => {
     expect(err).toContain('You typed "no"');
     expect(said).toContain("  pat loses Tailscale SSH to the box. Screen Sharing stays.");
     expect(said.some((l) => l.includes('replace taskbox\'s entries'))).toBe(true);
+  });
+
+  test("an update that moves the box to another tailnet tag says so before the yes", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys, { settings: { accounts: { service: "taskbox", agent: "taskbox-agent", people: [] }, tailnetTag: "tag:taskbox-studio" } });
+    const { d, said } = installDeps(sys, "no");
+    writeFileSync(join(d.configDir, "taskbox.json"), JSON.stringify({ ...CFG, accounts: { service: "taskbox", agent: "taskbox-agent", people: [] } }));
+    mkdirSync(d.paths.state, { recursive: true });
+    writeFileSync(d.paths.oldKey, PEM);
+    mkdirSync(dirname(d.paths.installed), { recursive: true });
+    writeFileSync(d.paths.installed, JSON.stringify({ commit: "56027d1c5671baa8eadd5aeaf1cdeb4d89254470", tag: "v1.9.0", pr: 17, title: "x", mergedAt: "x", installedAt: "x", files: {} }));
+    const err = await install(d, { first: false }).then(() => "", (e: Error) => e.message);
+    expect(err).toContain('You typed "no"');
+    expect(said).toContain("  It also moves the box on the tailnet from tag:taskbox to tag:taskbox-studio, so the policy's rules for tag:taskbox-studio reach it from then on. On the controller, type taskbox policy show --box all, and paste it first.");
+  });
+
+  test("tailnetTag is one of the reach keys the settings op guards", async () => {
+    const { REACH_KEYS } = await import("../src/settings/accounts.ts");
+    expect(REACH_KEYS).toContain("tailnetTag");
   });
 
   test("an accounts key this release doesn't know is named before the yes, so a typo shows", async () => {

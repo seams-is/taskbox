@@ -547,7 +547,7 @@ describe("the rollback watcher and undo", () => {
     expect(linkTarget(h.d.paths.opt)).toBe(h.before);
     expect(linkTarget(h.d.paths.prev)).toBe(v3);
     expect(log[0]).toBe(`rollback watcher: ${TAG} wasn't proved by its deadline, so the box goes back to the install before`);
-    expect(log.join("\n")).toContain("Stopped local.taskbox.broker, local.taskbox.notify, which this install doesn't run.");
+    expect(log.join("\n")).toContain("Stopped local.taskbox.guardwatch, local.taskbox.broker, local.taskbox.notify, which this install doesn't run.");
     expect(outs).toContain("system/local.taskbox.broker");
     expect(outs).toContain("gui/502/local.taskbox.notify");
     for (const f of [join(daemons, "local.taskbox.broker.plist"), join(agents, "local.taskbox.notify.plist"), rollbackWatchPaths(h.d.paths).plist, rollbackWatchPaths(h.d.paths).file]) expect(existsSync(f)).toBe(false);
@@ -714,23 +714,14 @@ describe("the rollback watcher and undo", () => {
     }
   });
 
-  test("an install that doesn't ship guardwatch, as v2.6.1's, has it booted out on the way back", async () => {
-    const { bootOutUnknown, KNOWN_DAEMONS, shippedDaemons } = await import("../src/hop.ts");
-    const app = mkdtempSync(join(tmpdir(), "v261-app-"));
-    mkdirSync(join(app, "launchd"));
-    for (const l of [GUARD_LABEL, TAILSCALED_LABEL, "local.taskbox.loop"]) writeFileSync(join(app, "launchd", `${l}.plist`), "x");
-    expect(shippedDaemons(app)).not.toContain("local.taskbox.guardwatch");
-    const sys = new FakeSys();
-    sys.responders.push((cmd) => (cmd === "/bin/launchctl" ? { code: 0, stdout: "", stderr: "" } : undefined));
-    const root = mkdtempSync(join(tmpdir(), "v261-box-"));
-    const daemons = join(root, "Library/LaunchDaemons");
-    mkdirSync(daemons, { recursive: true });
-    writeFileSync(join(daemons, "local.taskbox.guardwatch.plist"), "v3's");
-    const gone = await bootOutUnknown(sys, { guardPlist: join(daemons, `${GUARD_LABEL}.plist`), agentPlist: join(root, "Library/LaunchAgents/x.plist") }, [...KNOWN_DAEMONS, ...shippedDaemons(app)]);
-    expect(gone).toEqual(["local.taskbox.guardwatch"]);
+  test("an install record's tag says which v3 daemons it keeps: a v2 install none", async () => {
+    const { laterDaemons } = await import("../src/hop.ts");
+    expect(laterDaemons("v3.0.0-rc.1")).toEqual(["local.taskbox.guardwatch"]);
+    expect(laterDaemons("v4.0.0")).toEqual(["local.taskbox.guardwatch"]);
+    for (const t of ["v2.6.1", undefined, "", 3, "3.0.0"]) expect(laterDaemons(t)).toEqual([]);
   });
 
-  test.serial("undo by hand boots out daemons the install gone back to doesn't ship, and keeps its own", async () => {
+  test.serial("undo by hand boots out daemons the install gone back to doesn't know, and keeps its own", async () => {
     const h = await hopBox();
     const daemons = dirname(h.d.paths.guardPlist);
     for (const l of ["local.taskbox.guardwatch", "local.taskbox.netwatch"]) {
@@ -743,10 +734,9 @@ describe("the rollback watcher and undo", () => {
     const said: string[] = [];
     const code = await undo({ ...opsOf(h), say: (l) => said.push(l), ask: async () => "yes" });
     expect([code, said]).toEqual([0, expect.anything()]);
-    // The install gone back to ships guardwatch itself, so it stays; netwatch it doesn't know.
-    expect(said.join("\n")).toContain("Stopped local.taskbox.netwatch, which this install doesn't run.");
-    expect(existsSync(join(daemons, "local.taskbox.netwatch.plist"))).toBe(false);
-    expect(existsSync(join(daemons, "local.taskbox.guardwatch.plist"))).toBe(true);
+    // The install gone back to has no v3 tag, so it knows neither.
+    expect(said.join("\n")).toContain("Stopped local.taskbox.guardwatch, local.taskbox.netwatch, which this install doesn't run.");
+    for (const l of ["local.taskbox.guardwatch", "local.taskbox.netwatch"]) expect(existsSync(join(daemons, `${l}.plist`))).toBe(false);
     for (const l of [GUARD_LABEL, TAILSCALED_LABEL, ROLLBACK_LABEL]) expect(existsSync(join(daemons, `${l}.plist`))).toBe(true);
     expect(existsSync(join(daemons, "com.example.other.plist"))).toBe(true);
     expect(boots).toEqual([`${GUARD_LABEL}.plist: <?xml`]);

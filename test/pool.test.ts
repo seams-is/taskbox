@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { POOL_GROUP, POOL_USER } from "../src/access.ts";
+import { POOL_USER } from "../src/access.ts";
 import { type AccountDeps, denyIn, groupsProblem, listsUser, placePool, planPool, poolProblem, undenyIn } from "../src/accounts.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "../src/pin.ts";
 import { GATE_SHELL, paths } from "../src/config.ts";
@@ -33,7 +33,7 @@ function setup(dir: Dir) {
   const d: AccountDeps = { sys, say: (l) => said.push(l), ask: async () => "yes", tty: () => 0, chown: (path, uid, gid) => chowned.push([path, uid, gid]), rootUid: process.getuid!(), again: "Type taskbox update again" };
   return { root, p, sys, d, said, chowned };
 }
-const place = (s: ReturnType<typeof setup>) => placePool(s.d, s.p, POOL_USER, POOL_GROUP, GATE_SHELL);
+const place = (s: ReturnType<typeof setup>) => placePool(s.d, s.p, POOL_USER, POOL_USER, GATE_SHELL);
 const ME = process.getuid!();
 const poolRec = (s: { p: { poolRecord: string } }) => readPoolRecord(s.p.poolRecord, ME) as PoolRecord;
 const writes = (sys: FakeSys) => sys.calls.filter((c) => (c.cmd === "/usr/bin/dscl" && (c.args[1] === "-create" || c.args[1] === "-delete")) || (c.cmd === "/usr/sbin/dseditgroup" && c.args[1] === "edit"));
@@ -46,8 +46,8 @@ describe("the install makes the pool account", () => {
     const u = dir.users[POOL_USER]!;
     expect(u.uid).toBe(471);
     // The group took the first free hidden group ID, and the account is in it, never staff.
-    expect(dir.groups[POOL_GROUP]!.gid).toBe(471);
-    expect(u.attrs).toEqual({ Password: "*", IsHidden: "1", UserShell: GATE_SHELL, NFSHomeDirectory: s.p.poolHome, PrimaryGroupID: "471", RealName: "taskbox workspace 1" });
+    expect(dir.groups[POOL_USER]!.gid).toBe(471);
+    expect(u.attrs).toEqual({ Password: "*", IsHidden: "1", UserShell: GATE_SHELL, NFSHomeDirectory: s.p.poolHome, PrimaryGroupID: "471", RealName: "taskbox workspace" });
     expect(dir.groups.staff!.members).not.toContain(POOL_USER);
     // The home: a real folder of its own, mode 700, given to the account and its group.
     expect(lstatSync(s.p.poolHome).isDirectory()).toBe(true);
@@ -60,7 +60,7 @@ describe("the install makes the pool account", () => {
     // In pool.json, never accounts.json, which older releases rewrite.
     const rec = poolRec(s);
     expect(rec.made[POOL_USER]).toEqual({ uid: 471, guid: "0F0F0F0F-0000-0000-0000-000000000471" });
-    expect(rec.groups).toEqual({ [POOL_GROUP]: { gid: 471 } });
+    expect(rec.groups).toEqual({ [POOL_USER]: { gid: 471 } });
     expect(existsSync(s.p.accountsRecord)).toBe(false);
   });
 
@@ -70,14 +70,14 @@ describe("the install makes the pool account", () => {
     const seen: string[] = [];
     dir.onCreate = (path, key) => {
       const rec = readPoolRecord(s.p.poolRecord, ME) as PoolRecord;
-      seen.push(`${path} ${key ?? "(new)"} ${path.startsWith("/Users/") ? (rec.made[POOL_USER] ? "recorded" : "-") : rec.groups?.[POOL_GROUP] ? "recorded" : "-"}`);
+      seen.push(`${path} ${key ?? "(new)"} ${path.startsWith("/Users/") ? (rec.made[POOL_USER] ? "recorded" : "-") : rec.groups?.[POOL_USER] ? "recorded" : "-"}`);
     };
     await place(s);
     expect(seen).toEqual([
-      "/Groups/taskbox-ws (new) -",
-      "/Groups/taskbox-ws PrimaryGroupID recorded",
-      "/Groups/taskbox-ws Password recorded",
-      "/Groups/taskbox-ws RealName recorded",
+      "/Groups/taskbox-ws1 (new) -",
+      "/Groups/taskbox-ws1 PrimaryGroupID recorded",
+      "/Groups/taskbox-ws1 Password recorded",
+      "/Groups/taskbox-ws1 RealName recorded",
       "/Users/taskbox-ws1 (new) -",
       "/Users/taskbox-ws1 Password recorded",
       "/Users/taskbox-ws1 IsHidden recorded",
@@ -102,7 +102,7 @@ describe("the install makes the pool account", () => {
     await place(s);
     const before = { dir: JSON.stringify([dir.users, dir.groups]), rec: readFileSync(s.p.poolRecord, "utf8"), cron: readFileSync(s.p.cronDeny, "utf8"), at: readFileSync(s.p.atDeny, "utf8") };
     const n = s.sys.calls.length;
-    expect(await planPool(s.sys, poolRec(s), POOL_USER, POOL_GROUP)).toEqual({ make: false });
+    expect(await planPool(s.sys, poolRec(s), POOL_USER, POOL_USER)).toEqual({ make: false });
     expect(await place(s)).toBe(471);
     expect(writes({ calls: s.sys.calls.slice(n) } as FakeSys)).toEqual([]);
     expect({ dir: JSON.stringify([dir.users, dir.groups]), rec: readFileSync(s.p.poolRecord, "utf8"), cron: readFileSync(s.p.cronDeny, "utf8"), at: readFileSync(s.p.atDeny, "utf8") }).toEqual(before);
@@ -172,14 +172,14 @@ describe("the install makes the pool account", () => {
 describe("planPool: an account or group taskbox didn't make is left alone", () => {
   const rec = (r: Partial<PoolRecord> = {}): PoolRecord => ({ made: {}, groups: {}, ...r });
   test("nothing there: made after the yes", async () => {
-    expect(await planPool(box().sys(), rec(), POOL_USER, POOL_GROUP)).toEqual({ make: true });
+    expect(await planPool(box().sys(), rec(), POOL_USER, POOL_USER)).toEqual({ make: true });
   });
   const left: [string, (d: Dir) => void, PoolRecord | "bad", RegExp][] = [
     ["a record that isn't root's plain file", () => {}, "bad", /pool\.json, isn't root's plain file/],
     ["an account by that name", (d) => d.user(POOL_USER, { uid: 600, attrs: {} }), rec(), /^taskbox-ws1 is an account taskbox didn't make/],
     ["an account recorded with another ID", (d) => d.user(POOL_USER, { uid: 472, attrs: {} }), rec({ made: { [POOL_USER]: { uid: 471 } } }), /^taskbox-ws1 is an account taskbox didn't make/],
-    ["a group by that name", (d) => d.group(POOL_GROUP, 480), rec(), /^taskbox-ws is a group taskbox didn't make/],
-    ["a group recorded with another ID", (d) => d.group(POOL_GROUP, 480), rec({ groups: { [POOL_GROUP]: { gid: 481 } } }), /group taskbox didn't make/],
+    ["a group by that name", (d) => d.group(POOL_USER, 480), rec(), /^taskbox-ws1 is a group taskbox didn't make/],
+    ["a group recorded with another ID", (d) => d.group(POOL_USER, 480), rec({ groups: { [POOL_USER]: { gid: 481 } } }), /group taskbox didn't make/],
     ["an account taskbox made that is now an admin", (d) => d.user(POOL_USER, { uid: 471, attrs: {}, admin: true }), rec({ made: { [POOL_USER]: { uid: 471 } } }), /is an administrator/],
   ];
   for (const [what, arrange, r, line] of left) {
@@ -187,7 +187,7 @@ describe("planPool: an account or group taskbox didn't make is left alone", () =
       const dir = box();
       arrange(dir);
       const sys = dir.sys();
-      const plan = await planPool(sys, r, POOL_USER, POOL_GROUP);
+      const plan = await planPool(sys, r, POOL_USER, POOL_USER);
       expect("leave" in plan && plan.leave).toMatch(line);
       expect("leave" in plan && plan.leave).toContain("workspaces stay off");
       expect(writes(sys)).toEqual([]);
@@ -270,7 +270,7 @@ describe("the deny lists", () => {
 describe("taskbox check's Workspace account row", () => {
   // The fake chown does nothing, so the home's owner is the test's user: the pool's ID stands in for it.
   const asPool = (path: string) => Object.assign(lstatSync(path), { uid: 471 });
-  const problem = (s: ReturnType<typeof setup>) => poolProblem(s.sys, readPoolRecord(s.p.poolRecord, ME), s.p, POOL_USER, POOL_GROUP, GATE_SHELL, true, ME, asPool);
+  const problem = (s: ReturnType<typeof setup>) => poolProblem(s.sys, readPoolRecord(s.p.poolRecord, ME), s.p, POOL_USER, POOL_USER, GATE_SHELL, true, ME, asPool);
   test("as the install leaves it: no problem", async () => {
     const s = setup(box());
     await place(s);
@@ -279,7 +279,7 @@ describe("taskbox check's Workspace account row", () => {
   test("a home owned by another user fails", async () => {
     const s = setup(box());
     await place(s);
-    expect(await poolProblem(s.sys, poolRec(s), s.p, POOL_USER, POOL_GROUP, GATE_SHELL, true, ME)).toMatch(/isn't taskbox-ws1's own folder at mode 700/);
+    expect(await poolProblem(s.sys, poolRec(s), s.p, POOL_USER, POOL_USER, GATE_SHELL, true, ME)).toMatch(/isn't taskbox-ws1's own folder at mode 700/);
   });
   const faults: [string, (dir: Dir, s: ReturnType<typeof setup>) => void, RegExp][] = [
     ["not there", (dir) => delete dir.users[POOL_USER], /isn't on this Mac/],
@@ -347,7 +347,7 @@ describe("remove and the pool account", () => {
     const order = s.sys.calls.map((c) => `${c.cmd.split("/").pop()} ${c.args[0]}`).filter((c) => /^(pkill|sysadminctl)/.test(c));
     expect(order).toEqual(["pkill -TERM", "pkill -KILL", "sysadminctl -deleteUser"]);
     expect(dir.users[POOL_USER]).toBeUndefined();
-    expect(dir.groups[POOL_GROUP]).toBeUndefined();
+    expect(dir.groups[POOL_USER]).toBeUndefined();
     expect(readFileSync(s.p.cronDeny, "utf8")).toBe("guest\n");
     expect(readFileSync(s.p.atDeny, "utf8")).toBe("");
     expect(said.join("\n")).toContain("deleted the account taskbox-ws1; deleted the group taskbox-ws");
@@ -370,8 +370,8 @@ describe("remove and the pool account", () => {
     await place(s);
     await run();
     expect(dir.users[POOL_USER]).toBeDefined();
-    expect(dir.groups[POOL_GROUP]).toBeDefined();
-    expect(poolRec(s)).toEqual({ made: { [POOL_USER]: { uid: 471, guid: "0F0F0F0F-0000-0000-0000-000000000471" } }, groups: { [POOL_GROUP]: { gid: 471 } } });
+    expect(dir.groups[POOL_USER]).toBeDefined();
+    expect(poolRec(s)).toEqual({ made: { [POOL_USER]: { uid: 471, guid: "0F0F0F0F-0000-0000-0000-000000000471" } }, groups: { [POOL_USER]: { gid: 471 } } });
     expect(readFileSync(s.p.cronDeny, "utf8")).toBe(`guest\n${POOL_USER}\n`);
   });
 
@@ -386,16 +386,16 @@ describe("remove and the pool account", () => {
     expect(out.asked).toContain("Delete taskbox-ws1, a workspace account taskbox started to make and didn't finish? Type yes to delete it: ");
     expect(dir.users[POOL_USER]).toBeUndefined();
     expect(s.sys.calls.some((c) => c.cmd === "/usr/bin/dscl" && c.args.join(" ") === `. -delete /Users/${POOL_USER}`)).toBe(true);
-    expect(dir.groups[POOL_GROUP]).toBeUndefined();
+    expect(dir.groups[POOL_USER]).toBeUndefined();
   });
 
   test("taskbox didn't make it: never offered, never deleted", async () => {
-    const dir = box().user(POOL_USER, { uid: 600, attrs: {} }).group(POOL_GROUP, 480);
+    const dir = box().user(POOL_USER, { uid: 600, attrs: {} }).group(POOL_USER, 480);
     const { run } = removeSetup(["yes", "yes", "yes"], dir);
     const { asked } = await run();
     expect(asked.some((q) => q.includes(POOL_USER))).toBe(false);
     expect(dir.users[POOL_USER]).toBeDefined();
-    expect(dir.groups[POOL_GROUP]).toBeDefined();
+    expect(dir.groups[POOL_USER]).toBeDefined();
   });
 
   test("with the settings unreadable, it isn't deleted", async () => {

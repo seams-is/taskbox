@@ -88,7 +88,7 @@ function namesFor(spec: CommandSpec, dir: string, app: string): { project: strin
       try {
         const project = readJson<{ project?: unknown }>(join(app, "taskbox.json")).project;
         if (typeof project === "string" && PROJECT_NAME.test(project)) {
-          const recorded = readRecord("/opt/taskbox-state/accounts.json").service;
+          const recorded = readRecord("/opt/taskbox-state/accounts.json").inUse?.service;
           if (recorded) return { project, service: recorded };
           const owners = readdirSync("/Users").filter((n) => {
             if (n.startsWith(".") || n === "Shared") return false;
@@ -263,7 +263,9 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
 
   // A typed confirmation with no terminal and no --yes is a usage error.
   if (spec.typed && c.flags.yes === undefined && !(deps.terminal?.() ?? true)) {
-    const line = `taskbox ${pathOf(spec)} asks for a typed yes, and there is no terminal here.${(spec.flags ?? []).includes("yes") ? " Add --yes to answer it." : " Run it at the box's own terminal."}`;
+    // A command with --yes asks a typed yes; one without needs a person at the terminal itself (remove's
+    // typed name and deletes, unlock's fdesetup).
+    const line = (spec.flags ?? []).includes("yes") ? `taskbox ${pathOf(spec)} asks for a typed yes, and there is no terminal here. Add --yes to answer it.` : `taskbox ${pathOf(spec)} asks a person at the terminal, and there is no terminal here. Run it at the box's own terminal.`;
     say(c.json ? errorJson(c, spec.path.join("."), EXIT.usage, { code: "usage", message: line, fix: null, who: "at-the-box" }, "usage") : line);
     return EXIT.usage;
   }

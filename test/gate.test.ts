@@ -30,7 +30,7 @@ function inPhase(phase: Phase): WsState {
 
 const inputs = (o: Partial<GateInputs> = {}): GateInputs => ({
   uid: POOL_UID,
-  pool: { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } },
+  pool: { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } },
   folderOk: true,
   read: { kind: "ok", state: inPhase("active") },
   boot: BOOT1,
@@ -137,7 +137,7 @@ function plantedBox(state: WsState | string | null, o: { stateMode?: number } = 
   const stateFile = join(stateDir, "workspaces.json");
   if (state !== null) writeFileSync(stateFile, typeof state === "string" ? state : stateText(state), { mode: o.stateMode ?? 0o644 });
   if (o.stateMode !== undefined) chmodSync(stateFile, o.stateMode);
-  writePoolRecord({ chown: () => {}, rootUid: me }, join(stateDir, "pool.json"), { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws": { gid: POOL_UID } } });
+  writePoolRecord({ chown: () => {}, rootUid: me }, join(stateDir, "pool.json"), { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } });
   return { dir, home, marker, evil, stateFile, poolRecord: join(stateDir, "pool.json") };
 }
 
@@ -207,5 +207,24 @@ describe("the gate, run for real", () => {
     expect(env).toContain(`HOME=${b.home}`);
     expect(env).toContain("USER=taskbox-ws1");
     expect(ran).toBe(false);
+  });
+});
+
+describe("every pool account, 1 to N", () => {
+  const pool = { made: { "taskbox-ws1": { uid: POOL_UID }, "taskbox-ws3": { uid: POOL_UID + 2 }, studio2: { uid: POOL_UID + 3 } }, groups: {} };
+  test("the gate finds any account pool.json records with the caller's ID, whatever the settings' prefix", async () => {
+    const { poolUserOf } = await import("../src/gate.ts");
+    expect(poolUserOf(pool, POOL_UID + 2)).toBe("taskbox-ws3");
+    expect(poolUserOf(pool, POOL_UID + 3)).toBe("studio2");
+    // Not recorded, or not a hidden ID: no account.
+    expect(poolUserOf(pool, POOL_UID + 1)).toBeUndefined();
+    expect(poolUserOf({ made: { "taskbox-ws2": { uid: 600 } }, groups: {} }, 600)).toBeUndefined();
+    // Two names on one ID: neither opens.
+    expect(poolUserOf({ made: { "taskbox-ws1": { uid: POOL_UID }, ws1: { uid: POOL_UID } }, groups: {} }, POOL_UID)).toBeUndefined();
+  });
+  test("a pool name is the prefix and 1 to 8", async () => {
+    const { POOL_USER } = await import("../src/workspace/model.ts");
+    for (const n of ["taskbox-ws1", "taskbox-ws8", "studio3"]) expect(POOL_USER.test(n)).toBe(true);
+    for (const n of ["taskbox-ws9", "taskbox-ws0", "taskbox-ws", "_x1", "a/b1"]) expect(POOL_USER.test(n)).toBe(false);
   });
 });
