@@ -1,9 +1,11 @@
 // The loop's job hooks. Packages that act around each job (the job's identity, network capture, the
 // tool cache's clone) add a hook file (src/hooks/) and one line in src/hooks/index.ts, and never edit
-// loop.ts. Two points, around one VM:
+// loop.ts. Three points, around one VM:
 // - beforeStart: once a slot has a runner and before its VM is cloned. A hook may hold the start,
 //   with a reason: the loop starts nothing, deletes the runner, and logs the reason. A hook that
 //   throws holds the start too, so a hook that can't tell never lets a VM start unwatched.
+// - jobStarted: when the runner takes a job (its "Running job" line). The loop doesn't wait for it,
+//   and a hook that throws is logged.
 // - afterEnd: once the VM is stopped and deleted, for every start beforeStart let through, whatever
 //   the outcome. A hook may add fields to the job's line in jobs.jsonl; the loop's own fields win.
 //   A hook that throws is logged; the job's line and the cleanup never wait on it.
@@ -15,11 +17,18 @@ import { badKey } from "./rootfile.ts";
 // How long the loop waits for one hook's afterEnd: it runs in the job's cleanup.
 export const HOOK_MS = 30_000;
 
+// Short-lived GitHub tokens: Actions read on one repo, for an hour at most. On the box, the GitHub
+// key keeper's source token; absent, no hook reads GitHub.
+export interface TokenSource {
+  actionsRead(repo: string): Promise<string>;
+}
+
 export interface HookDeps {
   sys: Sys;
   cfg: Config;
   paths: Paths;
   log: Pick<Log, "write">;
+  tokens?: TokenSource;
 }
 
 export interface JobStart {
@@ -37,9 +46,15 @@ export interface JobEnd extends JobStart {
   record?: Record<string, unknown>; // the job's line about to be written, when it has one
 }
 
+export interface JobRunning extends JobStart {
+  at: number; // when the runner took it
+  name: string; // the runner's name for the job: the job's own text, cleaned
+}
+
 export interface JobHook {
   name: string;
   beforeStart?(d: HookDeps, j: JobStart): Promise<{ hold: string } | undefined>;
+  jobStarted?(d: HookDeps, j: JobRunning): Promise<void>;
   afterEnd?(d: HookDeps, j: JobEnd): Promise<Record<string, unknown> | undefined>;
 }
 
@@ -55,6 +70,16 @@ export async function beforeStart(hooks: readonly JobHook[], d: HookDeps, j: Job
     }
   }
   return undefined;
+}
+
+// Each hook hears the job started. Nothing waits for them, and nothing they throw reaches the loop.
+export function jobStarted(hooks: readonly JobHook[], d: HookDeps, j: JobRunning): void {
+  for (const h of hooks) {
+    if (!h.jobStarted) continue;
+    void Promise.resolve()
+      .then(() => h.jobStarted!(d, j))
+      .catch((e) => d.log.write(`slot ${j.slot}: ${h.name} at the job's start: ${String((e as Error)?.message ?? e).replace(/[^\x20-\x7e]/g, " ").slice(0, 120)}`));
+  }
 }
 
 // Every hook's fields, in hook order, a later hook's never over an earlier's. Each hook runs, whatever

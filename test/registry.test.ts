@@ -125,7 +125,8 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["logins", "logins --all --json"], bad: ["logins --refused", "logins x"] },
   { good: ["hello", "hello --json --answers 4,3"], bad: ["hello x", "hello --answers"] },
   { good: ["size list", "size list --json"], bad: ["size", "size list small", "size list -n 5", "size list --force"] },
-  { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job timings --all", "job cancel"] },
+  { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job list --state running --kind linux --since 2h -w", "job list --result passed --class merge --size small", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job list --state lost", "job list -w --json", "job timings --all", "job cancel"] },
+  { good: ["job show j_0123abcd", "job show job-j_0123abcd -w", "job logs j_0123abcd -f", "job show 3141592653 --json", "job logs 42 --tail 20 --json", "job cancel j_0123abcd", "job cancel 42 -y --json"], bad: ["job show", "job show j_0123ABCD", "job show ../x", "job show j_0123abcd -w --json", "job logs j_0123abcd -f --json", "job cancel j_0123abcd --json", "job cancel 0", "job cancel j_0123abcd --force", "job show j_0123abcd --net"] },
   { good: ["load status", "load report --session 3 --json", "load start --only --for 2h", "load stop"], bad: ["load report --session x", "load status --json", "load begin"] },
   { good: ["template show box-check", "template show test-job", "template show load"], bad: ["template show", "template show watchdog", "template show load load"] },
   { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
@@ -167,11 +168,11 @@ describe("the command line", () => {
     expect(r.code).toBe(2);
     expect(r.said[0]).toMatch(/^No command frobnicate\.\nCommands: check, /);
     const noun = await run(["job"]);
-    expect([noun.code, noun.said[0]!.split("\n")[0]]).toEqual([2, "taskbox job takes list, timings."]);
+    expect([noun.code, noun.said[0]!.split("\n")[0]]).toEqual([2, "taskbox job takes list, show, logs, cancel, timings."]);
   });
 
   test("--help gives the command's line and usage, and taskbox --help the commands", async () => {
-    expect((await run(["job", "list", "--help"])).said).toEqual(["One line per job, newest first: 20, or -n N, or --all.", "Usage: taskbox job list [--all] [--json] [--tail N]"]);
+    expect((await run(["job", "list", "--help"])).said).toEqual(["One line per job, newest first: 20, or -n N, or --all.", "Usage: taskbox job list [--all] [--state STATE] [--kind KIND] [--size NAME] [--class NAME] [--result RESULT] [--json] [--tail N] [--since TIME] [--watch]"]);
     const all = await run(["--help"]);
     expect([all.code, all.said[0]]).toEqual([0, expect.stringMatching(/^Commands: .*and as your admin user: connect, /)]);
     expect(all.said[0]).not.toContain("guard");
@@ -489,7 +490,7 @@ describe("--json: one envelope per command", () => {
     const read = readEnvelopes(r.said[0]!, { command: "job.list" });
     expect(read.ok).toBe(true);
     const e = JSON.parse(r.said[0]!);
-    expect([e.ok, e.changed, e.error, e.result]).toEqual([true, false, null, { jobs: [] }]);
+    expect([e.ok, e.changed, e.error, e.result]).toEqual([true, false, null, { jobs: [], live: [], queued: [], total: 0 }]);
     const text = await run(["job", "list"]);
     expect(e.lines).toEqual(text.said);
   });
