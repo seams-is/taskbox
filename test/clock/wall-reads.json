@@ -174,5 +174,9 @@
   "shell.ts": {
     "reads": 1,
     "why": "the agent shell's refusal envelope's at: a label"
+  },
+  "core/dispatch.ts": {
+    "reads": 1,
+    "why": "a request's 2 minutes and a signed statement's 5 minutes: times another machine wrote, which only the wall clock can judge; the nonce is what makes a signature work once"
   }
 }

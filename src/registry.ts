@@ -32,6 +32,8 @@ export function registryProblem(specs: readonly CommandSpec[]): string | undefin
     if (s.args && (s.args.min < 0 || s.args.max < s.args.min)) return `taskbox ${key}'s words are out of order`;
     if (s.root && s.shell) return `taskbox ${key} can't be both root's and the agent shell's`;
     if (s.answer && !(s.flags ?? []).includes("json")) return `taskbox ${key} has an answer but no --json`;
+    // A signed step reaches the guard only through the agent account's shell, and runs no handler here.
+    if ((s.flags ?? []).includes("signed") && (!s.shell || s.raw || s.early || s.first)) return `taskbox ${key} takes --signed, so it must be the agent shell's, with no raw words, early or first`;
   }
   for (const s of specs) {
     if (!s.args?.max && !s.raw) continue;

@@ -13,6 +13,7 @@
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readdirSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Clock } from "../clock.ts";
+import { ERROR_CODES, type ErrorCode } from "../command.ts";
 import { readUpTo } from "../workspace/read.ts";
 import { isBootId } from "./boot.ts";
 import { isId, type Rand, realRand, idOf } from "./ids.ts";
@@ -209,10 +210,10 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
 
 // v3's request files: <rq_ULID>.<kind>.json. The kind is in the name, so root can order requests
 // without opening them; the file's own id and kind must match its name.
-const NAME = /^(rq_[0-9A-HJKMNP-TV-Z]{26})\.([a-z][a-z-]{0,23})\.json$/;
+export const REQUEST_NAME = /^(rq_[0-9A-HJKMNP-TV-Z]{26})\.([a-z][a-z-]{0,23})\.json$/;
 export const requestFileName = (id: string, kind: string) => `${id}.${kind}.json`;
 export function parseRequestName(file: string, kinds: readonly string[]): { id: string; kind: string } | undefined {
-  const m = NAME.exec(file);
+  const m = REQUEST_NAME.exec(file);
   return m && kinds.includes(m[2]!) ? { id: m[1]!, kind: m[2]! } : undefined;
 }
 
@@ -299,6 +300,7 @@ export interface Outcome {
   boot?: string; // the boot it was written in
   ok: boolean;
   said: string;
+  code?: ErrorCode; // why it was refused, as the envelope's error.code says it
   op?: string;
 }
 export const OUTCOME_KEEP_MS = 60 * 60_000;
@@ -307,7 +309,7 @@ const outcomeFile = (dir: string, id: string) => {
   return join(dir, `${id}.json`);
 };
 function outcomeProblem(o: unknown): string | undefined {
-  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) && (o.mono === undefined || Number.isSafeInteger(o.mono)) && (o.boot === undefined || isBootId(o.boot)) ? undefined : "it isn't an outcome taskbox reads";
+  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) && (o.code === undefined || (ERROR_CODES as readonly unknown[]).includes(o.code)) && (o.mono === undefined || Number.isSafeInteger(o.mono)) && (o.boot === undefined || isBootId(o.boot)) ? undefined : "it isn't an outcome taskbox reads";
 }
 // Records an outcome once: a request's first outcome stands. False when one was there.
 export function recordOutcome(dir: string, o: Outcome, w: Omit<WriteRules, "mode"> = {}): boolean {

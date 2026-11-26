@@ -103,7 +103,8 @@ async function poolAccounts(d: WsDeps): Promise<{ list: PoolAccount[]; sure: boo
 
 // The agent account's user ID: the one root's accounts.json records for accounts.agent, and only
 // while the account has that ID now.
-async function agentUid(d: WsDeps): Promise<number | undefined> {
+// The agent spool's pass (passes/requests.ts) reads it the same way.
+export async function agentUid(d: Pick<WsDeps, "sys" | "cfg" | "p" | "rootUid">): Promise<number | undefined> {
   const name = d.cfg.accounts.agent;
   if (name === undefined) return undefined;
   try {

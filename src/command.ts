@@ -26,6 +26,8 @@ export const GLOBAL_FLAGS = {
   since: { names: ["--since"], value: "TIME" },
   until: { names: ["--until"], value: "TIME" },
   tail: { names: ["-n", "--tail"], value: "N" },
+  // The owner's signed step, from the controller through the agent account's shell (core/asker.ts).
+  signed: { names: ["--signed"], value: "WORD" },
 } as const;
 export type GlobalFlag = keyof typeof GLOBAL_FLAGS;
 // Taken by every command: --help, --version, --answers (the reader's version) and --box.
@@ -51,6 +53,7 @@ const GLOBAL_CHECKS: Partial<Record<GlobalFlag, (v: string) => boolean>> = {
   since: (v) => duration(v) !== undefined || /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/.test(v),
   until: (v) => duration(v) !== undefined || /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/.test(v),
   box: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(v),
+  signed: (v) => v.length <= 3000 && /^[A-Za-z0-9_-]{1,2800}\.[A-Za-z0-9_-]{1,2800}$/.test(v),
 };
 
 // A command's own flag: --away, --to VERSION, --admin NAME given more than once.

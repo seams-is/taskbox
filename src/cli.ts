@@ -248,6 +248,15 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     return EXIT.usage;
   }
 
+  // The owner's signed step: the agent account's shell carries it to the guard through the agent
+  // spool, and the guard's handler for this action applies it (core/asker.ts, core/dispatch.ts).
+  // The command's own handler never runs, and the Touch ID on the controller was the confirmation.
+  if (typeof c.flags.signed === "string") {
+    const { signedRun } = await import("./core/asker.ts");
+    const sc: BoxCtx = { ...c, spec: { ...spec, run: signedRun, answer: undefined, linesFrom: undefined, typed: false, did: "Sent the signed request." } };
+    return sc.json ? answer(sc, name) : text(sc, say);
+  }
+
   if (spec.root) {
     if (uid !== 0) {
       const e = elevation(pathOf(spec), words.slice(spec.path.length), await isAdmin(sys, deps.user()));

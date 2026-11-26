@@ -124,6 +124,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["check", "check --away", "check --away --json"], bad: ["check --away --away", "check away", "check --yes"] },
   { good: ["logins", "logins --all --json"], bad: ["logins --refused", "logins x"] },
   { good: ["hello", "hello --json --answers 4,3"], bad: ["hello x", "hello --answers"] },
+  { good: ["nonce box", "nonce rules --json", "nonce nova-1"], bad: ["nonce", "nonce Box", "nonce box rules", "nonce box --signed a.b", "nonce ../x"] },
   { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job timings --all", "job cancel"] },
   { good: ["load status", "load report --session 3 --json", "load start --only --for 2h", "load stop"], bad: ["load report --session x", "load status --json", "load begin"] },
   { good: ["template show box-check", "template show test-job", "template show load"], bad: ["template show", "template show watchdog", "template show load load"] },
