@@ -163,6 +163,14 @@ export class QueueReader {
     return token;
   }
 
+  // The job hooks' tokens (core/hooks.ts TokenSource): Actions read on the jobs repo, or on the test repo.
+  // The GitHub key keeper's source token takes this one's place.
+  async actionsRead(repo: string): Promise<string> {
+    if (repo === `${this.owner}/${this.repo}`) return this.tokenNow(false);
+    if (this.load && repo === this.load) return this.tokenNow(true);
+    throw new Error("a token was asked for a repo the job source doesn't read");
+  }
+
   // A GET with the ETag of the last answer, so an unchanged list costs no rate limit.
   private async get<T>(path: string, forLoad = false): Promise<T> {
     const token = await this.tokenNow(forLoad);

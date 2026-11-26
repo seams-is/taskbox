@@ -14,8 +14,8 @@ const deps = () => {
 };
 
 describe("the job hooks", () => {
-  test("no package adds a hook yet", () => {
-    expect(jobHooks()).toEqual([]);
+  test("the job's identity is the first hook", () => {
+    expect(jobHooks().map((h) => h.name)).toEqual(["the job's identity"]);
   });
   test("the first hold wins; a hook that throws holds too", async () => {
     const { d } = deps();
