@@ -6,7 +6,7 @@ Every job on a box is untrusted code. A box never runs a job that holds secrets:
 
 ## A new owner
 
-1. Make a private copy of this repo in your organisation, named `taskbox`. Set `.github/CODEOWNERS` to your GitHub account.
+1. Make a private copy of this repo in your organisation, named `taskbox`.
 2. Make a GitHub App there: Contents read-only, Self-hosted runners read and write. Install it on your copy. Its ID is `appId`.
 3. Make a runner group, limited to selected private repos, that lists the one repo whose jobs the box runs.
 4. Build tailscaled with `.github/workflows/build-tailscale.yml` ([docs](docs/build-tailscale.md)), publish it on a release of your copy, and pin it in `versions.json`.
