@@ -140,7 +140,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The two identical builds, as one file on a draft taskbox release named tailscale-<version>
+  # The two identical builds, as one file on a draft taskbox release named tailscale-<version>-run<run ID>
   # (docs/build-tailscale.md). The owner reads the hashes in the summary above, publishes the
   # draft, and a reviewed PR pins the asset's ID and the SHA-256s in versions.json. The pin is what
   # the box trusts: this job can't change what an install accepts. A tailscale-* tag is never a

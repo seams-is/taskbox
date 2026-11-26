@@ -4,7 +4,7 @@ Tailscale publishes no macOS build of `tailscaled` that starts before anyone sig
 
 Run it by hand from `main`, with no inputs.
 
-1. The run makes a draft release named `tailscale-<version>`. Check that the run's event is `workflow_dispatch` and its branch is `main`.
+1. The run makes a draft release named `tailscale-<version>-run<run ID>`. Check that the run's event is `workflow_dispatch` and its branch is `main`.
 2. Read both build jobs' logs. The SHA-256 lines for `tailscale` and `tailscaled` must match.
 3. Publish the draft. Then pin its asset ID and the SHA-256s in `versions.json` in a reviewed PR.
 
