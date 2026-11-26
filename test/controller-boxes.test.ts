@@ -307,3 +307,57 @@ describe("the independent review's findings", () => {
     expect(t.lines).toContain("Tailscale is off on this Mac: open Tailscale and connect, then try again.");
   }, CEILING);
 });
+
+describe("a box whose key or install ID changed", () => {
+  // taskbox-1 paired with another key: the map now lists KEY, as after a reinstall.
+  function changed(o: { installId?: boolean } = {}) {
+    const w = new World();
+    if (o.installId) w.setHello("f".repeat(32));
+    return { w, old: pairing({ hostKey: o.installId ? KEY : ed25519() }) };
+  }
+
+  test("every command stops with a line for the owner, and none says to re-pair", async () => {
+    const { w, old } = changed();
+    const d = deps(w);
+    writeConfig(d.home, controllerConfig([old]));
+    const r = await runLine(d, ["status"]);
+    expect(r.lines).toContain("taskbox-1's host key in Tailscale isn't the one paired.");
+    expect(r.lines.join(" ")).not.toContain("box add");
+  }, CEILING);
+
+  test("-y, or no terminal, never re-pins it", async () => {
+    for (const o of [{}, { installId: true }]) {
+      const { w, old } = changed(o);
+      const d = deps(w);
+      writeConfig(d.home, controllerConfig([old]));
+      d.tty = false;
+      const s = await pair(d, { name: "taskbox-1", yes: true });
+      expect("lines" in s && s.lines[1]).toBe("taskbox-1's host key or install ID changed since it was paired, so it wasn't paired again.");
+      expect(readConfig(d.home)).toMatchObject({ ok: true, config: { boxes: [{ hostKey: old.hostKey, installId: old.installId }] } });
+    }
+  }, CEILING);
+
+  test("at a terminal it shows the old and new values and needs the box's name typed, -y or not", async () => {
+    const { w, old } = changed();
+    const d = deps(w, ["yes"]);
+    writeConfig(d.home, controllerConfig([old]));
+    expect(await pair(d, { name: "taskbox-1", yes: true })).toMatchObject({ code: 1 });
+    expect(d.printed.some((l) => l.startsWith("  Host key:   SHA256:"))).toBe(true);
+    expect(d.asked).toEqual(["To pair it again, type its name, taskbox-1: "]);
+    expect(readConfig(d.home)).toMatchObject({ ok: true, config: { boxes: [{ hostKey: old.hostKey }] } });
+    const e = deps(w, ["taskbox-1"]);
+    writeConfig(e.home, controllerConfig([old]));
+    expect(await pair(e, { name: "taskbox-1", yes: true })).toMatchObject({ fresh: true, box: { hostKey: KEY } });
+  }, CEILING);
+
+  test("--agent refuses root, macOS's own names and names starting with _", async () => {
+    for (const agent of ["root", "daemon", "nobody", "_taskboxgh", "a b"]) {
+      const d = deps(new World());
+      const s = await pair(d, { name: "taskbox-1", agent, yes: true });
+      expect("lines" in s && s.code).toBe(1);
+    }
+    const d = deps(new World());
+    writeFileSync(d.home.config, JSON.stringify(controllerConfig([pairing({ agent: "root" })])), { mode: 0o600 });
+    expect(readConfig(d.home).ok).toBe(false);
+  }, CEILING);
+});

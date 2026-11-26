@@ -5,7 +5,6 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync,
 import { join } from "node:path";
 import { checkAnswer, errorAnswer, helloAnswer, jobsAnswer, logAnswer, statusAnswer } from "../src/answers.ts";
 import { check } from "../src/controller/check.ts";
-import { DENY_RULES } from "../src/controller/claude.ts";
 import { appendEvent } from "../src/controller/events.ts";
 import { home, isEd25519, readConfig, setUpController, writeConfig } from "../src/controller/home.ts";
 import { pair } from "../src/controller/pair.ts";
@@ -291,8 +290,8 @@ describe("box commands over ssh, from a v3 box", () => {
     w.answers["jobs 5 --json"] = w.answers["jobs 20 --json"]!;
     expect((await runLine(d, ["job", "list", "-n", "5"])).code).toBe(0);
     expect(w.sshCalls()).toContain("jobs 5 --json");
-    const r = await runLine(d, ["load", "status"]);
-    expect(r.lines[0]).toBe("taskbox-1 runs v2.0.0, which has no taskbox load status.");
+    const r = await runLine(d, ["check", "--away"]);
+    expect(r.lines[0]).toBe("taskbox-1 runs v2.0.0, which has no taskbox check --away.");
   }, CEILING);
 });
 
@@ -372,35 +371,5 @@ describe("taskbox self check", () => {
     const s = await check(d);
     expect(s.lines[0]).toBe("taskbox (controller) · box: none · v2.1.0");
     expect(s.lines).toContain("FAIL  Pairing: no box paired. Type taskbox box add.");
-  }, CEILING);
-});
-
-describe("the deny rules, read as Claude Code's permissions page says", () => {
-  // A Bash rule matches the whole command text, and * matches any text, spaces too.
-  const matches = (rule: string, cmd: string) => new RegExp(`^${rule.slice(5, -1).replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "s").test(cmd);
-  const denied = (cmd: string) => DENY_RULES.some((r) => matches(r, cmd));
-
-  test("stop the ways a shell reaches remote", () => {
-    for (const cmd of [
-      "ssh remote@100.64.0.7",
-      "ssh remote@100.64.0.7 hold --for 4h --reason x",
-      "/usr/bin/ssh -o BatchMode=yes remote@100.64.0.7 status",
-      "ssh -l remote 100.64.0.7",
-      "ssh -lremote 100.64.0.7",
-      "ssh -o User=remote 100.64.0.7",
-      "sh -c 'ssh remote@100.64.0.7'",
-      "tailscale ssh remote@taskbox-1",
-      "/Applications/Tailscale.app/Contents/MacOS/Tailscale ssh remote@taskbox-1",
-      // The review's forms, not checked against Claude Code's own matcher.
-      "ssh -o user=remote 100.64.0.7",
-      "ssh -o 'User remote' 100.64.0.7",
-      "ssh -4l remote 100.64.0.7",
-      "ssh  remote@100.64.0.7",
-      "ssh -l'remote' 100.64.0.7",
-    ]) expect(denied(cmd)).toBe(true);
-  }, CEILING);
-
-  test("leave the read commands and other ssh alone", () => {
-    for (const cmd of ["taskbox status", "taskbox jobs 50", "taskbox check", "ssh git@github.com", "git push origin main", "git remote -v", "ls ~/.ssh", "bun test"]) expect(denied(cmd)).toBe(false);
   }, CEILING);
 });

@@ -1,11 +1,10 @@
-// The controller's own event log: pairings, defaults, self updates and rollbacks. One JSON line per
-// event, in events/<day>.jsonl at 0600, the owner's alone. taskbox self events reads it. Nothing in it
-// is a secret, a token or a key.
-import { appendFileSync, closeSync, constants, fstatSync, mkdirSync, openSync, readdirSync, readSync } from "node:fs";
+// The controller's own event log, events/<day>.jsonl at 0600. Not core/events.ts: that log is root's,
+// with a writer per daemon and checks for root's files; this one has one writer, the owner's user.
+import { closeSync, constants, mkdirSync, openSync, readdirSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { ulid } from "../core/ids.ts";
 import { cleanLine } from "../envelope.ts";
-import type { Home } from "./home.ts";
+import { type Home, readSmall } from "./home.ts";
 
 export interface ControllerEvent {
   id: string; // ev_ and a ULID
@@ -25,27 +24,18 @@ export function appendEvent(h: Home, now: number, type: string, text: string, da
   const at = new Date(now).toISOString();
   const e: ControllerEvent = { id: `ev_${ulid(now)}`, at, type, text: cleanLine(text), data };
   mkdirSync(h.events, { recursive: true, mode: 0o700 });
-  // O_APPEND, one line a write; the file is made at 0600.
-  appendFileSync(join(h.events, `${at.slice(0, 10)}.jsonl`), `${JSON.stringify(e)}\n`, { mode: 0o600 });
-}
-
-function readDay(path: string): string {
-  let fd: number;
+  // One line a write, appended, made at 0600, never through a link.
+  const fd = openSync(join(h.events, `${at.slice(0, 10)}.jsonl`), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch {
-    return "";
-  }
-  try {
-    const st = fstatSync(fd);
-    if (!st.isFile() || st.uid !== process.getuid?.()) return "";
-    const n = Math.min(st.size, DAY_MAX);
-    const buf = Buffer.alloc(n);
-    readSync(fd, buf, 0, n, 0);
-    return buf.toString("utf8");
+    writeSync(fd, `${JSON.stringify(e)}\n`);
   } finally {
     closeSync(fd);
   }
+}
+
+function readDay(path: string): string {
+  const f = readSmall(path, DAY_MAX);
+  return "text" in f ? f.text : "";
 }
 
 function readOne(line: string): ControllerEvent | undefined {

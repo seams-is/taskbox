@@ -2,7 +2,7 @@
 // own Tailscale: this controller reads Running; the paired StableNodeID is listed, tagged tag:taskbox,
 // not shared in, and Online; and the map's ed25519 host key is the one stored at pairing. Then it
 // runs hello with the stored key only and checks role box, the answers' version and the install
-// ID. A mismatch stops the command and names the cause. taskbox box add again is the only way to change it.
+// ID. A mismatch stops the command and names the cause; only a person re-pairing at a terminal changes it.
 import { type Config, type ConfigRead, findBox, type Home, knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { Runner } from "./run.ts";
 import { type Answer, type Hello, type Kind, READS, readAnswer } from "./schema.ts";
@@ -55,7 +55,7 @@ export async function tailnetOrStop(d: Deps): Promise<{ state: TailnetState; app
 // The peer the pairing names, checked against the map. Each failure names its cause.
 export function peerOrStop(box: Paired, s: TailnetState): { peer: Peer; address: string } | Stop {
   const peer = s.peers.find((p) => p.node === box.node);
-  const repair = "If the box was reinstalled or replaced, type taskbox box add.";
+  const repair = "This may be another machine: the owner checks the box before pairing it again.";
   if (!peer) return { stop: `Tailscale doesn't list the paired box, ${box.name} (${box.node}).`, next: `It may have left the tailnet. ${repair}` };
   if (peer.shared) return { stop: `${box.name} is shared in from another tailnet, so taskbox won't talk to it.`, next: "Nothing to do here: taskbox only talks to boxes in your own tailnet." };
   if (!peer.tagged) return { stop: `${box.name} no longer carries tag:taskbox in Tailscale.`, next: "Check the box's tags in the Tailscale admin console." };
@@ -68,7 +68,7 @@ export function peerOrStop(box: Paired, s: TailnetState): { peer: Peer; address:
 export function sshStop(name: string, why: SshFailure, limitMs: number): Stop {
   switch (why) {
     case "host-key":
-      return { stop: `${name}'s host key doesn't match the one paired.`, next: "If the box was reinstalled, type taskbox box add. If not, leave it: agents look." };
+      return { stop: `${name}'s host key doesn't match the one paired.`, next: "This may be another machine: the owner checks the box before pairing it again." };
     case "refused":
       return { stop: `Tailscale refused the agent account on ${name}.`, next: "Check the tailnet policy lets your user reach the agent account on tag:taskbox: taskbox policy show --box all." };
     case "offline":
@@ -144,7 +144,7 @@ export async function helloOf(d: Deps, t: Target, name: string): Promise<Hello |
 // hello's answer against the pairing: role box (the schema), and the same install ID.
 export function helloStop(name: string, h: Hello, installId: string | null): Stop | undefined {
   if (h.installId === null) return { stop: `${name} has no install ID, so it can't be paired.`, next: "Update taskbox on the box to v2.0.0 or later: at the box, as your admin user, type taskbox update." };
-  if (installId !== null && h.installId !== installId) return { stop: `${name}'s install ID isn't the one paired: the box was reinstalled.`, next: "If you reinstalled it, type taskbox box add." };
+  if (installId !== null && h.installId !== installId) return { stop: `${name}'s install ID isn't the one paired: the box was reinstalled.`, next: "This may be another machine: the owner checks the box before pairing it again." };
   return undefined;
 }
 
@@ -191,31 +191,4 @@ export async function connectBox(d: Deps, box: Paired, state: TailnetState): Pro
   const dropped = rememberAnswers(d.home, box.node, box.name, h.answers, h.release);
   if (dropped) d.out(dropped);
   return { box, target, hello: h, state };
-}
-
-// One box, for jobs and log.
-export async function connect(d: Deps, sel?: string): Promise<Connected | Stop> {
-  const c = configOrStop(d);
-  if (isStop(c)) return c;
-  const chosen = chooseBoxes(c.config, sel, false);
-  if (isStop(chosen)) return chosen;
-  const ts = await tailnetOrStop(d);
-  if (isStop(ts)) return ts;
-  return connectBox(d, chosen[0]!, ts.state);
-}
-
-// Every box chosen, asked at the same time, each with its own checks and time limits. Tailscale is
-// read once for them all. A failure stops only its own box.
-export interface Each {
-  box: Paired;
-  c: Connected | Stop;
-}
-export async function connectAll(d: Deps, sel?: string): Promise<{ each: Each[] } | Stop> {
-  const c = configOrStop(d);
-  if (isStop(c)) return c;
-  const chosen = chooseBoxes(c.config, sel, true);
-  if (isStop(chosen)) return chosen;
-  const ts = await tailnetOrStop(d);
-  if (isStop(ts)) return ts;
-  return { each: await Promise.all(chosen.map(async (box) => ({ box, c: await connectBox(d, box, ts.state) }))) };
 }

@@ -8,12 +8,3 @@ export function scrub(v: unknown, max = 200): string {
   if (typeof v !== "string") return "";
   return v.replace(UNSAFE, " ").replace(/\s+/g, " ").trim().slice(0, max);
 }
-
-// Many lines, each scrubbed, with at most `lines` of them.
-export function scrubLines(v: string, max = 200, lines = 20): string[] {
-  return v
-    .split(/\r?\n|\r/)
-    .map((l) => scrub(l, max))
-    .filter((l) => l !== "")
-    .slice(0, lines);
-}

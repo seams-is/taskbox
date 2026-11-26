@@ -1,15 +1,16 @@
 // Each paired box's last agreed answers version and release, kept beside the pairing in
 // answers.json (0600). A box that drops to an older version, as after a rollback to v2.6.1, reads
 // on (N-1), and the controller says so once.
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Home, NODE, writePrivateFile } from "./home.ts";
+import { type Home, NODE, readSmall, writePrivateFile } from "./home.ts";
 
 type Seen = Record<string, { answers: number; release: string | null }>;
 
 function read(h: Home): Seen {
   try {
-    const v = JSON.parse(readFileSync(join(h.dir, "answers.json"), "utf8")) as unknown;
+    const f = readSmall(join(h.dir, "answers.json"), 64_000);
+    if ("why" in f) return {};
+    const v = JSON.parse(f.text) as unknown;
     if (!v || typeof v !== "object" || Array.isArray(v)) return {};
     const out: Seen = {};
     for (const [node, x] of Object.entries(v as Record<string, unknown>)) {

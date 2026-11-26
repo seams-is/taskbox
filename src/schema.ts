@@ -167,9 +167,8 @@ export const ENVELOPE: Shape = obj(
 export type EnvelopeRead = { ok: true; envelopes: Envelope[] } | { ok: false; code: "unreachable"; detail: string };
 
 // The box's stdout, read as envelopes. One envelope, or for a stream one per line with final true on
-// the last alone. partial: part of a stream, read as its lines come, so its last line needn't be final.
-// Every failure is unreachable.
-export function readEnvelopes(stdout: string, expect: { command?: string; installId?: string | null; stream?: boolean; partial?: boolean } = {}): EnvelopeRead {
+// the last alone. Every failure is unreachable.
+export function readEnvelopes(stdout: string, expect: { command?: string; installId?: string | null; stream?: boolean } = {}): EnvelopeRead {
   const no = (detail: string): EnvelopeRead => ({ ok: false, code: "unreachable", detail });
   const lines = stdout.split("\n").filter((l) => l.trim() !== "");
   if (!lines.length) return no("no answer");
@@ -192,8 +191,7 @@ export function readEnvelopes(stdout: string, expect: { command?: string; instal
     if (e.ok !== (e.exit === 0)) return no("ok and exit disagree");
     if (expect.command !== undefined && e.command !== expect.command && e.command !== "error") return no(`an answer to ${e.command}`);
     if (expect.installId && e.box?.installId !== expect.installId) return no("another install's answer");
-    if (e.final && i !== lines.length - 1) return no("a final line before the end");
-    if (!e.final && i === lines.length - 1 && !expect.partial) return no("a stream with no final line");
+    if (e.final !== (i === lines.length - 1)) return no(e.final ? "a final line before the end" : "a stream with no final line");
     out.push(e);
   }
   return { ok: true, envelopes: out };

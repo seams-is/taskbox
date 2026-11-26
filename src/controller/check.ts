@@ -25,7 +25,7 @@ export interface BoxLines {
   connected?: Connected;
 }
 
-export async function controllerChecks(d: Deps, sel?: string): Promise<{ lines: Line[]; boxes: BoxLines[] } | Stop> {
+export async function controllerChecks(d: Deps): Promise<{ lines: Line[]; boxes: BoxLines[] }> {
   const out: Line[] = [];
   const add = (name: string, ok: boolean, detail: string, fix?: string) => out.push({ name, ok, detail, ...(ok ? {} : { fix }) });
 
@@ -37,9 +37,7 @@ export async function controllerChecks(d: Deps, sel?: string): Promise<{ lines: 
   add("Tailscale app", app === "app-store" || app === "standalone", APP_NAMES[app], app === "none" ? "Install Tailscale from the App Store, then sign in." : "Use Tailscale from the App Store.");
 
   const cfg = readConfig(d.home);
-  const chosen = cfg.ok ? chooseBoxes(cfg.config, sel, true) : [];
-  if (sel !== undefined && isStop(chosen)) return chosen;
-  const boxes = isStop(chosen) ? [] : chosen;
+  const boxes = cfg.ok ? cfg.config.boxes : [];
   if (!cfg.ok) add("Config", false, cfg.why === "missing" || cfg.why === "not-controller" ? "taskbox isn't installed for a controller here" : `${d.home.config} couldn't be read`, "Install taskbox for a controller again, then type taskbox box add.");
   else add("Config", cfg.mode === 0o600, cfg.mode === 0o600 ? "mode 600" : `mode ${cfg.mode.toString(8)}, open to other users`, `Type chmod 600 "${d.home.config}".`);
   const installed = existsSync(join(d.home.bin, "taskbox")) && existsSync(join(d.home.current, "app", "src", "controller", "main.ts"));
@@ -81,9 +79,8 @@ async function boxLines(d: Deps, box: Paired, state: TailnetState | undefined): 
 
 const lineText = (l: Line) => `${l.ok ? "OK  " : "FAIL"}  ${l.name}: ${l.detail}${l.fix ? `. ${l.fix}` : ""}`.replace(/\.\. /g, ". ");
 
-export async function check(d: Deps, sel?: string): Promise<Screen> {
-  const r = await controllerChecks(d, sel);
-  if (isStop(r)) return { lines: [header(pairedNames(d), d.version), r.stop, ...footer("Nothing checked.", "Nothing changed.", r.next)], code: 1 };
+export async function check(d: Deps): Promise<Screen> {
+  const r = await controllerChecks(d);
   const lines = [header(r.boxes.length ? r.boxes.map((b) => b.box.name) : pairedNames(d), d.version), "On this controller:", ...r.lines.map(lineText)];
   let failed = r.lines.filter((l) => !l.ok).length;
   for (const b of r.boxes) {

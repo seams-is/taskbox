@@ -1,7 +1,5 @@
-// taskbox on the controller. bin/taskbox runs this file; the role is fixed at install. One grammar
-// with the box: every box command works here with --box, parsed by the box's own registry
-// (forward.ts), beside the controller's own nouns, box and self, and statusline and mcp. It runs as the
-// owner's user, uses no admin rights and opens no listening port.
+// taskbox on the controller, run by bin/taskbox as the owner's user. One grammar with the box: box
+// commands go through forward.ts with --box; box, self, statusline and mcp are the controller's own.
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { type CommandSpec, EXIT, type GlobalFlag, parse, usage } from "../command.ts";
@@ -11,8 +9,8 @@ import { commandList, registry, shellCommands, firstWords } from "../registry.ts
 import { verifyRelease } from "../release.ts";
 import { check } from "./check.ts";
 import { eventLine, readEvents } from "./events.ts";
-import { forward } from "./forward.ts";
-import { ACCOUNT, findBox, GITHUB_NAME, home, ownVersion } from "./home.ts";
+import { asciiJson, forward } from "./forward.ts";
+import { agentProblem, findBox, GITHUB_NAME, home, NAME, ownVersion } from "./home.ts";
 import { readLines, serve } from "./mcp.ts";
 import { AFTER, boxRemove, boxUse, pair } from "./pair.ts";
 import { configOrStop, connectBox, type Deps, isStop, tailnetOrStop } from "./reach.ts";
@@ -31,19 +29,19 @@ export const keygen = {
   },
 };
 
-const NAME_WORD = { name: "NAME", min: 1, max: 1, check: (v: string) => /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/.test(v) };
+const NAME_WORD = { name: "NAME", min: 1, max: 1, check: (v: string) => NAME.test(v) };
 const spec = (path: string[], summary: string, o: Partial<CommandSpec> = {}): CommandSpec => ({ path, summary, who: ["owner"], ...o });
 
 // The controller's own commands. The box's are in src/cmd/, and run here with --box.
 export const CONTROLLER: CommandSpec[] = [
-  spec(["box", "add"], "Pairs a box tagged tag:taskbox in this controller's Tailscale, then reads what it still needs.", { args: { name: "NAME", min: 0, max: 1, check: NAME_WORD.check }, options: [{ name: "--agent", value: "ACCOUNT", check: (v) => ACCOUNT.test(v) }], flags: ["yes"] }),
+  spec(["box", "add"], "Pairs a box tagged tag:taskbox in this controller's Tailscale, then reads what it still needs.", { args: { name: "NAME", min: 0, max: 1, check: NAME_WORD.check }, options: [{ name: "--agent", value: "ACCOUNT", check: (v) => agentProblem(v) === undefined }], flags: ["yes"] }),
   spec(["box", "list"], "The paired boxes: name, Tailscale ID, install ID, agent account, release, reachable.", { flags: ["json"] }),
   spec(["box", "show"], "One pairing, and its last status.", { args: NAME_WORD, flags: ["json"] }),
   spec(["box", "use"], "Sets the box a command goes to when it names none.", { args: NAME_WORD }),
   spec(["box", "remove"], "Forgets a pairing. Nothing changes on the box.", { args: NAME_WORD, flags: ["yes"] }),
-  spec(["self", "update"], "Updates this controller's taskbox from signed releases.", { options: [{ name: "--check" }, { name: "--to", value: "VERSION" }] }),
+  spec(["self", "update"], "Updates this controller's taskbox from signed releases.", { options: [{ name: "--check" }, { name: "--to", value: "VERSION" }], flags: ["json"] }),
   spec(["self", "rollback"], "Back to the release kept beside the one in use."),
-  spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing."),
+  spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing.", { flags: ["json"] }),
   spec(["self", "events"], "This controller's own event log: pairings, defaults, self updates.", { flags: ["since", "json"] }),
   spec(["statusline"], "One line for Claude Code's status line, from the last status read."),
   spec(["mcp"], "The stdio MCP server for Claude Code.", { internal: true }),
@@ -104,18 +102,19 @@ async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknow
     return p.code;
   }
   let exit = 0;
+  let ran = 0;
   for (const step of AFTER) {
-    // A later release adds these commands; until the box runs them, the phase says so and goes on.
+    // A later release adds these commands; until the box runs them, the phase is skipped and says so.
     const known = parse(registry(), step.argv);
     if (!known.ok || !known.spec.shell) {
-      io.out(`${step.phase}: taskbox ${step.argv.join(" ")} isn't in this release; skipped.`);
+      io.out(`${step.phase}: skipped: this release has no taskbox ${step.argv.join(" ")}.`);
       continue;
     }
     io.out(`${step.phase}: taskbox ${step.argv.join(" ")} --box ${p.box.name}`);
-    const code = await forward(d, [...step.argv, "--box", p.box.name], io);
-    if (step.phase === "checking") exit = code;
+    ran++;
+    if ((await forward(d, [...step.argv, "--box", p.box.name], io)) !== 0) exit = 1;
   }
-  for (const l of footer(`Paired with ${p.box.name}.`, p.fresh ? `Paired with ${p.box.name}.` : "Read the box again.", exit ? "Fix the first FAIL line: its fix is on it." : "Nothing to do.")) io.out(l);
+  for (const l of footer(`Paired with ${p.box.name}.`, p.fresh ? `Paired with ${p.box.name}.` : ran ? "Read the box again." : "Nothing changed.", exit ? "Fix the first FAIL line: its fix is on it." : "Nothing to do.")) io.out(l);
   return exit ? EXIT.failed : EXIT.ok;
 }
 
@@ -126,7 +125,7 @@ export interface Io {
 }
 
 // The controller's own answer as an envelope, for --json.
-const own = (d: Deps, command: string, s: Screen & { result?: Record<string, unknown> }) => JSON.stringify(envelope({ command, box: null, at: d.now(), exit: s.code, lines: s.lines, result: s.result ?? {} }));
+const own = (d: Deps, command: string, s: Screen & { result?: Record<string, unknown> }) => asciiJson(envelope({ command, box: null, at: d.now(), exit: s.code, lines: s.lines, result: s.result ?? {} }));
 
 export async function dispatch(d: UpdateDeps, argv: string[], io: Io): Promise<number> {
   const print = (s: Screen) => {
@@ -171,11 +170,11 @@ export async function dispatch(d: UpdateDeps, argv: string[], io: Io): Promise<n
     case "box remove":
       return print(await boxRemove(d, p.args[0]!, f("yes") === true));
     case "self update":
-      return print(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true }));
+      return answer(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true }));
     case "self rollback":
       return print(rollback(d));
     case "self check":
-      return print(await check(d));
+      return answer(await check(d));
     case "self events": {
       const since = sinceMs(f("since"), d.now());
       if (since === undefined) return io.out("--since takes a time or a duration, such as 1d."), EXIT.usage;
@@ -241,15 +240,15 @@ export async function controllerMain(argv: string[]): Promise<number> {
   }
   // A watched view redraws the whole screen each time; the clear is the controller's own, never the box's.
   const draw = (l: string[]) => process.stdout.write(`\x1b[H\x1b[2J${l.join("\n")}\n`);
-  // Ctrl-C while watching or following stops the watching only.
-  const watching = !argv.length || argv.some((a) => ["-w", "--watch", "-f", "--follow"].includes(a));
+  // Ctrl-C while watching stops the watching only.
+  const watching = !argv.length || argv.some((a) => ["-w", "--watch"].includes(a));
   if (watching)
     process.on("SIGINT", () => {
       console.log("\nStopped watching. What the box was doing carries on.");
       process.exit(EXIT.interrupted);
     });
   // When taskbox starts, it looks for a newer release alongside the command, and says so after.
-  const quiet = !argv.length || ["self", "install", "statusline"].includes(argv[0]!) || argv.includes("--json") || argv.includes("-w") || argv.includes("-f");
+  const quiet = !argv.length || ["self", "install", "statusline"].includes(argv[0]!) || argv.includes("--json") || watching;
   const note = quiet ? Promise.resolve(undefined) : updateNote(d).catch(() => undefined);
   const code = await dispatch(d, argv, { out: (l) => console.log(l), draw });
   const n = await note;

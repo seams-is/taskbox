@@ -98,8 +98,7 @@ export class World {
       const box = this.standIns[addr];
       if (box) {
         const r = await box.answer(line);
-        if (_o.onLine) for (const l of r.stdout.split("\n").slice(0, -1)) _o.onLine(l);
-        return { code: r.code, stdout: _o.onLine ? "" : r.stdout, stderr: "", timedOut: false, tooBig: false };
+        return { code: r.code, stdout: r.stdout, stderr: "", timedOut: false, tooBig: false };
       }
       const own = this.byAddress[addr]?.[line];
       if (own !== undefined) return { code: 0, stdout: `${own}\n`, stderr: "", timedOut: false, tooBig: false };

@@ -1,15 +1,9 @@
-// taskbox box add: no code. Tailscale proves which box it is: the
-// StableNodeID and tag in the map its servers sign, and the tunnel to that node. The owner picks the
-// box, by name or from the list, and confirms. The controller runs hello as the box's agent account over
-// the key the map lists, checks role box, the tag and the node, and stores the StableNodeID, the
-// install ID, the ed25519 host key and the agent account. Pairing grants nothing: it lets the controller
-// notice a swapped or reinstalled box.
-//
-// It runs in phases, each said as it starts: finding, pairing, connecting, checking. The phases after
-// pairing only read the box, so a re-run picks up where the last one stopped: a box already paired
-// with the same host key and install ID isn't paired again.
+// taskbox box add: Tailscale proves which box it is (the StableNodeID and tag in its signed map); the
+// controller stores the node, install ID, host key and agent account. Pairing grants nothing: it lets
+// the controller notice a swapped or reinstalled box, so a changed key or install ID needs a person.
+import { createHash } from "node:crypto";
 import { renameSync, rmSync } from "node:fs";
-import { ACCOUNT, type Config, configProblem, findBox, knownHostsFor, MAX_BOXES, type Paired, readConfig, writeConfig, writeKnownHosts } from "./home.ts";
+import { agentProblem, type Config, configProblem, findBox, knownHostsFor, MAX_BOXES, type Paired, readConfig, writeConfig, writeKnownHosts } from "./home.ts";
 import { appendEvent } from "./events.ts";
 import { chooseBoxes, configOrStop, type Deps, helloOf, helloStop, isStop, tailnetOrStop } from "./reach.ts";
 import { stopScreen } from "./commands.ts";
@@ -42,6 +36,9 @@ export function choices(list: Peer[], paired: Set<string> = new Set()): string[]
   return list.map((p, i) => `${i + 1}. ${p.name}${count.get(p.name)! > 1 ? ` (${p.node})` : ""}, ${p.online ? "online" : "offline"}${paired.has(p.node) ? ", paired" : ""}`);
 }
 
+// A host key's fingerprint, as ssh-keygen -l shows it.
+export const keyPrint = (b64: string) => `SHA256:${createHash("sha256").update(Buffer.from(b64, "base64")).digest("base64").replace(/=+$/, "")}`;
+
 // box add's first two phases. It returns the box paired, or the screen that stopped it.
 export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fresh: boolean } | Screen> {
   const c = configOrStop(d);
@@ -51,7 +48,8 @@ export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fres
   const top = header(names, d.version);
   const pairedNow = names.length ? `Paired with ${names.join(", ")}.` : "Not paired.";
   const none = (stop: string, next: string): Screen => ({ lines: [top, stop, ...footer(pairedNow, "Nothing changed.", next)], code: 1 });
-  if (!ACCOUNT.test(agent)) return none("--agent takes the box's agent account, such as taskbox-agent.", "Type taskbox box add again.");
+  const badAgent = agentProblem(agent);
+  if (badAgent) return none(`--agent ${agent.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32)} ${badAgent}.`, "Type taskbox box add with the box's agent account, such as taskbox-agent.");
   if (!d.tty && (!a.yes || a.name === undefined)) return stopScreen(d, { stop: "taskbox box add asks you to pick a box and type yes, so it runs in your own terminal, or with a box's name and -y.", next: "Type taskbox box add in Terminal." }, names);
   d.out(top);
   d.out("finding: the boxes tagged tag:taskbox in this controller's Tailscale.");
@@ -100,7 +98,16 @@ export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fres
       d.out(`${peer.name} is paired already, as ${agent}.`);
       return { box: before, fresh: false };
     }
-    if (!a.yes) {
+    // A changed host key or install ID may be another machine: only a person at a terminal, who reads
+    // the old and new values and types the box's name, pairs it again. -y never covers it.
+    if (before && (before.hostKey !== peer.hostKeys[0] || before.installId !== h.installId)) {
+      if (!d.tty) return none(`${peer.name}'s host key or install ID changed since it was paired, so it wasn't paired again.`, "The owner checks the box, then pairs it again at their own terminal.");
+      d.out(`${peer.name} changed since it was paired. If you didn't reinstall it, stop here and look at the box.`);
+      d.out(`  Host key:   ${keyPrint(before.hostKey)} then, ${keyPrint(peer.hostKeys[0]!)} now`);
+      d.out(`  Install ID: ${before.installId} then, ${h.installId} now`);
+      const typed = (await d.ask(`To pair it again, type its name, ${peer.name}: `)).trim();
+      if (typed.toLowerCase() !== peer.name.toLowerCase()) return none("Not paired: the name typed isn't the box's.", "Nothing to do.");
+    } else if (!a.yes) {
       const yes = (await d.ask(`${before ? "Pair this controller with" : "Add"} ${peer.name} (${peer.node})${before ? " again" : ""}, as ${agent}? Type yes: `)).trim().toLowerCase();
       if (yes !== "yes") return none("Not paired: you didn't type yes.", "Nothing to do.");
     }

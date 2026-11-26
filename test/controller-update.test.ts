@@ -11,7 +11,8 @@ import { keyPair, sshsig } from "./sshsig.ts";
 import { findRelease, newer } from "../src/controller/releases.ts";
 import { realRun } from "../src/controller/run.ts";
 import { readTar, Refused, unpack } from "../src/controller/unpack.ts";
-import { type Statement, update, updateNote, wrapper } from "../src/controller/update.ts";
+import { rollback, type Statement, update, updateNote, wrapper } from "../src/controller/update.ts";
+import { readEvents } from "../src/controller/events.ts";
 import { CEILING, deps, runLine, type TestDeps, World } from "./controller-fake.ts";
 
 const SRC = { owner: "example-org", repo: "taskbox-public" };
@@ -213,10 +214,14 @@ describe("taskbox update", () => {
     const d = deps(new World(), ["yes"]);
     d.run = realRun;
     const boot = mkdtempSync(join(process.env.HOME!, "download-"));
+    const owner = keyPair();
+    mkdirSync(join(boot, "signers"));
+    writeFileSync(join(boot, "signers", "allowed_signers"), `# the owner's key\n${owner.line}`);
     publish(d, "v2.1.0");
     const s = await runLine(d, ["install", "--from", `${SRC.owner}/${SRC.repo}`, "--bootstrap", boot]);
-    if (typeof s === "number") throw new Error("screen expected");
     expect(s.code).toBe(0);
+    // Trust on first use: the release key's fingerprint is shown, to compare with the signing Mac's.
+    expect(d.printed).toContain(`  Release key: SHA256:${createHash("sha256").update(owner.blob).digest("base64").replace(/=+$/, "")}`);
     expect(d.verified[0]!.signers).toBe(join(boot, "signers", "allowed_signers"));
     expect(d.verified[0]!.installed).toBeNull();
     expect(readConfig(d.home)).toMatchObject({ ok: true, config: { role: "controller", source: SRC } });
@@ -362,5 +367,23 @@ describe("taskbox update with the real verifyRelease", () => {
       expect(d.asked).toEqual([]);
       expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.1.0"));
     }
+  }, CEILING);
+});
+describe("self rollback", () => {
+  test("moves current to the kept release, and says so in the controller's events", () => {
+    const d = deps(new World());
+    for (const t of ["v2.1.0", "v2.2.0"]) {
+      mkdirSync(join(d.home.releases, t, "app", "src", "controller"), { recursive: true });
+      writeFileSync(join(d.home.releases, t, "bun"), "");
+      writeFileSync(join(d.home.releases, t, "app", "src", "controller", "main.ts"), "");
+    }
+    symlinkSync(join("releases", "v2.2.0"), d.home.current);
+    const s = rollback(d);
+    expect(s.code).toBe(0);
+    expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.1.0"));
+    expect(readEvents(d.home).map((e) => e.type)).toEqual(["self.rolled-back"]);
+    // Nothing else kept: nothing to roll back to.
+    expect(rollback(d).code).toBe(0);
+    expect(rollback(deps(new World())).lines[1]).toBe("This controller's taskbox has no release in use taskbox can read.");
   }, CEILING);
 });

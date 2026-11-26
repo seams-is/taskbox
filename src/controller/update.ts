@@ -1,17 +1,6 @@
-// The controller's install, `taskbox self update` and `taskbox self rollback`. A controller
-// installs from the public repo. Each release is checked with verifyRelease before anything is
-// unpacked: the owner's signature over the statement, against the pinned signers file, then the
-// tarball's SHA-256. The screen shows the tag, the private PR, its merge date and the commit from
-// the signed statement, and waits for yes. Then the tarball is unpacked into a new empty folder,
-// bun is put beside it by its SHA-256 pin, and `current` moves to the new release in one step.
-// Nothing installs by itself: when taskbox starts, it only says a newer release exists.
-//
-// ~/Library/Application Support/taskbox/
-//   releases/<tag>/app/    the release's files
-//   releases/<tag>/bun     bun, as pinned in that release's versions.json
-//   current                a link to releases/<tag>
-//   bin/taskbox            runs current/bun on current/app/src/controller/main.ts
-//   bin/bun                a link to current/bun
+// The controller's install, self update and self rollback. verifyRelease checks each release before
+// anything is unpacked; the owner says yes; then releases/<tag>/ is filled, bun placed by its pin, and
+// `current` moves in one step. bin/taskbox runs current/app/src/controller/main.ts.
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -19,7 +8,7 @@ import { relink } from "../layout.ts";
 import { describeStatement, type Statement, type Verdict, verifyRelease } from "../release.ts";
 import type { Deps } from "./reach.ts";
 import { appendEvent } from "./events.ts";
-import { type Home, readConfig, setUpController, type Source } from "./home.ts";
+import { type Home, readConfig, readSmall, setUpController, type Source, writePrivateFile } from "./home.ts";
 import { type Fetch, findRelease, get, MAX, newer, RELEASE_TAG, releaseProblem, SIGNATURE, STATEMENT, tarballName } from "./releases.ts";
 import { footer, header, type Screen } from "./screens.ts";
 import { Refused, refuseOdd, unpack } from "./unpack.ts";
@@ -39,6 +28,19 @@ export const BUN_URL = /^https:\/\/github\.com\/oven-sh\/bun\/releases\/download
 const DITTO = "/usr/bin/ditto";
 
 export const signersIn = (app: string) => join(app, "signers", "allowed_signers");
+
+// Each pinned release key's fingerprint, as ssh-keygen -l shows it.
+export function signerPrints(file: string): string[] {
+  try {
+    return readFileSync(file, "utf8")
+      .split("\n")
+      .map((l) => / ([A-Za-z0-9+/]+={0,2})(?: |$)/.exec(l.trim().startsWith("#") ? "" : l)?.[1])
+      .filter((b): b is string => !!b)
+      .map((b) => `SHA256:${createHash("sha256").update(Buffer.from(b, "base64")).digest("base64").replace(/=+$/, "")}`);
+  } catch {
+    return [];
+  }
+}
 
 // What the screen shows from a signed statement, before the yes: the box's update screen's lines,
 // without the tarball's hash, which verifyRelease has checked.
@@ -195,7 +197,11 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     d.out(top);
     d.out(a.first ? `This installs taskbox ${tag} on this controller:` : `This updates this controller from taskbox ${d.version} to ${tag}:`);
     for (const l of describe(v.statement)) d.out(l);
-    if (a.first) d.out(`It is checked against the release key in the folder you downloaded. Later updates are checked against the key ${tag} carries.`);
+    if (a.first) {
+      d.out(`It is checked against the release key in the folder you downloaded. Later updates are checked against the key ${tag} carries.`);
+      // Trust on first use: the owner compares these with taskbox sign --fingerprint on the signing Mac.
+      for (const f of signerPrints(signers)) d.out(`  Release key: ${f}`);
+    }
     const yes = (await d.ask("Type yes to install it: ")).trim().toLowerCase();
     if (yes !== "yes") return screen("Not installed: you didn't type yes.", "Nothing to do.");
 
@@ -225,7 +231,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     if (!existsSync(bunLink) && !isLink(bunLink)) symlinkSync(join("..", "current", "bun"), bunLink);
     relink(d.home.current, join("releases", tag));
     prune(d.home, [tag, ...(inUse ? [inUse] : [])]);
-    writeFileSync(d.home.updateCheck, JSON.stringify({ checkedAt: d.now(), latest: tag }), { mode: 0o600 });
+    writePrivateFile(d.home.updateCheck, JSON.stringify({ checkedAt: d.now(), latest: tag }));
     const did = `Installed taskbox ${tag}, from #${v.statement.source.pr}, commit ${v.statement.source.commit.slice(0, 7)}.`;
     appendEvent(d.home, d.now(), "self.updated", did, { tag, from: inUse ?? null });
     return { lines: [header(null, tag), did, ...footer(`taskbox ${tag} on this controller.`, did, a.first ? "Type taskbox box add." : "Nothing to do.")], code: 0 };
@@ -253,7 +259,8 @@ export async function updateNote(d: UpdateDeps): Promise<string | undefined> {
   if (!own) return undefined;
   let latest: string | undefined;
   try {
-    const v = JSON.parse(readFileSync(d.home.updateCheck, "utf8"));
+    const f = readSmall(d.home.updateCheck, 4_000);
+    const v = JSON.parse("text" in f ? f.text : "");
     if (Number.isSafeInteger(v.checkedAt) && d.now() - v.checkedAt < CHECK_EVERY_MS && d.now() >= v.checkedAt) latest = typeof v.latest === "string" && RELEASE_TAG.test(v.latest) ? v.latest : own;
   } catch {}
   if (!latest) {
@@ -261,7 +268,7 @@ export async function updateNote(d: UpdateDeps): Promise<string | undefined> {
     if (!r.ok) return undefined;
     latest = r.value.tag;
     try {
-      writeFileSync(d.home.updateCheck, JSON.stringify({ checkedAt: d.now(), latest }), { mode: 0o600 });
+      writePrivateFile(d.home.updateCheck, JSON.stringify({ checkedAt: d.now(), latest }));
     } catch {}
   }
   return newer(latest, own) ? `taskbox ${latest} is out for this controller. Type taskbox self update to see it.` : undefined;

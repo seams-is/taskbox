@@ -8,52 +8,22 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { POOL_GROUP, POOL_USER } from "../src/access.ts";
 import { readPin, readPoolRecord, type PoolRecord, writePin, writePoolRecord } from "../src/pin.ts";
-import { fingerprint, keyChangeText, ROTATE_ASK, type Verifier } from "../src/approver.ts";
+import { APPROVER_NAMESPACE, fingerprint, keyChangeText, ROTATE_ASK, type Verifier } from "../src/approver.ts";
 import { earlierWorkspaces, install, type InstallDeps, TRUST_FILES, trustFilesLine } from "../src/install.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
 import { Dir } from "./fake-dir.ts";
 import { CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
-import { wsMain } from "../src/controller/ws.ts";
-import { keyDir, writeController } from "../src/controller/settings.ts";
-import { SSH } from "../src/controller/box.ts";
-import { SSH_KEYGEN } from "../src/controller/owner.ts";
 import { boxFacts, workspacesJson } from "../src/workspace/show.ts";
 import { approver, realKeygen } from "./ws-helpers.ts";
-import { keyChangeVerifier } from "../src/workspace/approval.ts";
+import { keyChangeVerifier, toB64url } from "../src/workspace/approval.ts";
 
-// The block taskbox approver --rotate prints on the laptop, from old to next at the box's gen. signer:
-// a key that signs in old's place; flags: the signature's user-presence flags.
+// The block that rotates the approver key in the box's taskbox.json, from old to next at the box's
+// gen: the old key signs the box's own key-change text. signer: a key that signs in old's place;
+// flags: the signature's user-presence flags.
 async function rotateBlock(old: ReturnType<typeof approver>, next: ReturnType<typeof approver>, gen: number, signer = old, flags?: number, namespace?: string) {
-  const home = mkdtempSync(join(tmpdir(), "rotate-home-"));
-  mkdirSync(keyDir(home), { recursive: true, mode: 0o700 });
-  const h = join(keyDir(home), "id_ecdsa_sk_rk");
-  writeFileSync(h, "handle\n");
-  writeFileSync(`${h}.pub`, `${old.key}\n`);
-  writeFileSync(join(home, "new.pub"), `${next.key}\n`);
-  writeController(home, { v: 1, box: "taskbox-1", agent: "taskbox-agent", key: h, next: null });
-  const out: string[] = [];
-  const code = await wsMain(
-    {
-      home,
-      isTty: true,
-      now: () => 0,
-      sleep: async () => {},
-      ask: async () => "",
-      tty: async () => 0,
-      out: (l) => out.push(l),
-      run: async (argv, o) => {
-        if (argv[0] === SSH) return { code: 0, stdout: workspacesJson({ read: { kind: "missing" }, now: 0, disk: () => undefined, word: () => undefined, box: boxFacts(BOX, { state: "pinned", key: old.key, gen, cleared: [] }) }), stderr: "" };
-        if (argv[0] === SSH_KEYGEN) {
-          expect(argv.slice(1, 5)).toEqual(["-Y", "sign", "-n", "taskbox-approver"]);
-          return { code: 0, stdout: signer.sign(o!.stdin!, { flags, namespace: namespace ?? argv[4] }), stderr: "" };
-        }
-        throw new Error(argv.join(" "));
-      },
-    },
-    ["approver", "--rotate", join(home, "new.pub")],
-  );
-  if (code !== 0) throw new Error(out.join("\n"));
-  return JSON.parse(`{${out.filter((l) => l.startsWith('  "approver')).join("")}}`) as { approverKey: string; approverKeyChange: { statement: string; signature: string } };
+  const text = keyChangeText(BOX, gen, fingerprint(old.key), next.key);
+  const sig = signer.sign(text, { flags, namespace: namespace ?? APPROVER_NAMESPACE });
+  return { approverKey: next.key, approverKeyChange: { statement: toB64url(text), signature: toB64url(sig) } };
 }
 
 const str = (b: Buffer | string) => {
