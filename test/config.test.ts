@@ -30,7 +30,7 @@ describe("the settings", () => {
     expect(load({ labels: ["taskbox-macos", "taskbox-macos-merge", "self-hosted"] })).toThrow("every runner has");
     expect(load({ labels: ["taskbox-macos", "taskbox-macos-merge", "a;b"] })).toThrow("labels is 1 to 8");
     // Any label in GitHub's shape, beyond taskbox-: the code names none.
-    expect(labelsFor(load({ labels: ["taskbox-macos", "taskbox-macos-merge", "ios-big"] })(), "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "ios-big"]);
+    expect(labelsFor(load({ labels: ["taskbox-macos", "taskbox-macos-merge", "ios-big"] })(), "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "ios-big", "example-box-macos"]);
   });
   test("sources: one, github-actions on jobsFrom with its own App, or none; the old actionsAppId must agree", () => {
     const c = base();
@@ -81,11 +81,11 @@ describe("the settings", () => {
     const { mergeLabel: _, ...linuxNoMerge } = ex.linux;
     // macOS sets a labels list, and Linux has none of its own.
     const a = cfg({ labels: ["taskbox-macos", "taskbox-macos-merge", "taskbox-macos-big"] }, ex.linux);
-    expect(labelsFor(a, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge"]);
-    expect(labelsFor(a, "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "taskbox-macos-big"]);
+    expect(labelsFor(a, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge", "example-box-linux"]);
+    expect(labelsFor(a, "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "taskbox-macos-big", "example-box-macos"]);
     // Linux leaves mergeLabel out, so it registers only its own label.
     const b = cfg({}, linuxNoMerge);
-    expect(labelsFor(b, "linux")).toEqual(["taskbox-linux"]);
+    expect(labelsFor(b, "linux")).toEqual(["taskbox-linux", "example-box-linux"]);
   });
   test("timings: each a whole number within its bounds, defaults for the rest", () => {
     expect(timingsOf(load({ timings: { giveWayMinutes: 5 } })())).toEqual({ ...DEFAULT_TIMINGS, giveWayMinutes: 5 });

@@ -15,7 +15,7 @@ const V = valuesOf(TWO);
 
 describe("the workflows, made from the box's settings", () => {
   test("every label the box serves for the box check, one per kind for the test job", () => {
-    expect([V.box, V.labels, V.testLabels]).toEqual(["taskbox-1", ["taskbox-linux", "taskbox-linux-merge", "taskbox-macos", "taskbox-macos-merge"], ["taskbox-macos", "taskbox-linux"]]);
+    expect([V.box, V.labels, V.testLabels]).toEqual(["taskbox-1", ["taskbox-1-linux", "taskbox-1-macos", "taskbox-linux", "taskbox-linux-merge", "taskbox-macos", "taskbox-macos-merge"], ["taskbox-1-macos", "taskbox-1-linux"]]);
   });
 
   test("the box's name is its settings' tailnet name; one that can't be a name is refused", () => {
@@ -27,7 +27,8 @@ describe("the workflows, made from the box's settings", () => {
     expect(y).not.toMatch(/__[A-Z]+__/);
     // update.drainMinutes (30 until it is set) plus 30, kept under the test job's 60.
     for (const l of ['    - cron: "7 * * * *"', 'WAIT_MINUTES: "50"', 'LEASE_HOURS: "12"', 'HOLD_ALARM_HOURS: "24"', 'REQUEST_MINUTES: "60"', 'UNREACHED_SPAN: "3 hours"', "HOLD: ${{ vars.TASKBOX_HOLD_TASKBOX_1 }}", `run-name: taskbox hourly box check taskbox-1 ${fingerprint({ v: 3, box: "taskbox-1", labels: V.labels, wait: 50, every: 60, lease: 12, holdAlarm: 24, request: 60 })}`]) expect(y).toContain(l);
-    expect(y).toMatch(/\npermissions:\n {2}actions: read\n\n/);
+    // Actions read for the jobs, contents read for the other boxes' checks.
+    expect(y).toMatch(/\npermissions:\n {2}actions: read\n {2}contents: read\n\n/);
     const none = boxCheckYaml({ ...V, every: 0 });
     expect(none).not.toMatch(/- cron:/);
     expect(none).toContain("No schedule: run it by hand");
@@ -40,10 +41,11 @@ describe("the workflows, made from the box's settings", () => {
   test("the test job: one job per kind, no token, at most one waiting per label", () => {
     const y = testJobYaml(V);
     expect(y).not.toMatch(/__[A-Z]+__/);
-    expect(y).toContain('label: ["taskbox-macos", "taskbox-linux"]');
+    // Each kind's label of this box alone, in a group of this box's own.
+    expect(y).toContain('label: ["taskbox-1-macos", "taskbox-1-linux"]');
     expect(y).toContain('    - cron: "41 * * * *"');
     expect(y).toMatch(/\npermissions: \{\}\n/);
-    expect(y).toMatch(/group: taskbox-canary-\$\{\{ matrix\.label \}\}/);
+    expect(y).toMatch(/group: taskbox-canary-taskbox-1-\$\{\{ matrix\.label \}\}/);
   });
 
   test("the controller takes only values a box's settings can give", () => {

@@ -168,3 +168,52 @@ describe("source failures counted", () => {
     expect(s.detail).toBe("a job; choosing without the job source since 14:02 (x)");
   });
 });
+
+describe("source failures classed", () => {
+  test("each failed read is classed as the runner chain is; a time limit or the network otherwise", async () => {
+    const { failureOf } = await import("../src/source.ts");
+    const { QueueError } = await import("../src/queue.ts");
+    const { classify } = await import("../src/ghfail.ts");
+    const res = (status: number, headers: Record<string, string> = {}) => new Response("{}", { status, headers });
+    const q = (status: number, headers?: Record<string, string>) => new QueueError("x", status, classify(res(status, headers), 0, "the queue"));
+    expect(failureOf(q(401))).toEqual({ kind: "key" });
+    expect(failureOf(q(404))).toEqual({ kind: "gone" });
+    expect(failureOf(q(502))).toEqual({ kind: "server" });
+    expect(failureOf(q(403))).toEqual({ kind: "refused" });
+    expect(failureOf(q(429, { "retry-after": "600" }))).toEqual({ kind: "rate", waitMs: 600_000 });
+    expect(failureOf(new DOMException("t", "TimeoutError"))).toEqual({ kind: "timeout" });
+    expect(failureOf(new TypeError("fetch failed"))).toEqual({ kind: "network" });
+  });
+
+  test("a rate limit waits for GitHub's reset before the source is read again", async () => {
+    const { GitHubActionsSource } = await import("../src/source.ts");
+    const { QueueError } = await import("../src/queue.ts");
+    const { classify } = await import("../src/ghfail.ts");
+    let reads = 0;
+    let limited = true;
+    const src = new GitHubActionsSource(
+      {
+        items: async () => {
+          reads++;
+          if (limited) throw new QueueError("x", 429, classify(new Response("{}", { status: 429, headers: { "retry-after": "600" } }), 0, "the queue"));
+          return [];
+        },
+      },
+      30_000,
+    );
+    const first = await src.read(0);
+    expect(first).toMatchObject({ known: false, kind: "rate", waitMs: 600_000 });
+    limited = false;
+    for (const t of [60_000, 300_000, 599_000]) await src.read(t);
+    expect(reads).toBe(1);
+    expect((await src.read(600_000)).known).toBe(true);
+    expect(reads).toBe(2);
+  });
+
+  test("who acts, by class", async () => {
+    const { sourceNext } = await import("../src/sourcefail.ts");
+    expect(sourceNext({ sourceKind: "rate", sourceRetryAt: Date.parse("2031-03-04T14:30:00") })).toBe("Waits by itself: GitHub's rate limit lets it read again at 14:30");
+    expect(sourceNext({ sourceKind: "key" })).toMatch(/^From away: type taskbox connect status/);
+    expect(sourceNext({ sourceKind: "network" })).toMatch(/^Waits by itself: the loop reads it again each minute/);
+  });
+});

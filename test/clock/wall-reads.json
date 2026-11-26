@@ -96,8 +96,8 @@
     "why": "the load command's now for its session's labels and freshness: display and a refusal to start"
   },
   "queue.ts": {
-    "reads": 2,
-    "why": "when the queue was read and a run's queued time when GitHub gives none: the scheduler's order"
+    "reads": 3,
+    "why": "when the queue was read and a run's queued time when GitHub gives none: the scheduler's order; a refusal's time, for its clock offset and a rate limit's wait when GitHub sends no Date"
   },
   "kinds.ts": {
     "reads": 7,

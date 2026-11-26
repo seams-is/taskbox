@@ -48,6 +48,8 @@ export interface LoopView {
   sourceFailures?: number;
   sourceFailingSince?: number;
   sourceWhy?: string;
+  sourceKind?: import("./source.ts").SourceKind;
+  sourceRetryAt?: number;
   endingUntil?: number; // the latest it should take to end; past it, the guard ends it (passes/ending.ts)
   watchKickSeen?: number; // v2.5.0: the last restart by the guard that the loop has counted (loopwatch.ts)
 }

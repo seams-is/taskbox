@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Check, CheckContext } from "./checks.ts";
 import { awayOf, type Config, CRON_INTERVALS, kindsOf, labelsFor, readStateJson, sourceAppId } from "./config.ts";
+import { boxLabelFor } from "./settings/kinds.ts";
 import { BOX_NAME, holdVariable } from "./hold.ts";
 import { MAX_LEASE_HOURS, waitingFor } from "./settings/away.ts";
 import { appJwt } from "./github.ts";
@@ -33,7 +34,8 @@ const schedule = (minutes: number, offset: number) => (minutes === 0 ? "  # No s
 
 // Every label the box's VMs may register, for the box check; one per kind, for the test job.
 export const boxLabels = (cfg: Config): string[] => [...new Set(kindsOf(cfg).flatMap((k) => labelsFor(cfg, k)))].sort();
-export const canaryLabels = (cfg: Config): string[] => kindsOf(cfg).map((k) => labelsFor(cfg, k)[0]!);
+// The test job asks for each kind's label of this box alone, so another box never takes it.
+export const canaryLabels = (cfg: Config): string[] => kindsOf(cfg).map((k) => boxLabelFor(cfg, k) ?? labelsFor(cfg, k)[0]!);
 
 export function fingerprint(v: unknown): string {
   return createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 12);

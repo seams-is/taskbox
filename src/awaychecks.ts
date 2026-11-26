@@ -11,6 +11,7 @@ import { lapse, readPending } from "./core/pending.ts";
 import { BROKER_ACCOUNT, BROKER_LABEL, beatState as beatNowOf, RESTARTS_PER_HOUR, STALE_MS, watchPaths } from "./guardwatch.ts";
 import type { Check, CheckContext } from "./checks.ts";
 import { awayOf, GUARD_LABEL, sourceOf } from "./config.ts";
+import { sourceNext } from "./sourcefail.ts";
 import { CLOCK_LIMIT_S, GitHubError, githubLine, githubState } from "./ghfail.ts";
 import { GitHub } from "./github.ts";
 import { Log } from "./log.ts";
@@ -250,6 +251,6 @@ export async function sourceRow(c: CheckContext): Promise<Row> {
   const loop = readLoop(c.paths.loopState);
   const n = loop.sourceFailures ?? 0;
   const why = loop.sourceWhy ?? "no reason given";
-  if (n >= awayOf(c.cfg).sourceFailures) return fail(`the job source couldn't be read ${n} times in a row (${why}), so the box chooses without it. Waits by itself: the loop reads it again each minute. If it stays, from away: type taskbox connect status`);
+  if (n >= awayOf(c.cfg).sourceFailures) return fail(`the job source couldn't be read ${n} times in a row (${loop.sourceKind ? `${loop.sourceKind}: ` : ""}${why}), so the box chooses without it. ${sourceNext(loop)}`);
   return ok(n ? `the job source's last read failed (${why}); it is read again each minute` : "the job source's last read saw the queue");
 }

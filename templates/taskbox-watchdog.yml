@@ -4,8 +4,8 @@
 # waiting with no hold, the box held too long, a workspace request waiting too long, a hold variable
 # out of shape, or GitHub's API out of reach on 3 runs in a row. The hold is one repository variable
 # that only your controller writes; it runs out by itself. Values reach the script through env only.
-# It needs no secret, reads this repo's Actions only, and its run name carries the settings'
-# fingerprint, so taskbox check --away can tell whether this copy matches the box.
+# It needs no secret and only reads this repo. It warns when another box's check here names one of
+# this box's labels. Its run name carries the settings' fingerprint for taskbox check --away.
 name: taskbox hourly box check (__BOX__)
 run-name: taskbox hourly box check __BOX__ __FINGERPRINT__${{ inputs.test_alert && ' (test alert)' || '' }}
 
@@ -20,6 +20,7 @@ __SCHEDULE__
 
 permissions:
   actions: read
+  contents: read
 
 concurrency:
   group: taskbox-box-check-__BOX__
@@ -135,6 +136,15 @@ jobs:
             done
           done
           echo 0 > "$COUNT_DIR/unreached"
+          # Another box's check that names one of this box's labels: that box can take this one's jobs.
+          # This box's test job asks for its own label, so its death still alarms; the owner is told.
+          for f in $(gh api "repos/$REPO/contents/.github/workflows" --jq '.[].name' 2>/dev/null | grep -E '^taskbox-watchdog-[a-z0-9-]+\.yml$' || true); do
+            [ "$f" = "taskbox-watchdog-$BOX.yml" ] && continue
+            theirs=$(gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/.github/workflows/$f" 2>/dev/null | sed -n 's/^      LABELS: "\([A-Za-z0-9._ -]*\)"$/\1/p' | tr 'A-Z' 'a-z')
+            for l in $(printf '%s' "$LABELS" | tr 'A-Z' 'a-z'); do
+              case " $theirs " in *" $l "*) echo "::warning::$f also names $l, so that box can take $BOX's jobs for it. Give each box labels of its own." ;; esac
+            done
+          done
           late=$(jq -r --argjson now "$now" --argjson wait "$WAIT_MINUTES" "$LATE_JOBS" "$jobs")
           if [ -n "$late" ] && [ "$state" != "current" ]; then
             echo "Jobs are waiting and $BOX isn't taking them: over $WAIT_MINUTES minutes, with no hold current. The box may be off, asleep, at the FileVault screen, offline, or short of slots."

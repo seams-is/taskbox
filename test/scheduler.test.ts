@@ -44,7 +44,7 @@ describe("job sources", () => {
     let reads = 0;
     let fail = true;
     const src = new GitHubActionsSource({ items: async () => (reads++, fail ? Promise.reject(new Error("offline")) : []) }, 15_000);
-    expect(await src.read(0)).toEqual({ known: false, at: 0, why: "GitHub's queued jobs couldn't be read" });
+    expect(await src.read(0)).toEqual({ known: false, at: 0, why: "GitHub's queued jobs couldn't be read", kind: "network" });
     fail = false;
     expect((await src.read(59_000)).known).toBe(false);
     expect(reads).toBe(1);

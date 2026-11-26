@@ -44,8 +44,8 @@ describe("the setting", () => {
     expect(c.slots).toBe(1);
     expect(c.vmsAtOnce).toBe(2);
     expect(slotCount(c)).toBe(2);
-    expect(labelsFor(c, "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge"]);
-    expect(labelsFor(c, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge"]);
+    expect(labelsFor(c, "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "example-box-macos"]);
+    expect(labelsFor(c, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge", "example-box-linux"]);
     // Each VM keeps its own size.
     expect([c.vmCpus, c.vmMemoryMB, c.linux!.vmCpus, c.linux!.vmMemoryMB]).toEqual([4, 8192, 4, 8192]);
   });
@@ -290,8 +290,8 @@ describe("the loop with 2 slots", () => {
     expect(bothAt).toBeDefined();
     expect(seen).toEqual(["running a job", "waiting for a job"]);
     const jits = sys.requests.filter((r) => r.url.endsWith("generate-jitconfig")).map((r) => r.body as { name: string; labels: string[] });
-    // Each kind's VM registered its label and its merge label; each name carries its slot.
-    expect(jits.map((j) => j.labels).sort()).toEqual([["taskbox-linux", "taskbox-linux-merge"], ["taskbox-macos", "taskbox-macos-merge"]]);
+    // Each kind's VM registered its label, its merge label and the box's own; each name carries its slot.
+    expect(jits.map((j) => j.labels).sort()).toEqual([["taskbox-linux", "taskbox-linux-merge", "taskbox-1-linux"], ["taskbox-macos", "taskbox-macos-merge", "taskbox-1-macos"]]);
     expect(new Set(jits.map((j) => j.name.split("-")[2]))).toEqual(new Set(["1", "2"]));
     const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     const mac = jobs.find((j) => j.vmKind === "macos");

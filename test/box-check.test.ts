@@ -51,6 +51,8 @@ interface Run {
   apiDown?: boolean;
   jobsDown?: boolean; // the run list answers, a run's jobs don't
   count?: string;
+  jobs?: { name: string; status: string; labels: string[]; minutes: number }[]; // instead of the one queued job
+  files?: Record<string, string>; // the jobs repo's workflow files, by name
 }
 
 function run(r: Run): { code: number; out: string; count: string } {
@@ -58,9 +60,15 @@ function run(r: Run): { code: number; out: string; count: string } {
   const bin = join(dir, "bin");
   mkdirSync(bin);
   const now = Date.now();
-  const jobs = [...(r.queuedMinutes !== undefined ? [{ name: r.jobName ?? "app/test", status: "queued", labels: [CFG.label], created_at: isoSecond(now - r.queuedMinutes * M) }] : []), { name: "elsewhere", status: "queued", labels: ["ubuntu-latest"], created_at: isoSecond(now - 300 * M) }];
+  const jobs = r.jobs ? r.jobs.map((j) => ({ name: j.name, status: j.status, labels: j.labels, created_at: isoSecond(now - j.minutes * M) })) : [...(r.queuedMinutes !== undefined ? [{ name: r.jobName ?? "app/test", status: "queued", labels: [CFG.label], created_at: isoSecond(now - r.queuedMinutes * M) }] : []), { name: "elsewhere", status: "queued", labels: ["ubuntu-latest"], created_at: isoSecond(now - 300 * M) }];
   writeFileSync(join(dir, "fixture-jobs.json"), JSON.stringify({ jobs }));
-  writeFileSync(join(bin, "gh"), `#!/bin/sh\n${r.apiDown ? "exit 1\n" : ""}case "$*" in\n  *status=queued*) echo 101 ;;\n  *status=in_progress*) ;;\n  *runs/101/jobs*) ${r.jobsDown ? "exit 1" : `cat "${join(dir, "fixture-jobs.json")}"`} ;;\n  *) exit 1 ;;\nesac\n`);
+  mkdirSync(join(dir, "files"));
+  for (const [n, t] of Object.entries(r.files ?? {})) writeFileSync(join(dir, "files", n), t);
+  writeFileSync(join(dir, "names"), Object.keys(r.files ?? {}).join("\n") + "\n");
+  writeFileSync(
+    join(bin, "gh"),
+    `#!/bin/sh\n${r.apiDown ? "exit 1\n" : ""}case "$*" in\n  *status=queued*) echo 101 ;;\n  *status=in_progress*) ;;\n  *runs/101/jobs*) ${r.jobsDown ? "exit 1" : `cat "${join(dir, "fixture-jobs.json")}"`} ;;\n  *"contents/.github/workflows --jq"*) cat "${join(dir, "names")}" ;;\n  *contents/.github/workflows/*) cat "${join(dir, "files")}/$(basename "$4")" ;;\n  *) exit 1 ;;\nesac\n`,
+  );
   chmodSync(join(bin, "gh"), 0o755);
   if (JQ) writeFileSync(join(bin, "jq"), `#!/bin/sh\nexec ${JQ} "$@"\n`), chmodSync(join(bin, "jq"), 0o755);
   const { env, script } = parts(r.y ?? yaml);
@@ -179,6 +187,29 @@ describe("two boxes on one jobs repo", () => {
     expect(b).not.toContain("taskbox-1");
     expect(testJobYaml(other)).not.toContain("taskbox-1");
   });
+
+  test.serial.skipIf(!JQ)("one box dead, the other alive on a shared label: the dead box's own test job still alarms", () => {
+    // taskbox-1 is dead. example-box runs a real job on the label both name, and taskbox-1's test
+    // job, which asks for taskbox-1's own label alone, waits.
+    const r = run({
+      jobs: [
+        { name: "app/build", status: "in_progress", labels: [CFG.label], minutes: 5 },
+        { name: "taskbox test job taskbox-1", status: "queued", labels: ["taskbox-1-macos"], minutes: 90 },
+      ],
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Jobs are waiting and taskbox-1 isn't taking them");
+    expect(r.out).toContain("taskbox test job taskbox-1 has waited 90 min for taskbox-1-macos");
+    expect(testJobYaml(values)).toContain('label: ["taskbox-1-macos"]');
+    expect(testJobYaml(other)).toContain('label: ["example-box-macos"]');
+  }, SLOW);
+
+  test.serial.skipIf(!JQ)("a check warns when another box's check names one of this box's labels", () => {
+    const r = run({ files: { "taskbox-watchdog-taskbox-1.yml": yaml, "taskbox-watchdog-example-box.yml": boxCheckYaml({ ...other, labels: ["example-box-macos", CFG.label.toUpperCase()] }), "deploy.yml": "x" } });
+    expect(r.out).toContain(`::warning::taskbox-watchdog-example-box.yml also names ${CFG.label}, so that box can take taskbox-1's jobs for it`);
+    expect(r.out.match(/::warning::/g)).toHaveLength(1);
+    expect(run({ files: { "taskbox-watchdog-example-box.yml": boxCheckYaml(other) } }).out).not.toContain("::warning::");
+  }, SLOW);
 
   test.serial.skipIf(!JQ)("one box's hold quiets only that box", () => {
     expect(run({ queuedMinutes: 90, hold: hold() }).code).toBe(0);

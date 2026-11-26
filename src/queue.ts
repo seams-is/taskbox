@@ -6,6 +6,7 @@
 import { serviceName } from "./names.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { appJwt } from "./github.ts";
+import { classify, type GitHubError } from "./ghfail.ts";
 import { type Config, loadRepoOf, sourceAppId, sourceOf } from "./config.ts";
 import type { WaitingItem } from "./source.ts";
 import type { Log } from "./log.ts";
@@ -29,6 +30,7 @@ export class QueueError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly failure?: GitHubError, // the runner chain's class for it (ghfail.ts classify)
   ) {
     super(message);
   }
@@ -149,12 +151,12 @@ export class QueueReader {
     const jwt = appJwt(this.appId, this.pem, now);
     this.log.secret(jwt);
     const inst = await this.call("GET", `/repos/${this.owner}/${this.repo}/installation`, jwt);
-    if (!inst.ok) throw new QueueError(`GitHub answered ${inst.status} for the second App's installation`, inst.status);
+    if (!inst.ok) throw new QueueError(`GitHub answered ${inst.status} for the second App's installation`, inst.status, classify(inst, now, "the installation"));
     const { id } = (await inst.json()) as { id?: unknown };
     if (!Number.isInteger(id)) throw new QueueError("GitHub's answer for the second App's installation had no ID");
     const repositories = [forLoad ? this.load!.split("/")[1]! : this.repo];
     const res = await this.call("POST", `/app/installations/${id}/access_tokens`, jwt, { repositories, permissions: { actions: "read" } });
-    if (!res.ok) throw new QueueError(`GitHub answered ${res.status} for the second App's token`, res.status);
+    if (!res.ok) throw new QueueError(`GitHub answered ${res.status} for the second App's token`, res.status, classify(res, now, "the token"));
     const { token } = (await res.json()) as { token?: unknown };
     if (typeof token !== "string" || !token) throw new QueueError("GitHub's answer for the second App's token had none");
     this.log.secret(token);
@@ -177,7 +179,7 @@ export class QueueReader {
       if (forLoad) this.loadToken = undefined;
       else this.token = undefined;
     }
-    if (!res.ok) throw new QueueError(`GitHub answered ${res.status} for ${path.split("?")[0]}`, res.status);
+    if (!res.ok) throw new QueueError(`GitHub answered ${res.status} for ${path.split("?")[0]}`, res.status, classify(res, this.sys.now(), "the queue"));
     const body = (await res.json()) as T;
     const etag = res.headers.get("etag");
     if (etag) this.etags.set(path, { etag, body });

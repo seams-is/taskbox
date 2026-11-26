@@ -23,7 +23,7 @@ jobs:
     # At most two per label at once: the first waits for the box and keeps its age, which the hourly
     # box check sees; a newer one takes the place of the second, so a dead box never piles them up.
     concurrency:
-      group: taskbox-canary-${{ matrix.label }}
+      group: taskbox-canary-__BOX__-${{ matrix.label }}
       cancel-in-progress: false
     steps:
       - run: echo ok
