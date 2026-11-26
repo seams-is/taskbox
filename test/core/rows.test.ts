@@ -37,9 +37,9 @@ describe("the check-row registry", () => {
   });
   test("a later package's row takes its place between two, with no edit to v2's lists", () => {
     const fn: Row["fn"] = async () => ({ status: "OK", detail: "" });
-    const mine: Row = { name: "Later row", fn, order: 2005, in: ["check", "away"] };
+    const mine: Row = { name: "Accounts", fn, order: 2005, in: ["check", "away"] };
     const list = rowsFor([...allRows(), mine], "check", ctx());
-    const i = names(list).indexOf("Later row");
+    const i = names(list).indexOf("Accounts");
     expect(names(list)[i - 1]).toBe(CHECK_EXTRA[0]![0]);
     expect(names(list)[i + 1]).toBe(CHECK_EXTRA[1]![0]);
   });
