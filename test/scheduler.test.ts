@@ -1,5 +1,5 @@
 // v2.4.0: the scheduler. Each scenario
-// is a table test of decide(); the 17 Nov list and the 18 Nov stall are replays through a model of
+// is a table test of decide(); a burst day and a merge-queue stall are replays through a model of
 // the box (test/sim.ts); and random loads check the rules that must always hold.
 import { describe, expect, test } from "bun:test";
 import { classOf, ranked } from "../src/classes.ts";
@@ -184,14 +184,14 @@ describe("what a job can hold a VM with", () => {
 const at = (min: number) => min * M;
 const L = (name: string, q: number, minutes: number, labels = ["taskbox-linux"], event?: string): SimJob => ({ name, kind: "linux", labels, queuedAt: at(q), minutes, ...(event ? { event } : {}) });
 const MAC = (name: string, q: number, minutes: number): SimJob => ({ name, kind: "macos", labels: ["taskbox-macos"], queuedAt: at(q), minutes });
-// 17 Nov: two pushes, at 20:52 and 21:07, each with one ios and its Linux jobs. "0 min" is 0.5.
+// A burst: two pushes 15 min apart, each with one ios job and its Linux jobs. "0 min" is 0.5.
 const NOV17: SimJob[] = [
   MAC("mac1", 12, 2), ...[0.5, 2, 4, 2, 3, 0.5, 0.5].map((m, i) => L(`a${i + 1}`, 12, m)),
   MAC("mac2", 27, 8), ...[0.5, 0.5, 0.5, 0.5, 0.5, 2, 1, 1, 2, 0.5, 2].map((m, i) => L(`b${i + 1}`, 27, m)),
 ];
 const lastLinuxEnd = (runs: { kind: Kind; endedAt: number }[]) => Math.max(...runs.filter((r) => r.kind === "linux").map((r) => r.endedAt));
 
-describe("replay: 17 Nov, a Linux burst beside a macOS job", () => {
+describe("replay: a burst of 18 Linux jobs beside 2 macOS jobs", () => {
   const before = simulate({ jobs: NOV17, slots: 2, mode: "v221" });
   const follow = simulate({ jobs: NOV17, slots: 2, mode: "follow" });
   const source = simulate({ jobs: NOV17, slots: 2, mode: "source", classes: MERGE });
@@ -217,7 +217,7 @@ describe("replay: 17 Nov, a Linux burst beside a macOS job", () => {
   });
 });
 
-// 18 Nov, 23:28 to 23:59: merge-queue gate jobs waited behind later PR jobs on one Linux slot.
+// A stall: merge-queue gate jobs waited behind later PR jobs on one Linux slot for half an hour.
 // Modelled with GitHub handing the newest job first, the worst case the box can't see without a source.
 const NOV18: SimJob[] = [
   ...Array.from({ length: 14 }, (_, i) => L(`pr-${i}`, i * 2, 2.5)),
@@ -228,7 +228,7 @@ const NOV18: SimJob[] = [
   L("forged", 5, 1, ["taskbox-linux-merge"], "pull_request"),
 ];
 
-describe("replay: 18 Nov, the merge-queue stall", () => {
+describe("replay: 14 PR jobs and 3 merge-group gates, the merge-queue stall", () => {
   const gate = (r: { name: string }) => r.name.startsWith("gate-");
   const before = simulate({ jobs: NOV18, slots: 2, mode: "v221", github: "newest" });
   const source = simulate({ jobs: NOV18, slots: 2, mode: "source", classes: MERGE, github: "newest" });

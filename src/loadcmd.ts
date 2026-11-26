@@ -9,7 +9,7 @@ import type { CheckContext } from "./checks.ts";
 import { canaryLabels, fingerprint, TEMPLATES } from "./watchdog.ts";
 import { GitHub } from "./github.ts";
 import { Log } from "./log.ts";
-import { type Config, type Kind, kindsOf, labelsFor, loadRepoOf, readStateJson } from "./config.ts";
+import { type Config, type Kind, kindsOf, labelsFor, loadRepoOf, readStateJson, vmsAtMostOf } from "./config.ts";
 import { readJobs } from "./jobs.ts";
 import { currentSession, FRESH_MS, LOAD_MAX_MS, LOAD_MIN_MS, loadBlind, loadOff, loadOn, parseFor, readLoad } from "./load.ts";
 import { loadReport, loadReportLines } from "./loadreport.ts";
@@ -116,7 +116,7 @@ export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json:
       d.say("taskbox load start --for takes hours and minutes, such as 2h or 90m: at least 10m, at most 4h.");
       return 1;
     }
-    const slots = Number.isInteger(cfg.vmsAtOnce) ? cfg.vmsAtOnce! : 1;
+    const slots = vmsAtMostOf(cfg);
     if (!only && slots < 2) {
       d.say("With one VM at a time, the load test can't run beside the real repo: it never takes the real repo's last slot. Type taskbox load start --only to give it the box for a while.");
       return 1;

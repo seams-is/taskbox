@@ -4,7 +4,7 @@
 // this image and this install has passed: it fails closed.
 import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readJson, readStateJson, type Installed } from "./config.ts";
+import { MAX_SLOTS, readJson, readStateJson, type Installed } from "./config.ts";
 import { tunAddress } from "./guard.ts";
 import { clean } from "./progress.ts";
 import type { Sys } from "./sys.ts";
@@ -84,7 +84,7 @@ export const PEER = "another job VM";
 // The exit a try at another job VM gives for no route to host, as EHOSTUNREACH is numbered.
 export const NO_ROUTE = 113;
 export function peerTargets(addresses: string[]): Target[] {
-  return addresses.filter((a) => IPV4.test(a)).slice(0, 4).map((host) => ({ name: PEER, host, ports: PROOF_PORTS }));
+  return addresses.filter((a) => IPV4.test(a)).slice(0, MAX_SLOTS).map((host) => ({ name: PEER, host, ports: PROOF_PORTS }));
 }
 
 
