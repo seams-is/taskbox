@@ -2,10 +2,7 @@
 // tied to GitHub's job and run once GitHub names its runner (hooks/identity.ts). Every command takes
 // either id, or the VM's name.
 import { type BoxCtx, type CommandSpec, duration, type ErrorBody, type Outcome } from "../command.ts";
-import type { JobFilter, JobView } from "../jobs.ts";
-
-const JOB_STATES = ["queued", "starting", "running", "succeeded", "failed", "stopped", "cancelled"];
-const RESULT_WORDS = ["passed", "failed", "cancelled", "finished", "stopped", "no job", "box failure"];
+import { JOB_REF, JOB_STATES, type JobFilter, type JobView, RESULT_WORDS } from "../jobs.ts";
 // How often a watch or a follow reads again.
 export const WATCH_MS = 2_000;
 // How long job cancel waits for the loop to delete the VM and write the job's line.
@@ -24,7 +21,7 @@ async function load(c: BoxCtx): Promise<{ all: JobView[]; repo: string } | undef
   const cfg = await settingsOf(c);
   const repo = cfg?.jobsFrom ?? "";
   const kindOf = cfg ? (labels: string[]) => labels.map((l) => kindOfLabel(cfg, l)).find((k) => k !== undefined) : undefined;
-  const all = allJobs(c.p, c.cu, repo, kindOf);
+  const all = allJobs(c.p, c.cu, repo, c.ops.sys.now(), kindOf);
   return all ? { all, repo } : undefined;
 }
 
@@ -47,7 +44,6 @@ function asJson(j: JobView): Record<string, unknown> {
     reason: j.reason ?? null,
     stoppedBy: j.stoppedBy ?? null,
     result: j.result ?? null,
-    queuedAt: t(j.queuedAt),
     at: t(j.at),
     jobAt: t(j.jobAt),
     endedAt: t(j.endedAt),
@@ -133,7 +129,7 @@ async function listAnswer(c: BoxCtx) {
     v3,
     exit: 0,
     result: {
-      jobs: ended.map((j, i) => ({ ...v3jobs[i], ...asJson(j), kind: "job" })),
+      jobs: ended.map((j, i) => ({ ...v3jobs[i], id: j.id ?? null, vm: j.vm ?? null, githubJob: j.githubJob ?? null, githubRun: j.githubRun ?? null, workflow: j.workflow ?? null, event: j.event ?? null, state: j.state, reason: j.reason ?? null, stoppedBy: j.stoppedBy ?? null })),
       live: shown.filter((j) => !j.record && j.state !== "queued").map(asJson),
       queued: shown.filter((j) => j.state === "queued").map(asJson),
       total: match.length,
@@ -164,7 +160,7 @@ async function pick(c: BoxCtx): Promise<{ job: JobView; repo: string } | { out: 
   return { job: f.job, repo: got.repo };
 }
 
-const isLive = (j: JobView) => j.state === "queued" || j.state === "starting" || j.state === "running";
+const isLive = (j: JobView) => j.state === "queued" || j.state === "running";
 // The same job read again, for a watch: undefined once it can't be found.
 async function again(c: BoxCtx): Promise<JobView | undefined> {
   const p = await pick({ ...c, say: () => {} });
@@ -177,7 +173,7 @@ async function show(c: BoxCtx): Promise<Outcome> {
   const { footer } = await import("../state.ts");
   const p = await pick(c);
   if ("out" in p) return p.out;
-  const lines = (j: JobView) => [...jobShowLines(j, c.ops.sys.now()), ...(c.opts.net ? [netLine(j)] : [])];
+  const lines = (j: JobView) => jobShowLines(j, c.ops.sys.now());
   let j = p.job;
   if (c.flags.watch && isLive(j)) {
     // A job between its live file and its line is missed once: the next read finds its line.
@@ -195,11 +191,6 @@ async function show(c: BoxCtx): Promise<Outcome> {
   } else for (const l of lines(j)) c.say(l);
   for (const l of footer(await stateNow(c.ops), `Showed job ${j.id ?? j.githubJob ?? ""}.`)) c.say(l);
   return { exit: 0, result: { job: asJson(j) } };
-}
-
-function netLine(j: JobView): string {
-  const net = (j.record as { net?: unknown } | undefined)?.net;
-  return net && typeof net === "object" ? "Network: recorded for this job." : "Network: network capture isn't recorded for this job.";
 }
 
 // The box's lines for one job: both event logs, by the job's id.
@@ -240,6 +231,8 @@ async function logs(c: BoxCtx): Promise<Outcome> {
   const first = await printBox();
   if (!first.lines.length) c.say("  None yet.");
   for (const u of first.unread) c.say(`  This account can't read ${u}, so their lines aren't shown.`);
+  // GitHub's log is job content: the service account and root read it, and nobody else on the box.
+  const mayRead = c.cu !== undefined && (c.uid === c.cu || c.uid === 0);
   if (c.flags.follow && isLive(j)) {
     let misses = 0;
     while (isLive(j) && misses < 3) {
@@ -250,9 +243,9 @@ async function logs(c: BoxCtx): Promise<Outcome> {
       misses = now ? 0 : misses + 1;
     }
     // GitHub's log reaches the box a little after the end, once the loop could read it.
-    if (j.githubJob && j.id) for (let waited = 0; waited < LOG_WAIT_MS && readJobLog(c.p, j.id, c.cu) === undefined; waited += WATCH_MS) await c.ops.sys.sleep(WATCH_MS);
+    if (mayRead && j.githubJob && j.id) for (let waited = 0; waited < LOG_WAIT_MS && readJobLog(c.p, j.id, c.cu) === undefined; waited += WATCH_MS) await c.ops.sys.sleep(WATCH_MS);
   }
-  const gh = j.id ? readJobLog(c.p, j.id, c.cu) : undefined;
+  const gh = mayRead && j.id ? readJobLog(c.p, j.id, c.cu) : undefined;
   c.say("");
   const link = githubLink(j);
   let why: string | null = null;
@@ -261,14 +254,15 @@ async function logs(c: BoxCtx): Promise<Outcome> {
     c.say(`GitHub's log${shown.length < gh.length ? `, its last ${shown.length} lines` : ""}:`);
     for (const l of shown) c.say(l);
   } else {
-    why = isLive(j) ? "GitHub's log shows here once the job ends." : !j.githubJob ? "GitHub's job for it isn't known, so its log can't be read." : "GitHub's log isn't on the box.";
+    why = !mayRead ? "GitHub's log is kept for the service account and root alone, so it isn't shown here."
+      : isLive(j) ? "GitHub's log shows here once the job ends." : !j.githubJob ? "GitHub's job for it isn't known, so its log can't be read." : "GitHub's log isn't on the box.";
     c.say(`${why}${link ? ` GitHub has it at ${link}` : ""}`);
   }
   return { exit: 0, result: { job: asJson(j), box: first.lines, github: gh ?? null, why, link: link ?? null } };
 }
 
 async function cancel(c: BoxCtx): Promise<Outcome> {
-  const { githubLink, readJobs, readLiveOne, stopJob } = await import("../jobs.ts");
+  const { githubLink, readJobs, readLiveOne, removeStop, stopJob } = await import("../jobs.ts");
   const p = await pick(c);
   if ("out" in p) return p.out;
   const j = p.job;
@@ -286,11 +280,6 @@ async function cancel(c: BoxCtx): Promise<Outcome> {
   if (!isLive(j)) {
     c.say(`Job ${j.id ?? j.githubJob} already ended: ${j.state}. Nothing to stop.`);
     return { exit: 0, changed: false, result: { job: asJson(j) } };
-  }
-  if (j.state === "starting") {
-    const line = `VM ${j.vm} waits for a job and runs none yet, so there is nothing to stop. taskbox pause takes no new jobs.`;
-    c.say(line);
-    return { exit: 1, error: err("failed", line, "taskbox pause") };
   }
   const id = j.id!;
   // A typed yes, after the checks above, so an agent hears why it can't, not how to skip the question.
@@ -312,7 +301,17 @@ async function cancel(c: BoxCtx): Promise<Outcome> {
   const t = engineFor(cfg.engine, c.ops.sys, c.own);
   const r = await stopJob({ paths: c.own, engine: t, now: () => c.ops.sys.now() }, { id, vm: j.vm! }, CANCELLED_BY);
   const ended = () => (readJobs(c.own, c.cu) ?? []).find((x) => x.id === id);
-  if (!r.stopped && !ended()) {
+  // The job ended on its own first: its line is written and has no stop, so nothing was stopped.
+  const before = () => {
+    const e = ended();
+    if (!e || e.stoppedBy) return undefined;
+    removeStop(c.own, id);
+    c.say(`Job ${id} ended on its own first: ${e.state ?? e.result}. Nothing was stopped.`);
+    return { exit: 0, changed: false, result: { id } };
+  };
+  if (!r.stopped) {
+    const first = before();
+    if (first) return first;
     const line = `The VM ${j.vm} couldn't be stopped: ${r.why}.`;
     c.say(line);
     return { exit: 1, error: err("failed", line, "taskbox logs", "waits") };
@@ -329,7 +328,11 @@ async function cancel(c: BoxCtx): Promise<Outcome> {
       }
     }
     c.say(`Stopped job ${id}, and deleted its VM. The loop hasn't written its line yet.`);
-  } else c.say(`Stopped job ${id}: its VM is stopped and deleted.`);
+  } else {
+    const first = before();
+    if (first) return first;
+    c.say(`Stopped job ${id}: its VM is stopped and deleted.`);
+  }
   c.say(`GitHub ends the job as lost. The rest of its run carries on.${link ? ` ${link}` : ""}`);
   return { exit: 0, changed: true, result: { id, githubJob: j.githubJob ?? null, stoppedBy: CANCELLED_BY } };
 }
@@ -374,7 +377,7 @@ async function timings(c: BoxCtx, json: boolean): Promise<{ v3?: Record<string, 
 }
 
 const v3 = (r: { v3?: Record<string, unknown>; exit: number }) => ({ v3: r.v3!, exit: r.exit });
-const ID_ARG = { name: "ID", min: 1, max: 1, check: (v: string) => /^(j_[0-9a-z]{8}|[1-9][0-9]{0,15}|job-[A-Za-z0-9_-]{1,40})$/.test(v) };
+const ID_ARG = { name: "ID", min: 1, max: 1, check: (v: string) => JOB_REF.test(v) };
 // A stream in --json is one envelope a line, which isn't written yet: -w and -f are text only.
 const noStream = (p: { flags: Partial<Record<string, string | true>> }) => (p.flags.json && (p.flags.watch || p.flags.follow) ? "-w and -f are for the text form; --json gives one answer" : undefined);
 
@@ -386,11 +389,11 @@ export const commands: CommandSpec[] = [
     flags: ["json", "tail", "since", "watch"],
     options: [
       { name: "--all" },
-      { name: "--state", value: "STATE", check: (v) => JOB_STATES.includes(v) },
+      { name: "--state", value: "STATE", check: (v) => (JOB_STATES as readonly string[]).includes(v) },
       { name: "--kind", value: "KIND", check: (v) => v === "macos" || v === "linux" },
       { name: "--size", value: "NAME", check: (v) => /^[a-z][a-z0-9-]{0,30}$/.test(v) },
       { name: "--class", value: "NAME", check: (v) => /^[a-z][a-z0-9-]{0,30}$/.test(v) },
-      { name: "--result", value: "RESULT", check: (v) => RESULT_WORDS.includes(v) },
+      { name: "--result", value: "RESULT", check: (v) => (RESULT_WORDS as readonly string[]).includes(v) },
     ],
     check: noStream,
     shell: true,
@@ -403,7 +406,6 @@ export const commands: CommandSpec[] = [
     summary: "Every field of one job, by the box's id or GitHub's.",
     who: ["anyone"],
     flags: ["json", "watch"],
-    options: [{ name: "--net" }],
     args: ID_ARG,
     check: noStream,
     shell: true,
@@ -412,7 +414,7 @@ export const commands: CommandSpec[] = [
   },
   {
     path: ["job", "logs"],
-    summary: "The box's lines for one job, then its own log from GitHub.",
+    summary: "The box's lines for one job, then its log from GitHub. -f follows the box's lines to the end.",
     who: ["anyone"],
     flags: ["json", "follow", "tail"],
     args: ID_ARG,

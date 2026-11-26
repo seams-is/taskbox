@@ -79,7 +79,7 @@ describe("in the loop", () => {
         afterEnd: async (_, j) => {
           record = j.record;
           at.push(`after ${j.outcome} ${j.vmDeleted} ${sys.tartCalls().at(-1)?.split(" ")[0]}`);
-          return { id: "j_abcdefgh", result: "forged" };
+          return { githubRun: 42, result: "forged" };
         },
       },
     ];
@@ -87,7 +87,7 @@ describe("in the loop", () => {
     expect(at).toEqual(["before job- 0", "after done true delete"]);
     expect(record).toMatchObject({ job: "integration", result: "finished" });
     const line = JSON.parse(readFileSync(d.paths.jobsFile, "utf8"));
-    expect(line).toMatchObject({ id: "j_abcdefgh", result: "finished", job: "integration" });
+    expect(line).toMatchObject({ githubRun: 42, result: "finished", job: "integration" });
   });
 });
 

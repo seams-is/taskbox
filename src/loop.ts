@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
-import { appendJob, type JobRecord, newJobId, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
+import { appendJob, type JobRecord, jobOfVm, newJobId, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
 import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
 import { rows } from "./rows/index.ts";
 import { bootId, monoNow } from "./core/boot.ts";
@@ -317,8 +317,8 @@ export async function cleanLeakedVms(d: LoopDeps & { box: Slots }): Promise<stri
 // A job VM, never an image: what a loop leaves behind when it ends without deleting its VMs.
 export const isJobVm = (vm: { name: string; image?: unknown }) => !vm.image && vm.name.startsWith("job-");
 
-// The VM's name is its job's id (jobs.ts), made as a slot starts a VM.
-export function vmName(): string {
+// The VM's name is its job's id (jobs.ts), made as a slot starts a VM. The argument is v2's.
+export function vmName(_sys?: Sys): string {
   return vmOfJob(newJobId());
 }
 
@@ -722,7 +722,7 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
   const pub = pubs[0];
   if (!pub) return { ok: false, detail: "the box's public address couldn't be read", infra: true };
   const net = netFor(d.cfg, pubs);
-  const vm = vmName();
+  const vm = vmName(d.sys);
   const occ = d.box?.held.get(d.slot);
   if (occ) occ.name = vm; // before the clone, so the idle cleanup never takes it
   let proc: { exited: Promise<number>; kill(): void } | undefined;
@@ -889,7 +889,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   // that repo, so GitHub never gives it a real job, nor a real VM a load job.
   const served = turn.role === "load" ? loadRepoOf(d.cfg) : undefined;
   if (turn.role === "load" && !served) throw new Error("a load VM was chosen, but taskbox.json has no test repo");
-  const vm = vmName();
+  const vm = vmName(d.sys);
   const own = d.box?.held.get(d.slot);
   if (own) own.name = vm; // before the clone, so the idle cleanup never takes it
   // The runner takes only its kind's labels, so GitHub sends it only that kind's jobs. A VM started
@@ -1305,6 +1305,8 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
       vmStartedAt !== undefined && outcome !== "gave-way"
         ? {
             v: 1,
+            id: jobOfVm(vm),
+            vm,
             startedAt: vmStartedAt,
             jobAt,
             endedAt: d.sys.now(),
