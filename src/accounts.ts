@@ -2,7 +2,6 @@
 // agents and laptops reach over Tailscale SSH, and the pool account, where a workspace runs. People's accounts are never made, changed or deleted.
 // Each account taskbox makes is recorded by name and user ID in /opt/taskbox-state/accounts.json,
 // root's, so remove offers to delete only those, and only while the ID still matches.
-// docs/access-model-design.md, sections 2 and 10, has the design.
 import { type Stats, chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { USER_NAME } from "./access.ts";
@@ -367,7 +366,7 @@ export async function undoScreenSharing(sys: Sys, rec: AccountsRecord): Promise<
   return out;
 }
 
-// The pool account (docs/workspaces-design.md, section 5.1). One account, POOL_USER, where a
+// The pool account. One account, POOL_USER, where a
 // workspace runs: hidden, standard, no password, in its own group POOL_GROUP and in no other group
 // but those every account is in, its home its own at mode 700, the gate as its login shell, and
 // denied cron and at. taskbox makes it and its group, records both in pool.json (pin.ts), and from

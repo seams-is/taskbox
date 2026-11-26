@@ -17,7 +17,7 @@ if [ "$(basename -- "$self")" != install.sh ] || [ ! -f "$self" ]; then
 fi
 # The box's own settings come from this copy of taskbox. The public repo has none.
 if [ ! -f "$here/taskbox.json" ]; then
-  echo "This copy of taskbox has no taskbox.json. Copy taskbox.example.json to taskbox.json in your private copy, fill in your values (README, A new owner), then download that copy again."
+  echo "This copy of taskbox has no taskbox.json. Copy taskbox.example.json to taskbox.json in your private copy, fill in your values (the README's A new owner), then download that copy again."
   exit 1
 fi
 

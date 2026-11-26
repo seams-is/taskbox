@@ -54,7 +54,7 @@ describe("an outcome file", () => {
     utimesSync(join(dir, `${id}.json`), new Date(T), new Date(T));
     return dir;
   };
-  test("is kept when the wall clock goes back: boot and mono decide then (review 7, O1)", () => {
+  test("is kept when the wall clock goes back: boot and mono decide then", () => {
     const dir = setup();
     expect(keepOutcomes(dir, at(T - 1000, M + 1000))).toEqual([]);
   });

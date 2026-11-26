@@ -53,7 +53,7 @@ export interface CheckContext {
   rootUid?: number; // who must own /usr/local: root; tests use their own user
   // How many other VMs run now (v2.2.0). The loop says before each start; check reads the loop's state.
   vmsRunning?: number;
-  // An image download under way beside this start, in GB still to come (v2.2.0 review, finding 5).
+  // An image download under way beside this start, in GB still to come.
   downloadGB?: number;
 }
 
@@ -220,7 +220,7 @@ async function firewall(c: CheckContext): Promise<Omit<Check, "name">> {
 }
 
 export const FILEVAULT_FIX = "FileVault is off. At the box, as your admin user: System Settings, Privacy & Security, FileVault, Turn On, and keep the recovery key off the box. Then run this again.";
-// v2.5.0: off passes only when the owner's restart plan is filevault-off (docs/away-ready-design.md).
+// v2.5.0: off passes only when the owner's restart plan is filevault-off.
 async function fileVault(c: CheckContext): Promise<Omit<Check, "name">> {
   const r = await c.sys.run("/usr/bin/fdesetup", ["isactive"]);
   if (r.stdout.trim() === "true") return ok("on");
@@ -547,7 +547,7 @@ export async function boxSettingsRow(c: CheckContext): Promise<Omit<Check, "name
   return ok(keys.length ? `${c.paths.boxSettings} sets ${keys.join(", ")}` : "none: every setting is the release's");
 }
 
-// The job source App itself, asked of GitHub (connect-github design): a key in place
+// The job source App itself, asked of GitHub: a key in place
 // for an App that is gone, uninstalled, or has more than it should fails here, with the fix. SKIP
 // with no source, or where the key can't be read (anyone but root and the service).
 // Lines joined as sentences, each starting with a capital.
@@ -557,8 +557,7 @@ export function asSentences(lines: readonly string[]): string {
 
 // One line per runner in the group that isn't the box's own: a name without the box's runner prefix,
 // or a label that isn't in the box's settings (a runner claiming a hosted
-// label such as ubuntu-latest is named). JIT runners carry exactly the labels they were made with (ran:
-// connect-github design, section 10), so the box's own carry only its labels.
+// label such as ubuntu-latest is named). JIT runners carry exactly the labels they were made with, so the box's own carry only its labels.
 export function runnerProblems(runners: readonly GroupRunner[], prefix: string, labels: readonly string[]): string[] {
   const allowed = new Set(labels.map((l) => l.toLowerCase()));
   const shown = (s: string) => s.replace(/[^\x20-\x7e]/g, "").slice(0, 60);
@@ -574,7 +573,7 @@ export function runnerProblems(runners: readonly GroupRunner[], prefix: string, 
   return out;
 }
 
-// The box's runner group (connect-github design, section 10): only this box's runners, with its
+// The box's runner group: only this box's runners, with its
 // labels. Run as the service or root, which hold the runner App's key. Three reads, no writes.
 export async function runnerGroupRow(c: CheckContext): Promise<Omit<Check, "name">> {
   if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${c.paths.service} to check` };
@@ -666,7 +665,7 @@ export async function agentRow(c: CheckContext): Promise<Omit<Check, "name">> {
   return ok(`${u}, a hidden standard user with no password, taskbox's shell and a read-only home. Laptops pair with the name ${u}`);
 }
 
-// Workspaces (docs/workspaces-design.md): the approver key the settings name must be the one the box
+// Workspaces: the approver key the settings name must be the one the box
 // pinned at its own screen. Only then does the box trust it.
 export async function approverRow(c: CheckContext): Promise<Omit<Check, "name">> {
   const key = c.cfg.approverKey; // not trust: shown, and compared through trustedKey below

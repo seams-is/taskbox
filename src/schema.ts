@@ -1,4 +1,4 @@
-// The one schema module for the box's answers, shared by the box and the laptop (v3 design, §3.1).
+// The one schema module for the box's answers, shared by the box and the laptop.
 // Version 4 is the envelope (src/envelope.ts); version 3 is v2.x's one line per answer. A reader
 // takes its own version and the one before. It fails closed: no envelope, one that doesn't parse, an
 // answers version it doesn't take, another install's answer, or a stream with no final line is
@@ -167,7 +167,7 @@ export const ENVELOPE: Shape = obj(
 export type EnvelopeRead = { ok: true; envelopes: Envelope[] } | { ok: false; code: "unreachable"; detail: string };
 
 // The box's stdout, read as envelopes. One envelope, or for a stream one per line with final true on
-// the last alone. Every failure is unreachable (§3.1).
+// the last alone. Every failure is unreachable.
 export function readEnvelopes(stdout: string, expect: { command?: string; installId?: string | null; stream?: boolean } = {}): EnvelopeRead {
   const no = (detail: string): EnvelopeRead => ({ ok: false, code: "unreachable", detail });
   const lines = stdout.split("\n").filter((l) => l.trim() !== "");

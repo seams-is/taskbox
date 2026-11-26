@@ -1,5 +1,5 @@
 // taskbox rollback: back to the install kept behind /opt/taskbox.prev (v2's undo). As root, through
-// sudo. WP4 adds --to and the kept installs it picks from.
+// sudo.
 import type { CommandSpec } from "../command.ts";
 
 export const commands: CommandSpec[] = [

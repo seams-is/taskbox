@@ -1,4 +1,4 @@
-// Review findings S3, S11 and T8: root skips the test repo row, the simulator kept out of src/, and the
+// Root skips the test repo row, the simulator kept out of src/, and the
 // simulator's calibration path run end to end on a day the box's own answer shape carries.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -16,7 +16,7 @@ const M = 60_000;
 const TEST = { name: "example-org/load", role: "load" as const, runnerGroup: "taskbox-load" };
 const LOADCFG: Config = { ...CFG, vmsAtOnce: 2, sources: [{ type: "github-actions", appId: 4242, repos: [CFG.jobsFrom, TEST] }] };
 
-describe("S11: the simulator stays in test/", () => {
+describe("the simulator stays in test/", () => {
   test("no file in src/ imports the simulator or anything from test/", () => {
     const src = join(import.meta.dir, "../src");
     const files = readdirSync(src, { recursive: true }).map(String).filter((f) => f.endsWith(".ts"));
@@ -25,7 +25,7 @@ describe("S11: the simulator stays in test/", () => {
   });
 });
 
-describe("S3: the test repo row as root", () => {
+describe("the test repo row as root", () => {
   // The key's path is in the service account's home, which that account controls. Root never opens
   // it, so a link or a FIFO left there can neither redirect nor hang root's taskbox check.
   test("root skips the row and never opens the App key's path", async () => {
@@ -46,7 +46,7 @@ describe("S3: the test repo row as root", () => {
   });
 });
 
-describe("T8: the calibration path, end to end", () => {
+describe("the calibration path, end to end", () => {
   // A day made by the simulator, carried through the box's own jobs answer and JSON, then replayed:
   // the saved-day test's comparison must hold on a day that is the model's own.
   test("a simulated day, as taskbox job list --all --json, replays within 3 minutes on the macOS wait", () => {

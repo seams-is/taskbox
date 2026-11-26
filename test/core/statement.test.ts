@@ -80,7 +80,7 @@ describe("the box's check", () => {
   }
 });
 
-describe("review fixes: H1", () => {
+describe("statements", () => {
   test("args that hide a key in __proto__ are refused, never compared equal", async () => {
     const hidden = JSON.parse('{"force":false,"timeout":0,"__proto__":{"admin":true}}');
     expect(canonical(hidden)).toBeUndefined();

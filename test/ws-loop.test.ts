@@ -1,5 +1,4 @@
-// Build plan step 7: the loop reads root's workspaces state (docs/workspaces-design.md 5.2, 5.6 and
-// 5.8). What each kind of read holds, failing closed; the cached read from disk; and the watchers'
+// The loop reads root's workspaces state. What each kind of read holds, failing closed; the cached read from disk; and the watchers'
 // lines while a Whole holds the box.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";

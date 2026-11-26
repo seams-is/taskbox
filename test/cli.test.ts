@@ -168,7 +168,7 @@ describe("an update that stops before it changes anything", () => {
     const sys = new FakeSys();
     healthyBox(sys);
     (o.gh ?? githubRoutes)(sys);
-    // The update moves the key from before into root's key folder first (connect-github design), and
+    // The update moves the key from before into root's key folder first, and
     // the test's user can't make a folder root's, so that one folder reads as root's.
     return readAsRoot((path) => path === p.actionsKeyDir, () => run(["update"], CALLERS["root via sudo"], { root, sys }));
   }
@@ -222,7 +222,7 @@ describe("taskbox rollback-watch", () => {
   });
 });
 
-// N1: a trial's tag reaches the update, through the real argv path, as the admin (re-run through sudo)
+// A trial's tag reaches the update, through the real argv path, as the admin (re-run through sudo)
 // and as root. Root's run reaches the hop, which needs a public repo the example names none of.
 describe("taskbox update with a trial's tag", () => {
   test("the admin's update re-runs through sudo with the tag, and root's reaches the hop", async () => {

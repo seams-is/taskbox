@@ -1,4 +1,4 @@
-// v2.6.0's command names that v3.0.0 renamed (§2.6). Each prints one line and exits 2. With --json
+// v2.6.0's command names that v3.0.0 renamed. Each prints one line and exits 2. With --json
 // the line is an error envelope with error.code renamed and error.replacement. Only v2.6.0's surface
 // is here: commands from branches that never shipped need no pointer.
 

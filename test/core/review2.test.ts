@@ -1,5 +1,3 @@
-// The confirming review's findings (review-wp0b-2.md), each held by a test; the reviewer's probes
-// that fit are here too.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +10,7 @@ const T = 1_800_000_000_000;
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-review2-"));
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-describe("H1, the reviewer's probes", () => {
+describe("the reviewer's probes", () => {
   test("safeParse refuses prototype keys anywhere, escaped too, and with duplicates", () => {
     for (const t of ['{"__proto__":1}', '{"a":{"b":{"__proto__":{}}}}', '[[{"constructor":{}}]]', '{"\\u005f_proto__":{"force":true}}', '{"prototype":1}', '{"a":1,"__proto__":{"x":1},"a":2}']) expect(() => safeParse(t)).toThrow();
   });
@@ -29,7 +27,7 @@ describe("H1, the reviewer's probes", () => {
   });
 });
 
-describe("M1: the lock", () => {
+describe("the lock", () => {
   // test.serial: more than 50 ms of work alone (test/setup.ts).
   test.serial("many writers at once all land; a throw releases the lock", async () => {
     const p = join(tmp(), "c.json");
@@ -41,11 +39,11 @@ describe("M1: the lock", () => {
     await expect(withLock(p, () => Promise.reject(new Error("x")))).rejects.toThrow();
     expect(await withLock(p, () => 1)).toBe(1);
   });
-  test("N8: a nested lock on one file throws, rather than waiting for ever", async () => {
+  test("a nested lock on one file throws, rather than waiting for ever", async () => {
     const p = join(tmp(), "c.json");
     await expect(withLock(p, () => withLock(p, () => "inner"))).rejects.toThrow("one lock at a time");
   });
-  test("N8: two spellings of one file share one lock", async () => {
+  test("two spellings of one file share one lock", async () => {
     const d = tmp();
     const order: string[] = [];
     await Promise.all([
@@ -58,13 +56,13 @@ describe("M1: the lock", () => {
     ]);
     expect(order).toEqual(["a1", "a2", "b1"]);
   });
-  test("M1: state files have no unlocked writer to import", async () => {
+  test("state files have no unlocked writer to import", async () => {
     for (const m of ["nonces", "pending", "approvers", "spool"]) {
       const mod = await import(`../../src/core/${m}.ts`);
       expect(Object.keys(mod).filter((k) => /^write(Nonces|Pending|Approvers|Outcomes)$/.test(k))).toEqual([]);
     }
   });
-  test("M1: issuing a nonce and ending a workspace's subject, at once, beside a signed request's rotation, all land", async () => {
+  test("issuing a nonce and ending a workspace's subject, at once, beside a signed request's rotation, all land", async () => {
     const { dropNonce, nonceFor, readNonces, updateNonces } = await import("../../src/core/nonces.ts");
     const p = join(tmp(), "nonces.json");
     const o = { now: T, rootUid: uid, exists: () => true };
@@ -83,7 +81,7 @@ describe("M1: the lock", () => {
   });
 });
 
-describe("N7: temporary names left by a crash", () => {
+describe("temporary names left by a crash", () => {
   test("are swept once their writer's pid is gone; a live writer's stay", async () => {
     const { sweepTemps } = await import("../../src/core/rootfile.ts");
     const d = tmp();
@@ -97,7 +95,7 @@ describe("N7: temporary names left by a crash", () => {
 });
 void [chmodSync, existsSync, mkdirSync, writeOwnedText];
 
-describe("N1: the event limit", () => {
+describe("the event limit", () => {
   const ev = () => ({ dir: join(tmp(), "ev"), owner: uid });
   test("never drops an op's end: 70 progress reports in a minute, then the end", async () => {
     const { applyReport } = await import("../../src/core/child.ts");
@@ -165,7 +163,7 @@ describe("N1: the event limit", () => {
   });
 });
 
-describe("N1: the guard's exit", () => {
+describe("the guard's exit", () => {
   test("writes every dropped count before guardWatch returns", async () => {
     const { eventLog, readEvents } = await import("../../src/core/events.ts");
     const { guardWatch } = await import("../../src/guard.ts");
@@ -185,7 +183,7 @@ describe("N1: the guard's exit", () => {
   });
 });
 
-describe("N6: a pass that fails is seen", () => {
+describe("a pass that fails is seen", () => {
   test("a maker that throws, or a pass that throws, shows in the passes' problems, said once", async () => {
     const { makePasses, Passes } = await import("../../src/core/passes.ts");
     const lines: string[] = [];
@@ -217,7 +215,7 @@ describe("N6: a pass that fails is seen", () => {
   });
 });
 
-describe("N6: the event for a failed pass", () => {
+describe("the event for a failed pass", () => {
   test("each pass problem is one guard.pass-failed event, however many ticks it lasts", async () => {
     const { passTeller } = await import("../../src/guard.ts");
     const { makePasses, Passes } = await import("../../src/core/passes.ts");

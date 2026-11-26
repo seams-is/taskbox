@@ -1,19 +1,18 @@
-# The load test's workflow (taskbox v2.6.0, docs/load-test-design.md). Made by `taskbox load
-# workflow` from the box's own settings: don't edit the copy in your test repo; change the settings
+# The load test's workflow. Made by `taskbox template show load`
+# from the box's own settings: don't edit the copy in your test repo; change the settings
 # and make it again. It goes in .github/workflows/load.yml of your test repo, never the repo whose
 # jobs your box runs. It runs only on your box, so it uses no GitHub-hosted minutes, and only when
 # you start it: Actions, load, Run workflow. Every job only sleeps or echoes. Nothing builds,
 # fetches or keeps anything. It holds no secret and gets no token.
 #
 # Patterns, and what each measures in taskbox load report:
-#   canary: one tiny job per kind of VM, as taskbox canary asks for. Each kind's boot and wait.
+#   canary: one tiny job per kind of VM, as the test-job template asks for. Each kind's boot and wait.
 #   burst:  12 Linux jobs at once, each sleeping 30 to 240 s. Linux bursts keep the slots busy, give-ways.
 #   push:   one macOS job of 6 min with 9 Linux jobs, as a real push. The same, beside a macOS job.
 #   day:    6 macOS jobs and 54 Linux jobs at once. Every criterion, macOS waits too.
 # Runs may overlap: start push again while one runs for a busier moment. A job that waited to space
 # them would hold a slot. Each load job has a 15 minute limit here, and the box ends any after 20.
 # day beside the real repo needs 3 or more VMs at once to finish well inside a 4 hour session.
-# The merge pattern comes after its trial on GitHub (the design's "The merge pattern's trial").
 name: load
 run-name: taskbox load ${{ inputs.pattern }} __FINGERPRINT__
 

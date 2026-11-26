@@ -92,7 +92,7 @@ export function linuxProofLine(p: string | undefined): string {
 function loopChoiceFix(c: string | undefined): string {
   if (!c?.startsWith("turns: ") && !c?.startsWith("each: ") && !c?.startsWith("follow: ")) return "";
   if (/job source is none/.test(c)) return "";
-  if (/no job source|no second App|key isn't on the box|can't read the jobs repo's Actions/.test(c)) return ". To let the box see the queue, connect a job source (README, Connect a job source)";
+  if (/no job source|no second App|key isn't on the box|can't read the jobs repo's Actions/.test(c)) return ". To let the box see the queue, connect a job source (taskbox connect github)";
   return ". It reads the queue again before every VM";
 }
 
@@ -555,7 +555,7 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   }
   // Undo has happened by here: what follows is reported, never thrown.
   let did = `Back to #${prev.pr} ${noControl(prev.title)}. The loop moves to it once the current job or download ends.`;
-  // v2.6.1 (docs/v3-design.md §5.7, 6): daemons of a later release, which this install doesn't know,
+  // v2.6.1: daemons of a later release, which this install doesn't know,
   // are booted out and their plists removed, so they don't run against an install that can't answer them.
   const notEnded: string[] = [];
   const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid, notEnded).catch(() => [] as string[]);
@@ -692,7 +692,7 @@ export const TAILSCALED_STOP_TRIES = 20;
 
 export async function remove(d: OpsDeps, o: { serviceUid?: number; overSsh?: boolean; people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {
   // Removing taskbox's Tailscale ends a session that came in over it, and remove with it, half done
-  // and with no way back in (v2.2.2 review).
+  // and with no way back in.
   if (o.overSsh) {
     for (const l of ["taskbox remove runs at the box only: it takes the box off your tailnet, which would end this session halfway.", "", "Now: unchanged.", "Did: Nothing changed.", "Next: At the box, log in as your admin user and type taskbox remove."]) d.say(l);
     return 1;
@@ -1017,7 +1017,7 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
   return { kept };
 }
 
-// taskbox key reset approver (docs/workspaces-design.md, section 5.3): clears the approver key the box
+// taskbox key reset approver: clears the approver key the box
 // trusts, for a lost laptop, at the box only, after a typed yes. Workspaces stay off until the next
 // taskbox update pins the key taskbox.json names, after its own yes.
 export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {

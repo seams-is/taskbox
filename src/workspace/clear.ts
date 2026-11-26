@@ -1,4 +1,4 @@
-// taskbox workspace clear <agent>, as an admin at the box (docs/workspaces-design.md, section 3): deletes the
+// taskbox workspace clear <agent>, as an admin at the box: deletes the
 // files of that agent's pool account, after a typed yes naming their size.
 //
 // - It takes only an account pool.json records, by user ID, and only while the account has that ID.

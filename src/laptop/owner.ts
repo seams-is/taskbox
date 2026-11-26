@@ -1,4 +1,4 @@
-// The owner's workspace commands on the laptop (docs/workspaces-design.md, sections 3 and 5.3):
+// The owner's workspace commands on the laptop:
 // approve, pause, resume and end, each signed with the approver key, which asks for Touch ID; deny,
 // unsigned, as the label laptop; and approver, which makes the key once and names a new one.
 //

@@ -1,7 +1,7 @@
 // v3's housekeeping of root's shared state, by the one writer only (the guard under its current
-// label): lasting changes past their 24 hours lapse, with a confirm.lapsed event each (design §3.6);
+// label): lasting changes past their 24 hours lapse, with a confirm.lapsed event each;
 // root's event log keeps within its share of the size cap, and op records their count and cap, both
-// by write order and never by the clock (§3.2, §3.3); outcomes keep an hour; temporary names a crash left are swept; the event log's
+// by write order and never by the clock; outcomes keep an hour; temporary names a crash left are swept; the event log's
 // dropped counts whose minute is over are written. Every full pass.
 import { readdirSync } from "node:fs";
 import { join } from "node:path";

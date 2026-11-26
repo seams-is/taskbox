@@ -1,4 +1,4 @@
-// The pool account, in the access model (docs/workspaces-design.md, section 5.1): the install makes
+// The pool account, in the access model: the install makes
 // it, a re-run changes nothing, remove offers it only when taskbox made it, and taskbox check reads
 // each of its keys. A fake macOS directory stands for dscl, id, dseditgroup and sysadminctl.
 import { describe, expect, test } from "bun:test";

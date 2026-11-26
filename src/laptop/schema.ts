@@ -1,7 +1,6 @@
 // The box's answers as the laptop reads them: hello, and --json on status, job list, logs and check.
 // Version 4 is the envelope; a box on version 3 (v2.6.1, N-1) answers its v2.x line. Both are read by
-// the one schema module the box shares (src/schema.ts), which fails closed. WP12 moves the laptop to
-// print the envelope's lines.
+// the one schema module the box shares (src/schema.ts), which fails closed.
 import { ANSWERS_V4, READS } from "../envelope.ts";
 import { KINDS, type Kind, OUTCOMES, type Read, readAnswerOf, RESULTS, STATUSES, WORDS } from "../schema.ts";
 

@@ -140,7 +140,7 @@ export function readJobs(p: Paths, serviceUid: number | undefined, maxBytes = 5_
       try {
         const r: unknown = JSON.parse(line);
         // A hold line from before v2.2.0 isn't a job (its kind is set), so it is left out.
-        // Phases out of their shape go; the line stays (v2.4.0 security review, finding 5).
+        // Phases out of their shape go; the line stays.
         if (r && typeof r === "object" && "phases" in r && !validPhases((r as { phases?: unknown }).phases)) delete (r as { phases?: unknown }).phases;
         // v2.5.0: so do a use record or labels out of their shape: a guest that lied can't hide its job.
         if (r && typeof r === "object" && "usage" in r && !validUsage((r as { usage?: unknown }).usage)) delete (r as { usage?: unknown }).usage;

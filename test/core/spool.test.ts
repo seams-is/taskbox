@@ -175,7 +175,7 @@ describe("a request", () => {
     expect(readRequest("rq_x.unknown.json", f(JSON.stringify(good)), { owner: uid, now: T, kinds }).ok).toBe(false);
     expect(readRequest(name, { ...f("x"), bytes: new Uint8Array([0xff]) }, { owner: uid, now: T, kinds })).toMatchObject({ why: "the request isn't UTF-8" });
   });
-  test("its outcome is kept once, by id, in a folder nobody lists, for an hour (L9)", () => {
+  test("its outcome is kept once, by id, in a folder nobody lists, for an hour", () => {
     const dir = join(mkdtempSync(join(tmpdir(), "taskbox-out-")), "agent");
     expect(recordOutcome(dir, { id: good.id, at: T, ok: true, said: "Drained." }, { owner: uid })).toBe(true);
     expect(recordOutcome(dir, { id: good.id, at: T, ok: false, said: "again" }, { owner: uid })).toBe(false);
@@ -193,7 +193,7 @@ function dirname(p: string): string {
   return p.slice(0, p.lastIndexOf("/"));
 }
 
-describe("review fixes: H1 in requests", () => {
+describe("requests", () => {
   test("a body with __proto__ is refused before its kind's validator sees it", () => {
     const name = "rq_01JD8Q4AAAAAAAAAAAAAAAAAAA.drain.json";
     const text = `{"v":1,"id":"rq_01JD8Q4AAAAAAAAAAAAAAAAAAA","at":${T},"kind":"drain","body":{"__proto__":{"force":true}}}`;
@@ -202,13 +202,13 @@ describe("review fixes: H1 in requests", () => {
   });
 });
 
-describe("review fixes: L9 and L10", () => {
-  test("L9: each spool keeps its own outcomes", async () => {
+describe("outcomes and stale requests", () => {
+  test("each spool keeps its own outcomes", async () => {
     const { rootState } = await import("../../src/core/paths.ts");
     const s = rootState("/r");
     expect(new Set([s.outcomes("agent"), s.outcomes("service"), s.outcomes("pool-1")]).size).toBe(3);
   });
-  test("L10: a request of a kind no longer read goes once stale, and folders are counted each pass", async () => {
+  test("a request of a kind no longer read goes once stale, and folders are counted each pass", async () => {
     const dir = spool();
     const old = "rq_01JD8Q4AAAAAAAAAAAAAAAAAAA.retired.json";
     writeFileSync(join(dir, old), "{}");

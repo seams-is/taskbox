@@ -1,4 +1,4 @@
-// The owner's screen on the laptop (docs/workspaces-design.md, sections 3 and 5.7): taskbox on its
+// The owner's screen on the laptop: taskbox on its
 // own. One card per workspace, redrawn every 3 s, read from the box as the agent account, and a
 // macOS notification when a new request comes in. Everything on it is the box's text, scrubbed.
 import { OPEN, QUIET_MS } from "../workspace/model.ts";

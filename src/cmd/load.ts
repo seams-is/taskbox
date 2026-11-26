@@ -1,6 +1,5 @@
 // taskbox load status, report, start and stop: the load test's sessions (v2.6.0, loadcmd.ts). start
-// and stop are the service account's at the box, as v2's load on and load off were; WP15 moves start
-// to the laptop.
+// and stop are the service account's at the box, as v2's load on and load off were.
 import type { BoxCtx, CommandSpec } from "../command.ts";
 import { v3Answer } from "../cmdkit.ts";
 

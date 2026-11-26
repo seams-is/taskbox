@@ -181,7 +181,7 @@ export const commands: CommandSpec[] = [
       if (labelProblem(xpc) !== undefined) {
         const proof = currentProof(sys, p, GUARD_LABEL, c.ops.rootUid ?? 0);
         const works = proof.works;
-        // A second guard exits (§4.10.1), once the guard under the current label is proven to work.
+        // A second guard exits, once the guard under the current label is proven to work.
         // It waits a few passes for that, acting on nothing; with no proof it acts as the lone guard.
         const { GUARD_TICK_MS } = await import("../guard.ts");
         for (let i = 0; i < PROOF_WAIT_TICKS && keepGoing(); i++) {

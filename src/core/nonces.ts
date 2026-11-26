@@ -1,4 +1,4 @@
-// One nonce per subject (design §3.7), in root's nonces.json, 644, the guard its one writer. A
+// One nonce per subject, in root's nonces.json, 644, the guard its one writer. A
 // signed statement names the subject's current nonce; once a signed request for that subject
 // applies, the guard makes a new one, so a statement works once. Subjects: "box" (availability,
 // updates, keys, connect), "rules" (standing rules), and a workspace's name.

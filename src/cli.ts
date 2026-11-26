@@ -2,7 +2,7 @@
 // taskbox: the commands at the box, the daemons, and the first install (run by install.sh). Each
 // command is a file in src/cmd/ (registry.ts). This file reads the line, renames and usage, finds
 // the box's accounts and paths, gates root's commands, runs the command, and writes its footer or
-// its answers envelope (v3 design, §2 and §3.1).
+// its answers envelope.
 import { serviceName, setServiceName } from "./names.ts";
 import { lchownSync, lstatSync, readdirSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
@@ -136,7 +136,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     return EXIT.ok;
   }
 
-  // Each of v2.6.0's old names prints one line and exits 2 (§2.6). Said before anything is read, so it needs no settings.
+  // Each of v2.6.0's old names prints one line and exits 2. Said before anything is read, so it needs no settings.
   const old = renamed(
     words,
     (() => {
@@ -173,7 +173,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     say(`taskbox ${typeof tag === "string" ? cleanLine(tag).slice(0, 30) : "(release not known)"}`);
     return EXIT.ok;
   }
-  // The answers version this reader takes: one number, or for hello the list it reads (§3.1).
+  // The answers version this reader takes: one number, or for hello the list it reads.
   const theirs = parsed.answers === undefined ? [4] : versionsOf(parsed.answers);
   if (!theirs || (spec.path[0] !== "hello" && theirs.length !== 1)) {
     say(`--answers takes a version, such as 4${spec.path[0] === "hello" ? ", or the versions you read, such as 4,3" : ""}.`);
@@ -212,7 +212,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
   }
   if (spec.early) return exitOf(await spec.early(base));
 
-  // The project this box serves, from taskbox.json: one per box (§4.2.4).
+  // The project this box serves, from taskbox.json: one per box.
   const names = namesFor(spec, spec.namesFrom?.(base) ?? APP, APP);
   if (typeof names === "string") {
     say(base.json ? errorJson(base, spec.path.join("."), EXIT.failed, errorFromV3("state-unreadable"), "state-unreadable") : `${names}, so taskbox can't run. Nothing to do: agents fix it.`);
@@ -241,7 +241,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
   const c: BoxCtx = { ...base, names, own, p, S, cu, view, ops: { sys, paths: p, uid, serviceUid: cu, say, ask: deps.ask } };
   const name = boxName(deps);
 
-  // On a box, --box must name this box (§2.1), so a script written for the laptop runs here unchanged.
+  // On a box, --box must name this box, so a script written for the laptop runs here unchanged.
   if (typeof c.flags.box === "string" && c.flags.box.toLowerCase() !== name) {
     const line = `This is ${name ?? "this box"}: --box ${cleanLine(c.flags.box).slice(0, 63)} names another box.`;
     say(c.json ? errorJson(c, spec.path.join("."), EXIT.usage, { code: "usage", message: line, fix: null, who: null }, "usage") : line);
@@ -261,7 +261,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     }
   }
 
-  // A typed confirmation with no terminal and no --yes is a usage error (§2.2).
+  // A typed confirmation with no terminal and no --yes is a usage error.
   if (spec.typed && c.flags.yes === undefined && !(deps.terminal?.() ?? true)) {
     const line = `taskbox ${pathOf(spec)} asks for a typed yes, and there is no terminal here.${(spec.flags ?? []).includes("yes") ? " Add --yes to answer it." : " Run it at the box's own terminal."}`;
     say(c.json ? errorJson(c, spec.path.join("."), EXIT.usage, { code: "usage", message: line, fix: null, who: "at-the-box" }, "usage") : line);
@@ -275,7 +275,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
 
 const exitOf = (o: Outcome) => (typeof o === "number" ? o : o.exit);
 
-// The footer every command's text ends with (§3.1): Now, Did and Next. A handler that wrote its own
+// The footer every command's text ends with: Now, Did and Next. A handler that wrote its own
 // keeps it; one that didn't gets one here, on stderr beside a file.
 async function withFooter(c: BoxCtx, said: string[], o: Outcome, to: (l: string) => void): Promise<void> {
   if (c.spec.internal && c.spec.path[0] !== "hello") return;
@@ -300,7 +300,7 @@ async function text(c: BoxCtx, say: (l: string) => void): Promise<number> {
   return exitOf(o);
 }
 
-// --json: one envelope (§3.1). Its lines are the text form's, footer included; its result is the
+// --json: one envelope. Its lines are the text form's, footer included; its result is the
 // command's own fields, the same as its version 3 line. A reader that asked for version 3 gets that line.
 async function answer(c: BoxCtx, name: string | null): Promise<number> {
   const spec = c.spec;

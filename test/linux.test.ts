@@ -706,7 +706,7 @@ describe("the install", () => {
     expect(said.at(-1)).toBe(`Installed. Now log in as taskbox. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).`);
   });
 
-  // P3: install.sh run again over a service with state keeps that state; the key goes in root's folder.
+  // Install.sh run again over a service with state keeps that state; the key goes in root's folder.
   test.serial("a reinstall over an existing service keeps its ~/.taskbox", async () => {
     const { healthyBox, installDeps } = await import("./helpers.ts");
     const sys = new FakeSys();

@@ -101,8 +101,7 @@ async function proveOnce(d: ProveDeps, cfg: Config, pem: string, appId: number):
   if (!inst.ok) return `GitHub answered ${inst.status} for the App's installations`;
   const list = (await inst.json()) as { id?: unknown; repository_selection?: unknown; account?: { login?: unknown } }[];
   // v2.6.0: jobsFrom, and the test repo if taskbox.json names one, and no other repo. The App may
-  // lack the test repo for a while, so adding or removing it works in either order (product review,
-  // finding 2): the box then can't read the test repo, and says so.
+  // lack the test repo for a while, so adding or removing it works in either order: the box then can't read the test repo, and says so.
   const want = servedRepos(cfg).map((r) => r.name);
   const only = want.length > 1 ? `on ${want[0]}, may be on ${want[1]}, and on no other repo` : `on ${want[0]} only`;
   if (!Array.isArray(list)) return `GitHub's answer for the App's installations had no list`;
@@ -178,7 +177,7 @@ export function writeKey(d: Pick<InstallDeps, "paths" | "chown">, pem: string, s
   }
 }
 
-// The step in the install (connect-github design). Keys no longer come from Downloads
+// The step in the install. Keys no longer come from Downloads
 // here: taskbox connect github places them. The key in place is proved again on every update. An App
 // that gained rights, events or repos stops the update, since its key must never be used. An App that
 // is gone, uninstalled or refuses its key lets the update go on; the box then has no usable source,
@@ -198,7 +197,7 @@ export async function placeActionsKey(d: InstallDeps, cfg: Config, serviceUid: n
 
 const NO_KEY = "no new key in Downloads yet";
 
-// One new key in the admin's Downloads (connect --new-key, design section 4b): exactly one file ending
+// One new key in the admin's Downloads (connect --new-key): exactly one file ending
 // .private-key.pem, not a download in progress, made at or after since. Read as readDownloadedKey
 // reads it. Returns the key and the file to delete once it is placed, or why there is none yet.
 export function keyFromDownloads(dl: string, since: number): { pem: string; from: string; name: string; dev: number; ino: number } | { why: string; wait: boolean } {

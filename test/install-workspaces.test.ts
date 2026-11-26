@@ -1,4 +1,4 @@
-// taskbox update and workspaces (docs/workspaces-design.md, sections 5.1 and 5.3): the yes screen
+// taskbox update and workspaces: the yes screen
 // names any change to the approver key on its own line, with its fingerprint; a new key after the
 // first needs the old key's signed statement; and after the yes the install pins the key and makes
 // the pool account before anything else is installed.

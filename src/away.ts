@@ -1,4 +1,4 @@
-// `taskbox check --away` (v2.5.0, docs/away-ready-design.md): one screen of checks before the owner leaves
+// `taskbox check --away`: one screen of checks before the owner leaves
 // the box for days. Every check row, then the rows that matter only for leaving. Each line is OK,
 // FAIL with its fix and where it is done, WARN (worth a look, no reason to stay), or SKIP; the
 // screen ends "Ready to leave." or "N things to do before leaving." remote may run it, as it runs check: no row names a user, and rows that need

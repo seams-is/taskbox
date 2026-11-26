@@ -1,4 +1,4 @@
-// The loop's heartbeat (v2.5.0, docs/away-ready-design.md, scenario 3). Each slot's state carries a
+// The loop's heartbeat. Each slot's state carries a
 // beat: when it was written, the phase, and the latest time the next beat can come. The loop writes
 // one with every phase it enters, and again on each turn of a wait that repeats, never from a timer,
 // so a hung await stops it. A beat past its own deadline plus the grace reads Failing for every

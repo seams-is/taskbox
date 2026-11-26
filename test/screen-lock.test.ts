@@ -1,4 +1,4 @@
-// The service's screen lock (X3): read as the service with sysadminctl, never before a VM.
+// The service's screen lock: read as the service with sysadminctl, never before a VM.
 import { describe, expect, test } from "bun:test";
 import { CHECK_EXTRA, type CheckContext, PRESTART, screenLockFix, screenLockRow } from "../src/checks.ts";
 import { paths } from "../src/config.ts";

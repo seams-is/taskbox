@@ -1,4 +1,4 @@
-// What a command is, and how a command line is read (v3 design, §2.1 to §2.3). Each noun's commands
+// What a command is, and how a command line is read. Each noun's commands
 // are one file in src/cmd/, found by src/registry.ts, and read by cli.ts, shell.ts and elevate.ts.
 // So a later package adds a command by adding a file, and edits no shared one.
 //
@@ -8,10 +8,10 @@ import type { Paths } from "./config.ts";
 import type { OpsDeps } from "./ops.ts";
 import type { Sys } from "./sys.ts";
 
-// Exit codes (§2.4). Readers exit 0 whenever they could report: health lives in check.
+// Exit codes. Readers exit 0 whenever they could report: health lives in check.
 export const EXIT = { ok: 0, failed: 1, usage: 2, timeout: 3, denied: 4, interrupted: 130 } as const;
 
-// The global flags (§2.2). Every command takes each one it declares, and refuses the others with
+// The global flags. Every command takes each one it declares, and refuses the others with
 // exit 2. --help, --version, --answers and --box are taken by every command.
 export const GLOBAL_FLAGS = {
   json: { names: ["--json"] },
@@ -28,17 +28,17 @@ export const GLOBAL_FLAGS = {
   tail: { names: ["-n", "--tail"], value: "N" },
 } as const;
 export type GlobalFlag = keyof typeof GLOBAL_FLAGS;
-// Taken by every command: --help, --version, --answers (the reader's version, §3.1) and --box.
+// Taken by every command: --help, --version, --answers (the reader's version) and --box.
 export const ALWAYS = ["--help", "--version", "--answers", "--box"] as const;
 
-// A duration: 90s, 30m, 1h, 2d, or 0 for no limit (§2.2). In ms, or undefined when it isn't one.
+// A duration: 90s, 30m, 1h, 2d, or 0 for no limit. In ms, or undefined when it isn't one.
 export function duration(v: string): number | undefined {
   if (v === "0") return 0;
   const m = /^([1-9]\d{0,5})([smhd])$/.exec(v);
   if (!m) return undefined;
   return Number(m[1]) * { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as "s" | "m" | "h" | "d"];
 }
-// A memory size in M or G (§2.2). In MiB, or undefined.
+// A memory size in M or G. In MiB, or undefined.
 export function memory(v: string): number | undefined {
   const m = /^([1-9]\d{0,6})([MG])$/.exec(v);
   return m ? Number(m[1]) * (m[2] === "G" ? 1024 : 1) : undefined;
@@ -61,7 +61,7 @@ export interface Option {
   repeat?: boolean;
 }
 
-// Who may run a command (§2.3), for help and the shell. The checks themselves stay in each handler.
+// Who may run a command, for help and the shell. The checks themselves stay in each handler.
 export type Role = "anyone" | "agent" | "pool" | "service" | "admin" | "owner" | "launchd";
 
 export interface CommandSpec {
@@ -77,14 +77,14 @@ export interface CommandSpec {
   root?: boolean;
   // Internal: launchd's daemons, the install, hello. Not in help.
   internal?: boolean;
-  // A typed confirmation: with no terminal and no --yes it is a usage error (§2.2).
+  // A typed confirmation: with no terminal and no --yes it is a usage error.
   typed?: boolean;
   // Readers that anyone but the service account and root reads from the copies every user may read (shared.ts).
   sharedReads?: boolean;
-  // Its own parser checks every word (the workspace agent's commands, #47). No flag is read here.
+  // Its own parser checks every word (the workspace agent's commands). No flag is read here.
   raw?: boolean;
-  // For a raw command: the verb #47's parser (workspace/agent.ts) knows it by, where that isn't its
-  // first word. workspace end is #47's release.
+  // For a raw command: the verb the workspace parser (workspace/agent.ts) knows it by, where that isn't its
+  // first word. workspace end is the agent's release.
   agent?: string;
   // Its exit 1 is a verdict (check: a row failed), not a failure of the command: the envelope carries
   // the whole result, with no error.
@@ -103,7 +103,7 @@ export interface CommandSpec {
   // Runs before the box's settings are read: the rollback watcher, the lines for hold and share.
   early?: (c: Ctx) => Promise<Outcome>;
   run?: (c: BoxCtx) => Promise<Outcome>;
-  // The answer in version 3, for --json (§3.1): the same command's v2.x JSON line. Its fields
+  // The answer in version 3, for --json: the same command's v2.x JSON line. Its fields
   // become the v4 envelope's result.
   // result: the v4 result, where it isn't the v3 line's own fields.
   answer?: (c: BoxCtx) => Promise<{ v3: Record<string, unknown>; exit: number; result?: Record<string, unknown> }>;
@@ -112,7 +112,7 @@ export interface CommandSpec {
   linesFrom?: (result: Record<string, unknown>) => string[];
 }
 
-// An error, as the envelope carries it (§3.1, §3.5).
+// An error, as the envelope carries it.
 export const ERROR_CODES = ["usage", "renamed", "denied", "expired", "not-found", "busy", "refused-over-ssh", "signature", "unreachable", "timeout", "failed", "stale-state", "needs-confirm"] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 export const WHO = ["waits", "from-away", "at-the-box"] as const;
@@ -168,7 +168,7 @@ export interface Ctx {
   opts: Values; // the command's own flags, by name without the dashes
   flags: Partial<Record<GlobalFlag, string | true>>;
   json: boolean;
-  answers: number; // the answers version this reader takes (§3.1)
+  answers: number; // the answers version this reader takes
   deps: CliDeps;
   uid: number;
   env: Record<string, string | undefined>;
@@ -261,7 +261,7 @@ export function parse(specs: readonly CommandSpec[], argv: readonly string[]): P
       const g = (Object.keys(GLOBAL_FLAGS) as GlobalFlag[]).find((k) => (GLOBAL_FLAGS[k].names as readonly string[]).includes(flag));
       const o = (spec.options ?? []).find((x) => x.name === flag);
       if (g) {
-        // --box goes with every command: on a box it must name that box (§2.1), checked once settings are read.
+        // --box goes with every command: on a box it must name that box, checked once settings are read.
         if (g !== "box" && !(spec.flags ?? []).includes(g)) return bad(`${name} doesn't take ${flag}.`);
         if (flags[g] !== undefined) return bad(`${flag} is given twice.`);
         const def = GLOBAL_FLAGS[g];

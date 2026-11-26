@@ -1,4 +1,4 @@
-// v2.6.0: the load test (docs/load-test-design.md). The test repo in the settings, its own runner
+// v2.6.0: the load test. The test repo in the settings, its own runner
 // group, the App on both repos, the reader's budget per repo, the scheduler's roles, the sessions,
 // taskbox load start, off and report, and replays that check real jobs never wait behind load.
 import { describe, expect, test } from "bun:test";
@@ -599,7 +599,7 @@ describe("a test repo the box can't use", () => {
     expect(loadNow(c.p, NOW + 2 * M)).toBeUndefined();
     c.sys.clock = NOW + 2 * M;
     await c.run();
-    expect(c.said.at(-1)).toBe("The box ended session 1 at 10:01 UTC: the load test's runner group: runner group taskbox-load must list example-org/load only. README, Load test, has the steps.");
+    expect(c.said.at(-1)).toBe("The box ended session 1 at 10:01 UTC: the load test's runner group: runner group taskbox-load must list example-org/load only");
     // Nothing is on, so a second failure changes nothing.
     expect(loadFailed(c.p, NOW + 3 * M, "again")).toBeUndefined();
   });
@@ -611,7 +611,7 @@ describe("taskbox check's test repo row", () => {
     const { githubRoutes } = await import("./fake.ts");
     const sys = new FakeSys();
     githubRoutes(sys);
-    expect(await testRepoRow(ctx(sys))).toEqual({ status: "FAIL", detail: "no runner group named taskbox-load. README, Setting up the test repo, step 3" });
+    expect(await testRepoRow(ctx(sys))).toEqual({ status: "FAIL", detail: "no runner group named taskbox-load" });
     for (const [repos, status] of [[["example-org/load"], "OK"], [["example-org/load", "example-org/app"], "FAIL"]] as const) {
       const s2 = new FakeSys();
       githubRoutes(s2);

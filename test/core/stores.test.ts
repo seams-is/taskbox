@@ -211,8 +211,8 @@ describe("the pending store for confirm", () => {
   });
 });
 
-describe("review fixes: root's files", () => {
-  test("H1: untrusted JSON with __proto__, constructor or prototype keys is refused", async () => {
+describe("root's files", () => {
+  test("untrusted JSON with __proto__, constructor or prototype keys is refused", async () => {
     const { safeParse } = await import("../../src/core/rootfile.ts");
     expect(safeParse('{"a":{"b":1}}')).toEqual({ a: { b: 1 } });
     for (const t of ['{"__proto__":{"x":1}}', '{"a":[{"constructor":1}]}', '{"prototype":1}']) expect(() => safeParse(t)).toThrow();
@@ -220,12 +220,12 @@ describe("review fixes: root's files", () => {
     writeFileSync(join(dir, "n.json"), JSON.stringify({ v: 1, subjects: {} }).replace("{}", '{"__proto__":{"nonce":"x"}}'));
     expect(readNonces(join(dir, "n.json"), uid).kind).toBe("bad");
   });
-  test("M1: each write uses its own temporary name, so two writers never share one", async () => {
+  test("each write uses its own temporary name, so two writers never share one", async () => {
     const { tempName } = await import("../../src/core/rootfile.ts");
     expect(tempName("/x/f.json")).not.toBe(tempName("/x/f.json"));
     expect(tempName("/x/f.json")).toMatch(/^\/x\/f\.json\.new\.\d+\.[0-9a-f]{16}$/);
   });
-  test("M1: read, change and write under one lock: two changes at once both land", async () => {
+  test("read, change and write under one lock: two changes at once both land", async () => {
     const { updateOwnedJson } = await import("../../src/core/rootfile.ts");
     const p = join(tmp(), "nonces.json");
     const slow = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -240,13 +240,13 @@ describe("review fixes: root's files", () => {
   });
 });
 
-describe("review fixes: nonces, approvers, pending", () => {
-  test("L8: a nonce is made only for a subject that exists", () => {
+describe("nonces, approvers, pending", () => {
+  test("a nonce is made only for a subject that exists", () => {
     expect(() => nonceFor(emptyNonces(), "nova-3", T, nonce)).toThrow("isn't one");
     expect(nonceFor(emptyNonces(), "nova-3", T, nonce, (s) => s === "nova-3").changed).toBe(true);
     expect(nonceFor(emptyNonces(), "box", T, nonce).changed).toBe(true);
   });
-  test("L3: a signed removal takes the key out without banning it; only a reset bans", () => {
+  test("a signed removal takes the key out without banning it; only a reset bans", () => {
     const a = keyPair().key;
     const b = keyPair().key;
     const one = trustFirst(noApprovers(), a, T, "screen");
@@ -259,12 +259,12 @@ describe("review fixes: nonces, approvers, pending", () => {
     expect(addKey(r.state, a, T).ok).toBe(true);
   });
   const ask = { kind: "channel" as const, subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { a: 1, b: 2 } };
-  test("L7: the same change with its keys in another order is one entry", () => {
+  test("the same change with its keys in another order is one entry", () => {
     const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();
     expect(raise(r.state, { ...ask, payload: { b: 2, a: 1 } }, mo(T))).toMatchObject({ ok: true, again: true });
   });
-  test("L7: lapsed items not yet removed count toward the cap, with a line that says so", () => {
+  test("lapsed items not yet removed count toward the cap, with a line that says so", () => {
     let s = noPending();
     for (let i = 0; i < PENDING_MAX; i++) {
       const r = raise(s, { ...ask, payload: { i } }, mo(T));
@@ -273,7 +273,7 @@ describe("review fixes: nonces, approvers, pending", () => {
     }
     expect(raise(s, { ...ask, payload: { i: "x" } }, mo(T + LAPSE_MS))).toMatchObject({ ok: false, why: expect.stringContaining("waiting or lapsed") });
   });
-  test("L6: an item asked in the clock's future lapses, so a clock set back never stretches its 24 hours", () => {
+  test("an item asked in the clock's future lapses, so a clock set back never stretches its 24 hours", () => {
     const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();
     expect(lapse(r.state, mo(T - 10 * 60_000)).lapsed).toHaveLength(1);
@@ -282,7 +282,7 @@ describe("review fixes: nonces, approvers, pending", () => {
   });
 });
 
-describe("review fixes: L1 and M1, a signed request consumed once", () => {
+describe("a signed request consumed once", () => {
   test("the nonce rotates under its lock before the request is applied; two at once, one wins", async () => {
     const { consumeSigned } = await import("../../src/core/signed.ts");
     const { CONTROL_NS, signedWord, statementFor, statementText } = await import("../../src/core/statement.ts");

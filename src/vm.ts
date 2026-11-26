@@ -1,6 +1,6 @@
 // The VM engine: everything taskbox asks of the program that runs its VMs (v2.1.0). Tart is the one
 // engine (src/tart.ts). Another, such as Lume, would implement the same interface, and must give
-// the same security boundary first (docs/vm-engines.md). Nothing but this file imports an engine.
+// the same security boundary first. Nothing but this file imports an engine.
 import type { Paths, Versions } from "./config.ts";
 import type { UsageProbe } from "./guest.ts";
 import type { Proc, RunResult, Sys } from "./sys.ts";
@@ -18,7 +18,7 @@ export interface VmInfo {
 }
 
 // What a VM may reach, said once for every engine. Each engine turns it into its own rules, and must
-// enforce all of it (docs/vm-engines.md).
+// enforce all of it.
 export interface NetPolicy {
   // Addresses no VM may reach: the box's public address and the tailnet's range.
   block: string[];

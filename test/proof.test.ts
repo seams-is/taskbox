@@ -319,7 +319,7 @@ describe("one job VM can't reach another", () => {
   });
 });
 
-// A Whole workspace can begin while the proof waits for the gate (docs/workspaces-design.md 5.6).
+// A Whole workspace can begin while the proof waits for the gate.
 describe("the proof and a held box", () => {
   test("a hold that began before the gate let the proof in: no proof VM, and it says it didn't run", async () => {
     const { Slots } = await import("../src/loop.ts");

@@ -1,4 +1,4 @@
-// The agents' workspace commands on the laptop (docs/workspaces-design.md, section 3): queue, wait,
+// The agents' workspace commands on the laptop: queue, wait,
 // progress, release and workspaces run the box's own commands over Tailscale SSH as the agent
 // account, and connect opens the workspace's pool account. Each line is checked here with the box's
 // own parser first, and sent in the one spelling it makes, so the box's shell sees nothing else.
@@ -20,7 +20,7 @@ export function boxWords(c: AgentCmd): string[] {
       return ["queue", "--as", c.agent, "--why", c.why, ...json];
     case "wait":
       return [c.cmd, c.name, ...json];
-    // The box's taskbox workspace end is #47's release.
+    // The box's taskbox workspace end is the agent's release.
     case "release":
       return ["workspace", "end", c.name, ...json];
     case "progress":

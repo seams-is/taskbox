@@ -1,6 +1,6 @@
-// Spools (design §4.10.2): every request that changes the box reaches root through a folder owned by
-// the user who may ask, that root only reads and unlinks in. The rules, the workspaces design's §5.2,
-// hold for every spool:
+// Spools: every request that changes the box reaches root through a folder owned by
+// the user who may ask, that root only reads and unlinks in. The rules
+// below hold for every spool:
 // - the spool's parent is root's alone, and the spool a real folder, the asker's, mode 700;
 // - one file per request, written to a temporary name and renamed (writeSpoolFile);
 // - each is opened with no link followed and without blocking on a FIFO, and read only when it is a

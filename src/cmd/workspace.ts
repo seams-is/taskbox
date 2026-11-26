@@ -1,8 +1,7 @@
-// Workspaces (#47). taskbox workspace clear AGENT is root's, at the box (#47's clear), and taskbox
-// workspace end NAME is #47's release, which ends the agent's own workspace. The agent's other
-// verbs (queue, wait, progress, deny, signed) and workspaces are #47's as they stand: each
-// checks every word with workspace/agent.ts's own parser, in the agent shell and again here. WP10
-// and WP11 move them to the workspace noun (§2.4) with v4 answers.
+// Workspaces. taskbox workspace clear AGENT is root's, at the box, and taskbox
+// workspace end NAME ends the agent's own workspace. The agent's other
+// verbs (queue, wait, progress, deny, signed) and workspaces are as they stand: each
+// checks every word with workspace/agent.ts's own parser, in the agent shell and again here.
 import type { BoxCtx, CommandSpec } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
 
@@ -93,7 +92,7 @@ export const commands: CommandSpec[] = [
       return clear({ sys: c.ops.sys, say: c.say, ask: c.ask, chown: (path, u, g) => lchownSync(path, u, g), state: c.p.workspaces, poolRecord: c.p.poolRecord, usersDir: "/Users" }, c.args[0]!);
     },
   },
-  // #47's release, under the workspace noun (§2.4), so release is free for the signed releases (WP4).
+  // The agent's release, under the workspace noun, so release is free for the signed releases.
   { path: ["workspace", "end"], summary: "Ends the agent's own workspace.", who: ["agent"], shell: true, raw: true, agent: "release", run: agentCommand },
   ...AGENT_VERBS.map(([verb, summary]): CommandSpec => ({ path: [verb], summary, who: verb === "deny" || verb === "signed" ? ["owner"] : ["agent"], shell: true, raw: true, run: agentCommand })),
   { path: ["workspaces"], summary: "Every workspace, with its agent, state and reason.", who: ["anyone"], shell: true, raw: true, run: agentCommand },

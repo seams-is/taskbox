@@ -1,4 +1,4 @@
-// Signed requests (design §3.7): one mechanism for every owner-signed request.
+// Signed requests: one mechanism for every owner-signed request.
 //
 // The statement is one line of JSON, fields in one order, args with their keys sorted, so the laptop
 // and the box make the same bytes:
@@ -11,7 +11,7 @@
 // - its signature is one of the pinned approver keys' (approvers.ts), in namespace taskbox-control,
 //   checked by ssh-keygen -Y verify as nobody, with the user-presence flag set.
 // So a signature works once, on one box, for one action with its arguments, within 5 minutes.
-// The presence flag is set by software on the signing Mac (§3.7): it is checked, and never taken as
+// The presence flag is set by software on the signing Mac: it is checked, and never taken as
 // proof of a touch. Lasting changes wait for confirm at the box (pending.ts).
 import { fingerprint } from "../approver.ts";
 import { fromB64url, toB64url, verifySignature, type VerifyDeps } from "../workspace/approval.ts";

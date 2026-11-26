@@ -1,4 +1,4 @@
-// L-c (the confirming review): the laptop remembers each box's agreed answers version, and says so
+// The laptop remembers each box's agreed answers version, and says so
 // when a box drops to an older one.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";

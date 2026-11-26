@@ -14,7 +14,7 @@ export { CLASS_NAME, checkScheduling, type ClassRule, DEFAULT_TIMINGS, type Labe
 export const DEFAULT_TUN = "utun99";
 // The agent account's login shell: taskbox's commands only (src/shell.ts).
 export const REMOTE_SHELL = "/opt/taskbox/bin/taskbox-shell";
-// The pool account's login shell: the gate (docs/workspaces-design.md, section 5.4), from the install.
+// The pool account's login shell: the gate, from the install.
 export const GATE_SHELL = "/opt/taskbox/bin/taskbox-gate";
 // The box's tag on the tailnet: the policy's rules for it are the only ones that reach it.
 export const TAILNET_TAG = "tag:taskbox";
