@@ -620,7 +620,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
       rmSync(d.bootstrap, { recursive: true, force: true });
       rmSync(d.bootstrap + ".zip", { force: true });
     }
-    if (cfg.accounts.agent !== undefined) d.say(`  Agents and laptops reach the box as ${cfg.accounts.agent}: taskbox pair on a laptop asks for that name.`);
+    if (cfg.accounts.agent !== undefined) d.say(`  Agents and the controller reach the box as ${cfg.accounts.agent}: the controller pairs with that name.`);
     d.say(opts.first ? `Installed. Now log in as ${d.paths.service}. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -959,7 +959,7 @@ export async function placeAgent(d: AgentDeps, user: string, target: string = ag
   if (uid === undefined) {
     const made = await makeAgent(deps, user, REMOTE_SHELL, target, d.paths.accountsRecord);
     if (typeof made === "string") throw new Stop(made, true);
-    d.say(`  Made the account ${user}, for agents and laptops over Tailscale SSH. It has no password.`);
+    d.say(`  Made the account ${user}, for agents and the controller over Tailscale SSH. It has no password.`);
   } else if (readRecord(d.paths.accountsRecord).made[user]?.role !== "agent") {
     // The one agent from before v2.7.0 (planAgent): taskbox's own from now on, said before the yes.
     const rec = readRecord(d.paths.accountsRecord);

@@ -1,5 +1,6 @@
 // taskbox policy show: the tailnet policy's entries for this box, from its accounts. It prints; the
-// owner applies it in the admin console.
+// owner applies it in the admin console. Its result is the policy itself, with the box's install ID,
+// which the controller joins into one block for every box (policy.ts policyBlock).
 import type { CommandSpec } from "../command.ts";
 
 const LOGIN = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$/;
@@ -64,7 +65,10 @@ export const commands: CommandSpec[] = [
         print(policyEntries(pol));
       }
       if (owner === undefined) (c.opts.whole ? c.err : c.say)("Put your Tailscale login in place of OWNER, or type taskbox policy show --owner <your login>.");
-      return 0;
+      // The controller builds one block for every paired box from each box's result.
+      const { readInstallId } = await import("../answers.ts");
+      const installId = readInstallId(c.own.installId);
+      return { exit: 0, result: { ...(installId ? { installId } : {}), policy: pol } };
     },
   },
 ];

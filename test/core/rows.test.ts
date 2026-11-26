@@ -16,6 +16,9 @@ describe("the check-row registry", () => {
     // v3 adds one row, "Guard passes", after the Screen Sharing guard's (rows/guard.ts).
     const extra = names(CHECK_EXTRA);
     extra.splice(extra.indexOf("Screen Sharing guard") + 1, 0, "Guard passes", "Op deadlines", "Loop clock");
+    // And the access model's two (rows/accounts.ts).
+    extra.splice(extra.indexOf("Service account") + 1, 0, "Accounts");
+    extra.splice(extra.indexOf("Tailscale") + 1, 0, "Tailnet policy");
     expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...extra, SECOND_KEY_ROW]);
     expect(names(rows("away", ctx()))).toEqual([...names(AWAY_ONLY), ...names(PRESTART), ...extra]);
     expect(names(rows("preflight"))).toEqual(names(INSTALL_PREFLIGHT));
@@ -34,9 +37,9 @@ describe("the check-row registry", () => {
   });
   test("a later package's row takes its place between two, with no edit to v2's lists", () => {
     const fn: Row["fn"] = async () => ({ status: "OK", detail: "" });
-    const mine: Row = { name: "Accounts", fn, order: 2005, in: ["check", "away"] };
+    const mine: Row = { name: "Later row", fn, order: 2005, in: ["check", "away"] };
     const list = rowsFor([...allRows(), mine], "check", ctx());
-    const i = names(list).indexOf("Accounts");
+    const i = names(list).indexOf("Later row");
     expect(names(list)[i - 1]).toBe(CHECK_EXTRA[0]![0]);
     expect(names(list)[i + 1]).toBe(CHECK_EXTRA[1]![0]);
   });

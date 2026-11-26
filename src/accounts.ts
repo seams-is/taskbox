@@ -1,5 +1,5 @@
 // The accounts taskbox makes on the box: the service, which runs the loop, the agent, which
-// agents and laptops reach over Tailscale SSH, the pool accounts, where workspaces run, and two
+// agents and the controller reach over Tailscale SSH, the pool accounts, where workspaces run, and two
 // accounts for taskbox's own parts. A person's account is made only when the owner asks at the box,
 // and is never changed or deleted.
 // Each account taskbox makes is recorded by name, user ID and GeneratedUID in

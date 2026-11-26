@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Accounts, POOL_USER, validateAccounts } from "../src/access.ts";
-import { policyArgs, policyEntries, policyFor, policyText } from "../src/policy.ts";
+import { type Accounts, POOL_USER, poolNames, validateAccounts } from "../src/access.ts";
+import { policyArgs, policyBlock, policyEntries, policyFor, policyText } from "../src/policy.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = (name: string) => readFileSync(join(root, "test/fixtures/policy", name), "utf8");
@@ -131,6 +131,59 @@ describe("policyFor", () => {
 
   test("the generated text is JSON", () => {
     for (const [, a] of cases) expect(JSON.parse(policyText(policyFor(a)))).toEqual(policyFor(a));
+  });
+});
+
+describe("tailnet logins, pool accounts and a box's own tag", () => {
+  const people = validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: ["pat", { user: "sam", tailnet: "sam@example.com" }, { user: "lee", tailnet: "lee@example.com" }], ssh: ["pat", "sam"] });
+  test("matches tailnet-login.json: sam is reached from sam's login only, lee has Screen Sharing only", () => {
+    expect(policyText(policyFor(people))).toBe(fixture("tailnet-login.json"));
+    const p = policyFor(people);
+    expect(p.sshTests[0]!.deny).toContain("sam");
+    expect(p.ssh.filter((r) => (r.users as string[]).includes("sam")).map((r) => r.src)).toEqual([["sam@example.com"]]);
+  });
+  test("a person whose login is the owner's is the owner's, with nothing apart", () => {
+    const a = validateAccounts({ service: "taskbox", people: [{ user: "pat", tailnet: "me@example.com" }], ssh: ["pat"] });
+    const p = policyFor(a, { owner: "me@example.com" });
+    expect(p.ssh).toEqual([{ action: "check", src: ["me@example.com"], dst: ["tag:taskbox"], users: ["pat"] }]);
+    expect(p.sshTests).toHaveLength(1);
+  });
+  test("matches pool-accounts.json: every pool account in one accept rule", () => {
+    const w = validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [], workspaces: { pool: "taskbox-ws", size: 3 } });
+    expect(policyText(policyFor(w, {}, poolNames(w)))).toBe(fixture("pool-accounts.json"));
+  });
+  test("matches custom-tag.json, and refuses a tag that isn't one", () => {
+    const a = validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: ["pat"], ssh: ["pat"] });
+    expect(policyText(policyFor(a, { tag: "tag:taskbox-2" }))).toBe(fixture("custom-tag.json"));
+    expect(() => policyFor(a, { tag: "autogroup:member" })).toThrow(/isn't a tag/);
+  });
+  test("the generated text is JSON for each", () => {
+    for (const f of ["tailnet-login.json", "pool-accounts.json", "custom-tag.json"]) expect(() => JSON.parse(fixture(f))).not.toThrow();
+  });
+});
+
+describe("one block for every paired box", () => {
+  const a = validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] });
+  test("each box's entries under its install ID, list by list, in a stable order", () => {
+    const b = policyBlock([
+      { installId: "box-b", policy: policyFor(a, { tag: "tag:taskbox-b" }) },
+      { installId: "box-a", policy: policyFor(a, { tag: "tag:taskbox-a" }) },
+    ]);
+    expect(b.shared).toEqual([]);
+    const lines = b.text.split("\n");
+    expect(lines[0]).toBe('In "tagOwners":');
+    expect(lines.slice(1, 5)).toEqual(["  // taskbox:box-a", '  "tag:taskbox-a": ["OWNER"],', "  // taskbox:box-b", '  "tag:taskbox-b": ["OWNER"],']);
+    expect(lines.filter((l) => l.startsWith("In "))).toEqual(['In "tagOwners":', 'In "grants":', 'In "ssh":', 'In "sshTests":', 'In "tests":']);
+    // Every rule line is one of its box's own whole file.
+    const whole = policyText(policyFor(a, { tag: "tag:taskbox-a" })) + policyText(policyFor(a, { tag: "tag:taskbox-b" }));
+    for (const l of lines.filter((x) => x.startsWith("  {"))) expect(whole).toContain(l.trim().replace(/,$/, ""));
+  });
+  test("two boxes on one tag are named: Tailscale would join their rules", () => {
+    const b = policyBlock([{ installId: "one", policy: policyFor(a) }, { installId: "two", policy: policyFor(a) }]);
+    expect(b.shared).toEqual(["one, two share tag:taskbox, so Tailscale gives each of them the others' SSH rules too. Give each box a tag of its own."]);
+  });
+  test("an install ID that could break the comment is refused", () => {
+    expect(() => policyBlock([{ installId: "x\n}", policy: policyFor(a) }])).toThrow(/install ID/);
   });
 });
 

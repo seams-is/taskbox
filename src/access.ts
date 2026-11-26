@@ -43,7 +43,7 @@ export type Accounts = {
   tailnet?: Record<string, string>;
   // The people who may log in by Tailscale SSH, in check mode. A person gets Screen Sharing, and SSH
   // only when named here: an account that logs in at the screen is no reason to let agents on the
-  // owner's laptop log in as it. Empty by default.
+  // owner's controller log in as it. Empty by default.
   ssh?: string[];
   workspaces?: { pool: string; size: number };
 };

@@ -94,6 +94,10 @@ const QUIET_ACCOUNTS: [string, RunResult][] = [
   ["/usr/bin/dscl . -read /Users/taskbox-agent ShadowHashData", out("No such key: ShadowHashData\n")],
   ["/usr/bin/dscl . -read /Users/taskbox-agent AuthenticationAuthority", out("No such key: AuthenticationAuthority\n")],
   ["/usr/bin/dscl . -read /Groups/com.apple.access_screensharing GroupMembership NestedGroups", out("No such key: GroupMembership\nNestedGroups: ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050\n")],
+  // No account but the agent has taskbox's shell, and taskbox's own two aren't made yet.
+  ["/usr/bin/dscl . -list /Users UserShell", out("root /bin/sh\ntaskbox /bin/zsh\n")],
+  ["/usr/bin/id -u _taskboxnet", { code: 1, stdout: "", stderr: "id: _taskboxnet: no such user\n" }],
+  ["/usr/bin/id -u _taskboxgh", { code: 1, stdout: "", stderr: "id: _taskboxgh: no such user\n" }],
 ];
 export function quietAccounts(sys: FakeSys): void {
   sys.fallbacks.push((cmd, args) => QUIET_ACCOUNTS.find(([line]) => line === [cmd, ...args].join(" "))?.[1]);

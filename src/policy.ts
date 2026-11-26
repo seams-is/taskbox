@@ -15,6 +15,8 @@ export type PolicyInputs = {
   owner?: string;
   // The box's admin accounts, or ADMIN.
   admins?: readonly string[];
+  // The box's tag: tag:taskbox, or one of its own, so two boxes' rules stay apart.
+  tag?: string;
 };
 
 type Rule = Record<string, unknown>;
@@ -26,8 +28,12 @@ export type Policy = {
   tests: Rule[];
 };
 
-// pool: the workspace accounts (access.ts poolOf), each accepted in a rule of its own. Their login
+export const TAG = /^tag:[a-z0-9][a-z0-9-]{0,62}$/;
+
+// pool: the workspace accounts (access.ts poolOf), accepted in a rule of their own. Their login
 // shell is the gate, which opens a shell only for an Active workspace.
+// A person with a tailnet login is reached from that login only: their check rule, their grant and
+// their test name it, and the owner's test denies them. Everyone else comes from the owner.
 export function policyFor(a: Accounts, inputs: PolicyInputs = {}, pool: readonly string[] = []): Policy {
   const owner = inputs.owner ?? OWNER;
   // root has its own deny line, so it isn't listed again as an admin.
@@ -39,35 +45,56 @@ export function policyFor(a: Accounts, inputs: PolicyInputs = {}, pool: readonly
     if (admins.some((x) => x.toLowerCase() === name.toLowerCase())) throw new Error(`${name} is an admin, so it can't be ${what}; make it a standard user, or name another account`);
   }
   for (const name of pool) if (admins.some((x) => x.toLowerCase() === name.toLowerCase())) throw new Error(`${name} is an admin, so it can't be the workspace account; make it a standard user`);
-  const tag = TAILNET_TAG;
+  const tag = inputs.tag ?? TAILNET_TAG;
+  if (!TAG.test(tag)) throw new Error(`${tag.slice(0, 70)} isn't a tag: tag: then lowercase letters, digits and '-'`);
+  // A login the same as the owner's is the owner: nothing apart.
+  const loginOf = (n: string) => {
+    const l = a.tailnet?.[n];
+    return l !== undefined && l.toLowerCase() !== owner.toLowerCase() ? l : undefined;
+  };
 
   // The agent and the workspace accounts are accepted: each has taskbox's own shell.
   const agent = a.agent !== undefined ? [a.agent] : [];
   const accept = [...agent, ...pool];
-  // Only the people in accounts.ssh, in check mode. The rest of the people are denied SSH.
-  const check = [...(a.ssh ?? [])];
+  // Only the people in accounts.ssh, in check mode, each from their own login when they have one.
+  const sshPeople = a.ssh ?? [];
+  const check = sshPeople.filter((n) => loginOf(n) === undefined);
+  const logins = [...new Set(a.people.map(loginOf).filter((l): l is string => l !== undefined))].sort();
+  const checkFrom = (l: string) => sshPeople.filter((n) => loginOf(n) === l);
 
   const ssh: Rule[] = [];
   if (agent.length > 0) ssh.push({ action: "accept", src: [owner], dst: [tag], users: agent });
   if (pool.length > 0) ssh.push({ action: "accept", src: [owner], dst: [tag], users: [...pool] });
   if (check.length > 0) ssh.push({ action: "check", src: [owner], dst: [tag], users: check });
+  for (const l of logins) if (checkFrom(l).length) ssh.push({ action: "check", src: [l], dst: [tag], users: checkFrom(l) });
 
   // A port opens only for a role that needs it: SSH for any ssh rule, Screen Sharing for people.
-  const ports = [...(ssh.length > 0 ? [22] : []), ...(a.people.length > 0 ? [5900] : [])];
+  const ownerSsh = agent.length > 0 || pool.length > 0 || check.length > 0;
+  // The owner keeps Screen Sharing whenever anyone has it, as the admins do.
+  const ports = [...(ownerSsh ? [22] : []), ...(a.people.length > 0 ? [5900] : [])];
+  const portsOf = (l: string) => [...(checkFrom(l).length ? [22] : []), 5900];
 
   const grants: Rule[] = [{ src: ["autogroup:member"], dst: ["autogroup:self"], ip: ["*"] }];
   if (ports.length > 0) grants.push({ src: [owner], dst: [tag], ip: ports.map((p) => `tcp:${p}`) });
+  for (const l of logins) grants.push({ src: [l], dst: [tag], ip: portsOf(l).map((p) => `tcp:${p}`) });
 
   const sshTest: Rule = { src: owner, dst: [tag] };
   if (accept.length > 0) sshTest.accept = accept;
   if (check.length > 0) sshTest.check = check;
-  sshTest.deny = ["root", a.service, ...a.people.filter((n) => !(a.ssh ?? []).includes(n)), ...admins];
+  sshTest.deny = ["root", a.service, ...a.people.filter((n) => !check.includes(n)), ...admins];
+  const sshTests: Rule[] = [sshTest];
+  for (const l of logins) {
+    const mine = checkFrom(l);
+    sshTests.push({ src: l, dst: [tag], ...(mine.length ? { check: mine } : {}), deny: ["root", a.service, ...accept, ...a.people.filter((n) => !mine.includes(n)), ...admins] });
+  }
 
   const tests: Rule[] = [];
   if (ports.length > 0) tests.push({ src: owner, accept: ports.map((p) => `${tag}:${p}`) });
+  for (const l of logins) tests.push({ src: l, accept: portsOf(l).map((p) => `${tag}:${p}`) });
   tests.push({ src: tag, deny: OWNER_PORTS.map((p) => `${owner}:${p}`) });
+  for (const l of logins) tests.push({ src: tag, deny: OWNER_PORTS.map((p) => `${l}:${p}`) });
 
-  return { tagOwners: { [tag]: [owner] }, grants, ssh, sshTests: [sshTest], tests };
+  return { tagOwners: { [tag]: [owner] }, grants, ssh, sshTests, tests };
 }
 
 // The policy as the doc shows it: fixed key order, one rule per line.
@@ -145,4 +172,36 @@ export function sshChangeLines(before: string[], after: string[]): string[] {
   if (gained.length) lines.push(`${gained.join(" and ")} ${gained.length === 1 ? "gains" : "gain"} Tailscale SSH to the box, in check mode.`);
   lines.push("After the update, type taskbox policy show, and in Tailscale's admin console replace taskbox's entries with what it prints. Until then the console keeps the old rules.");
   return lines;
+}
+
+// One block for every box the controller has paired, for `taskbox policy show --box all`: list by
+// list, each box's entries under a `// taskbox:<installId>` line, so the owner sees which lines are
+// taskbox's and whose. Tailscale's policy file takes comments. shared names the boxes that share a
+// tag: Tailscale joins their rules, so each box takes the others' accounts too.
+export type BoxPolicy = { installId: string; policy: Policy };
+const INSTALL_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function policyBlock(boxes: readonly BoxPolicy[]): { text: string; shared: string[] } {
+  const one = (r: unknown) => JSON.stringify(r).replace(/":/g, '": ').replace(/,(?=["{\[])/g, ", ").replace(/^\{/, "{ ").replace(/\}$/, " }");
+  for (const b of boxes) if (!INSTALL_ID.test(b.installId)) throw new Error("an install ID is letters, digits, '_' and '-'");
+  const sorted = [...boxes].sort((x, y) => (x.installId < y.installId ? -1 : x.installId > y.installId ? 1 : 0));
+  const out: string[] = ['In "tagOwners":'];
+  for (const b of sorted) {
+    out.push(`  // taskbox:${b.installId}`);
+    for (const [t, o] of Object.entries(b.policy.tagOwners)) out.push(`  ${JSON.stringify(t)}: ${JSON.stringify(o).replace(/,/g, ", ")},`);
+  }
+  for (const k of ["grants", "ssh", "sshTests", "tests"] as const) {
+    if (sorted.every((b) => b.policy[k].length === 0)) continue;
+    out.push("", `In "${k}":`);
+    for (const b of sorted) {
+      if (!b.policy[k].length) continue;
+      out.push(`  // taskbox:${b.installId}`);
+      for (const r of b.policy[k]) out.push(`  ${one(r)},`);
+    }
+  }
+  out.push("");
+  const byTag = new Map<string, string[]>();
+  for (const b of sorted) for (const t of Object.keys(b.policy.tagOwners)) byTag.set(t, [...(byTag.get(t) ?? []), b.installId]);
+  const shared = [...byTag].filter(([, ids]) => ids.length > 1).map(([t, ids]) => `${ids.join(", ")} share ${t}, so Tailscale gives each of them the others' SSH rules too. Give each box a tag of its own.`);
+  return { text: out.join("\n"), shared };
 }

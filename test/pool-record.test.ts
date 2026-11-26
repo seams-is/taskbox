@@ -32,7 +32,7 @@ describe("a release from before workspaces, after an undo", () => {
   test("its Screen Sharing and remove rewrites of accounts.json leave pool.json as it was, and the next install still sees the pool as taskbox's", async () => {
     const { p, sys, d } = box();
     // The box with workspaces: the service and agent in accounts.json, the pool in pool.json.
-    writeRecord(d, p.accountsRecord, { service: "taskbox", made: { taskbox: { role: "service", uid: 502 }, "taskbox-agent": { role: "agent", uid: 470 } } });
+    writeRecord(d, p.accountsRecord, { inUse: { service: "taskbox" }, made: { taskbox: { role: "service", uid: 502 }, "taskbox-agent": { role: "agent", uid: 470 } } });
     expect(await placePool(d, p, POOL_USER, POOL_USER, GATE_SHELL)).toBe(471);
     const before = readFileSync(p.poolRecord, "utf8");
 

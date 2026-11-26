@@ -127,7 +127,7 @@ describe("planService, before the yes", () => {
     expect(why).toMatch(/ci's taskbox state is on this box/);
     expect(why).toMatch(/taskbox remove first/);
     // With that state gone, the new name is made.
-    expect(await planService(deps(boxSys({ uids: {} })), "taskbox", { service: "ci", made: {} }, noState)).toEqual({ make: true });
+    expect(await planService(deps(boxSys({ uids: {} })), "taskbox", { inUse: { service: "ci" }, made: {} }, noState)).toEqual({ make: true });
   });
 });
 
