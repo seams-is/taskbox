@@ -80,8 +80,8 @@
     "why": "the answers envelope's at, for a usage error, a rename and every answer: a label"
   },
   "ops.ts": {
-    "reads": 18,
-    "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h remove's op record takes its start, end and phase times from it, for people to read; no deadline or lapse rests on them."
+    "reads": 19,
+    "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h. Remove's op record takes its start, end and phase times from it, for people to read; no deadline or lapse rests on them. A stale remove's end time too."
   },
   "install.ts": {
     "reads": 6,

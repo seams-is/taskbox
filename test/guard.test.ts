@@ -550,6 +550,9 @@ describe("remote's home", () => {
     symlinkSync("/tmp", p.agentHome!);
     sys.responders.unshift((cmd) => (cmd === "/usr/bin/id" ? { code: 0, stdout: "504\n", stderr: "" } : cmd === "/usr/sbin/dseditgroup" ? { code: 67, stdout: "", stderr: "" } : cmd === "/usr/bin/dscl" ? { code: 0, stdout: "", stderr: "" } : undefined));
     const d = { sys, paths: p, say: () => {}, chown: () => {}, rootUid: process.getuid!() } as unknown as Parameters<typeof placeAgent>[0];
+    // The agent taskbox made, as its record says.
+    const { writeRecord } = await import("../src/accounts.ts");
+    writeRecord({ chown: () => {}, rootUid: process.getuid!() }, p.accountsRecord, { made: { "taskbox-agent": { role: "agent", uid: 504 } } });
     await expect(placeAgent(d, "taskbox-agent")).rejects.toThrow("isn't taskbox's");
   });
 });

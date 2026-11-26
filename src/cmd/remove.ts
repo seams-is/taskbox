@@ -6,7 +6,7 @@ import { overSsh } from "../cmdkit.ts";
 export const commands: CommandSpec[] = [
   {
     path: ["remove"],
-    summary: "Takes taskbox off this box, in phases, after its name is typed. At the box only.",
+    summary: "Takes taskbox off this box, in phases, after its name is typed. -y answers every question yes. At the box only.",
     who: ["admin"],
     root: true,
     typed: true,
@@ -23,7 +23,7 @@ export const commands: CommandSpec[] = [
       // The name the box goes by on the network. Without it, a typed yes.
       const host = await c.ops.sys.run("/usr/sbin/scutil", ["--get", "LocalHostName"], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
       const name = host.code === 0 && /^[A-Za-z0-9-]{1,63}$/.test(host.stdout.trim()) ? host.stdout.trim() : undefined;
-      return remove(c.ops, { serviceUid: c.cu, people, chown: c.chown, overSsh: await overSsh(c), yes: c.flags.yes !== undefined, keepImages: c.opts["keep-images"] === true, ...(name ? { boxName: name } : {}) });
+      return remove(c.ops, { serviceUid: c.cu, people, chown: c.chown, overSsh: await overSsh(c), yes: c.flags.yes !== undefined, keepImages: c.opts["keep-images"] === true, ...(name ? { boxName: name } : {}), proc: process });
     },
   },
 ];

@@ -40,7 +40,7 @@ import { commandLinkProblem, linkTarget, placeCommandLink, prune, relink, swapIn
 import { poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
 import { BOX_FIX, readBoxFile } from "./boxsettings.ts";
 import { adoptSource, type ConnectDeps } from "./connectflow.ts";
-import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
+import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { adminState } from "./elevate.ts";
@@ -395,6 +395,11 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if (approver.change === "rotate" && !rotateConfirmed(approver.fingerprint, await d.ask(ROTATE_ASK))) throw new Stop(`That isn't the end of ${approver.fingerprint}, so the box keeps ${approver.from}. Nothing was installed.`, true);
   const answer = (await d.ask(`Type yes to install ${clean(rel.tag).slice(0, 20)}: `)).trim().toLowerCase();
   if (answer !== "yes") throw new Stop(`You typed "${answer.replace(/[^\x20-\x7e]/g, "").slice(0, 40)}". Stopped. Nothing was installed.`);
+  // An account taskbox didn't make becomes the agent only when an admin types its name here.
+  const claimed = "claim" in agentPlan && agentPlan.claim === true && relAccounts.agent !== undefined;
+  if (claimed && (await d.ask(`Type ${relAccounts.agent} to let taskbox take that account as its agent: `)).trim() !== relAccounts.agent) {
+    throw new Stop(`That isn't ${relAccounts.agent}, so taskbox doesn't take it as the agent. Nothing was installed. Name a new account in accounts.agent, and taskbox makes it.`, true);
+  }
 
   const work = mkdtempSync(join(d.workRoot, "taskbox-"));
   chmodSync(work, 0o700);
@@ -435,9 +440,9 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     }
     // The agent, before anything is installed, so a step that doesn't take leaves the old release
     // current and running. The tree's accounts are relAccounts, proved above.
-    if (relAccounts.agent !== undefined) await placeAgent(d, relAccounts.agent, agentHomeFor(d, relAccounts.agent));
+    if (relAccounts.agent !== undefined) await placeAgent(d, relAccounts.agent, agentHomeFor(d, relAccounts.agent), claimed);
     // The rest of the accounts, then the approver key, all before anything is installed.
-    const stepDone = await applyAccountsStep(accountDeps(d), d.paths, step, { poolShell: GATE_SHELL, ...(d.paths.agent !== undefined ? { oldAgentHome: agentHomeFor(d, d.paths.agent) } : {}), event: accountEvent(d) });
+    const stepDone = await applyAccountsStep(accountDeps(d), d.paths, step, { poolShell: GATE_SHELL, event: accountEvent(d) });
     for (const l of stepDone.said) d.say(`  ${l}`);
     if (stepDone.stop) throw new Stop(stepDone.stop, true);
     madePeople.push(...stepDone.people);
@@ -620,6 +625,8 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
       rmSync(d.bootstrap, { recursive: true, force: true });
       rmSync(d.bootstrap + ".zip", { force: true });
     }
+    // The agent named before, last: the new release is in place and its services run.
+    for (const l of await applyOldAgentStep(accountDeps(d), d.paths, step, { ...(d.paths.agent !== undefined ? { oldAgentHome: agentHomeFor(d, d.paths.agent) } : {}), event: accountEvent(d) })) d.say(`  ${l}`);
     if (cfg.accounts.agent !== undefined) d.say(`  Agents and the controller reach the box as ${cfg.accounts.agent}: the controller pairs with that name.`);
     d.say(opts.first ? `Installed. Now log in as ${d.paths.service}. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
   } finally {
@@ -953,19 +960,25 @@ export async function labelsBack(d: Pick<InstallDeps, "sys" | "paths" | "say">, 
 // install). /Users/<agent> is left as it is. An agent that isn't there is made (v2.7.0). planAgent
 // has refused any other account before the yes, so this one is taskbox's and a standard user.
 // Every install puts it back as it should be (agentSteps). Each failure stops the install.
-export async function placeAgent(d: AgentDeps, user: string, target: string = agentHomeFor(d, user)): Promise<void> {
+// claimed: an admin typed the name of an account v2 placed (planAgent's claim), so it is taken as
+// the agent, recorded as placed. Without that, an account taskbox didn't make is never taken.
+export async function placeAgent(d: AgentDeps, user: string, target: string = agentHomeFor(d, user), claimed = false): Promise<void> {
   const deps = accountDeps(d);
   const uid = await uidOf(d, user);
   if (uid === undefined) {
     const made = await makeAgent(deps, user, REMOTE_SHELL, target, d.paths.accountsRecord);
     if (typeof made === "string") throw new Stop(made, true);
     d.say(`  Made the account ${user}, for agents and the controller over Tailscale SSH. It has no password.`);
-  } else if (readRecord(d.paths.accountsRecord).made[user]?.role !== "agent") {
-    // The one agent from before v2.7.0 (planAgent): taskbox's own from now on, said before the yes.
+  } else if (!["agent", "placed"].includes(readRecord(d.paths.accountsRecord).made[user]?.role ?? "")) {
+    if (!claimed) throw new Stop(`${user} is an account taskbox didn't make, and no admin has typed its name at the box to take it as the agent. Nothing else was installed. At the box, as your admin user, type taskbox update.`, true);
+    // The one agent from before v2.7.0 (planAgent): placed, never made, so nothing deletes it.
     const rec = readRecord(d.paths.accountsRecord);
     const guid = await guidOf(d.sys, user);
-    rec.made[user] = { role: "agent", uid, ...(guid ? { guid } : {}) };
+    rec.made[user] = { role: "placed", uid, ...(guid ? { guid } : {}) };
     writeRecord(d, d.paths.accountsRecord, rec);
+    try {
+      accountEvent(d)("account.placed", user, `Took the account ${user} as the agent, after an admin's yes at the box.`);
+    } catch {}
   }
   const root = d.rootUid ?? 0;
   if (!lstatExistsI(target)) {
@@ -988,6 +1001,8 @@ export async function keepAgent(d: Pick<InstallDeps, "sys" | "paths" | "chown" |
     if (user === undefined || (await uidOf(d, user)) === undefined) return undefined;
     const plan = await planAgent(d.sys, user, readRecord(d.paths.accountsRecord), REMOTE_SHELL);
     if ("stop" in plan) return plan.stop;
+    // Never taken here: an account taskbox didn't make waits for an admin's typed yes at the box.
+    if (plan.claim) return `${user} waits for an admin to type its name at the box, in taskbox update, before taskbox takes it as the agent`;
     await placeAgent({ ...d, say: () => {}, ask: async () => "", tty: () => 1 }, user);
     return undefined;
   } catch (e) {

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
-import { type OpsDeps, remove } from "../src/ops.ts";
+import { type OpsDeps, REMOVE_OP, remove } from "../src/ops.ts";
 import { begin, listOps, writeOp } from "../src/core/ops.ts";
 import { rootStateOf } from "../src/core/paths.ts";
 import { FakeSys } from "./fake.ts";
@@ -130,6 +130,89 @@ describe("remove as an op", () => {
     writeOp(f, b.op);
     expect(await remove(d, { serviceUid: 502 })).toBe(1);
     expect(said[0]).toMatch(/update \(op_\w+\) is running, and the two never run together/);
+    expect(existsSync(p.opt)).toBe(true);
+  });
+});
+
+describe("a remove stopped part way", () => {
+  const ops = (p: ReturnType<typeof paths>) => listOps({ dir: rootStateOf(p).ops, owner: process.getuid!() }).ops;
+  // A process stand-in: the handlers remove sets, and the exit it asks for.
+  const proc = () => {
+    const on = new Map<string, () => void>();
+    return { pid: 4242, on: (s: string, f: () => void) => void on.set(s, f), off: (s: string) => void on.delete(s), exit: (c: number) => {
+        exited.push(c);
+        throw new Error("exited");
+      }, handlers: on };
+  };
+  const exited: number[] = [];
+  test("Ctrl-C at the name ends the op cancelled, and changes nothing", async () => {
+    const { d, p, sys } = removeDeps();
+    d.rootUid = process.getuid!();
+    const pr = proc();
+    d.ask = async () => {
+      pr.handlers.get("SIGINT")!();
+      return "";
+    };
+    await expect(remove(d, { serviceUid: 502, boxName: "box-1", proc: pr as never })).rejects.toThrow("exited");
+    expect(exited.at(-1)).toBe(130);
+    expect(ops(p).map((o) => [o.state, o.why])).toEqual([["cancelled", "stopped by a signal in confirm"]]);
+    expect(sys.calls.some((c) => c.args[0] === "bootout")).toBe(false);
+    // Its handlers are taken off.
+    expect(pr.handlers.size).toBe(0);
+  });
+  test("a signal past confirm ends it failed, in the phase it was in", async () => {
+    const { d, p } = removeDeps();
+    d.rootUid = process.getuid!();
+    const pr = proc();
+    d.ask = async (q) => {
+      if (q.startsWith("Also delete the downloaded images")) pr.handlers.get("SIGTERM")!();
+      return q.startsWith("Type") ? "box-1" : "yes";
+    };
+    mkdirSync(join(p.serviceHome, ".tart"), { recursive: true });
+    await expect(remove(d, { serviceUid: 502, boxName: "box-1", proc: pr as never })).rejects.toThrow("exited");
+    expect(ops(p).map((o) => [o.state, o.phase, o.why])).toEqual([["failed", "images", "stopped by a signal in images"]]);
+  });
+  test("one left running by a process that is gone is failed, and the next remove starts", async () => {
+    const { d, p, sys } = removeDeps();
+    d.rootUid = process.getuid!();
+    const f = { dir: rootStateOf(p).ops, owner: process.getuid!() };
+    const b = begin([], REMOVE_OP, { subject: "box", params: { keepImages: false }, actor: "admin" }, sys.now());
+    if (b.kind !== "start") throw new Error("no start");
+    mkdirSync(f.dir, { recursive: true });
+    writeOp(f, { ...b.op, pid: 99999 });
+    d.ask = async () => "no";
+    expect(await remove(d, { serviceUid: 502, boxName: "box-1", alive: () => false })).toBe(1);
+    expect(ops(p).map((o) => o.state).sort()).toEqual(["cancelled", "failed"]);
+    // While it still runs, it is one remove at a time.
+    const live = begin([], REMOVE_OP, { subject: "box", params: { keepImages: false }, actor: "admin" }, sys.now());
+    if (live.kind !== "start") throw new Error("no start");
+    writeOp(f, { ...live.op, pid: 4243 });
+    const said: string[] = [];
+    d.say = (l) => said.push(l);
+    expect(await remove(d, { serviceUid: 502, boxName: "box-1", alive: (pid) => pid === 4243 })).toBe(1);
+    expect(said[0]).toMatch(/A remove \(op_\w+\) is running already/);
+  });
+  test("a throw part way ends it failed, and the error still goes up", async () => {
+    const { d, p, sys } = removeDeps();
+    d.rootUid = process.getuid!();
+    d.ask = async () => "box-1";
+    sys.responders.unshift((cmd) => {
+      if (cmd === "/usr/bin/du") throw new Error("du broke");
+      return undefined;
+    });
+    mkdirSync(join(p.serviceHome, ".tart"), { recursive: true });
+    await expect(remove(d, { serviceUid: 502, boxName: "box-1" })).rejects.toThrow("du broke");
+    expect(ops(p).map((o) => [o.state, o.phase])).toEqual([["failed", "images"]]);
+  });
+  test("another remove holding the update lock refuses it, with nothing changed", async () => {
+    const { d, p } = removeDeps();
+    const { updateLockPath } = await import("../src/layout.ts");
+    mkdirSync(join(updateLockPath(p), ".."), { recursive: true });
+    writeFileSync(updateLockPath(p), `${process.pid} ${Date.now()}`);
+    const said: string[] = [];
+    d.say = (l) => said.push(l);
+    expect(await remove(d, { serviceUid: 502 })).toBe(1);
+    expect(said[0]).toBe("An update, a rollback or another remove is running, and remove never runs beside one.");
     expect(existsSync(p.opt)).toBe(true);
   });
 });

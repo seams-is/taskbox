@@ -231,11 +231,15 @@ describe("an existing agent is put back on every install", () => {
     const sys = dir.sys();
     const { d, p } = placeDeps(sys);
     const plan = await planAgent(sys, "remote", readRecord(p.accountsRecord), REMOTE_SHELL);
-    expect(plan).toEqual({ line: "remote's password goes and it leaves the login window, since agents reach it over Tailscale SSH. From now on taskbox counts remote as its own, so taskbox remove offers to delete it. Its old folder /Users/remote stays." });
+    expect(plan).toEqual({ line: "remote is the agent an earlier taskbox set up in an account it didn't make. If you type its name at the box, its password goes and it leaves the login window, since agents reach it over Tailscale SSH. taskbox never deletes it: remove gives its shell back. Its old folder /Users/remote stays.", claim: true });
     const home = join(dirname(p.agentHome!), "taskbox-remote");
-    await placeAgent(d, "remote", home);
+    // Not taken without an admin's typed yes.
+    expect(await placeAgent(d, "remote", home).catch((x: unknown) => x)).toBeInstanceOf(Stop);
+    expect(steps(sys)).toEqual([]);
+    await placeAgent(d, "remote", home, true);
     expect(steps(sys)).toEqual(["fdesetup remove", "-create Password", "-create IsHidden", "-create UserShell", "-create NFSHomeDirectory", "-delete AuthenticationAuthority", "-delete ShadowHashData"]);
-    expect(readRecord(p.accountsRecord).made.remote).toEqual({ role: "agent", uid: 503, guid: guidFor(503) });
+    // Placed, never made: remove never deletes it.
+    expect(readRecord(p.accountsRecord).made.remote).toEqual({ role: "placed", uid: 503, guid: guidFor(503) });
     const u = dir.users.remote!;
     expect([u.unlocks, u.attrs.AuthenticationAuthority, u.attrs.ShadowHashData, u.attrs.IsHidden, u.attrs.Password]).toEqual([false, undefined, undefined, "1", "*"]);
     // From now on it is the recorded agent: no line, no fdesetup, and nothing changes.
@@ -252,7 +256,7 @@ describe("an existing agent is put back on every install", () => {
     dir.fdesetupWorks = false;
     const sys = dir.sys();
     const { d, p } = placeDeps(sys);
-    const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote")).catch((x: unknown) => x);
+    const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote"), true).catch((x: unknown) => x);
     expect((e as Stop).message).toBe("taskbox couldn't take remote off the disk's unlock list (fdesetup ended with 1). Nothing else was installed. If remote is the last account that unlocks the disk, add your admin user first: as your admin user, type taskbox unlock.");
     expect(steps(sys)).toEqual(["fdesetup remove"]);
   });
@@ -262,7 +266,7 @@ describe("an existing agent is put back on every install", () => {
     dir.stuck = "ShadowHashData";
     const sys = dir.sys();
     const { d, p } = placeDeps(sys);
-    const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote")).catch((x: unknown) => x);
+    const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote"), true).catch((x: unknown) => x);
     expect((e as Stop).message).toBe("dscl didn't delete remote's ShadowHashData. Nothing else was installed. Type taskbox update again.");
   });
 });
@@ -274,15 +278,26 @@ describe("the guard puts the agent back", () => {
     return { g: { sys, paths: p, chown: d.chown, rootUid: d.rootUid }, p };
   };
 
-  test("the earlier agent, after an update an earlier release ran: no password, hidden, off the unlock list, and taskbox's own", async () => {
+  test("the earlier agent is never taken at the guard's start: it waits for an admin's typed yes", async () => {
     const dir = new Dir().add("remote", earlier());
     const sys = dir.sys();
     const { g, p } = guardDeps(sys);
+    const before = dir.snapshot();
+    expect(await keepAgent(g, "remote")).toBe("remote waits for an admin to type its name at the box, in taskbox update, before taskbox takes it as the agent");
+    expect(dir.snapshot()).toBe(before);
+    expect(writes(sys)).toEqual([]);
+    expect(readRecord(p.accountsRecord).made.remote).toBeUndefined();
+  });
+
+  test("once placed, the guard puts it back: no password, hidden, off the unlock list", async () => {
+    const dir = new Dir().add("remote", earlier());
+    const sys = dir.sys();
+    const { g, p } = guardDeps(sys);
+    record(p, { made: { remote: { role: "placed", uid: 503, guid: guidFor(503) } } });
     expect(await keepAgent(g, "remote")).toBeUndefined();
     const u = dir.users.remote!;
     expect([u.unlocks, u.attrs.AuthenticationAuthority, u.attrs.ShadowHashData, u.attrs.IsHidden, u.attrs.Password]).toEqual([false, undefined, undefined, "1", "*"]);
     expect(u.attrs.NFSHomeDirectory).toBe(join(dirname(p.agentHome!), "taskbox-remote"));
-    expect(readRecord(p.accountsRecord).made.remote).toEqual({ role: "agent", uid: 503, guid: guidFor(503) });
   });
 
   test("an agent that isn't there isn't made: only an install makes it, after the yes", async () => {
@@ -313,7 +328,8 @@ describe("the guard puts the agent back", () => {
 
   test("an agent put back writes nothing to the guard's log", async () => {
     const dir = new Dir().add("remote", earlier());
-    const { g } = guardDeps(dir.sys());
+    const { g, p } = guardDeps(dir.sys());
+    record(p, { made: { remote: { role: "placed", uid: 503, guid: guidFor(503) } } });
     const file = join(mkdtempSync(join(tmpdir(), "guardlog-")), "taskbox-guard.log");
     await guardAgent(g, "remote", new Log(file));
     expect(existsSync(file)).toBe(false);
@@ -322,7 +338,8 @@ describe("the guard puts the agent back", () => {
   test("a step that doesn't take is said, not thrown", async () => {
     const dir = new Dir().add("remote", earlier({ unlocks: false }));
     dir.stuck = "ShadowHashData";
-    const { g } = guardDeps(dir.sys());
+    const { g, p } = guardDeps(dir.sys());
+    record(p, { made: { remote: { role: "placed", uid: 503, guid: guidFor(503) } } });
     expect(await keepAgent(g, "remote")).toBe("dscl didn't delete remote's ShadowHashData. Nothing else was installed. Type taskbox update again.");
   });
 });

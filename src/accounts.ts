@@ -15,8 +15,10 @@ import type { Sys } from "./sys.ts";
 
 // pool: a workspace account, whose record is pool.json. person: an account taskbox made for a name
 // in accounts.people, which is never deleted. net and gh: network capture's and the key broker's.
-export type MadeRole = "service" | "agent" | "pool" | "person" | "net" | "gh";
-const RECORD_ROLES: readonly MadeRole[] = ["service", "agent", "person", "net", "gh"];
+// placed: an agent taskbox didn't make (v2's), taken as the agent after an admin's typed yes at the
+// box: never deleted, only given its shell back.
+export type MadeRole = "service" | "agent" | "pool" | "person" | "net" | "gh" | "placed";
+const RECORD_ROLES: readonly MadeRole[] = ["service", "agent", "person", "net", "gh", "placed"];
 export type Made = { role: MadeRole; uid: number; guid?: string };
 export type AccountsRecord = {
   // The service whose state is on this box: the install refuses another while that state exists.
@@ -228,22 +230,26 @@ const NEW_AGENT = "Name a new account in accounts.agent, and taskbox makes it.";
 // agent taskbox placed before v2.7.0 (taskbox's shell, OLD_AGENT_HOME), and a standard user. Anything
 // else is refused, with nothing changed. A line to say before the yes, or why it can't go on and
 // whether the owner can fix it.
-export async function planAgent(sys: Sys, name: string, rec: AccountsRecord, shell: string): Promise<{ line?: string } | { stop: string; owner: boolean }> {
+// claim: an account v2 placed, which taskbox takes as its agent only after an admin types its name at
+// the box (install.ts). It is recorded as placed, never as made, so nothing ever deletes it.
+export async function planAgent(sys: Sys, name: string, rec: AccountsRecord, shell: string): Promise<{ line?: string; claim?: true } | { stop: string; owner: boolean }> {
   if ((await uidOf(sys, name)) === undefined) return {};
   const stop = (why: string, owner = true) => ({ stop: why, owner });
   const m = rec.made[name];
   let line: string | undefined;
-  if (m?.role === "agent") {
-    if (!(await stillMade(sys, name, m))) return stop(`${name} isn't the account taskbox made for agents: its ID changed. Nothing was installed. ${NEW_AGENT}`);
+  let claim = false;
+  if (m?.role === "agent" || m?.role === "placed") {
+    if (!(await stillMade(sys, name, m))) return stop(`${name} isn't the account taskbox ${m.role === "agent" ? "made" : "took"} for agents: its ID changed. Nothing was installed. ${NEW_AGENT}`);
   } else if ((await userKey(sys, name, "UserShell")) === shell && (await userKey(sys, name, "NFSHomeDirectory")) === OLD_AGENT_HOME) {
-    line = `${name}'s password goes and it leaves the login window, since agents reach it over Tailscale SSH. From now on taskbox counts ${name} as its own, so taskbox remove offers to delete it. Its old folder /Users/${name} stays.`;
+    line = `${name} is the agent an earlier taskbox set up in an account it didn't make. If you type its name at the box, its password goes and it leaves the login window, since agents reach it over Tailscale SSH. taskbox never deletes it: remove gives its shell back. Its old folder /Users/${name} stays.`;
+    claim = true;
   } else {
     return stop(`taskbox.json names ${name} as the agent, and ${name} is an account taskbox didn't make. Nothing was installed. ${NEW_AGENT}`);
   }
   const a = await adminState(sys, name);
   if (a === "admin") return stop(`${name} is an administrator, and the agent must be a standard user. Nothing was installed. Make ${name} a Standard user in System Settings, Users & Groups, or name a new account in accounts.agent.`);
   if (a === "unknown") return stop(`taskbox can't tell whether ${name} is an admin. Nothing was installed. Nothing to do: agents fix it.`, false);
-  return line ? { line } : {};
+  return { ...(line ? { line } : {}), ...(claim ? { claim: true as const } : {}) };
 }
 
 // The agent as it should be, put back on every install: off the disk's unlock list, no password,
@@ -329,6 +335,7 @@ export async function removable(sys: Sys, rec: AccountsRecord, people: readonly 
   const lower = people.map((p) => p.toLowerCase());
   for (const [name, m] of Object.entries(rec.made)) {
     if ((await uidOf(sys, name)) === undefined) continue;
+    if (m.role === "placed") continue;
     if (!(await stillMade(sys, name, m))) out.left.push(`${name} (its ID isn't the one taskbox made)`);
     else if (m.role === "person" || lower.includes(name.toLowerCase())) out.left.push(`${name} (a person's account)`);
     else if ((await adminState(sys, name)) !== "standard") out.left.push(`${name} (not a standard user)`);
@@ -911,8 +918,14 @@ export async function applyOldAgent(d: AccountDeps, plan: OldAgent, home: string
   if (act === "delete" && (await d.ask(`Delete ${name}, the old agent account taskbox made? Type yes to delete it, or anything else to keep it with no shell: `)).trim().toLowerCase() !== "yes") act = "shell";
   if (act === "delete") {
     const uid = await uidOf(d.sys, name);
-    if (uid !== undefined && !(await stopProcesses(d.sys, uid))) out.missed.push(`${name}'s processes didn't stop, so it wasn't deleted`);
-    else if ((await d.sys.run("/usr/sbin/sysadminctl", ["-deleteUser", name], { timeoutMs: 120_000 })).code !== 0 || (await uidOf(d.sys, name)) !== undefined) out.missed.push(`sysadminctl didn't delete ${name}`);
+    // Checked again at the moment of the delete: still the account taskbox made, by uid and GeneratedUID.
+    const m = readRecord(recordPath).made[name];
+    if (!m || m.role !== "agent" || !(await stillMade(d.sys, name, m))) {
+      out.missed.push(`${name} isn't the account taskbox made any more, so taskbox leaves it alone`);
+      return out;
+    } else if (uid !== undefined && !(await stopProcesses(d.sys, uid))) out.missed.push(`${name}'s processes didn't stop, so it wasn't deleted`);
+    // Its home is taskbox's own empty folder, removed below only when empty.
+    else if ((await d.sys.run("/usr/sbin/sysadminctl", ["-deleteUser", name, "-keepHome"], { timeoutMs: 120_000 })).code !== 0 || (await uidOf(d.sys, name)) !== undefined) out.missed.push(`sysadminctl didn't delete ${name}`);
     else {
       const rec = readRecord(recordPath);
       delete rec.made[name];
@@ -1026,10 +1039,18 @@ export async function applyAccountsStep(d: AccountDeps, p: StepPaths, plan: Acco
       ev("account.made", n, `Made the person's account ${n}.`);
     }
   }
-  if (plan.oldAgent) {
-    const r = await applyOldAgent(d, plan.oldAgent, o.oldAgentHome ?? "", p.accountsRecord);
-    said.push(...r.done, ...r.missed.map((m) => `${m}. taskbox check says so.`));
-    if (r.done.some((l) => l.startsWith("Deleted"))) ev("account.deleted", plan.oldAgent.name, `Deleted the old agent account ${plan.oldAgent.name}.`);
-  }
   return { said, people };
+}
+
+// The agent accounts.agent named before, put back only once the new release is installed and its
+// services run: if the install stops before that, the release still in place reaches its own agent.
+export async function applyOldAgentStep(d: AccountDeps, p: Pick<StepPaths, "accountsRecord">, plan: AccountsPlan, o: { oldAgentHome?: string; event?: AccountEvent }): Promise<string[]> {
+  if (!plan.oldAgent) return [];
+  const r = await applyOldAgent(d, plan.oldAgent, o.oldAgentHome ?? "", p.accountsRecord);
+  if (r.done.some((l) => l.startsWith("Deleted"))) {
+    try {
+      o.event?.("account.deleted", plan.oldAgent.name, `Deleted the old agent account ${plan.oldAgent.name}.`);
+    } catch {}
+  }
+  return [...r.done, ...r.missed.map((m) => `${m}. taskbox check says so.`)];
 }

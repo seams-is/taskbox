@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateAccounts } from "../src/access.ts";
-import { type AccountDeps, applyAccountsStep, canUnlock, freeHidden, makePerson, planAccountsStep, planOldAgent, planSystem, placeSystem, readRecord, removable, systemProblem, writeRecord } from "../src/accounts.ts";
+import { type AccountDeps, applyAccountsStep, applyOldAgentStep, canUnlock, freeHidden, makePerson, planAccountsStep, planOldAgent, planSystem, placeSystem, readRecord, removable, systemProblem, writeRecord } from "../src/accounts.ts";
 import type { CheckContext } from "../src/checks.ts";
 import { GATE_SHELL, paths, REMOTE_SHELL } from "../src/config.ts";
 import { rootStateOf } from "../src/core/paths.ts";
@@ -155,19 +155,21 @@ describe("the agent accounts.agent named before", () => {
     expect(plan?.act).toBe("delete");
     const home = join(s.p.poolHome, "..", "old-home");
     mkdirSync(home);
-    const r = await applyAccountsStep(s.d, s.p, { lines: [], pool: [], system: [], people: [], oldAgent: plan! }, { poolShell: GATE_SHELL, oldAgentHome: home });
+    const said = await applyOldAgentStep(s.d, s.p, { lines: [], pool: [], system: [], people: [], oldAgent: plan! }, { oldAgentHome: home });
     expect(s.asked[0]).toMatch(/^Delete old-agent, the old agent account taskbox made\?/);
     expect(s.dir.users["old-agent"]).toBeUndefined();
     expect(readRecord(s.p.accountsRecord).made["old-agent"]).toBeUndefined();
     expect(existsSync(home)).toBe(false);
-    expect(r.said).toContain("Deleted the old agent account old-agent.");
+    expect(said).toContain("Deleted the old agent account old-agent.");
+    // sysadminctl keeps the home: taskbox removes it only when empty.
+    expect(s.sys.calls.filter((c) => c.cmd === "/usr/sbin/sysadminctl").map((c) => c.args)).toEqual([["-deleteUser", "old-agent", "-keepHome"]]);
   });
   test("one taskbox placed keeps its account, with its shell back to /usr/bin/false; a no to the delete does the same", async () => {
-    for (const [rec, answer] of [[{ made: {} }, "yes"], [{ made: { remote: { role: "agent", uid: 503 } } }, "no"]] as const) {
+    for (const [rec, answer] of [[{ made: { remote: { role: "placed", uid: 503 } } }, "yes"], [{ made: {} }, "yes"], [{ made: { remote: { role: "agent", uid: 503 } } }, "no"]] as const) {
       const s = setup(made(new Dir(), "remote", 503), [answer]);
       writeRecord(s.d, s.p.accountsRecord, rec as never);
       const plan = await planOldAgent(s.sys, "remote", "taskbox-agent", readRecord(s.p.accountsRecord), REMOTE_SHELL, []);
-      await applyAccountsStep(s.d, s.p, { lines: [], pool: [], system: [], people: [], oldAgent: plan! }, { poolShell: GATE_SHELL, oldAgentHome: "/nonexistent" });
+      await applyOldAgentStep(s.d, s.p, { lines: [], pool: [], system: [], people: [], oldAgent: plan! }, { oldAgentHome: "/nonexistent" });
       expect(s.dir.users.remote!.attrs.UserShell).toBe("/usr/bin/false");
       expect(s.dir.users.remote!.attrs.NFSHomeDirectory).toBe("/Users/remote");
     }
@@ -343,9 +345,12 @@ describe("remove and taskbox's own accounts", () => {
     const asked: string[] = [];
     s.sys.responders.push((cmd) => (cmd === "/usr/bin/du" ? { code: 0, stdout: "0\t/x\n", stderr: "" } : cmd === "/bin/launchctl" || cmd === "/sbin/pfctl" || cmd === "/usr/bin/sudo" ? { code: 0, stdout: "", stderr: "" } : undefined));
     const said: string[] = [];
-    await remove({ sys: s.sys, paths: s.p, uid: 0, serviceUid: 502, say: (l) => said.push(l), ask: async (q) => (asked.push(q), "yes"), rootUid: ME }, { serviceUid: 502, people: [], yes: true });
-    expect(asked).toContain("Delete _taskboxgh, taskbox's account for the GitHub key keeper, and its home folder? Type yes to delete it: ");
+    await remove({ sys: s.sys, paths: s.p, uid: 0, serviceUid: 502, say: (l) => said.push(l), ask: async (q) => (asked.push(q), "yes"), rootUid: ME }, { serviceUid: 502, people: [] });
+    expect(asked).toContain("Delete _taskboxgh, taskbox's account for the GitHub key keeper? Type yes to delete it: ");
     expect(s.dir.users._taskboxgh).toBeUndefined();
     expect(s.dir.groups._taskboxgh).toBeUndefined();
+    // Its directory record only: never sysadminctl, which would take /var/empty with it.
+    expect(s.sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl")).toBe(false);
+    expect(s.sys.calls.some((c) => c.cmd === "/usr/bin/dscl" && c.args.join(" ") === ". -delete /Users/_taskboxgh")).toBe(true);
   });
 });
