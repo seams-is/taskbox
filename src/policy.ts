@@ -205,3 +205,52 @@ export function policyBlock(boxes: readonly BoxPolicy[]): { text: string; shared
   const shared = [...byTag].filter(([, ids]) => ids.length > 1).map(([t, ids]) => `${ids.join(", ")} share ${t}, so Tailscale gives each of them the others' SSH rules too. Give each box a tag of its own.`);
   return { text: out.join("\n"), shared };
 }
+
+// policy show's answer, in a shape that passes a controller's reader of box results, whose keys
+// are plain words: the tag goes beside the rules, never as a key. The controller reads each box's
+// answer with policyOfAnswer, then joins them with policyBlock.
+export function policyAnswer(p: Policy, installId: string | undefined): Record<string, unknown> {
+  const [tag, owners] = Object.entries(p.tagOwners)[0] ?? [TAILNET_TAG, [OWNER]];
+  return { ...(installId ? { installId } : {}), tag, owners, rules: { grants: p.grants, ssh: p.ssh, sshTests: p.sshTests, tests: p.tests } };
+}
+
+// A box's answer back into its policy, or why it can't be used. A box is trusted only for its own
+// tag: every rule must reach that tag and nothing else, no rule lets root or any user in, and only
+// accept and check are taken. So one box's answer can't add a rule for another box or the tailnet.
+// pairedId: the install ID the controller paired with, which it uses over the box's own word.
+export function policyOfAnswer(a: unknown, pairedId?: string): BoxPolicy | string {
+  const r = a && typeof a === "object" && !Array.isArray(a) ? (a as Record<string, unknown>) : undefined;
+  if (!r) return "the answer isn't an object";
+  if (pairedId !== undefined && r.installId !== undefined && r.installId !== pairedId) return "the answer names another box's install ID";
+  const id = pairedId ?? r.installId;
+  if (typeof id !== "string" || !INSTALL_ID.test(id)) return "the answer names no install ID";
+  const tag = r.tag;
+  if (typeof tag !== "string" || !/^tag:taskbox(-[a-z0-9]+)*$/.test(tag) || tag.length > 64) return "its tag isn't a taskbox tag";
+  const words = (v: unknown, max = 32) => Array.isArray(v) && v.length <= max && v.every((x) => typeof x === "string" && /^[A-Za-z0-9._%+@:*-]{1,300}$/.test(x)) ? (v as string[]) : undefined;
+  const owners = words(r.owners, 4);
+  if (!owners?.length || owners.some((o) => o.startsWith("tag:") || o.startsWith("autogroup:"))) return "its tag's owners aren't logins";
+  const rules = r.rules && typeof r.rules === "object" ? (r.rules as Record<string, unknown>) : {};
+  const list = (k: string) => (Array.isArray(rules[k]) && (rules[k] as unknown[]).length <= 64 ? (rules[k] as unknown[]) : undefined);
+  const out: Policy = { tagOwners: { [tag]: owners }, grants: [], ssh: [], sshTests: [], tests: [] };
+  const KEYS: Record<keyof Omit<Policy, "tagOwners">, string[]> = { grants: ["src", "dst", "ip"], ssh: ["action", "src", "dst", "users"], sshTests: ["src", "dst", "accept", "check", "deny"], tests: ["src", "accept", "deny"] };
+  for (const k of ["grants", "ssh", "sshTests", "tests"] as const) {
+    const l = list(k);
+    if (!l) return `its ${k} aren't a list`;
+    for (const x of l) {
+      if (!x || typeof x !== "object" || Array.isArray(x)) return `a rule in ${k} isn't an object`;
+      const rule = x as Record<string, unknown>;
+      if (Object.keys(rule).some((key) => !KEYS[k].includes(key))) return `a rule in ${k} has a key taskbox doesn't write`;
+      const val = (key: string) => (typeof rule[key] === "string" ? [rule[key] as string] : words(rule[key]));
+      for (const key of Object.keys(rule)) if (key !== "action" && !val(key)) return `a rule in ${k} has a value taskbox doesn't write`;
+      const self = k === "grants" && JSON.stringify(rule) === JSON.stringify({ src: ["autogroup:member"], dst: ["autogroup:self"], ip: ["*"] });
+      // Every rule reaches this box's tag only; the one grant every taskbox file has is the exception.
+      if (!self && (k === "grants" || k === "ssh" || k === "sshTests") && JSON.stringify(rule.dst) !== JSON.stringify([tag])) return `a rule in ${k} reaches more than ${tag}`;
+      if (k === "ssh" && (!["accept", "check"].includes(rule.action as string) || (val("users") ?? []).some((u) => u === "root" || u.includes("*") || u.startsWith("autogroup:")))) return "an SSH rule lets in root or any user";
+      if (k === "ssh" && (val("src") ?? []).some((s) => s.startsWith("tag:") || s.startsWith("autogroup:") || s === "*")) return "an SSH rule comes from more than people";
+      if (k === "grants" && !self && (val("src") ?? []).some((s) => s.startsWith("tag:") || s.startsWith("autogroup:") || s === "*")) return "a grant comes from more than people";
+      if (k === "tests" && (val("accept") ?? []).some((t) => !t.startsWith(`${tag}:`))) return `a test accepts more than ${tag}`;
+      (out[k] as Rule[]).push(rule);
+    }
+  }
+  return { installId: id, policy: out };
+}

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Accounts, POOL_USER, poolNames, validateAccounts } from "../src/access.ts";
-import { policyArgs, policyBlock, policyEntries, policyFor, policyText } from "../src/policy.ts";
+import { type BoxPolicy, policyArgs, policyBlock, policyEntries, policyFor, policyOfAnswer, policyText } from "../src/policy.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = (name: string) => readFileSync(join(root, "test/fixtures/policy", name), "utf8");
@@ -220,5 +220,45 @@ In "tests", add:
     const p = policyFor(cases[3]![1]);
     const whole = policyText(p);
     for (const l of policyEntries(p).split("\n").filter((x) => x.startsWith("  "))) expect(whole).toContain(l.trim());
+  });
+});
+
+describe("policy show's answer, joined on the controller", () => {
+  // The controller's reader of box results keeps only keys that are plain words, at most 8 deep
+  // (src/controller/forward.ts plain, on the controller's branch). The answer must come through it whole.
+  const scrub = (v: unknown, depth = 0): unknown => {
+    if (v === null || typeof v !== "object") return v;
+    if (depth >= 8) return undefined;
+    if (Array.isArray(v)) return v.map((x) => scrub(x, depth + 1));
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).filter(([k]) => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(k)).map(([k, x]) => [k, scrub(x, depth + 1)]));
+  };
+  const answers = JSON.parse(fixture("answers.json")) as Record<string, unknown>[];
+  test("two boxes' answers, through the controller's reader, give box-all.txt", () => {
+    for (const a of answers) expect(scrub(a)).toEqual(a);
+    const boxes = answers.map((a) => policyOfAnswer(scrub(a), a.installId as string));
+    for (const b of boxes) expect(typeof b).not.toBe("string");
+    expect(policyBlock(boxes as BoxPolicy[]).text).toBe(fixture("box-all.txt"));
+  });
+  test("each answer is its own policy again", () => {
+    const back = policyOfAnswer(answers[0], answers[0]!.installId as string) as BoxPolicy;
+    expect(policyText(back.policy)).toBe(policyText(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: ["pat"], ssh: ["pat"] }), { tag: "tag:taskbox-one" })));
+  });
+  const two = answers[1]!;
+  const rules = two.rules as Record<string, Record<string, unknown>[]>;
+  const withRule = (k: string, r: Record<string, unknown>) => ({ ...two, rules: { ...rules, [k]: [...rules[k]!, r] } });
+  const refused: [string, unknown, RegExp][] = [
+    ["a rule for another box's tag", withRule("ssh", { action: "accept", src: ["OWNER"], dst: ["tag:taskbox-one"], users: ["remote"] }), /reaches more than tag:taskbox-two/],
+    ["a rule for any tag", withRule("grants", { src: ["OWNER"], dst: ["*"], ip: ["*"] }), /reaches more than/],
+    ["root let in", withRule("ssh", { action: "accept", src: ["OWNER"], dst: ["tag:taskbox-two"], users: ["root"] }), /lets in root or any user/],
+    ["any user let in", withRule("ssh", { action: "accept", src: ["OWNER"], dst: ["tag:taskbox-two"], users: ["*"] }), /lets in root or any user/],
+    ["SSH from another tag", withRule("ssh", { action: "accept", src: ["tag:taskbox-one"], dst: ["tag:taskbox-two"], users: ["remote"] }), /comes from more than people/],
+    ["a key taskbox doesn't write", withRule("ssh", { action: "accept", src: ["OWNER"], dst: ["tag:taskbox-two"], users: ["remote"], checkPeriod: "always" }), /a key taskbox doesn't write/],
+    ["a test that accepts another box", withRule("tests", { src: "OWNER", accept: ["tag:taskbox-one:22"] }), /accepts more than tag:taskbox-two/],
+    ["a tag that isn't taskbox's", { ...two, tag: "tag:prod" }, /isn't a taskbox tag/],
+    ["an owner that is a tag", { ...two, owners: ["tag:taskbox-one"] }, /owners aren't logins/],
+  ];
+  for (const [what, a, line] of refused) test(`refuses ${what}`, () => expect(policyOfAnswer(a, two.installId as string)).toMatch(line));
+  test("refuses an answer naming another install ID than the one paired", () => {
+    expect(policyOfAnswer(two, "f".repeat(32))).toBe("the answer names another box's install ID");
   });
 });

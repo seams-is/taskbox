@@ -1,6 +1,6 @@
 // taskbox policy show: the tailnet policy's entries for this box, from its accounts. It prints; the
 // owner applies it in the admin console. Its result is the policy itself, with the box's install ID,
-// which the controller joins into one block for every box (policy.ts policyBlock).
+// which the controller reads with policyOfAnswer and joins into one block for every box (policyBlock).
 import type { CommandSpec } from "../command.ts";
 
 const LOGIN = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$/;
@@ -11,6 +11,7 @@ export const commands: CommandSpec[] = [
     path: ["policy", "show"],
     summary: "The tailnet policy's entries for this box. --whole prints a whole policy file.",
     who: ["anyone"],
+    flags: ["json"],
     options: [
       { name: "--owner", value: "LOGIN", check: (v) => LOGIN.test(v) },
       { name: "--admin", value: "NAME", check: (v) => SHORT.test(v), repeat: true },
@@ -25,7 +26,7 @@ export const commands: CommandSpec[] = [
       const { uidOf } = await import("../accounts.ts");
       const { trustedKey } = await import("../approver.ts");
       const { readPin } = await import("../pin.ts");
-      const { policyEntries, policyFor, policyText } = await import("../policy.ts");
+      const { policyAnswer, policyEntries, policyFor, policyText } = await import("../policy.ts");
       const owner = typeof c.opts.owner === "string" ? c.opts.owner : undefined;
       const extra = Array.isArray(c.opts.admin) ? c.opts.admin : [];
       const cfg = loadConfig(c.p.app, c.p.boxSettings);
@@ -68,7 +69,7 @@ export const commands: CommandSpec[] = [
       // The controller builds one block for every paired box from each box's result.
       const { readInstallId } = await import("../answers.ts");
       const installId = readInstallId(c.own.installId);
-      return { exit: 0, result: { ...(installId ? { installId } : {}), policy: pol } };
+      return { exit: 0, result: policyAnswer(pol, installId) };
     },
   },
 ];

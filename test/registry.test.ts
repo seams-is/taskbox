@@ -566,3 +566,20 @@ describe("a v2.x handler's JSON line", () => {
     for (const lines of [["FAIL Sleep: after 10 minutes", '{"answers":3}'], ["not json"], [], ["[1]"]]) expect(oneJsonLine(lines)).toBeUndefined();
   });
 });
+
+describe("policy show --json, for the controller's --box all", () => {
+  test("answers with the box's install ID, tag and rules, which the controller reads back whole", async () => {
+    const { policyOfAnswer, policyFor } = await import("../src/policy.ts");
+    const { validateAccounts } = await import("../src/access.ts");
+    const r = await run(["policy", "show", "--json"], CALLERS.ci, {
+      setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)),
+    });
+    expect(r.code).toBe(0);
+    const e = JSON.parse(r.said[0]!);
+    expect(e.result.tag).toBe("tag:taskbox");
+    // The controller reads it with the install ID it paired with.
+    const back = policyOfAnswer(e.result, "a".repeat(32));
+    if (typeof back === "string") throw new Error(back);
+    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { admins: ["owner"] }).ssh);
+  });
+});
