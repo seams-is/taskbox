@@ -1,5 +1,5 @@
 {
-  "$comment": "One box's settings, with made-up values. Copy it to taskbox.json in your private copy of taskbox and change each value. org is your organisation, jobsFrom the one repo whose jobs the box runs, appId the App's ID, runnerGroup the group's name. Every setting left out has a default. away.restartPlan is your choice: kvm, filevault-off or accept. accounts names the box's accounts by role: the install makes service and agent, and people, your own standard accounts for Screen Sharing, may be empty. ssh, which may be left out, names the people who may also log in by Tailscale SSH. VMs pack by memory and CPUs: up to vmsAtMost at once, in what the box has beyond boxKeepsGB. A job picks a size with one of the size's labels; the kind's own labels are its default size.",
+  "$comment": "One box's settings, with made-up values. Copy it to taskbox.json in your private copy of taskbox and change each value. org is your organisation, jobsFrom the one repo whose jobs the box runs, appId the App's ID, runnerGroup the group's name. Every setting left out has a default. away.restartPlan is your choice: kvm, filevault-off or accept. accounts names the box's accounts by role: the install makes service and agent, and people, your own standard accounts for Screen Sharing, may be empty. ssh, which may be left out, names the people who may also log in by Tailscale SSH. VMs pack by memory and CPUs: up to vmsAtMost at once, in what the box has beyond what it keeps for itself (boxKeepsGB, by default 35% of its memory, 4 to 16 GB). A job picks a size with one of the size's labels; the kind's own labels are its default size.",
   "org": "example-org",
   "repo": "taskbox",
   "project": "app",
@@ -13,7 +13,6 @@
   "image": "ghcr.io/cirruslabs/macos-golden-gate-xcode@sha256:d7641b1d985fd53fbac071c663bf249007b9b387e16b7d576144588acb1d93f9",
   "slots": 1,
   "vmsAtOnce": 2,
-  "boxKeepsGB": 12,
   "jobTimeoutMinutes": 55,
   "vmMaxHours": 24,
   "minFreeDiskGB": 60,
