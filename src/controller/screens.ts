@@ -1,5 +1,5 @@
 // What the controller draws. Every screen starts with the role, the box and
-// this laptop's release, and ends with Now, Did and Next, as the box's do. Everything the box sent
+// this controller's release, and ends with Now, Did and Next, as the box's do. Everything the box sent
 // is scrubbed again here, whatever the schema already allowed.
 import type { BoxCheck, Jobs, Log, Status } from "./schema.ts";
 import { scrub } from "./scrub.ts";
@@ -66,7 +66,7 @@ export function statusBody(s: Status, own: string): string[] {
   if (s.lastJob) out.push(`Last job: ${dayTime(s.lastJob.at)}, ${s.lastJob.result ?? "result not known"}`);
   if (s.othersLoggedIn > 0) out.push(`Other users logged in at the box: ${s.othersLoggedIn}`);
   const rel = s.release ?? "release not known";
-  out.push(`Box: ${rel}${s.commit ? ` (${s.commit})` : ""}${s.release && s.release !== own ? `. This laptop: ${own}.` : ""}`);
+  out.push(`Box: ${rel}${s.commit ? ` (${s.commit})` : ""}${s.release && s.release !== own ? `. This controller: ${own}.` : ""}`);
   return out;
 }
 
