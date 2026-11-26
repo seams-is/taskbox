@@ -1,12 +1,12 @@
 // The access model's rows: "Accounts", the accounts as taskbox placed them, and "Tailnet policy",
 // the SSH rules the tailnet sent this box beside what the settings give now.
 import { poolOf, SYSTEM_USERS } from "../access.ts";
-import { otherTaskboxShells, readRecord, systemProblem, uidOf } from "../accounts.ts";
+import { otherTaskboxShells, ownAccess, readRecord, systemProblem, uidOf } from "../accounts.ts";
 import { trustedKey } from "../approver.ts";
 import type { Check, CheckContext } from "../checks.ts";
 import { REMOTE_SHELL, tagOf } from "../config.ts";
 import type { Row } from "../core/rows.ts";
-import { readPin } from "../pin.ts";
+import { readPin, readPoolRecord } from "../pin.ts";
 import { policyFor } from "../policy.ts";
 
 type Out = Omit<Check, "name">;
@@ -58,6 +58,8 @@ export function liveSshUsers(netmap: unknown): Map<string, Set<"accept" | "check
   if (!netmap || typeof netmap !== "object" || !("SSHPolicy" in netmap)) return undefined;
   const out = new Map<string, Set<"accept" | "check">>();
   const pol = (netmap as { SSHPolicy?: { rules?: unknown } | null }).SSHPolicy;
+  // null is no rules; anything else must have its rules where taskbox reads them, or it can't be read.
+  if (pol !== null && !(pol && typeof pol === "object" && (pol.rules === undefined || pol.rules === null || Array.isArray(pol.rules)))) return undefined;
   const rules = pol && Array.isArray(pol.rules) ? pol.rules : [];
   for (const r of rules) {
     if (!r || typeof r !== "object") continue;
@@ -99,8 +101,12 @@ export async function tailnetPolicyRow(c: CheckContext): Promise<Out> {
   } catch {}
   const live = liveSshUsers(netmap);
   if (!live) return skip("taskbox can't see the tailnet's SSH rules for this box, so it can't compare them with the settings. On the controller, type taskbox policy show --box all, and check what you pasted");
-  const pool = poolOf(c.cfg.accounts, trustedKey(c.cfg.approverKey, readPin(c.paths.approverPin, c.rootUid ?? 0)));
-  const want = policyFor(c.cfg.accounts, { tag: tagOf(c.cfg) }, pool).ssh;
+  // Only the accounts taskbox made get accept, as in policy show.
+  const own = await ownAccess(c.sys, c.cfg.accounts.agent, poolOf(c.cfg.accounts, trustedKey(c.cfg.approverKey, readPin(c.paths.approverPin, c.rootUid ?? 0))), readRecord(c.paths.accountsRecord), readPoolRecord(c.paths.poolRecord, c.rootUid ?? 0));
+  if ("refuse" in own) return fail(`${own.refuse}. As your admin user, type taskbox update`);
+  const accounts = { ...c.cfg.accounts };
+  if (own.agent === undefined) delete accounts.agent;
+  const want = policyFor(accounts, { tag: tagOf(c.cfg) }, own.pool).ssh;
   const users = (action: string) => want.filter((x) => x.action === action).flatMap((x) => x.users as string[]);
   const diff = policyDiff(live, { accept: users("accept"), check: users("check") });
   if (diff.length) return fail(`the tailnet's rules for this box differ from the settings (${diff.slice(0, 4).join("; ")}): on the controller, type taskbox policy show --box all, then paste it`);

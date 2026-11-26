@@ -568,18 +568,38 @@ describe("a v2.x handler's JSON line", () => {
 });
 
 describe("policy show --json, for the controller's --box all", () => {
-  test("answers with the box's install ID, tag and rules, which the controller reads back whole", async () => {
+  const agentThere = (sys: FakeSys) =>
+    sys.responders.push((cmd, args) =>
+      cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : cmd === "/usr/bin/id" && args[0] === "-u" && args[1] === "taskbox-agent" ? { code: 0, stdout: "470\n", stderr: "" } : undefined,
+    );
+  const recorded = (p: ReturnType<typeof paths>) => {
+    mkdirSync(dirname(p.accountsRecord), { recursive: true });
+    writeFileSync(p.accountsRecord, JSON.stringify({ made: { "taskbox-agent": { role: "agent", uid: 470 } } }));
+  };
+  test("answers with the box's tag and rules, with the owner it was given, which the controller reads back whole", async () => {
     const { policyOfAnswer, policyFor } = await import("../src/policy.ts");
     const { validateAccounts } = await import("../src/access.ts");
-    const r = await run(["policy", "show", "--json"], CALLERS.ci, {
-      setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)),
-    });
+    const r = await run(["policy", "show", "--json", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere, prep: recorded });
     expect(r.code).toBe(0);
     const e = JSON.parse(r.said[0]!);
-    expect(e.result.tag).toBe("tag:taskbox");
-    // The controller reads it with the install ID it paired with.
-    const back = policyOfAnswer(e.result, "a".repeat(32));
+    expect([e.result.tag, e.result.owners]).toEqual(["tag:taskbox", ["owner@example.com"]]);
+    expect(JSON.stringify(e.result)).not.toMatch(/"(OWNER|ADMIN)/);
+    // The controller reads it with the install ID it paired with, and its own owner.
+    const back = policyOfAnswer(e.result, "a".repeat(32), "owner@example.com");
     if (typeof back === "string") throw new Error(back);
-    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { admins: ["owner"] }).ssh);
+    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { owner: "owner@example.com", admins: ["owner"] }).ssh);
+  });
+  test("--json without --owner is refused before anything is read: it would answer a placeholder", async () => {
+    const r = await run(["policy", "show", "--json"], CALLERS.ci);
+    expect(r.code).toBe(2);
+  });
+  test("an agent the settings name that taskbox didn't make refuses the policy; one not made yet is left out", async () => {
+    const refused = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere });
+    expect(refused.code).toBe(1);
+    expect(refused.said[0]).toMatch(/^taskbox-agent, the agent the settings name, isn't the account taskbox made, so no policy lets it in/);
+    const later = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)) });
+    expect(later.code).toBe(0);
+    expect(later.said.join("\n")).not.toContain('"accept"');
+    expect(later.said.join("\n")).toContain("taskbox-agent isn't made yet, so the policy leaves it out");
   });
 });

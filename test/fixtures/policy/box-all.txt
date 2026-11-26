@@ -1,40 +1,40 @@
 In "tagOwners":
   // taskbox:11111111111111111111111111111111
-  "tag:taskbox-one": ["OWNER"],
+  "tag:taskbox-one": ["owner@example.com"],
   // taskbox:22222222222222222222222222222222
-  "tag:taskbox-two": ["OWNER"],
+  "tag:taskbox-two": ["owner@example.com"],
 
 In "grants":
+  // taskbox
+  { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] },
   // taskbox:11111111111111111111111111111111
-  { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] },
-  { "src": ["OWNER"], "dst": ["tag:taskbox-one"], "ip": ["tcp:22", "tcp:5900"] },
+  { "src": ["owner@example.com"], "dst": ["tag:taskbox-one"], "ip": ["tcp:22", "tcp:5900"] },
   // taskbox:22222222222222222222222222222222
-  { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] },
-  { "src": ["OWNER"], "dst": ["tag:taskbox-two"], "ip": ["tcp:22", "tcp:5900"] },
+  { "src": ["owner@example.com"], "dst": ["tag:taskbox-two"], "ip": ["tcp:22", "tcp:5900"] },
   { "src": ["sam@example.com"], "dst": ["tag:taskbox-two"], "ip": ["tcp:22", "tcp:5900"] },
 
 In "ssh":
   // taskbox:11111111111111111111111111111111
-  { "action": "accept", "src": ["OWNER"], "dst": ["tag:taskbox-one"], "users": ["taskbox-agent"] },
-  { "action": "check", "src": ["OWNER"], "dst": ["tag:taskbox-one"], "users": ["pat"] },
+  { "action": "accept", "src": ["owner@example.com"], "dst": ["tag:taskbox-one"], "users": ["taskbox-agent"] },
+  { "action": "check", "src": ["owner@example.com"], "dst": ["tag:taskbox-one"], "users": ["pat"] },
   // taskbox:22222222222222222222222222222222
-  { "action": "accept", "src": ["OWNER"], "dst": ["tag:taskbox-two"], "users": ["remote"] },
-  { "action": "accept", "src": ["OWNER"], "dst": ["tag:taskbox-two"], "users": ["ws1", "ws2"] },
+  { "action": "accept", "src": ["owner@example.com"], "dst": ["tag:taskbox-two"], "users": ["remote"] },
+  { "action": "accept", "src": ["owner@example.com"], "dst": ["tag:taskbox-two"], "users": ["ws1", "ws2"] },
   { "action": "check", "src": ["sam@example.com"], "dst": ["tag:taskbox-two"], "users": ["sam"] },
 
 In "sshTests":
   // taskbox:11111111111111111111111111111111
-  { "src": "OWNER", "dst": ["tag:taskbox-one"], "accept": ["taskbox-agent"], "check": ["pat"], "deny": ["root", "taskbox", "ADMIN"] },
+  { "src": "owner@example.com", "dst": ["tag:taskbox-one"], "accept": ["taskbox-agent"], "check": ["pat"], "deny": ["root", "taskbox", "boss"] },
   // taskbox:22222222222222222222222222222222
-  { "src": "OWNER", "dst": ["tag:taskbox-two"], "accept": ["remote", "ws1", "ws2"], "deny": ["root", "ci", "sam", "ADMIN"] },
-  { "src": "sam@example.com", "dst": ["tag:taskbox-two"], "check": ["sam"], "deny": ["root", "ci", "remote", "ws1", "ws2", "ADMIN"] },
+  { "src": "owner@example.com", "dst": ["tag:taskbox-two"], "accept": ["remote", "ws1", "ws2"], "deny": ["root", "ci", "sam", "boss"] },
+  { "src": "sam@example.com", "dst": ["tag:taskbox-two"], "check": ["sam"], "deny": ["root", "ci", "remote", "ws1", "ws2", "boss"] },
 
 In "tests":
   // taskbox:11111111111111111111111111111111
-  { "src": "OWNER", "accept": ["tag:taskbox-one:22", "tag:taskbox-one:5900"] },
-  { "src": "tag:taskbox-one", "deny": ["OWNER:22", "OWNER:80", "OWNER:443", "OWNER:445", "OWNER:548", "OWNER:3283", "OWNER:5900", "OWNER:7000"] },
+  { "src": "owner@example.com", "accept": ["tag:taskbox-one:22", "tag:taskbox-one:5900"] },
+  { "src": "tag:taskbox-one", "deny": ["owner@example.com:22", "owner@example.com:80", "owner@example.com:443", "owner@example.com:445", "owner@example.com:548", "owner@example.com:3283", "owner@example.com:5900", "owner@example.com:7000"] },
   // taskbox:22222222222222222222222222222222
-  { "src": "OWNER", "accept": ["tag:taskbox-two:22", "tag:taskbox-two:5900"] },
+  { "src": "owner@example.com", "accept": ["tag:taskbox-two:22", "tag:taskbox-two:5900"] },
   { "src": "sam@example.com", "accept": ["tag:taskbox-two:22", "tag:taskbox-two:5900"] },
-  { "src": "tag:taskbox-two", "deny": ["OWNER:22", "OWNER:80", "OWNER:443", "OWNER:445", "OWNER:548", "OWNER:3283", "OWNER:5900", "OWNER:7000"] },
+  { "src": "tag:taskbox-two", "deny": ["owner@example.com:22", "owner@example.com:80", "owner@example.com:443", "owner@example.com:445", "owner@example.com:548", "owner@example.com:3283", "owner@example.com:5900", "owner@example.com:7000"] },
   { "src": "tag:taskbox-two", "deny": ["sam@example.com:22", "sam@example.com:80", "sam@example.com:443", "sam@example.com:445", "sam@example.com:548", "sam@example.com:3283", "sam@example.com:5900", "sam@example.com:7000"] },

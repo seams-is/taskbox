@@ -14,3 +14,8 @@ export function checkAccounts(c: Config): void {
   // The box's own tag, which the policy, the install's sign-in and the Tailscale row all use.
   if ("tailnetTag" in c && (typeof c.tailnetTag !== "string" || c.tailnetTag.length > 64 || !TAILNET_TAG_SHAPE.test(c.tailnetTag))) throw new Error("taskbox.json: tailnetTag is tag:taskbox, or tag:taskbox- then lowercase letters and digits, such as tag:taskbox-studio");
 }
+
+// The access model's guarded keys, first tier (reach and trust): a merged change to one waits for
+// the owner's settings apply and then the box's own confirm. tailnetTag is here because it decides
+// which of the tailnet's rules reach the box. The settings op reads this list and enforces it.
+export const REACH_KEYS = ["accounts.service", "accounts.agent", "accounts.ssh", "accounts.people", "accounts.workspaces", "tailnetTag"] as const;

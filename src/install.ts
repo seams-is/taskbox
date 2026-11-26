@@ -32,7 +32,7 @@ import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from
 import { rows } from "./rows/index.ts";
 import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./actionskey.ts";
 import { type EngineName, kitFor } from "./vm.ts";
-import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, tagOf, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
+import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILNET_TAG_SHAPE, tagOf, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
 import { compareTags, GitHub, type Head, mergeDate, RELEASE_TAG, repoMissing } from "./github.ts";
 import { gitTreeSha, gunzippedSize, hopTag, HopStop, placeRollbackWatch, publicRelease, parseStatement, removeRollbackWatch, ROLLBACK_AFTER_MS, SAFE_UNTAR, SIGNERS_IN_TREE, statementProblem, TARBALL_LIMIT, tarListProblem, UNPACKED_LIMIT, verifySignature } from "./hop.ts";
 import { clean } from "./progress.ts";
@@ -40,7 +40,7 @@ import { commandLinkProblem, linkTarget, placeCommandLink, prune, relink, swapIn
 import { poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
 import { BOX_FIX, readBoxFile } from "./boxsettings.ts";
 import { adoptSource, type ConnectDeps } from "./connectflow.ts";
-import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
+import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, recordedIds, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { adminState } from "./elevate.ts";
@@ -187,7 +187,7 @@ const stateIn = (d: InstallDeps) => () => {
 };
 // A first install has no taskbox command yet, so its lines say to run install.sh again.
 type AgentDeps = Pick<InstallDeps, "sys" | "paths" | "say" | "ask" | "tty" | "chown" | "rootUid" | "bootstrap">;
-const accountDeps = (d: AgentDeps): AccountDeps => ({ sys: d.sys, say: d.say, ask: d.ask, tty: d.tty, chown: d.chown, rootUid: d.rootUid ?? 0, again: d.bootstrap ? "Run sh ~/Downloads/taskbox-main/install.sh again" : "Type taskbox update again" });
+const accountDeps = (d: AgentDeps): AccountDeps => ({ sys: d.sys, say: d.say, ask: d.ask, tty: d.tty, chown: d.chown, rootUid: d.rootUid ?? 0, recorded: () => recordedIds(d.paths.accountsRecord, d.paths.poolRecord, d.rootUid ?? 0), again: d.bootstrap ? "Run sh ~/Downloads/taskbox-main/install.sh again" : "Type taskbox update again" });
 // account.made, account.placed and account.deleted, in root's event log.
 const accountEvent = (d: Pick<InstallDeps, "sys" | "paths" | "rootUid">): AccountEvent => {
   const log = eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys);
@@ -380,6 +380,9 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     d.say(`  Before you type yes: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
     d.say(`    "${tagOf(relCfg ?? {})}": ["OWNER"]`);
   }
+  // A new tag moves the box onto other rules of the tailnet's, so it is said before the yes.
+  const relTag = typeof relSettings.tailnetTag === "string" && TAILNET_TAG_SHAPE.test(relSettings.tailnetTag) ? relSettings.tailnetTag : TAILNET_TAG;
+  if (!opts.first && relTag !== tagOf(installedCfg)) d.say(`  It also moves the box on the tailnet from ${tagOf(installedCfg)} to ${relTag}, so the policy's rules for ${relTag} reach it from then on. On the controller, type taskbox policy show --box all, and paste it first.`);
   // Who may log in by Tailscale SSH: the console holds the rules, so a change is the owner's step.
   if (!opts.first) {
     let before: string[] | undefined;

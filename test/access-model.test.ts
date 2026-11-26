@@ -101,6 +101,16 @@ describe("hidden IDs", () => {
     s.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscacheutil" && args[4] === "472" ? { code: 0, stdout: "name: other\ngid: 472\n", stderr: "" } : undefined));
     expect(await freeHidden(s.sys, "/Groups")).toBe(473);
   });
+  test("an ID taskbox's records still hold, for an account gone from the directory, is never given again", async () => {
+    const s = setup();
+    expect(await freeHidden(s.sys, "/Users", [470, 471])).toBe(472);
+    writeRecord(s.d, s.p.accountsRecord, { made: { gone: { role: "agent", uid: 470 } }, groups: { gone: { gid: 471 } } });
+    const { recordedIds } = await import("../src/accounts.ts");
+    expect(recordedIds(s.p.accountsRecord, s.p.poolRecord, ME).sort()).toEqual([470, 471]);
+    // placeSystem asks for them: its group takes 472, which the record then holds, so the account takes 473.
+    expect(await placeSystem({ ...s.d, recorded: () => recordedIds(s.p.accountsRecord, s.p.poolRecord, ME) }, "_taskboxnet", s.p.accountsRecord)).toBe(473);
+    expect(s.dir.groups._taskboxnet!.gid).toBe(472);
+  });
   test("a list dscl can't give leaves no ID free", async () => {
     const sys = new FakeSys();
     sys.responders.push((cmd) => (cmd === "/usr/bin/dscl" ? { code: 1, stdout: "", stderr: "" } : undefined));
@@ -209,6 +219,13 @@ describe("a fresh box's accounts step", () => {
   });
 });
 
+// The agent as taskbox made it: there, and recorded with its ID.
+function withAgent(c: CheckContext): CheckContext {
+  writeRecord({ chown: () => {}, rootUid: ME }, c.paths.accountsRecord, { made: { "taskbox-agent": { role: "agent", uid: 470, guid: "0F0F0F0F-0000-0000-0000-000000000470" } } });
+  return c;
+}
+const agentDir = () => new Dir().user("taskbox-agent", { uid: 470, attrs: {} });
+
 function checkCtx(dir: Dir, o: { cfg?: Partial<typeof CFG>; uid?: number } = {}): CheckContext & { sys: FakeSys } {
   const sys = dir.sys();
   const p = paths(tempRoot(), testBox());
@@ -251,6 +268,10 @@ describe("the Tailnet policy row, from the box's own netmap", () => {
     expect([...live].map(([u, m]) => `${u}:${[...m].join("")}`)).toEqual(["taskbox-agent:accept", "pat:check"]);
     expect(liveSshUsers({})).toBeUndefined();
     expect(liveSshUsers({ SSHPolicy: null })?.size).toBe(0);
+    // Rules somewhere taskbox doesn't read them: can't be read, never "nobody is let in".
+    expect(liveSshUsers({ SSHPolicy: { Rules: [] } })?.size).toBe(0);
+    expect(liveSshUsers({ SSHPolicy: { rules: {} } })).toBeUndefined();
+    expect(liveSshUsers({ SSHPolicy: "x" })).toBeUndefined();
   });
   test("differences: a user let in that the settings don't name, a wrong mode, a missing one, any user", () => {
     const want = { accept: ["taskbox-agent"], check: ["pat"] };
@@ -263,10 +284,12 @@ describe("the Tailnet policy row, from the box's own netmap", () => {
     c.sys.responders.unshift((cmd, args) => (cmd === c.paths.tailscale && args.includes("netmap") ? { ...answer, stderr: "" } : undefined));
   test("FAIL when they differ, with the step on the controller; OK when they match", async () => {
     const cfg = { accounts: validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: ["pat"], ssh: ["pat"] }) };
-    const bad = checkCtx(new Dir(), { cfg });
+    const bad = checkCtx(agentDir(), { cfg });
+    withAgent(bad);
     tailscale(bad, { code: 0, stdout: JSON.stringify(netmap([accept(["taskbox-agent"])])) });
     expect(await tailnetPolicyRow(bad)).toEqual({ status: "FAIL", detail: "the tailnet's rules for this box differ from the settings (pat isn't let in): on the controller, type taskbox policy show --box all, then paste it" });
-    const good = checkCtx(new Dir(), { cfg });
+    const good = checkCtx(agentDir(), { cfg });
+    withAgent(good);
     tailscale(good, { code: 0, stdout: JSON.stringify(netmap([accept(["taskbox-agent"]), check(["pat"])])) });
     expect((await tailnetPolicyRow(good)).status).toBe("OK");
   });
@@ -331,7 +354,8 @@ describe("a box's own tag, tailnetTag", () => {
   });
   test("the policy row compares against the box's own tag's rules", async () => {
     const cfg = { accounts: validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), tailnetTag: "tag:taskbox-studio" };
-    const c = checkCtx(new Dir(), { cfg });
+    const c = checkCtx(agentDir(), { cfg });
+    withAgent(c);
     c.sys.responders.unshift((cmd, args) => (cmd === c.paths.tailscale && args.includes("netmap") ? { code: 0, stdout: JSON.stringify({ SSHPolicy: { rules: [{ sshUsers: { "taskbox-agent": "=" }, action: { accept: true } }] } }), stderr: "" } : undefined));
     expect((await tailnetPolicyRow(c)).status).toBe("OK");
   });
@@ -352,5 +376,26 @@ describe("remove and taskbox's own accounts", () => {
     // Its directory record only: never sysadminctl, which would take /var/empty with it.
     expect(s.sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl")).toBe(false);
     expect(s.sys.calls.some((c) => c.cmd === "/usr/bin/dscl" && c.args.join(" ") === ". -delete /Users/_taskboxgh")).toBe(true);
+  });
+});
+
+describe("the Tailnet policy row and accounts taskbox didn't make", () => {
+  test("a pool name the settings give to an account taskbox didn't make fails the row, never reads OK", async () => {
+    const { writePin } = await import("../src/pin.ts");
+    // A security key's line, as taskbox approver makes it.
+    const str = (x: Buffer | string) => {
+      const v = Buffer.from(x);
+      const n = Buffer.alloc(4);
+      n.writeUInt32BE(v.length);
+      return Buffer.concat([n, v]);
+    };
+    const key = `sk-ecdsa-sha2-nistp256@openssh.com ${Buffer.concat([str("sk-ecdsa-sha2-nistp256@openssh.com"), str("nistp256"), str(Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 7)])), str("ssh:")]).toString("base64")}`;
+    const c = checkCtx(agentDir().user("test1", { uid: 501, attrs: { UserShell: "/bin/zsh" } }), { cfg: { accounts: validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [], workspaces: { pool: "test", size: 1 } }), approverKey: key } });
+    withAgent(c);
+    writePin({ chown: () => {}, rootUid: ME }, c.paths.approverPin, { key, gen: 1, cleared: [] });
+    c.sys.responders.unshift((cmd, args) => (cmd === c.paths.tailscale && args.includes("netmap") ? { code: 0, stdout: JSON.stringify({ SSHPolicy: { rules: [{ sshUsers: { "taskbox-agent": "=", test1: "=" }, action: { accept: true } }] } }), stderr: "" } : undefined));
+    const r = await tailnetPolicyRow(c);
+    expect(r.status).toBe("FAIL");
+    expect(r.detail).toMatch(/^test1, a workspace account the settings name, isn't the account taskbox made/);
   });
 });

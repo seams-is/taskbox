@@ -34,6 +34,8 @@ export type AccountsRecord = {
 
 export type AccountDeps = {
   sys: Sys;
+  // The IDs taskbox's records hold (accounts.json and pool.json), users and groups alike.
+  recorded?: () => number[];
   say(line: string): void;
   ask(prompt: string): Promise<string>;
   // Runs a command on the terminal, for the prompts macOS asks itself. Its exit code.
@@ -278,14 +280,16 @@ export async function agentSteps(d: AccountDeps, name: string, shell: string, ho
 // local directory's list, and the system's own lookup, which also sees any other directory the Mac
 // is bound to. A user ID is asked of id; a group ID of dscacheutil, and no user may have it as its
 // primary group either. A lookup that fails for any other reason counts the ID as taken.
-export async function freeHidden(sys: Sys, kind: "/Users" | "/Groups"): Promise<number | undefined> {
+// taken: IDs taskbox's own records hold, for an account or group that may be gone from the
+// directory, so a new account never takes an ID an old record still names.
+export async function freeHidden(sys: Sys, kind: "/Users" | "/Groups", taken: readonly number[] = []): Promise<number | undefined> {
   const list = async (k: string, key: string) => {
     const r = await sys.run("/usr/bin/dscl", [".", "-list", k, key], { timeoutMs: 10_000 });
     return r.code === 0 ? r.stdout.split("\n").map((l) => Number(l.trim().split(/\s+/).pop())) : undefined;
   };
   const lists = kind === "/Users" ? [await list("/Users", "UniqueID")] : [await list("/Groups", "PrimaryGroupID"), await list("/Users", "PrimaryGroupID")];
   if (lists.some((l) => l === undefined)) return undefined;
-  const used = new Set(lists.flat() as number[]);
+  const used = new Set([...(lists.flat() as number[]), ...taken]);
   for (let n = FIRST_HIDDEN_UID; n <= LAST_HIDDEN_UID; n++) {
     if (used.has(n)) continue;
     if (kind === "/Users") {
@@ -303,7 +307,7 @@ export async function freeHidden(sys: Sys, kind: "/Users" | "/Groups"): Promise<
 // needs none and nobody logs in as it at the screen. agentSteps comes before its ID, so an account
 // left half made by a failed step can't be logged in to.
 export async function makeAgent(d: AccountDeps, name: string, shell: string, home: string, recordPath: string): Promise<number | string> {
-  const uid = await freeHidden(d.sys, "/Users");
+  const uid = await freeHidden(d.sys, "/Users", d.recorded?.() ?? []);
   if (uid === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
   if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
   // Recorded as soon as the record exists, so remove finds it even if a later key fails.
@@ -499,7 +503,7 @@ async function placeGroup(d: AccountDeps, group: string, store: GroupStore, real
   const now = await groupGid(d.sys, group);
   if (now === null) return `taskbox can't read the group ${group}. Nothing else was installed. ${againOf(d)}.`;
   if (now !== undefined) return groups[group]?.gid === now ? now : `${group} is a group taskbox didn't make. Nothing else was installed. Nothing to do: agents fix it.`;
-  const gid = await freeHidden(d.sys, "/Groups");
+  const gid = await freeHidden(d.sys, "/Groups", d.recorded?.() ?? []);
   if (gid === undefined) return `there is no free hidden group ID for ${group}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
   const dscl = (args: string[]) => d.sys.run("/usr/bin/dscl", [".", ...args], { timeoutMs: 10_000 });
   if ((await dscl(["-create", `/Groups/${group}`])).code !== 0) return `dscl didn't make the group ${group}. Nothing else was installed. ${againOf(d)}.`;
@@ -675,7 +679,7 @@ export async function placePool(d: AccountDeps, p: PoolPaths, name: string, grou
   let uid = await uidOf(d.sys, name);
   const made = uid === undefined;
   if (uid === undefined) {
-    const free = await freeHidden(d.sys, "/Users");
+    const free = await freeHidden(d.sys, "/Users", d.recorded?.() ?? []);
     if (free === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
     if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
     const rec = poolRec(d, p.poolRecord);
@@ -833,7 +837,7 @@ export async function placeSystem(d: AccountDeps, name: (typeof SYSTEM_USERS)[nu
   let uid = await uidOf(d.sys, name);
   const made = uid === undefined;
   if (uid === undefined) {
-    const free = await freeHidden(d.sys, "/Users");
+    const free = await freeHidden(d.sys, "/Users", d.recorded?.() ?? []);
     if (free === undefined) return `there is no free hidden user ID for ${name}, so it wasn't made. Nothing else was installed. Nothing to do: agents fix it.`;
     if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't make ${name}. Nothing else was installed. ${againOf(d)}.`;
     // Recorded as soon as the record exists, so remove finds it even if a later key fails.
@@ -1053,4 +1057,33 @@ export async function applyOldAgentStep(d: AccountDeps, p: Pick<StepPaths, "acco
     } catch {}
   }
   return [...r.done, ...r.missed.map((m) => `${m}. taskbox check says so.`)];
+}
+
+// The accounts the tailnet policy may let in by SSH accept: the agent and the pool accounts, only
+// as taskbox made (or, for the agent, took) them, by uid and GeneratedUID. A settings name alone
+// gives nothing: one that isn't there yet is left out, and one taskbox didn't make refuses the policy.
+export async function ownAccess(sys: Sys, agent: string | undefined, pool: readonly string[], rec: AccountsRecord, poolRec: PoolRecord | "bad"): Promise<{ agent?: string; pool: string[]; notYet: string[] } | { refuse: string }> {
+  const notYet: string[] = [];
+  let ag: string | undefined;
+  if (agent !== undefined) {
+    const m = rec.made[agent];
+    if ((await uidOf(sys, agent)) === undefined) notYet.push(agent);
+    else if ((m?.role === "agent" || m?.role === "placed") && (await stillMade(sys, agent, m))) ag = agent;
+    else return { refuse: `${agent}, the agent the settings name, isn't the account taskbox made, so no policy lets it in` };
+  }
+  const own: string[] = [];
+  for (const name of pool) {
+    const m = poolRec === "bad" ? undefined : poolRec.made[name];
+    if ((await uidOf(sys, name)) === undefined) notYet.push(name);
+    else if (m && (await stillMade(sys, name, asMade(m)))) own.push(name);
+    else return { refuse: `${name}, a workspace account the settings name, isn't the account taskbox made, so no policy lets it in` };
+  }
+  return { ...(ag !== undefined ? { agent: ag } : {}), pool: own, notYet };
+}
+
+// Every ID taskbox's two records hold, users and groups, for freeHidden.
+export function recordedIds(accountsPath: string, poolPath: string, rootUid = 0): number[] {
+  const rec = readRecord(accountsPath);
+  const pool = readPoolRecord(poolPath, rootUid);
+  return [...Object.values(rec.made).map((m) => m.uid), ...Object.values(rec.groups ?? {}).map((g) => g.gid), ...(pool === "bad" ? [] : [...Object.values(pool.made).map((m) => m.uid), ...Object.values(pool.groups).map((g) => g.gid)])];
 }

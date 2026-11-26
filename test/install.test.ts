@@ -544,6 +544,26 @@ describe("the service account", () => {
     expect(said.some((l) => l.includes('replace taskbox\'s entries'))).toBe(true);
   });
 
+  test("an update that moves the box to another tailnet tag says so before the yes", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys, { settings: { accounts: { service: "taskbox", agent: "taskbox-agent", people: [] }, tailnetTag: "tag:taskbox-studio" } });
+    const { d, said } = installDeps(sys, "no");
+    writeFileSync(join(d.configDir, "taskbox.json"), JSON.stringify({ ...CFG, accounts: { service: "taskbox", agent: "taskbox-agent", people: [] } }));
+    mkdirSync(d.paths.state, { recursive: true });
+    writeFileSync(d.paths.oldKey, PEM);
+    mkdirSync(dirname(d.paths.installed), { recursive: true });
+    writeFileSync(d.paths.installed, JSON.stringify({ commit: "56027d1c5671baa8eadd5aeaf1cdeb4d89254470", tag: "v1.9.0", pr: 17, title: "x", mergedAt: "x", installedAt: "x", files: {} }));
+    const err = await install(d, { first: false }).then(() => "", (e: Error) => e.message);
+    expect(err).toContain('You typed "no"');
+    expect(said).toContain("  It also moves the box on the tailnet from tag:taskbox to tag:taskbox-studio, so the policy's rules for tag:taskbox-studio reach it from then on. On the controller, type taskbox policy show --box all, and paste it first.");
+  });
+
+  test("tailnetTag is one of the reach keys the settings op guards", async () => {
+    const { REACH_KEYS } = await import("../src/settings/accounts.ts");
+    expect(REACH_KEYS).toContain("tailnetTag");
+  });
+
   test("an accounts key this release doesn't know is named before the yes, so a typo shows", async () => {
     const sys = new FakeSys();
     healthyBox(sys);

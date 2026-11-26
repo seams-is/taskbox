@@ -219,6 +219,8 @@ describe("every pool account, 1 to N", () => {
     // Not recorded, or not a hidden ID: no account.
     expect(poolUserOf(pool, POOL_UID + 1)).toBeUndefined();
     expect(poolUserOf({ made: { "taskbox-ws2": { uid: 600 } }, groups: {} }, 600)).toBeUndefined();
+    // Two names on one ID: neither opens.
+    expect(poolUserOf({ made: { "taskbox-ws1": { uid: POOL_UID }, ws1: { uid: POOL_UID } }, groups: {} }, POOL_UID)).toBeUndefined();
   });
   test("a pool name is the prefix and 1 to 8", async () => {
     const { POOL_USER } = await import("../src/workspace/model.ts");
