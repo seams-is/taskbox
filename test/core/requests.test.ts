@@ -674,10 +674,11 @@ describe("the handlers' folder", () => {
 });
 
 describe("--signed through the box's command line", () => {
-  // A test-only command that takes --signed; its own run must never run for a signed line.
-  const ran: string[] = [];
-  const spec: CommandSpec = { path: ["drain"], summary: "Drain.", who: ["owner", "service"], flags: ["json", "timeout", "force", "signed"], shell: true, run: async () => (ran.push("own"), 0) };
-  async function cli(b: Awaited<ReturnType<typeof box>>, argv: string[], o: { uid?: number; service?: number } = {}) {
+  // A test-only command that takes --signed; its own run must never run for a signed line. Each
+  // test has its own, so tests run at once don't share what ran.
+  const command = (ran: string[]): CommandSpec => ({ path: ["drain"], summary: "Drain.", who: ["owner", "service"], flags: ["json", "timeout", "force", "signed"], shell: true, run: async () => (ran.push("own"), 0) });
+  async function cli(b: Awaited<ReturnType<typeof box>>, argv: string[], o: { uid?: number; service?: number; ran?: string[] } = {}) {
+    const spec = command(o.ran ?? []);
     mkdirSync(b.p.app, { recursive: true });
     writeFileSync(join(b.p.app, "taskbox.json"), readFileSync(join(import.meta.dir, "../../taskbox.example.json"), "utf8"));
     quietBox(b.sys);
@@ -695,11 +696,11 @@ describe("--signed through the box's command line", () => {
   test(
     "the line goes through the agent spool to the guard's handler; the command's own run never runs",
     async () => {
-      ran.length = 0;
+      const ran: string[] = [];
       const b = await box();
       const n = (await nonceOf(b.d, "box")) as { nonce: string };
       const word = signFor({ action: "drain", args: drainArgs(), nonce: n.nonce });
-      const r = await cli(b, ["drain", "--timeout", "1h", "--signed", word, "--json"]);
+      const r = await cli(b, ["drain", "--timeout", "1h", "--signed", word, "--json"], { ran });
       expect(r.code).toBe(0);
       const env = JSON.parse(r.said.at(-1)!);
       expect(env).toMatchObject({ command: "drain", ok: true, exit: 0, changed: true, result: { request: expect.stringMatching(/^rq_/), op: "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ" }, error: null });
@@ -727,13 +728,13 @@ describe("--signed through the box's command line", () => {
   );
 
   test("the same command unsigned, from the agent account, is refused before its run; the service account runs it", async () => {
-    ran.length = 0;
+    const ran: string[] = [];
     const b = await box();
-    const r = await cli(b, ["drain", "--timeout", "1h", "--json"]);
+    const r = await cli(b, ["drain", "--timeout", "1h", "--json"], { ran });
     expect(r.code).toBe(1);
     expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
     expect(ran).toEqual([]);
-    const s = await cli(b, ["drain", "--timeout", "1h"], { uid: me, service: me });
+    const s = await cli(b, ["drain", "--timeout", "1h"], { uid: me, service: me, ran });
     expect(s.code).toBe(0);
     expect(ran).toEqual(["own"]);
   });
