@@ -635,7 +635,7 @@ describe("the v2.5.0 hooks", () => {
     const y = loadWorkflowYaml(LIN);
     expect(y).not.toMatch(/__[A-Z]+__/);
     expect(y).toContain("options: [canary, burst, push, day]");
-    expect(y).toContain('label: ["taskbox-macos", "taskbox-linux"]');
+    expect(y).toContain('label: ["taskbox-1-macos", "taskbox-1-linux"]');
     expect(y).toContain("runs-on: [taskbox-macos]");
     expect(y).toContain("runs-on: [taskbox-linux]");
     expect(y).toContain("permissions: {}");

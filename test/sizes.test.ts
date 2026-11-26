@@ -61,7 +61,7 @@ describe("the settings", () => {
     const c = loadConfig(writeConfig(base()));
     expect(sizesOf(c, "linux").map((s) => [s.name, s.vmCpus, s.vmMemoryMB])).toEqual([["default", 4, 8192], ["small", 2, 4096], ["large", 8, 16384]]);
     expect(sizesOf(c, "macos").map((s) => s.name)).toEqual(["default"]);
-    expect(allLabelsFor(c, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge", "taskbox-linux-small", "taskbox-linux-small-merge", "taskbox-linux-large"]);
+    expect(allLabelsFor(c, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge", "example-box-linux", "taskbox-linux-small", "taskbox-linux-small-merge", "taskbox-linux-large"]);
     expect(kindOfLabel(c, "taskbox-linux-small")).toBe("linux");
     expect(smallestSize(c, "linux").name).toBe("small");
     expect(warmSizeOf(c, "linux").name).toBe("default");

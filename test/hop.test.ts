@@ -547,7 +547,7 @@ describe("the rollback watcher and undo", () => {
     expect(linkTarget(h.d.paths.opt)).toBe(h.before);
     expect(linkTarget(h.d.paths.prev)).toBe(v3);
     expect(log[0]).toBe(`rollback watcher: ${TAG} wasn't proved by its deadline, so the box goes back to the install before`);
-    expect(log.join("\n")).toContain("Stopped local.taskbox.broker, local.taskbox.notify, which this install doesn't run.");
+    expect(log.join("\n")).toContain("Stopped local.taskbox.guardwatch, local.taskbox.broker, local.taskbox.notify, which this install doesn't run.");
     expect(outs).toContain("system/local.taskbox.broker");
     expect(outs).toContain("gui/502/local.taskbox.notify");
     for (const f of [join(daemons, "local.taskbox.broker.plist"), join(agents, "local.taskbox.notify.plist"), rollbackWatchPaths(h.d.paths).plist, rollbackWatchPaths(h.d.paths).file]) expect(existsSync(f)).toBe(false);
@@ -714,6 +714,12 @@ describe("the rollback watcher and undo", () => {
     }
   });
 
+  test("only a tag that says v2 drops guardwatch; a missing or unreadable tag keeps it, so the guard stays watched", async () => {
+    const { laterDaemons } = await import("../src/hop.ts");
+    for (const t of ["v3.0.0-rc.1", "v4.0.0", undefined, "", 3, "3.0.0", "taskbox"]) expect(laterDaemons(t)).toEqual(["local.taskbox.guardwatch"]);
+    for (const t of ["v2.6.1", "v2.0.0"]) expect(laterDaemons(t)).toEqual([]);
+  });
+
   test.serial("undo by hand boots out daemons the install gone back to doesn't know, and keeps its own", async () => {
     const h = await hopBox();
     const daemons = dirname(h.d.paths.guardPlist);
@@ -727,6 +733,7 @@ describe("the rollback watcher and undo", () => {
     const said: string[] = [];
     const code = await undo({ ...opsOf(h), say: (l) => said.push(l), ask: async () => "yes" });
     expect([code, said]).toEqual([0, expect.anything()]);
+    // The install gone back to has no v3 tag, so it knows neither.
     expect(said.join("\n")).toContain("Stopped local.taskbox.guardwatch, local.taskbox.netwatch, which this install doesn't run.");
     for (const l of ["local.taskbox.guardwatch", "local.taskbox.netwatch"]) expect(existsSync(join(daemons, `${l}.plist`))).toBe(false);
     for (const l of [GUARD_LABEL, TAILSCALED_LABEL, ROLLBACK_LABEL]) expect(existsSync(join(daemons, `${l}.plist`))).toBe(true);
