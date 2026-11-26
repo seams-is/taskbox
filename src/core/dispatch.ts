@@ -13,13 +13,12 @@
 // Handlers apply what they are given and answer within HANDLER_MS: a long change starts an op
 // (core/child.ts) and returns its id. One that takes longer is answered `timeout` and left running,
 // so a handler must be safe to leave.
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import type { CommandSpec, ErrorCode } from "../command.ts";
 import { ERROR_CODES } from "../command.ts";
 import type { Config, Paths } from "../config.ts";
 import type { Sys } from "../sys.ts";
 import type { VerifyDeps } from "../workspace/approval.ts";
+import { handlerFiles } from "../handlers/index.ts";
 import { pinnedKeys, readApprovers } from "./approvers.ts";
 import type { EventLog } from "./events.ts";
 import { always, nonceFor, SUBJECT } from "./nonces.ts";
@@ -87,21 +86,21 @@ export function handlersProblem(h: Handlers): string | undefined {
   return undefined;
 }
 
-// Every file in src/handlers/ exports `handlers`, one package's, as src/cmd/ does for commands, so a
-// package adds its handlers by adding a file and edits no shared one. Throws when one doesn't fit.
-export const HANDLERS_DIR = join(import.meta.dir, "..", "handlers");
-const FILE = /^[a-z][a-z0-9-]*\.ts$/;
-export function loadHandlers(dir = HANDLERS_DIR): Handlers {
+// One package's handlers, as its file in src/handlers/ exports them; src/handlers/index.ts lists
+// every file by static import.
+export interface HandlerFile {
+  file: string;
+  handlers: unknown;
+}
+
+// The handlers of every file, checked: each exports `handlers` with signed or unsigned lists, and
+// together they fit. Throws when one doesn't.
+export function handlersFrom(files: readonly HandlerFile[]): Handlers {
   const signed: SignedHandler[] = [];
   const unsigned: UnsignedHandler[] = [];
-  let files: string[] = [];
-  try {
-    files = readdirSync(dir).filter((f) => FILE.test(f)).sort();
-  } catch {}
-  for (const f of files) {
-    const h = (require(join(dir, f)) as { handlers?: unknown }).handlers;
+  for (const { file, handlers: h } of files) {
     const ok = isObj(h) && (h.signed !== undefined || h.unsigned !== undefined) && (h.signed === undefined || Array.isArray(h.signed)) && (h.unsigned === undefined || Array.isArray(h.unsigned));
-    if (!ok) throw new Error(`src/handlers/${f} exports no handlers`);
+    if (!ok) throw new Error(`src/handlers/${file} exports no handlers`);
     signed.push(...((h.signed ?? []) as SignedHandler[]));
     unsigned.push(...((h.unsigned ?? []) as UnsignedHandler[]));
   }
@@ -111,7 +110,7 @@ export function loadHandlers(dir = HANDLERS_DIR): Handlers {
   return out;
 }
 let cached: Handlers | undefined;
-export const requestHandlers = (): Handlers => (cached ??= loadHandlers());
+export const requestHandlers = (): Handlers => (cached ??= handlersFrom(handlerFiles));
 
 // A command that lists --signed and a signed handler are named by one string, path.join("."): each
 // such command needs a handler for its action, and each signed handler such a command.

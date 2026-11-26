@@ -13,10 +13,11 @@ import { parse } from "../../src/command.ts";
 import { paths } from "../../src/config.ts";
 import { trustFirst, updateApprovers } from "../../src/core/approvers.ts";
 import { ask, type AskDeps, nonceOf, POLL_MS, POLLS, sendSigned } from "../../src/core/asker.ts";
-import { type Answer, contractProblem, type DispatchDeps, type Handlers, handlersProblem, loadHandlers, requestHandlers, type SignedHandler, takeRequest } from "../../src/core/dispatch.ts";
+import { type Answer, contractProblem, type DispatchDeps, type Handlers, handlersFrom, handlersProblem, requestHandlers, type SignedHandler, takeRequest } from "../../src/core/dispatch.ts";
 import { eventLog, readEvents } from "../../src/core/events.ts";
 import { currentNonce, nonceFor, readNonces, SUBJECT } from "../../src/core/nonces.ts";
 import { NAME } from "../../src/workspace/model.ts";
+import { handlerFiles } from "../../src/handlers/index.ts";
 import { rootStateOf } from "../../src/core/paths.ts";
 import { readOutcome, readSpoolFile, writeSpoolFile } from "../../src/core/spool.ts";
 import { type Args, argsOf, CONTROL_NS, signedWord, signsInProcess, statementFor, statementText } from "../../src/core/statement.ts";
@@ -763,28 +764,20 @@ describe("the review's cases", () => {
 });
 
 describe("the handlers' folder", () => {
-  const dir = () => {
-    const d = join(tempRoot(), "handlers");
-    mkdirSync(d, { recursive: true });
-    return d;
-  };
-  const src = (o: string) => `export const handlers = ${o};\n`;
-  test("each file's handlers are found, from every file in the folder", () => {
-    const d = dir();
-    writeFileSync(join(d, "jobs.ts"), src(`{ signed: [{ action: "job.cancel", subject: () => "box", apply: async () => ({ ok: true, said: "x" }) }] }`));
-    writeFileSync(join(d, "connect.ts"), src(`{ unsigned: [{ kind: "connect-code", check: () => undefined, apply: async () => ({ ok: true, said: "x" }) }] }`));
-    writeFileSync(join(d, "notes.md"), "not a handler file");
-    const h = loadHandlers(d);
-    expect(h.signed.map((x) => x.action)).toEqual(["job.cancel"]);
-    expect(h.unsigned.map((x) => x.kind)).toEqual(["connect-code"]);
+  const h = (o: Partial<SignedHandler>[] = [], u: { kind: string }[] = []) => ({ ...(o.length ? { signed: o.map((x) => ({ subject: () => "box", apply: async () => ({ ok: true, said: "x" }), ...x })) } : {}), ...(u.length ? { unsigned: u.map((x) => ({ check: () => undefined, apply: async () => ({ ok: true, said: "x" }), ...x })) } : {}) });
+  test("each file's handlers are found", () => {
+    const got = handlersFrom([{ file: "jobs.ts", handlers: h([{ action: "job.cancel" }]) }, { file: "connect.ts", handlers: h([], [{ kind: "connect-code" }]) }]);
+    expect(got.signed.map((x) => x.action)).toEqual(["job.cancel"]);
+    expect(got.unsigned.map((x) => x.kind)).toEqual(["connect-code"]);
   });
   test("a file that exports no handlers, or two files taking one action, is refused", () => {
-    const d = dir();
-    writeFileSync(join(d, "empty.ts"), "export const other = 1;\n");
-    expect(() => loadHandlers(d)).toThrow("src/handlers/empty.ts exports no handlers");
-    const e = dir();
-    for (const f of ["a.ts", "b.ts"]) writeFileSync(join(e, f), src(`{ signed: [{ action: "drain", subject: () => "box", apply: async () => ({ ok: true, said: "x" }) }] }`));
-    expect(() => loadHandlers(e)).toThrow("two signed handlers take drain");
+    expect(() => handlersFrom([{ file: "empty.ts", handlers: undefined }])).toThrow("src/handlers/empty.ts exports no handlers");
+    expect(() => handlersFrom([{ file: "a.ts", handlers: h([{ action: "drain" }]) }, { file: "b.ts", handlers: h([{ action: "drain" }]) }])).toThrow("two signed handlers take drain");
+  });
+  test("the static index names every handler file in src/handlers/, and only those", () => {
+    const folder = readdirSync(new URL("../../src/handlers/", import.meta.url)).filter((f) => /^[a-z][a-z0-9-]*\.ts$/.test(f) && f !== "index.ts").sort();
+    expect(handlerFiles.map((f) => f.file).sort()).toEqual(folder);
+    expect(() => requestHandlers()).not.toThrow();
   });
   test("every command that takes --signed has a handler for its action, and every signed handler a command", () => {
     expect(contractProblem(registry(), requestHandlers())).toBeUndefined();
