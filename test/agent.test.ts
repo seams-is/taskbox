@@ -134,11 +134,11 @@ describe("a missing agent is made", () => {
     await placeAgent(d, AGENT, p.agentHome);
     // Its own group comes after the steps that take its password, before its ID.
     expect(steps(sys)).toEqual(["-create", "-create Password", "-create IsHidden", "-create UserShell", "-create NFSHomeDirectory", "-delete AuthenticationAuthority", "-delete ShadowHashData", "-create", "-create PrimaryGroupID", "-create Password", "-create RealName", "-create UniqueID", "-create PrimaryGroupID", "-create RealName"]);
-    expect(dir.groups[AGENT]).toEqual({ gid: 470 });
-    expect(readRecord(p.accountsRecord).groups).toEqual({ [AGENT]: { gid: 470 } });
+    expect(dir.groups[AGENT]).toEqual({ gid: 471 });
+    expect(readRecord(p.accountsRecord).groups).toEqual({ [AGENT]: { gid: 471 } });
     expect(recordedAtPassword?.made[AGENT]).toEqual({ role: "agent", uid: 470 });
     expect(readRecord(p.accountsRecord).made[AGENT]).toEqual({ role: "agent", uid: 470, guid: guidFor(470) });
-    expect(dir.users[AGENT]!.attrs).toEqual({ Password: "*", IsHidden: "1", UserShell: REMOTE_SHELL, NFSHomeDirectory: p.agentHome!, PrimaryGroupID: "470", RealName: "taskbox agent" });
+    expect(dir.users[AGENT]!.attrs).toEqual({ Password: "*", IsHidden: "1", UserShell: REMOTE_SHELL, NFSHomeDirectory: p.agentHome!, PrimaryGroupID: "471", RealName: "taskbox agent" });
   });
 
   for (const key of ["Password", "IsHidden", "UserShell", "NFSHomeDirectory", "UniqueID", "PrimaryGroupID", "RealName"]) {

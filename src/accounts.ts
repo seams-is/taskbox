@@ -166,6 +166,8 @@ export async function makeService(d: AccountDeps, name: string, recordPath: stri
     }
     return `sysadminctl gave ${name} the password "-" instead of asking for one, so taskbox ${del.code === 0 ? "deleted it" : `couldn't delete it: delete ${name} in System Settings, Users & Groups`}. Nothing else was changed. Make ${name} in System Settings, Users & Groups, as a Standard user, then run it again.`;
   }
+  // remove checks the GeneratedUID beside the uid before it deletes anything.
+  if (!guid) return `${name} was made, but its GeneratedUID can't be read, so taskbox couldn't record which account it made. Nothing else was installed. ${againOf(d)}.`;
   return uid;
 }
 
@@ -323,12 +325,14 @@ export async function makeAgent(d: AccountDeps, name: string, shell: string, hom
     if ((await d.sys.run("/usr/bin/dscl", [".", "-create", `/Users/${name}`, k, v], { timeoutMs: 10_000 })).code !== 0) return `dscl didn't set ${name}'s ${k}. Nothing else was installed. ${againOf(d)}.`;
   }
   if ((await uidOf(d.sys, name)) !== uid) return `${name} was made, but its ID reads back wrong. Nothing else was installed. Nothing to do: agents fix it.`;
+  // Recorded with its GeneratedUID, which remove checks beside the uid before it deletes anything.
   const guid = await guidOf(d.sys, name);
-  if (guid) {
-    const r2 = readRecord(recordPath);
-    r2.made[name] = { role: "agent", uid, guid };
-    writeRecord(d, recordPath, r2);
-  }
+  if (!guid) return `${name} was made, but its GeneratedUID can't be read, so taskbox couldn't record which account it made. Nothing else was installed. ${againOf(d)}.`;
+  const r2 = readRecord(recordPath);
+  r2.made[name] = { role: "agent", uid, guid };
+  writeRecord(d, recordPath, r2);
+  const shared = await idsShared(d.sys, name, uid, gid);
+  if (shared) return shared;
   return uid;
 }
 
@@ -699,7 +703,8 @@ export async function placePool(d: AccountDeps, p: PoolPaths, name: string, grou
     const guid = await guidOf(d.sys, name);
     const rec = poolRec(d, p.poolRecord);
     if (typeof rec === "string") return rec;
-    if (guid) writePoolRecord(d, p.poolRecord, { ...rec, made: { ...rec.made, [name]: { uid, guid } } });
+    if (!guid) return `${name} was made, but its GeneratedUID can't be read, so taskbox couldn't record which account it made. Nothing else was installed. ${againOf(d)}.`;
+    writePoolRecord(d, p.poolRecord, { ...rec, made: { ...rec.made, [name]: { uid, guid } } });
   }
   if ((await adminState(d.sys, name)) !== "standard") return `${name} isn't a standard user. Nothing else was installed. Nothing to do: agents fix it.`;
   // Never staff: a file another user left readable by staff stays out of a workspace's reach.
@@ -852,9 +857,12 @@ export async function placeSystem(d: AccountDeps, name: (typeof SYSTEM_USERS)[nu
     if ((await uidOf(d.sys, name)) !== uid) return `${name} was made, but its ID reads back wrong. Nothing else was installed. Nothing to do: agents fix it.`;
     const guid = await guidOf(d.sys, name);
     const rec = readRecord(recordPath);
-    if (guid) writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role, uid, guid } } });
+    if (!guid) return `${name} was made, but its GeneratedUID can't be read, so taskbox couldn't record which account it made. Nothing else was installed. ${againOf(d)}.`;
+    writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role, uid, guid } } });
   }
   if ((await adminState(d.sys, name)) !== "standard") return `${name} isn't a standard user. Nothing else was installed. Nothing to do: agents fix it.`;
+  const shared = await idsShared(d.sys, name, uid, gid);
+  if (shared) return shared;
   return uid;
 }
 
@@ -874,7 +882,15 @@ export async function systemProblem(sys: Sys, rec: AccountsRecord, name: (typeof
   if ((await read("NFSHomeDirectory")) !== SYSTEM_HOME) return `${name} has a home. ${fix}`;
   const gid = rec.groups?.[name]?.gid;
   if (gid === undefined || (await groupGid(sys, name)) !== gid || (await read("PrimaryGroupID")) !== String(gid)) return `${name}'s group isn't ${name}, the group taskbox made for it. ${fix}`;
-  return undefined;
+  return idsShared(sys, name, uid, gid);
+}
+
+// Why another user or group shares this account's IDs, or undefined: a daemon a macOS update or an
+// installer made with one of taskbox's IDs could read what the account reads.
+export async function idsShared(sys: Sys, name: string, uid: number, gid: number | undefined): Promise<string | undefined> {
+  const shared = await sharing(sys, name, name, uid, gid ?? -1);
+  if (!shared) return `taskbox can't list the box's users and groups to check ${name}'s IDs. Nothing to do: agents fix it.`;
+  return shared.length ? `${shared.join("; ")}, so it can reach ${name}'s files. Nothing to do: agents fix it.` : undefined;
 }
 
 // A person's account, made only when the owner asks at the box. sysadminctl asks for its password at
@@ -888,11 +904,19 @@ export async function makePerson(d: AccountDeps, name: string, recordPath: strin
   const rec = readRecord(recordPath);
   const guid = await guidOf(d.sys, name);
   writeRecord(d, recordPath, { ...rec, made: { ...rec.made, [name]: { role: "person", uid, ...(guid ? { guid } : {}) } } });
-  // Had sysadminctl taken "-" as the password itself, "-" would now log in.
+  // Had sysadminctl taken "-" as the password itself, "-" would now log in: the account goes, as the
+  // service's does, before anything gives it Screen Sharing or SSH.
   if ((await d.sys.run("/usr/bin/dscl", [".", "-authonly", name, "-"], { timeoutMs: 10_000 })).code === 0) {
-    return `sysadminctl gave ${name} the password "-" instead of asking for one. Change ${name}'s password in System Settings, Users & Groups, now.`;
+    const del = await d.sys.run("/usr/sbin/sysadminctl", ["-deleteUser", name], { timeoutMs: 120_000 });
+    if (del.code === 0 && (await uidOf(d.sys, name)) === undefined) {
+      const r2 = readRecord(recordPath);
+      delete r2.made[name];
+      writeRecord(d, recordPath, r2);
+    }
+    return `sysadminctl gave ${name} the password "-" instead of asking for one, so taskbox ${del.code === 0 ? "deleted it" : `couldn't delete it: delete ${name} in System Settings, Users & Groups, now`}. Make ${name} in System Settings, Users & Groups, as a Standard user.`;
   }
   if ((await adminState(d.sys, name)) !== "standard") return `${name} was made, but isn't a standard user. Make ${name} a Standard user in System Settings, Users & Groups.`;
+  if (!guid) return `${name} was made, but its GeneratedUID can't be read, so taskbox couldn't record which account it made.`;
   return uid;
 }
 

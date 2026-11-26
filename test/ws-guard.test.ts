@@ -1135,22 +1135,24 @@ describe("the card's notes", () => {
 describe("every pool account, 1 to N", () => {
   // Three accounts, the settings' workspaces.size: each one's processes stopped while no workspace is
   // open in it, whether pool.json names them or, unreadable, the settings do.
-  const three = (b: ReturnType<typeof wsBox>) => {
+  const three = (b: ReturnType<typeof wsBox>, pre = "taskbox-ws") => {
     const procs: Record<number, number> = { [POOL_UID + 1]: 2, [POOL_UID + 2]: 2 };
+    const kills: string[] = [];
     b.sys.responders.unshift((cmd, args) => {
       const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
       const uid = cmd === "/usr/bin/pgrep" || cmd === "/usr/bin/pkill" ? Number(args[cmd === "/usr/bin/pkill" ? 2 : 1]) : NaN;
-      if (cmd === "/usr/bin/id" && args[0] === "-u" && (args[1] === "taskbox-ws2" || args[1] === "taskbox-ws3")) return out(`${POOL_UID + Number(args[1].slice(-1)) - 1}\n`);
-      if (cmd === "/usr/bin/sudo" && /^-n -u taskbox-ws[23] -- \/bin\/kill -9 -1$/.test(args.join(" "))) {
+      if (cmd === "/usr/bin/id" && args[0] === "-u" && (args[1] === `${pre}2` || args[1] === `${pre}3`)) return out(`${POOL_UID + Number(args[1].slice(-1)) - 1}\n`);
+      if (cmd === "/usr/bin/sudo" && args.join(" ") === `-n -u ${args[2]} -- /bin/kill -9 -1` && (args[2] === `${pre}2` || args[2] === `${pre}3`)) {
+        kills.push(args[2]!);
         procs[POOL_UID + Number(args[2]!.slice(-1)) - 1] = 0;
         return out("");
       }
       if (procs[uid] === undefined) return undefined;
       if (cmd === "/usr/bin/pgrep") return args.includes("-f") ? out("", 1) : procs[uid]! > 0 ? out("123\n") : out("", 1);
-      if (args[0] === "-KILL") procs[uid] = 0;
+      // pkill alone leaves a process that forks: only the one-call kill stops it here.
       return out("");
     });
-    return procs;
+    return Object.assign(procs, { kills });
   };
   test("pool.json's three accounts are all fenced", async () => {
     const b = wsBox();
@@ -1169,5 +1171,30 @@ describe("every pool account, 1 to N", () => {
     b.box.procs = 2;
     await fencePass(b.d, newWsMemory());
     expect([b.box.procs, procs[POOL_UID + 1], procs[POOL_UID + 2]]).toEqual([0, 0, 0]);
+  });
+});
+
+describe("a pool with its own prefix", () => {
+  test("studio1 to studio3 are fenced, each by the one-call kill as itself", async () => {
+    const b = wsBox();
+    b.d.cfg = { ...b.d.cfg, accounts: { ...b.d.cfg.accounts, workspaces: { pool: "studio", size: 3 } } };
+    writePoolRecord({ chown: () => {}, rootUid: me }, b.p.poolRecord, { made: { "taskbox-ws1": { uid: POOL_UID }, studio2: { uid: POOL_UID + 1 }, studio3: { uid: POOL_UID + 2 } }, groups: {} });
+    const procs: Record<number, number> = { [POOL_UID + 1]: 2, [POOL_UID + 2]: 2 };
+    const kills: string[] = [];
+    b.sys.responders.unshift((cmd, args) => {
+      const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
+      if (cmd === "/usr/bin/sudo" && /^-n -u studio[23] -- \/bin\/kill -9 -1$/.test(args.join(" "))) {
+        kills.push(args[2]!);
+        procs[POOL_UID + Number(args[2]!.slice(-1)) - 1] = 0;
+        return out("");
+      }
+      const uid = cmd === "/usr/bin/pgrep" || cmd === "/usr/bin/pkill" ? Number(args[cmd === "/usr/bin/pkill" ? 2 : 1]) : NaN;
+      if (procs[uid] === undefined) return undefined;
+      if (cmd === "/usr/bin/pgrep") return args.includes("-f") ? out("", 1) : procs[uid]! > 0 ? out("123\n") : out("", 1);
+      return out("");
+    });
+    await fencePass(b.d, newWsMemory());
+    expect(kills.sort()).toEqual(["studio2", "studio3"]);
+    expect([procs[POOL_UID + 1], procs[POOL_UID + 2]]).toEqual([0, 0]);
   });
 });

@@ -1,7 +1,7 @@
 // The access model's rows: "Accounts", the accounts as taskbox placed them, and "Tailnet policy",
 // the SSH rules the tailnet sent this box beside what the settings give now.
 import { poolOf, SYSTEM_USERS } from "../access.ts";
-import { otherTaskboxShells, ownAccess, readRecord, systemProblem, uidOf } from "../accounts.ts";
+import { idsShared, otherTaskboxShells, ownAccess, readRecord, systemProblem, uidOf } from "../accounts.ts";
 import { trustedKey } from "../approver.ts";
 import type { Check, CheckContext } from "../checks.ts";
 import { REMOTE_SHELL, tagOf } from "../config.ts";
@@ -30,6 +30,14 @@ export async function accountsRow(c: CheckContext): Promise<Out> {
   const shells = await otherTaskboxShells(c.sys, REMOTE_SHELL, a.agent);
   if (shells === undefined) fails.push("taskbox can't list the box's login shells");
   else for (const n of shells) fails.push(`${n} has taskbox's shell and isn't the agent. ${UPDATE}`);
+  // The agent taskbox made: no other user or group may share its IDs. One made before its own group
+  // came is in staff, which is said.
+  const ag = a.agent !== undefined ? rec.made[a.agent] : undefined;
+  if (a.agent !== undefined && ag && (await uidOf(c.sys, a.agent)) === ag.uid) {
+    const why = await idsShared(c.sys, a.agent, ag.uid, rec.groups?.[a.agent]?.gid);
+    if (why) fails.push(why);
+    if (!rec.groups?.[a.agent]) notes.push(`${a.agent} is in staff, as agents made before taskbox gave each its own group are`);
+  }
   // taskbox's own accounts, once the install has made them.
   for (const name of SYSTEM_USERS) {
     if (!rec.made[name] && (await uidOf(c.sys, name)) === undefined) {

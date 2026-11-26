@@ -4,8 +4,8 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { validateAccounts } from "../src/access.ts";
-import { type AccountDeps, applyAccountsStep, applyOldAgentStep, canUnlock, freeHidden, makePerson, planAccountsStep, planOldAgent, planSystem, placeSystem, readRecord, removable, systemProblem, writeRecord } from "../src/accounts.ts";
+import { poolNames, validateAccounts } from "../src/access.ts";
+import { type AccountDeps, applyAccountsStep, applyOldAgentStep, canUnlock, recordedIds, freeHidden, makePerson, planAccountsStep, planOldAgent, planSystem, placeSystem, readRecord, removable, systemProblem, writeRecord } from "../src/accounts.ts";
 import type { CheckContext } from "../src/checks.ts";
 import { GATE_SHELL, paths, REMOTE_SHELL } from "../src/config.ts";
 import { rootStateOf } from "../src/core/paths.ts";
@@ -397,5 +397,97 @@ describe("the Tailnet policy row and accounts taskbox didn't make", () => {
     const r = await tailnetPolicyRow(c);
     expect(r.status).toBe("FAIL");
     expect(r.detail).toMatch(/^test1, a workspace account the settings name, isn't the account taskbox made/);
+  });
+});
+
+describe("the reviews' edges", () => {
+  test("a person made with the password '-' is deleted, never left for Screen Sharing", async () => {
+    const s = setup();
+    s.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args[1] === "-authonly" ? { code: 0, stdout: "", stderr: "" } : undefined));
+    const r = await makePerson(s.d, "pat", s.p.accountsRecord);
+    expect(r).toMatch(/gave pat the password "-" instead of asking for one, so taskbox deleted it/);
+    expect(s.dir.users.pat).toBeUndefined();
+    expect(readRecord(s.p.accountsRecord).made.pat).toBeUndefined();
+  });
+  test("another user on one of taskbox's own accounts' IDs fails it", async () => {
+    const s = setup();
+    await placeSystem(s.d, "_taskboxgh", s.p.accountsRecord);
+    s.dir.user("_someday", { uid: 470, attrs: {} });
+    expect(await systemProblem(s.sys, readRecord(s.p.accountsRecord), "_taskboxgh", true)).toMatch(/the user _someday has its user ID 470, so it can reach _taskboxgh's files/);
+  });
+});
+
+describe("remove's refusal by GeneratedUID", () => {
+  // The same name and uid, made again by someone else: only the GeneratedUID differs.
+  for (const role of ["service", "agent", "net", "gh", "person"] as const) {
+    test(`a ${role} record whose account kept its uid but has another GeneratedUID is left`, async () => {
+      const s = setup(new Dir().user("acct", { uid: 480, attrs: {} }));
+      const rec = { made: { acct: { role, uid: 480, guid: "0F0F0F0F-0000-0000-0000-000000000999" } } };
+      const r = await removable(s.sys, rec, []);
+      expect(r.delete).toEqual([]);
+      expect(r.left).toEqual(["acct (its ID isn't the one taskbox made)"]);
+      // And the same record with the account's own GeneratedUID is offered, but a person's never.
+      const same = await removable(s.sys, { made: { acct: { role, uid: 480, guid: "0F0F0F0F-0000-0000-0000-000000000480" } } }, []);
+      expect(same.delete.map((x) => x.name)).toEqual(role === "person" ? [] : ["acct"]);
+    });
+  }
+});
+
+describe("the exact calls, and no password on any command line", () => {
+  // Every argv the step ran, and every tty one, held to one rule: nothing after -password but "-",
+  // and no other password flag at all.
+  const noPassword = (argvs: string[][]) => {
+    for (const a of argvs) {
+      a.forEach((x, i) => {
+        if (x === "-password") expect(a[i + 1]).toBe("-");
+      });
+      expect(a.some((x) => /^-(pass|adminPassword|adminpassword)$/i.test(x) || /^-password.+/.test(x))).toBe(false);
+    }
+  };
+  test("the rule can fail: it catches a password on argv", () => {
+    expect(() => noPassword([["/usr/sbin/sysadminctl", "-addUser", "x", "-password", "hunter2"]])).toThrow();
+    expect(() => noPassword([["/usr/sbin/sysadminctl", "-adminPassword", "x"]])).toThrow();
+  });
+  test("a fresh box: the service, the agent, three pool accounts, taskbox's own two and a person, call by call", async () => {
+    const s0 = setup(new Dir(), ["yes"]);
+    const s = { ...s0, d: { ...s0.d, recorded: () => recordedIds(s0.p.accountsRecord, s0.p.poolRecord, ME) } };
+    const { makeAgent, makeService } = await import("../src/accounts.ts");
+    expect(typeof (await makeService(s.d, "taskbox", s.p.accountsRecord))).toBe("number");
+    mkdirSync(s.p.agentHome!, { recursive: true });
+    expect(typeof (await makeAgent(s.d, "taskbox-agent", REMOTE_SHELL, s.p.agentHome!, s.p.accountsRecord))).toBe("number");
+    const a = validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: ["pat"], workspaces: { pool: "taskbox-ws", size: 3 } });
+    const plan = await planAccountsStep(s.sys, s.p, a, poolNames(a), undefined, REMOTE_SHELL, ME);
+    await applyAccountsStep(s.d, s.p, plan, { poolShell: GATE_SHELL });
+    noPassword([...s.sys.calls.map((c) => [c.cmd, ...c.args]), ...s.ttys]);
+    expect(s.ttys).toEqual([
+      ["/usr/sbin/sysadminctl", "-addUser", "taskbox", "-fullName", "taskbox", "-password", "-"],
+      ["/usr/sbin/sysadminctl", "-addUser", "pat", "-fullName", "pat", "-password", "-"],
+    ]);
+    // taskbox's own two, by dscl alone, in the order that leaves no half-made account a way in.
+    const sys = (n: string) => s.sys.calls.filter((c) => c.cmd === "/usr/bin/dscl" && (c.args[1] === "-create" || c.args[1] === "-delete") && (c.args[2] === `/Users/${n}` || c.args[2] === `/Groups/${n}`)).map((c) => c.args.slice(1).join(" "));
+    const g = s.dir.groups._taskboxgh!.gid;
+    const u = s.dir.users._taskboxgh!.uid;
+    expect(sys("_taskboxgh")).toEqual([
+      "-create /Groups/_taskboxgh",
+      `-create /Groups/_taskboxgh PrimaryGroupID ${g}`,
+      "-create /Groups/_taskboxgh Password *",
+      "-create /Groups/_taskboxgh RealName taskbox the GitHub key keeper",
+      "-create /Users/_taskboxgh",
+      "-create /Users/_taskboxgh Password *",
+      "-create /Users/_taskboxgh IsHidden 1",
+      "-create /Users/_taskboxgh UserShell /usr/bin/false",
+      "-create /Users/_taskboxgh NFSHomeDirectory /var/empty",
+      `-create /Users/_taskboxgh PrimaryGroupID ${g}`,
+      "-create /Users/_taskboxgh RealName taskbox the GitHub key keeper",
+      `-create /Users/_taskboxgh UniqueID ${u}`,
+    ]);
+    const ws = s.dir.groups["taskbox-ws2"]!.gid;
+    expect(sys("taskbox-ws2").slice(0, 6)).toEqual(["-create /Groups/taskbox-ws2", `-create /Groups/taskbox-ws2 PrimaryGroupID ${ws}`, "-create /Groups/taskbox-ws2 Password *", "-create /Groups/taskbox-ws2 RealName taskbox workspace", "-create /Users/taskbox-ws2", "-create /Users/taskbox-ws2 Password *"]);
+    expect(sys("taskbox-ws2").at(-1)).toBe(`-create /Users/taskbox-ws2 UniqueID ${s.dir.users["taskbox-ws2"]!.uid}`);
+    // No two of the accounts share a uid.
+    const uids = Object.values(s.dir.users).map((x) => x.uid);
+    expect(new Set(uids).size).toBe(uids.length);
+    // fdesetup only ever adds the service, at its own prompt; nothing else asked it.
+    expect(s.sys.calls.filter((c) => c.cmd === "/usr/bin/fdesetup")).toEqual([]);
   });
 });
