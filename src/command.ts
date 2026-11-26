@@ -98,6 +98,8 @@ export interface CommandSpec {
   namesFrom?: (c: Ctx) => string | undefined;
   // What the footer's Did line says when the handler doesn't say.
   did?: string;
+  // Runs before anything else is read. A number ends the command with that exit; undefined goes on.
+  first?: (c: Ctx) => Promise<number | undefined>;
   // Runs before the box's settings are read: the rollback watcher, the lines for hold and share.
   early?: (c: Ctx) => Promise<Outcome>;
   run?: (c: BoxCtx) => Promise<Outcome>;

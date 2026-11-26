@@ -1,8 +1,46 @@
 // The daemons launchd runs: the guard as root, the loop in the service account's session, and the
 // rollback watcher the hop to v3 leaves (v2.6.1). None is typed by a person.
-import type { CliDeps, CommandSpec } from "../command.ts";
-import type { Paths } from "../config.ts";
+import { realpathSync } from "node:fs";
+import { basename, join } from "node:path";
+import { readRecord } from "../accounts.ts";
+import type { CliDeps, CommandSpec, Ctx } from "../command.ts";
+import { boxNames, type Paths } from "../config.ts";
+import { INSTALL_NAME } from "../layout.ts";
 import type { OpsDeps } from "../ops.ts";
+
+// The install this code runs from, read once as it starts, or undefined in a checkout of the repo.
+const OWN_INSTALL = (() => {
+  try {
+    const dir = realpathSync(join(import.meta.dir, "../../.."));
+    return INSTALL_NAME.test(basename(dir)) ? dir : undefined;
+  } catch {
+    return undefined;
+  }
+})();
+
+// Whether /opt/taskbox names another install than the one this code runs from: after a rollback,
+// launchd's next start of the loop then runs the install it names.
+export function installMoved(root: string): boolean {
+  if (!OWN_INSTALL) return false;
+  try {
+    return realpathSync(join(root, "opt/taskbox")) !== OWN_INSTALL;
+  } catch {
+    return true;
+  }
+}
+
+// v2's service account: every box's before the move to v3 records its own.
+const V2_SERVICE = "ci";
+
+// The account the loop runs as, known before any setting is checked: taskbox.json's, else root's
+// record of the accounts in use, else v2's.
+function loopService(c: Ctx): string {
+  try {
+    return boxNames(c.app).service;
+  } catch {
+    return readRecord(join(c.root, "opt/taskbox-state/accounts.json")).service ?? V2_SERVICE;
+  }
+}
 
 // What the rollback watcher runs with: root's, and the service account's uid, so a later release's
 // LaunchAgents in its gui domain are booted out on the way back (v2.6.1).
@@ -199,6 +237,16 @@ export const commands: CommandSpec[] = [
     summary: "The loop: takes jobs and runs their VMs, in the service account's session.",
     who: ["launchd"],
     internal: true,
+    // The LaunchAgent loads in every login session. Only the service account's runs the loop. With
+    // no such account, the service's own session can't be there; taskbox check fails "Service account".
+    // Under another install than /opt/taskbox names, it exits for launchd to start that one.
+    async first(c) {
+      const service = loopService(c);
+      const cu = await c.deps.serviceUid(service);
+      if (cu === undefined) return c.env.USER === service ? 1 : 0;
+      if (c.uid !== cu) return 0;
+      return installMoved(c.root) ? (await import("../loop.ts")).RESTART : undefined;
+    },
     async run(c) {
       const { lstatSync, mkdirSync, readFileSync } = await import("node:fs");
       const { loadConfig, sourceAppId, sourceKeyPath, timingsOf } = await import("../config.ts");
@@ -210,11 +258,8 @@ export const commands: CommandSpec[] = [
       const { mirrorLogLine } = await import("../shared.ts");
       const { sourceFor } = await import("../source.ts");
       const { stateHold } = await import("../workspace/hold.ts");
-      const { uid, cu, S, p } = c;
-      // The LaunchAgent loads in every login session. Only the service account's runs the loop. With
-      // no such account, the service's own session can't be there; taskbox check fails "Service account".
-      if (cu === undefined) return c.env.USER === S ? 1 : 0;
-      if (uid !== cu) return 0;
+      const { uid, cu, p } = c;
+      if (cu === undefined) return 1;
       // Everything from here is inside the try: launchd sends the loop's output nowhere, so an error
       // that escaped it would restart the loop every 30 s with no trace.
       const log = new Log(p.log, (line) => mirrorLogLine(p, line));
@@ -248,6 +293,7 @@ export const commands: CommandSpec[] = [
         const settingsAt = stamp();
         let saidSettings = false;
         const relabel = () => {
+          if (installMoved(c.root)) return true;
           if (relabeled?.()) return true;
           if (stamp() === settingsAt) return false;
           // Said once, so taskbox logs shows why the loop restarts (Tart run of #34).

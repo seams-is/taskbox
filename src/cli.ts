@@ -206,6 +206,10 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     return EXIT.failed;
   }
 
+  if (spec.first) {
+    const exit = await spec.first(base);
+    if (exit !== undefined) return exit;
+  }
   if (spec.early) return exitOf(await spec.early(base));
 
   // The project this box serves, from taskbox.json: one per box (§4.2.4).

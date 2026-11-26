@@ -1,4 +1,4 @@
-# The release key that signs taskbox v3's public releases, pinned here by a PR
+# The release key that signs taskbox v3's public releases, pinned here, in the private repo, by a PR
 # the owner merges. v2.6.1 verifies the hop to v3 against this file alone (src/hop.ts), never against
 # a file inside the release it verifies. One or two lines, each in this form:
 # taskbox-release namespaces="taskbox-release" sk-ecdsa-sha2-nistp256@openssh.com AAAA... a note

@@ -1,0 +1,135 @@
+// Everything that touches the machine goes through Sys, so tests can fake it.
+import { connect } from "node:net";
+import { networkInterfaces } from "node:os";
+
+export interface RunResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export interface RunOptions {
+  stdin?: string | Uint8Array;
+  timeoutMs?: number;
+  env?: Record<string, string>; // added to childEnv's, never in place of it
+}
+
+export interface Proc {
+  exited: Promise<number>;
+  done?: Promise<number>; // exited, once all output has been read
+  kill(): void;
+  pid?: number;
+}
+
+export interface SpawnOptions {
+  stdin?: string | Uint8Array;
+  env?: Record<string, string>; // added to the fixed child environment
+  onLine?: (line: string) => void;
+}
+
+export type ProbeResult = "refused" | "open" | "timeout" | "error";
+
+export interface Sys {
+  run(cmd: string, args: string[], opts?: RunOptions): Promise<RunResult>;
+  spawn(cmd: string, args: string[], opts?: SpawnOptions): Proc;
+  fetch(url: string, init?: RequestInit): Promise<Response>;
+  tcpProbe(host: string, port: number, timeoutMs: number): Promise<ProbeResult>;
+  localIPv4(): string[];
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+
+// Children get this environment and nothing else. Nothing is inherited, so
+// SENTRY_DSN, CIRRUS_SENTRY_TAGS and anything else in the caller's
+// environment never reaches Tart or Softnet.
+export function childEnv(home: string): Record<string, string> {
+  return {
+    // Softnet's own folder first, where Tart finds it (tart.ts).
+    PATH: "/opt/taskbox/softnet:/opt/taskbox/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    HOME: home,
+    LANG: "en_US.UTF-8",
+  };
+}
+
+function assertNotTest(): void {
+  if (process.env.TASKBOX_TEST === "1") {
+    throw new Error("the real Sys was used inside a test");
+  }
+}
+
+export function realSys(home: string): Sys {
+  const env = childEnv(home);
+  return {
+    async run(cmd, args, opts = {}) {
+      assertNotTest();
+      const p = Bun.spawn([cmd, ...args], {
+        env: { ...env, ...(opts.env ?? {}) },
+        stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      if (opts.timeoutMs) timer = setTimeout(() => p.kill(9), opts.timeoutMs);
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(p.stdout).text(),
+        new Response(p.stderr).text(),
+        p.exited,
+      ]);
+      if (timer) clearTimeout(timer);
+      return { code, stdout, stderr };
+    },
+    spawn(cmd, args, opts = {}) {
+      assertNotTest();
+      const p = Bun.spawn([cmd, ...args], {
+        env: { ...env, ...(opts.env ?? {}) },
+        stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const read = async (s: ReadableStream<Uint8Array>) => {
+        let buf = "";
+        const dec = new TextDecoder();
+        for await (const chunk of s) {
+          buf += dec.decode(chunk, { stream: true });
+          let i: number;
+          // Tart redraws a line with \r when it thinks it has a terminal, so both end a line.
+          buf = buf.replace(/\r(?!\n)/g, "\n");
+          while ((i = buf.indexOf("\n")) >= 0) {
+            opts.onLine?.(buf.slice(0, i));
+            buf = buf.slice(i + 1);
+          }
+        }
+        if (buf) opts.onLine?.(buf);
+      };
+      const drained = Promise.all([read(p.stdout), read(p.stderr)]);
+      return { exited: p.exited, done: Promise.all([p.exited, drained]).then(([c]) => c), kill: () => p.kill(9), pid: p.pid };
+    },
+    fetch(url, init) {
+      assertNotTest();
+      return fetch(url, init);
+    },
+    tcpProbe(host, port, timeoutMs) {
+      assertNotTest();
+      return new Promise((resolve) => {
+        const s = connect({ host, port });
+        const done = (r: ProbeResult) => {
+          s.destroy();
+          resolve(r);
+        };
+        s.setTimeout(timeoutMs, () => done("timeout"));
+        s.on("connect", () => done("open"));
+        s.on("error", (e: NodeJS.ErrnoException) => done(e.code === "ECONNREFUSED" ? "refused" : "error"));
+      });
+    },
+    localIPv4() {
+      assertNotTest();
+      const out = ["127.0.0.1"];
+      for (const list of Object.values(networkInterfaces())) {
+        for (const a of list ?? []) if (a.family === "IPv4" && !a.internal) out.push(a.address);
+      }
+      return out;
+    },
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  };
+}

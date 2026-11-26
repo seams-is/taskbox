@@ -30,3 +30,7 @@ Golden files, written by taskbox, not captured:
   account's rules exactly so; `pfctl -n -v -o none` prints every line of this file, the bridges'
   `(bridgeN)` addresses included (a test runs it). The kernel's read-back of the bridges' rules waits
   for a Tart run.
+
+`v2.6.1/` is v2.6.1's own code, not captured: its hop() and every file hop() calls into, unchanged, with
+install.ts and checks.ts cut to the functions hop() calls, and its plists and signers file. The hop
+contract test runs it over this tree.
