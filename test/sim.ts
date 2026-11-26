@@ -5,7 +5,7 @@
 //   the order the test says (oldest first, or newest first to model GitHub's own choice);
 // - a job runs its minutes, then the VM takes cleanupMs to go, and the slot is free.
 // v221 is the rule before v2.4.0 without the queue, kept here only to compare against.
-import type { ClassRule, Kind, Timings } from "../src/config.ts";
+import type { Budget, ClassRule, Kind, Timings } from "../src/config.ts";
 import { DEFAULT_TIMINGS, MACOS_MAX, runnerDefaults } from "../src/config.ts";
 import { decide, type Decision, type KindHistory, type KindView, type SlotState } from "../src/scheduler.ts";
 import type { JobRecord } from "../src/jobs.ts";
@@ -54,6 +54,9 @@ export interface SimOptions {
   lagMs?: number;
   // Called every tick with the slots, for property checks.
   check?: (vms: SimVm[], now: number) => void;
+  // Sizes by label: the kinds with their sizes, and the VMs' budget. Absent: no sizes, no budget.
+  kinds?: KindView[];
+  budget?: Budget;
 }
 
 export interface SimVm {
@@ -66,6 +69,9 @@ export interface SimVm {
   readyAt: number;
   job?: { name: string; endAt: number };
   goneAt?: number; // cleaning up until then
+  size?: string;
+  memoryMB?: number;
+  cpus?: number;
 }
 
 export const LABELS: Record<Kind, string[]> = { macos: ["taskbox-macos", "taskbox-macos-merge"], linux: ["taskbox-linux", "taskbox-linux-merge"] };
@@ -77,7 +83,8 @@ export function simulate(o: SimOptions): { runs: SimRun[]; starts: { at: number;
   const cleanup = o.cleanupMs ?? 10_000;
   const labels = o.labels ?? LABELS;
   const timings = { ...DEFAULT_TIMINGS, ...(o.timings ?? {}) };
-  const kinds: KindView[] = (["macos", "linux"] as Kind[]).map((k) => ({ kind: k, labels: labels[k], defaults: runnerDefaults(k), cap: k === "macos" ? Math.min(MACOS_MAX, o.slots) : o.slots, open: true }));
+  const kinds: KindView[] = o.kinds ?? (["macos", "linux"] as Kind[]).map((k) => ({ kind: k, labels: labels[k], defaults: runnerDefaults(k), cap: k === "macos" ? Math.min(MACOS_MAX, o.slots) : o.slots, open: true }));
+  const sizeEnds = new Map<string, number>();
   const vms: SimVm[] = [];
   const done: SimRun[] = [];
   const waiting = new Set(o.jobs.map((j) => j.name));
@@ -95,6 +102,7 @@ export function simulate(o: SimOptions): { runs: SimRun[]; starts: { at: number;
       if (v.goneAt !== undefined && now >= v.goneAt) {
         vms.splice(i, 1);
         if (!vms.some((x) => x.kind === v.kind)) history[v.kind] = { ...history[v.kind], noVmSince: now };
+        if (!vms.some((x) => x.kind === v.kind && x.size === v.size)) sizeEnds.set(`${v.kind}/${v.size}`, now);
       }
     }
     // GitHub gives waiting jobs to ready runners.
@@ -112,21 +120,23 @@ export function simulate(o: SimOptions): { runs: SimRun[]; starts: { at: number;
     if (!waiting.size && !vms.some((v) => v.job && v.goneAt === undefined)) break;
     o.check?.(vms, now);
     // The scheduler.
-    const slotStates: SlotState[] = vms.map((v) => ({ slot: v.slot, kind: v.kind, labels: v.labels, state: v.job || v.goneAt !== undefined ? "busy" : "waiting", since: v.askedAt, ...(v.readyAt <= now ? { readySince: v.readyAt } : {}), ...(v.role ? { role: v.role } : {}) }));
+    const slotStates: SlotState[] = vms.map((v) => ({ slot: v.slot, kind: v.kind, labels: v.labels, state: v.job || v.goneAt !== undefined ? "busy" : "waiting", since: v.askedAt, ...(v.readyAt <= now ? { readySince: v.readyAt } : {}), ...(v.role ? { role: v.role } : {}), ...(v.size ? { size: v.size, memoryMB: v.memoryMB, cpus: v.cpus } : {}), ...(v.goneAt !== undefined && !v.job ? { going: true } : {}) }));
     // With a lag, the snapshot still lists jobs that started in the last lagMs.
     const lag = o.lagMs ?? 0;
     const listed = [...queued(), ...done.filter((r) => now - r.startedAt < lag).map((r) => byName.get(r.name)!)];
     const items: WaitingItem[] = listed.map((j) => ({ key: j.name, labels: j.labels, queuedAt: j.queuedAt, origin: j.event ? { event: j.event, trusted: true } : { trusted: false }, ...(j.role ? { role: j.role } : {}) }));
     const starts = (k: Kind) => done.filter((r) => r.kind === k && now - r.startedAt < 5 * 60_000).map((r) => ({ at: r.startedAt, labels: vmLabels.get(r.name) ?? [] }));
-    const hist = Object.fromEntries((["macos", "linux"] as Kind[]).map((k) => [k, { ...(vms.some((v) => v.kind === k) ? { fastAt: history[k]?.fastAt, gaveWayAt: history[k]?.gaveWayAt } : history[k]), jobStarts: starts(k) }]));
+    const sizesHist = (k: Kind) => Object.fromEntries((kinds.find((x) => x.kind === k)?.sizes ?? []).map((z) => [z.name, vms.some((v) => v.kind === k && v.size === z.name) ? {} : { noVmSince: sizeEnds.get(`${k}/${z.name}`) ?? 0 }]));
+    const hist = Object.fromEntries((["macos", "linux"] as Kind[]).map((k) => [k, { ...(vms.some((v) => v.kind === k) ? { fastAt: history[k]?.fastAt, gaveWayAt: history[k]?.gaveWayAt } : history[k]), jobStarts: starts(k), sizes: sizesHist(k) }]));
     const ds: Decision[] =
       o.mode === "v221"
         ? v221(o.slots, kinds, slotStates)
-        : decide({ now, slots: o.slots, kinds, slotStates, snapshot: o.mode === "source" ? { known: true, at: now, items } : { known: false, at: now, why: "no source" }, classes: o.classes ?? [], timings, history: hist, ...(o.load ? { load: o.load } : {}) });
+        : decide({ now, slots: o.slots, kinds, slotStates, snapshot: o.mode === "source" ? { known: true, at: now, items } : { known: false, at: now, why: "no source" }, classes: o.classes ?? [], timings, history: hist, ...(o.load ? { load: o.load } : {}), ...(o.budget ? { budget: o.budget } : {}) });
     for (const d of ds) {
       if (d.do === "start") {
         if (vms.some((v) => v.slot === d.slot)) throw new Error(`slot ${d.slot} started twice`);
-        vms.push({ slot: d.slot, kind: d.kind, labels: d.labels, askedAt: now, readyAt: now + boot[d.kind], ...(d.item ? { className: d.item.className } : {}), ...(d.role === "load" ? { role: "load" as const } : {}) });
+        const z = kinds.find((k) => k.kind === d.kind)?.sizes?.find((x) => x.name === d.size);
+        vms.push({ slot: d.slot, kind: d.kind, labels: d.labels, askedAt: now, readyAt: now + boot[d.kind], ...(d.item ? { className: d.item.className } : {}), ...(d.role === "load" ? { role: "load" as const } : {}), ...(z ? { size: z.name, memoryMB: z.memoryMB, cpus: z.cpus } : {}) });
         startsMade.push({ at: now, slot: d.slot, kind: d.kind, why: d.why });
       } else if (d.do === "give-way") {
         const v = vms.find((x) => x.slot === d.slot)!;

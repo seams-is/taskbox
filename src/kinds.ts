@@ -148,6 +148,7 @@ export interface Occupant {
   size?: string;
   memoryMB?: number;
   cpus?: number;
+  going?: boolean; // told to give way; its VM still stops
 }
 
 // The chooser for every box from v2.4.0: it reads the job source,
@@ -198,7 +199,7 @@ export function schedule(d: ScheduleDeps): KindChooser {
   const states = (skip?: number): SlotState[] =>
     d.occupants()
       .filter((o) => o.slot !== skip)
-      .map((o) => ({ slot: o.slot, kind: o.kind, labels: o.labels, state: o.job ? "busy" : "waiting", since: o.since ?? d.ev.now(), ...(o.readyAt !== undefined ? { readySince: o.readyAt } : {}), ...(o.role === "load" ? { role: o.role } : {}), ...sizeFields(o) }));
+      .map((o) => ({ slot: o.slot, kind: o.kind, labels: o.labels, state: o.job ? "busy" : "waiting", since: o.since ?? d.ev.now(), ...(o.readyAt !== undefined ? { readySince: o.readyAt } : {}), ...(o.role === "load" ? { role: o.role } : {}), ...sizeFields(o), ...(o.going ? { going: true } : {}) }));
   // An occupant's size and what it holds. One from before sizes holds its kind's default.
   const sizeFields = (o: Occupant) => {
     const z = sizeOf(d.cfg, o.kind, o.size);
@@ -225,7 +226,11 @@ export function schedule(d: ScheduleDeps): KindChooser {
       return !!me1 && !me1.job && me1.readyAt !== undefined && d.ev.now() - me1.readyAt >= turnIdleMs;
     }
     const mine = decide(input(snap)).find((x) => x.slot === me && x.do === "give-way");
-    if (mine) d.ev.why?.(me, mine.why);
+    if (mine) {
+      d.ev.why?.(me, mine.why);
+      const o = d.occupants().find((x) => x.slot === me);
+      if (o) o.going = true;
+    }
     return !!mine;
   };
   return async (last, served, me = 1) => {

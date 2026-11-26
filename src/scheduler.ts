@@ -23,6 +23,7 @@ export interface SlotState {
   size?: string;
   memoryMB?: number;
   cpus?: number;
+  going?: boolean; // it was told to give way, and still holds its memory until it is gone
 }
 
 // One size of a kind. cap: the most VMs of it at once (maxAtOnce, from capOf).
@@ -248,7 +249,7 @@ export function decide(s: SchedulerInput): Decision[] {
     const items = ranked(s.snapshot.items.filter((it) => (it.role === "load" ? !!load : !only)), s.classes)
       .map((it) => (it.role === "load" ? { ...it, rank: it.rank + LOAD_RANK } : it))
       .sort((a, b) => a.rank - b.rank || a.queuedAt - b.queuedAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-    const { matched, at, unmatched } = assign(items, s.slotStates, s.kinds, s.now, t.floorMinutes * 60_000 + 5 * 60_000);
+    const { matched, unmatched } = assign(items, s.slotStates, s.kinds, s.now, t.floorMinutes * 60_000 + 5 * 60_000);
     // A load VM no load job came for in giveWayMinutes goes, so its slot is free for real work
     // before a real job has to wait for it.
     if (load) for (const x of s.slotStates) if (roleOf(x) === "load" && !wrong(x) && !matched.has(x.slot) && idleFor(x) >= giveWayMs && !out.some((d) => d.slot === x.slot)) out.push({ slot: x.slot, do: "give-way", why: `no load test job came for ${mins(idleFor(x))} since it was ready` });
@@ -314,19 +315,20 @@ export function decide(s: SchedulerInput): Decision[] {
     }
     // One waiting VM gives way to the first job that can't get a VM: when no slot is empty, or when
     // the job doesn't fit the budget. A VM no job needs goes first, even while it boots, since nothing
-    // waits for it; else a ready one held for a job of a worse class, the worst first. For room, past
-    // the floor, a VM held for a job behind this one may go too; the smallest that frees enough goes
-    // first, else the biggest. A running job is never stopped.
+    // waits for it; else a ready one held for a job of a worse class, the worst first. For room, the
+    // smallest that frees enough goes first, else the biggest, and only when those that may go free
+    // enough together. A VM held for a job of the same class never goes for room: the two jobs would
+    // take each other's VM in turn. A running job is never stopped.
     for (const it of queue) {
       if (never(it.size)) continue;
       const noSlot = !empty.length;
       const noRoom = !room(it.size);
-      if ((!noSlot && !noRoom) || (noRoom && !known)) continue;
-      const past = s.now - it.queuedAt >= floorMs;
+      // While a VM that gave way still goes, its memory isn't free yet: wait for it, never a second.
+      if ((!noSlot && !noRoom) || (noRoom && (!known || s.slotStates.some((x) => x.going)))) continue;
       const sizeHeld = (x: SlotState) => (sizeCount.get(key(it.kv.kind, it.size.name)) ?? 0) - (x.kind === it.kv.kind && (x.size ?? DEFAULT_SIZE) === it.size.name ? 1 : 0) < it.size.cap;
       const cands = s.slotStates
-        .filter((x) => x.state === "waiting" && !wrong(x) && !out.some((d) => d.slot === x.slot))
-        .filter((x) => !matched.has(x.slot) || (x.readySince !== undefined && matched.get(x.slot)! > it.rank) || (noRoom && past && at.get(x.slot)! > it.pos))
+        .filter((x) => x.state === "waiting" && !x.going && !wrong(x) && !out.some((d) => d.slot === x.slot))
+        .filter((x) => !matched.has(x.slot) || (x.readySince !== undefined && matched.get(x.slot)! > it.rank))
         // A load job may take only a waiting load VM's place, never a real VM's, and only within the load caps, counting this VM's going.
         .filter((x) => it.role !== "load" || (roleOf(x) === "load" && loads - 1 < loadCap && loadKindOk(it.kv, x.kind === it.kv.kind ? 1 : 0)))
         .filter((x) => it.kv.open && (count.get(it.kv.kind) ?? 0) - (x.kind === it.kv.kind ? 1 : 0) < it.kv.cap && sizeHeld(x));
@@ -343,7 +345,7 @@ export function decide(s: SchedulerInput): Decision[] {
       );
       const v = cands[0];
       if (!v) continue;
-      const held = matched.has(v.slot) ? (matched.get(v.slot)! > it.rank ? "this VM waits for a job of a lower class" : "this VM waits for a job queued after it") : "no waiting job needs this VM";
+      const held = matched.has(v.slot) ? "this VM waits for a job of a lower class" : "no waiting job needs this VM";
       const why = noSlot && !noRoom ? `${jobWord(it)} for ${word(it.kv, it.size)} has waited ${mins(s.now - it.queuedAt)}, every slot is taken, and ${held}` : `${jobWord(it)} for ${word(it.kv, it.size)} has waited ${mins(s.now - it.queuedAt)}${needs(it.size)}, ${holds()}, and ${held}, so it gives way to make room`;
       out.push({ slot: v.slot, do: "give-way", why });
       break;
