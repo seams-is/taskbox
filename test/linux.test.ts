@@ -805,11 +805,10 @@ describe("the install", () => {
       expect(existsSync(d.paths.boxSettings)).toBe(false);
     });
 
-    test("a box.json with a key only the release sets, such as accounts, stops before the yes with the one fixed line", async () => {
-      const { d, out, asked } = await update(true, { sources: [SOURCE], accounts: { service: "taskbox" } });
-      expect(out).toBe("This box's own settings can't be used with release v2.0.0: box.json sets accounts, which only the release's taskbox.json may set. Nothing was installed. To keep or replace the job source, type taskbox connect github, or taskbox disconnect github to go without one.");
-      expect(asked).toBe(false);
-      expect(JSON.parse(readFileSync(d.paths.installed, "utf8")).commit).toBe("56027d1c5671baa8eadd5aeaf1cdeb4d89254470");
+    test("a box.json with a key it may not hold, such as accounts, has that key passed over: the update goes on to the yes", async () => {
+      const { out, asked } = await update(true, { sources: [SOURCE], accounts: { service: "taskbox" } });
+      expect(out).not.toMatch(/own settings can't be used/);
+      expect(asked).toBe(true);
     });
   });
 
