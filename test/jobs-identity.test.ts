@@ -2,15 +2,15 @@
 // and run by GitHub's own runner_name, the record's new fields, v2 lines mapped on read, and job list,
 // show, logs and cancel.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliDeps, main } from "../src/cli.ts";
 import { watching } from "../src/cmd/job.ts";
 import { paths } from "../src/config.ts";
 import { HOOK_MS, type HookDeps, type JobHook, type TokenSource } from "../src/core/hooks.ts";
 import { loopState } from "../src/core/paths.ts";
-import { fetchJobLog, identityHook, LOG_TRIES_MS, TIE_TRIES_MS } from "../src/hooks/identity.ts";
-import { allJobs, appendJob, cleanLog, clearJobFiles, findJob, type JobRecord, jobOfVm, LOG_MAX, logsDir, newJobId, readJobLog, readLive, readQueued, recordQueued, runnerNameFor, stateOf, stopJob, writeJobLog, writeLive, writeQueued } from "../src/jobs.ts";
+import { fetchJobLog, identityHook, LAST_LOOK_MS, LOG_TRIES_MS, TIE_TRIES_MS } from "../src/hooks/identity.ts";
+import { allJobs, appendJob, cleanLog, startJobFiles, findJob, type JobRecord, jobOfVm, LOG_MAX, logsDir, newJobId, readJobLog, readLive, readQueued, recordQueued, runnerNameFor, stateOf, stopJob, writeJobLog, writeLive, writeQueued } from "../src/jobs.ts";
 import { engineOf, oneJob } from "../src/loop.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, fakeLaunchd, loopDeps, quietBox, tempRoot, testBox } from "./helpers.ts";
@@ -37,7 +37,7 @@ function github(sys: FakeSys, named: () => string | undefined, o: { log?: string
       const st = o.fail?.[looks++];
       if (st) return new Response("no", { status: st });
       const newer = Array.from({ length: o.runs ?? 1 }, (_, i) => ({ id: 1000 + i, name: "Other", event: "push" }));
-      return Response.json({ workflow_runs: u.searchParams.get("status") === "in_progress" ? [...newer, { id: 900, name: "CI", event: "pull_request" }] : [] });
+      return Response.json({ workflow_runs: [...newer, { id: 900, name: "CI", event: "pull_request" }] });
     }
     if (u.pathname === `/repos/${REPO}/actions/runs/900/jobs`) return Response.json({ jobs: [{ id: 7001, run_id: 900, runner_name: "taskbox-1-1-00000000" }, { id: 7002, run_id: 900, runner_name: named() ?? "none" }] });
     if (/\/actions\/runs\/1\d{3}\/jobs$/.test(u.pathname)) return Response.json({ jobs: [] });
@@ -184,11 +184,66 @@ describe("the tie", () => {
     const live = readLive(d.paths, me)[0]!;
     await stopJob({ paths: d.paths, engine: engineOf(d), now: () => sys.now() }, live, "job cancel, at the box");
     const endedAt = sys.now();
+    let finished = 0;
+    void run.then(() => (finished = sys.now()));
+    await sys.sleep(HOOK_MS);
     await run;
-    expect(sys.now() - endedAt).toBeLessThan(HOOK_MS);
+    // The loop sees the VM gone at its next 5 s tick; the last look adds at most LAST_LOOK_MS.
+    expect(finished - endedAt).toBeLessThanOrEqual(5_000 + LAST_LOOK_MS + 1_000);
     expect(aborted).toBeGreaterThan(0);
     expect(lineOf(d)).toMatchObject({ id: live.id, vm: live.vm, state: "stopped", stoppedBy: "job cancel, at the box" });
   }, 30_000);
+
+  test("a short job GitHub names late gets its ids from the last look, and its log is kept", async () => {
+    const sys = new FakeSys();
+    const d = deps(sys);
+    const g = guest(sys);
+    let done = false;
+    github(sys, () => (done && g.vm ? runnerOf(g.vm) : undefined));
+    const run = oneJob({ ...d, tokens: tokens() }, () => "c0ffee0", "c0ffee0");
+    await sys.sleep(5_000);
+    expect(readLive(d.paths, me)[0]!.githubJob).toBeUndefined();
+    done = true;
+    g.end!();
+    await run;
+    const line = lineOf(d);
+    expect(line).toMatchObject({ id: jobOfVm(g.vm!), githubJob: 7002, githubRun: 900 });
+    expect(sys.requests.some((r) => r.url.endsWith(`/actions/runs?per_page=30`))).toBe(true);
+    await sys.sleep(LOG_TRIES_MS[0]! + 1_000);
+    expect(readJobLog(d.paths, line.id, me)).toEqual(["line one", "red line", "[redacted] leaked"]);
+  }, 30_000);
+
+  for (const [what, ms] of [["slow", 3_000], ["hanging", Infinity]] as const) {
+    test(`the last look at a ${what} GitHub ends by ${LAST_LOOK_MS / 1000} s, and the line keeps its id, vm and state`, async () => {
+      const sys = new FakeSys();
+      const d = deps(sys);
+      const g = guest(sys);
+      let ended = false;
+      github(sys, () => (g.vm ? runnerOf(g.vm) : undefined));
+      const real = sys.fetch.bind(sys);
+      sys.fetch = (url, init) => {
+        if (!ended || !url.includes("/actions/runs")) return url.includes("/actions/runs") ? Promise.resolve(Response.json({ workflow_runs: [] })) : real(url, init);
+        return new Promise((ok, no) => {
+          init!.signal!.addEventListener("abort", () => no(new Error("aborted")));
+          if (ms !== Infinity) sys.after(ms, () => void real(url, init).then(ok, no));
+        });
+      };
+      const run = oneJob({ ...d, tokens: tokens() }, () => "c0ffee0", "c0ffee0");
+      await sys.sleep(5_000);
+      ended = true;
+      g.end!();
+      const endedAt = sys.now();
+      let finished = 0;
+      void run.then(() => (finished = sys.now()));
+      await sys.sleep(LAST_LOOK_MS + 5_000);
+      await run;
+      expect(finished - endedAt).toBeLessThanOrEqual(LAST_LOOK_MS + 1_000);
+      const line = lineOf(d);
+      expect(line).toMatchObject({ id: jobOfVm(g.vm!), vm: g.vm, state: "failed", reason: "lost" });
+      if (ms === Infinity) expect(line.githubJob).toBeUndefined();
+      else expect(line.githubJob).toBe(7002);
+    }, 30_000);
+  }
 
   test("with no token source nothing reads GitHub, and the job still has its id", async () => {
     const sys = new FakeSys();
@@ -212,8 +267,24 @@ describe("the live file", () => {
     expect(await oneJob({ ...d, hooks: [identityHook, hold] }, () => "c0ffee0", "c0ffee0")).toBe("held-back");
     expect(readLive(d.paths, me)).toEqual([]);
     writeLive(d.paths, { v: 1, id: "j_0000000a", vm: "job-j_0000000a", slot: 1, kind: "macos", labels: ["taskbox"], repo: REPO, state: "running", at: T0 });
-    clearJobFiles(d.paths);
+    startJobFiles(d.paths);
     expect(readLive(d.paths, me)).toEqual([]);
+  });
+
+  test("the loop's start puts the kept logs' modes right, whatever an earlier build left", () => {
+    const p = paths(tempRoot(), testBox());
+    const logs = logsDir(p);
+    mkdirSync(logs, { recursive: true });
+    chmodSync(logs, 0o755);
+    writeFileSync(join(logs, "j_0000000a.log"), "old\n", { mode: 0o644 });
+    chmodSync(join(logs, "j_0000000a.log"), 0o644);
+    mkdirSync(join(logs, "odd"));
+    expect(readJobLog(p, "j_0000000a", me)).toBeUndefined();
+    startJobFiles(p);
+    expect(statSync(logs).mode & 0o777).toBe(0o700);
+    expect(statSync(join(logs, "j_0000000a.log")).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(logs, "odd"))).toBe(false);
+    expect(readJobLog(p, "j_0000000a", me)).toEqual(["old"]);
   });
 });
 
@@ -229,8 +300,8 @@ describe("GitHub's log", () => {
     expect(r.text.endsWith("THE END\n")).toBe(true);
   });
   test("secrets' usual shapes are taken out", () => {
-    const out = cleanLog(["AKIAABCDEFGHIJKLMNOP", `npm_${"a".repeat(36)}`, "xoxb-1234567890-abc", "-----BEGIN RSA PRIVATE KEY----- MIIE", "https://user:hunter2@example.com/x"].join("\n"));
-    expect(out).toEqual(["[redacted]", "[redacted]", "[redacted]", "[redacted]", "https://user:[redacted]@example.com/x"]);
+    const out = cleanLog(["AKIAABCDEFGHIJKLMNOP", `npm_${"a".repeat(36)}`, "xoxb-1234567890-abc", "-----BEGIN RSA PRIVATE KEY-----", "MIIEpAIBAAKCAQEA0", "c2VjcmV0", "-----END RSA PRIVATE KEY-----", "after", "https://user:hunter2@example.com/x"].join("\n"));
+    expect(out).toEqual(["[redacted]", "[redacted]", "[redacted]", "[redacted]", "[redacted]", "[redacted]", "[redacted]", "after", "https://user:[redacted]@example.com/x"]);
   });
 });
 
@@ -308,7 +379,9 @@ function box(o: { root?: string; prep?: (p: ReturnType<typeof paths>) => void } 
   o.prep?.(p);
   return { root, p };
 }
-async function run(argv: string[], b: ReturnType<typeof box>, o: { uid?: number; ask?: string; sys?: FakeSys; setup?: (sys: FakeSys) => void; terminal?: boolean } = {}) {
+const isAdminUser = (sys: FakeSys) => sys.responders.unshift((cmd) => (cmd === "/usr/sbin/dseditgroup" ? { code: 0, stdout: "", stderr: "" } : undefined));
+const notAdmin = (sys: FakeSys) => sys.responders.unshift((cmd) => (cmd === "/usr/sbin/dseditgroup" ? { code: 67, stdout: "", stderr: "" } : undefined));
+async function run(argv: string[], b: ReturnType<typeof box>, o: { uid?: number; user?: string; env?: Record<string, string>; ask?: string; sys?: FakeSys; setup?: (sys: FakeSys) => void; terminal?: boolean } = {}) {
   const sys = o.sys ?? new FakeSys();
   if (!o.sys) {
     quietBox(sys);
@@ -316,9 +389,10 @@ async function run(argv: string[], b: ReturnType<typeof box>, o: { uid?: number;
   }
   o.setup?.(sys);
   const said: string[] = [];
-  const deps: CliDeps = { sys: () => sys, uid: o.uid ?? me, serviceUid: async () => me, env: { HOME: "/Users/ci" }, tty: () => 0, user: () => "ci", ask: async () => o.ask ?? "", say: (l) => said.push(l), err: (l) => said.push(l), terminal: () => o.terminal ?? true, hostname: () => "taskbox-1.local", root: b.root, chown: () => {} };
+  const ttys: string[][] = [];
+  const deps: CliDeps = { sys: () => sys, uid: o.uid ?? me, serviceUid: async () => me, env: o.env ?? { HOME: "/Users/ci" }, tty: (a) => (ttys.push(a), 0), user: () => o.user ?? "ci", ask: async () => o.ask ?? "", say: (l) => said.push(l), err: (l) => said.push(l), terminal: () => o.terminal ?? true, hostname: () => "taskbox-1.local", root: b.root, chown: () => {} };
   const code = await main(argv, deps);
-  return { code, said, sys };
+  return { code, said, sys, ttys };
 }
 const running = (p: ReturnType<typeof paths>) => writeLive(p, { v: 1, id: "j_0000000a", vm: "job-j_0000000a", slot: 1, kind: "macos", labels: ["taskbox"], repo: REPO, state: "running", at: T0 + 1000, job: "integration", githubJob: 7002, githubRun: 900 });
 const rmLive = (p: ReturnType<typeof paths>) => rmSync(join(dirname(p.jobsFile), "live", "j_0000000a.json"));
@@ -399,11 +473,24 @@ describe("job logs", () => {
     expect(r.said).not.toContain("step one");
   });
 
-  test("anyone else is told who can read GitHub's log, and where GitHub has it", async () => {
+  test("an agent or the controller is told who can read GitHub's log, and where GitHub has it", async () => {
     const b = box({ prep: ended });
-    const r = await run(["job", "logs", "j_0000000b"], b, { uid: me + 1 });
-    expect(r.said).toContain(`GitHub's log is kept for the service account and root alone, so it isn't shown here. GitHub has it at https://github.com/${REPO}/actions/runs/901/job/7003`);
+    const r = await run(["job", "logs", "j_0000000b"], b, { uid: me + 1, setup: notAdmin });
+    expect(r.said).toContain(`GitHub's log is kept for the service account and root alone, which an admin reaches at the box, so it isn't shown here. GitHub has it at https://github.com/${REPO}/actions/runs/901/job/7003`);
     expect(r.said).not.toContain("step one");
+    expect(r.ttys).toEqual([]);
+  });
+
+  test("an admin at the box reads it through sudo, and root shows it", async () => {
+    const b = box({ prep: ended });
+    const atBox = (sys: FakeSys) => (isAdminUser(sys), sys.responders.unshift((cmd) => (cmd === "/bin/ps" ? { code: 0, stdout: "1 /sbin/launchd\n", stderr: "" } : undefined)));
+    const overSsh = await run(["job", "logs", "j_0000000b"], b, { uid: 9501, user: "owner", env: { HOME: "/Users/owner", SSH_CONNECTION: "x" }, setup: isAdminUser });
+    expect([overSsh.ttys, overSsh.said.some((l) => l.startsWith("GitHub's log is kept for the service account and root alone"))]).toEqual([[], true]);
+    const r = await run(["job", "logs", "j_0000000b", "--tail", "1"], b, { uid: 9501, user: "owner", env: { HOME: "/Users/owner" }, setup: atBox });
+    expect(r.said).toContain("GitHub's log is root's and the service account's. taskbox job logs needs your admin password.");
+    expect(r.ttys).toEqual([["/usr/bin/sudo", "-p", "Password for %u: ", "--", "/opt/taskbox/bin/taskbox", "job", "logs", "j_0000000b", "--tail", "1"]]);
+    const root = await run(["job", "logs", "j_0000000b"], b, { uid: 0, env: { SUDO_USER: "owner", HOME: "/var/root" } });
+    expect(root.said).toContain("step one");
   });
 
   test("-f follows a running job, then prints GitHub's log once the loop keeps it", async () => {
@@ -474,6 +561,21 @@ describe("job cancel", () => {
     });
     expect([r.code, r.said[0]]).toEqual([0, "Job j_0000000a ended on its own first: succeeded. Nothing was stopped."]);
     expect(existsSync(join(dirname(b.p.jobsFile), "stops", "j_0000000a.json"))).toBe(false);
+  });
+
+  test("a job someone else stopped first is named as theirs, not this cancel's", async () => {
+    const b = box({ prep: running });
+    const r = await run(["job", "cancel", "j_0000000a", "-y"], b, {
+      setup: (sys) =>
+        sys.responders.unshift((cmd, args) => {
+          if (!cmd.endsWith("/tart") || args[0] !== "stop") return undefined;
+          appendJob(b.p, rec({ id: "j_0000000a", result: "stopped", why: "pressure", state: "stopped", stoppedBy: "taskbox (pressure)" }));
+          return { code: 0, stdout: "", stderr: "" };
+        }),
+    });
+    expect([r.code, r.said[0]]).toEqual([0, "Job j_0000000a was already stopped, by taskbox (pressure). Nothing was stopped here."]);
+    const ended = box({ prep: (p) => appendJob(p, rec({ id: "j_0000000b", result: "stopped", why: "pressure", state: "stopped", stoppedBy: "taskbox (pressure)" })) });
+    expect((await run(["job", "cancel", "j_0000000b", "-y"], ended)).said[0]).toBe("Job j_0000000b already ended: stopped, stopped by taskbox (pressure). Nothing to stop.");
   });
 
   test("an ended job is changed: false; a queued one is GitHub's; no terminal needs -y", async () => {

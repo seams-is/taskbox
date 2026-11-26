@@ -1,6 +1,7 @@
 // taskbox job list, show, logs, cancel and timings. Every job has the box's id (j_ and 8 characters),
 // tied to GitHub's job and run once GitHub names its runner (hooks/identity.ts). Every command takes
 // either id, or the VM's name.
+import { overSsh } from "../cmdkit.ts";
 import { type BoxCtx, type CommandSpec, duration, type ErrorBody, type Outcome } from "../command.ts";
 import { JOB_REF, JOB_STATES, type JobFilter, type JobView, RESULT_WORDS } from "../jobs.ts";
 // How often a watch or a follow reads again.
@@ -212,6 +213,17 @@ async function boxLines(c: BoxCtx, id: string | undefined): Promise<{ lines: { a
 
 async function logs(c: BoxCtx): Promise<Outcome> {
   const { githubLink, readJobLog } = await import("../jobs.ts");
+  // GitHub's log is job content: the service account and root read it, and nobody else on the box.
+  // An admin at the box reads it through sudo, as for root's commands; agents and the controller don't.
+  const mayRead = c.cu !== undefined && (c.uid === c.cu || c.uid === 0);
+  if (!mayRead && !c.json && (c.deps.terminal?.() ?? true)) {
+    const { elevation, isAdmin } = await import("../elevate.ts");
+    if ((await isAdmin(c.ops.sys, c.deps.user())) && !(await overSsh(c))) {
+      const e = elevation("job logs", c.argv.slice(c.argv.indexOf("logs") + 1), true);
+      c.say(`GitHub's log is root's and the service account's. ${e.say}`);
+      return c.tty(e.argv!);
+    }
+  }
   const p = await pick(c);
   if ("out" in p) return p.out;
   let j = p.job;
@@ -231,8 +243,6 @@ async function logs(c: BoxCtx): Promise<Outcome> {
   const first = await printBox();
   if (!first.lines.length) c.say("  None yet.");
   for (const u of first.unread) c.say(`  This account can't read ${u}, so their lines aren't shown.`);
-  // GitHub's log is job content: the service account and root read it, and nobody else on the box.
-  const mayRead = c.cu !== undefined && (c.uid === c.cu || c.uid === 0);
   if (c.flags.follow && isLive(j)) {
     let misses = 0;
     while (isLive(j) && misses < 3) {
@@ -254,7 +264,7 @@ async function logs(c: BoxCtx): Promise<Outcome> {
     c.say(`GitHub's log${shown.length < gh.length ? `, its last ${shown.length} lines` : ""}:`);
     for (const l of shown) c.say(l);
   } else {
-    why = !mayRead ? "GitHub's log is kept for the service account and root alone, so it isn't shown here."
+    why = !mayRead ? "GitHub's log is kept for the service account and root alone, which an admin reaches at the box, so it isn't shown here."
       : isLive(j) ? "GitHub's log shows here once the job ends." : !j.githubJob ? "GitHub's job for it isn't known, so its log can't be read." : "GitHub's log isn't on the box.";
     c.say(`${why}${link ? ` GitHub has it at ${link}` : ""}`);
   }
@@ -262,7 +272,7 @@ async function logs(c: BoxCtx): Promise<Outcome> {
 }
 
 async function cancel(c: BoxCtx): Promise<Outcome> {
-  const { githubLink, readJobs, readLiveOne, removeStop, stopJob } = await import("../jobs.ts");
+  const { githubLink, readJobs, readLiveOne, removeStop, stateOf, stopJob } = await import("../jobs.ts");
   const p = await pick(c);
   if ("out" in p) return p.out;
   const j = p.job;
@@ -278,7 +288,7 @@ async function cancel(c: BoxCtx): Promise<Outcome> {
     return { exit: 1, error: err("not-found", line, null) };
   }
   if (!isLive(j)) {
-    c.say(`Job ${j.id ?? j.githubJob} already ended: ${j.state}. Nothing to stop.`);
+    c.say(`Job ${j.id ?? j.githubJob} already ended: ${j.state}${j.stoppedBy ? `, stopped by ${j.stoppedBy}` : ""}. Nothing to stop.`);
     return { exit: 0, changed: false, result: { job: asJson(j) } };
   }
   const id = j.id!;
@@ -301,13 +311,14 @@ async function cancel(c: BoxCtx): Promise<Outcome> {
   const t = engineFor(cfg.engine, c.ops.sys, c.own);
   const r = await stopJob({ paths: c.own, engine: t, now: () => c.ops.sys.now() }, { id, vm: j.vm! }, CANCELLED_BY);
   const ended = () => (readJobs(c.own, c.cu) ?? []).find((x) => x.id === id);
-  // The job ended on its own first: its line is written and has no stop, so nothing was stopped.
+  // The job ended first, on its own or stopped by someone else: its line has no stop of this one's.
   const before = () => {
     const e = ended();
-    if (!e || e.stoppedBy) return undefined;
+    if (!e || e.stoppedBy === CANCELLED_BY) return undefined;
     removeStop(c.own, id);
-    c.say(`Job ${id} ended on its own first: ${e.state ?? e.result}. Nothing was stopped.`);
-    return { exit: 0, changed: false, result: { id } };
+    const s = stateOf(e);
+    c.say(s.stoppedBy ? `Job ${id} was already stopped, by ${s.stoppedBy}. Nothing was stopped here.` : `Job ${id} ended on its own first: ${s.state}. Nothing was stopped.`);
+    return { exit: 0, changed: false, result: { id, stoppedBy: s.stoppedBy ?? null } };
   };
   if (!r.stopped) {
     const first = before();
@@ -414,7 +425,7 @@ export const commands: CommandSpec[] = [
   },
   {
     path: ["job", "logs"],
-    summary: "The box's lines for one job, then its log from GitHub. -f follows the box's lines to the end.",
+    summary: "The box's lines for one job, then its log from GitHub (service account and root). -f follows to the end.",
     who: ["anyone"],
     flags: ["json", "follow", "tail"],
     args: ID_ARG,

@@ -292,8 +292,8 @@ export const commands: CommandSpec[] = [
         if (reader instanceof QueueReader) reader.loadWanted = () => loadWanted(p, sys.now());
         // What the source sees waiting is kept for taskbox job list. No job runs yet, so no job file
         // a loop before this one left stands (jobs.ts).
-        const { clearJobFiles, recordQueued } = await import("../jobs.ts");
-        clearJobFiles(p);
+        const { recordQueued, startJobFiles } = await import("../jobs.ts");
+        startJobFiles(p);
         const source = recordQueued(sourceFor(cfg, reader, timingsOf(cfg).sourcePollSeconds * 1000), p);
         // Still under the old label: the next update writes the new LaunchAgent, and then this loop
         // restarts, once no job runs, so handOver moves it.

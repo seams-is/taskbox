@@ -441,9 +441,23 @@ export function readLive(p: Pick<Paths, "jobsFile">, serviceUid: number | undefi
 export function removeLive(p: Pick<Paths, "jobsFile">, id: string): void {
   if (JOB_ID.test(id)) rmSync(join(liveDir(p), `${id}.json`), { force: true });
 }
-// At the loop's start no job runs, so every live file and stop left by a loop that ended goes.
-export function clearJobFiles(p: Pick<Paths, "jobsFile">): void {
+// At the loop's start no job runs, so every live file and stop left by a loop that ended goes, and the
+// kept logs get their modes again (700 and 600), whatever an earlier build left. A link or anything
+// but a plain file among them goes.
+export function startJobFiles(p: Pick<Paths, "jobsFile">): void {
   for (const dir of [liveDir(p), stopsDir(p)]) for (const n of names(dir)) rmSync(join(dir, n), { force: true });
+  const logs = logsDir(p);
+  try {
+    if (!lstatSync(logs).isDirectory()) return void rmSync(logs, { force: true });
+    chmodSync(logs, 0o700);
+    for (const n of names(logs)) {
+      const f = join(logs, n);
+      if (lstatSync(f).isFile()) chmodSync(f, 0o600);
+      else rmSync(f, { recursive: true, force: true });
+    }
+  } catch {
+    // Not the service's to change: readers refuse such a folder, and writes fail closed.
+  }
 }
 
 // A stop asked for: job cancel, or a forced drain. The identity hook reads it at the job's end, so the
@@ -491,11 +505,20 @@ const SECRETS = [
   /\b(AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /\bnpm_[A-Za-z0-9]{30,}/g,
   /\bxox[abposr]-[A-Za-z0-9-]{10,}/g,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----.*/g,
   /(?<=[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+(?=@)/gi, // a password in a URL
 ];
 export function cleanLog(text: string): string[] {
-  const lines = text.split(/\r?\n/).map((l) => SECRETS.reduce((x, re) => x.replace(re, "[redacted]"), clean(l.replace(/\t/g, "  ").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")).replace(/[^\x20-\x7e]/g, "?").slice(0, 400)));
+  // A private key, from its BEGIN line to its END line, goes whole.
+  let inKey = false;
+  const lines = text.split(/\r?\n/).map((raw) => {
+    const l = clean(raw.replace(/\t/g, "  ").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")).replace(/[^\x20-\x7e]/g, "?").slice(0, 400);
+    if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(l)) inKey = true;
+    if (inKey) {
+      if (/-----END [A-Z ]*PRIVATE KEY-----/.test(l)) inKey = false;
+      return "[redacted]";
+    }
+    return SECRETS.reduce((x, re) => x.replace(re, "[redacted]"), l);
+  });
   while (lines.length && lines.at(-1) === "") lines.pop();
   return lines;
 }

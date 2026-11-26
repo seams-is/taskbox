@@ -12,8 +12,11 @@ import { jobOfVm, keepJobLogs, LOG_MAX, LOGS_KEPT, readJobs, readLiveOne, readSt
 const API = "https://api.github.com";
 // When the tie is looked for after the runner takes its job: GitHub may take a moment to name it.
 export const TIE_TRIES_MS = [0, 20_000, 60_000, 180_000];
-// Runs read for their jobs on one look, newest first.
+// Runs read for their jobs on one look, newest first. A job whose run has more than this many newer
+// runs is left untied; its box id still works.
 export const TIE_RUNS = 30;
+// The last look, when a job ends untied, is cut off after this long.
+export const LAST_LOOK_MS = 10_000;
 // When GitHub's log is looked for after the end. A stopped job stays in progress on GitHub until
 // GitHub gives up on its runner, so the last tries are minutes later.
 export const LOG_TRIES_MS = [5_000, 60_000, 600_000, 1_800_000];
@@ -48,11 +51,12 @@ async function getJson<T>(d: HookDeps, path: string, token: string, signal?: Abo
   return (await res.json()) as T;
 }
 
-// The in-progress job GitHub gave this runner, from the newest TIE_RUNS runs.
-export async function findByRunner(d: HookDeps, repo: string, runner: string, signal?: AbortSignal): Promise<Tie | undefined> {
+// The job GitHub gave this runner, from the newest TIE_RUNS runs: in progress, or of any status for
+// the last look, when the run may have ended with the job.
+export async function findByRunner(d: HookDeps, repo: string, runner: string, signal?: AbortSignal, any = false): Promise<Tie | undefined> {
   if (!d.tokens || !REPO_SHAPE.test(repo)) return undefined;
   const token = await d.tokens.actionsRead(repo);
-  const r = await getJson<{ workflow_runs?: { id?: unknown; name?: unknown; event?: unknown }[] }>(d, `/repos/${repo}/actions/runs?status=in_progress&per_page=${TIE_RUNS}`, token, signal);
+  const r = await getJson<{ workflow_runs?: { id?: unknown; name?: unknown; event?: unknown }[] }>(d, `/repos/${repo}/actions/runs?${any ? "" : "status=in_progress&"}per_page=${TIE_RUNS}`, token, signal);
   for (const run of (r.workflow_runs ?? []).slice(0, TIE_RUNS)) {
     if (!ghId(run.id)) continue;
     const jobs = await getJson<{ jobs?: { id?: unknown; run_id?: unknown; runner_name?: unknown }[] }>(d, `/repos/${repo}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`, token, signal);
@@ -126,8 +130,10 @@ function pause(d: HookDeps, ms: number, signal: AbortSignal): Promise<boolean> {
   });
 }
 
-// Each job's tie still being looked for, ended by the job's end.
+// Each job's tie still being looked for, ended by the job's end, and the jobs GitHub refused or
+// rate-limited, which get no last look.
 const looking = new Map<string, AbortController>();
+const refused = new Set<string>();
 
 async function lookForTie(d: HookDeps, j: JobRunning, id: string, repo: string, signal: AbortSignal): Promise<void> {
   const runner = runnerNameFor(d.cfg, j.slot, j.vm);
@@ -146,7 +152,7 @@ async function lookForTie(d: HookDeps, j: JobRunning, id: string, repo: string, 
       if (signal.aborted) return;
       d.log.write(`slot ${j.slot}: GitHub's job for ${id} couldn't be read: ${why(e)}`);
       // Refused or rate-limited: no more tries for this job, so the job source keeps its share.
-      if (e instanceof Answer && (e.status === 403 || e.status === 429)) return;
+      if (e instanceof Answer && (e.status === 403 || e.status === 429)) return void refused.add(id);
     }
   }
 }
@@ -188,25 +194,33 @@ export const identityHook: JobHook = {
     void lookForTie(d, j, id, repo, c.signal).finally(() => looking.get(id) === c && looking.delete(id));
   },
 
-  // Local files only, and nothing awaited, so it never runs past the loop's limit. The tie ends here:
-  // whatever GitHub hasn't answered by the end isn't waited for.
+  // The tie's looks end here. A job still untied gets one last look, cut off at LAST_LOOK_MS, well inside
+  // the loop's limit; the loop writes the id and VM whatever this hook does.
   async afterEnd(d: HookDeps, j: JobEnd) {
     const id = jobOfVm(j.vm);
     if (!id) return undefined;
     looking.get(id)?.abort();
     looking.delete(id);
     const live = readLiveOne(d.paths, id, uid());
-    const tie = live?.githubJob && live.githubRun ? { githubJob: live.githubJob, githubRun: live.githubRun, ...(live.workflow ? { workflow: live.workflow } : {}), ...(live.event ? { event: live.event } : {}) } : undefined;
+    let tie: Tie | undefined = live?.githubJob && live.githubRun ? { githubJob: live.githubJob, githubRun: live.githubRun, ...(live.workflow ? { workflow: live.workflow } : {}), ...(live.event ? { event: live.event } : {}) } : undefined;
     const stop = readStop(d.paths, id, uid());
     const rec = (j.record ?? {}) as Parameters<typeof stateOf>[0];
     const ran = live !== undefined || rec.jobAt !== undefined;
+    const gaveUp = refused.delete(id);
+    if (!tie && ran && d.tokens && !gaveUp) {
+      const c = new AbortController();
+      const off = d.sys.after(LAST_LOOK_MS, () => c.abort());
+      tie = await findByRunner(d, live?.repo ?? repoOf(d, j.role), runnerNameFor(d.cfg, j.slot, j.vm), c.signal, true)
+        .catch((e) => (c.signal.aborted ? undefined : (d.log.write(`slot ${j.slot}: GitHub's job for ${id} couldn't be read: ${why(e)}`), undefined)))
+        .finally(off);
+    }
     const s = stop ? { state: "stopped" as const, stoppedBy: stop.by } : stateOf({ ...rec, result: rec.result ?? (ran ? "finished" : "no job"), why: rec.why ?? (j.outcome === "done" ? undefined : j.outcome) });
     removeLive(d.paths, id);
     removeStop(d.paths, id);
     const ids = tie ? { githubJob: tie.githubJob, githubRun: tie.githubRun } : {};
     if (stop) event(d, "job.stopped", id, `Job ${id} was stopped on the box, as ${stop.by} asked.`, { vm: j.vm, by: stop.by, ...ids });
     else event(d, "job.finished", id, `Job ${id} ended: ${s.state}${"reason" in s && s.reason ? ` (${s.reason})` : ""}.`, { vm: j.vm, ...ids });
-    if (tie && d.tokens) void keepLog(d, id, live!.repo, tie.githubJob).catch(() => {});
+    if (tie && d.tokens) void keepLog(d, id, live?.repo ?? repoOf(d, j.role), tie.githubJob).catch(() => {});
     return { ...s, ...(tie ?? {}) };
   },
 };
