@@ -178,5 +178,9 @@
   "core/dispatch.ts": {
     "reads": 1,
     "why": "a request's 2 minutes and a signed statement's 5 minutes: times another machine wrote, which only the wall clock can judge; the nonce is what makes a signature work once"
+  },
+  "passes/requests.ts": {
+    "reads": 1,
+    "why": "a statement's 5 minutes and a request's time when the spool is over its cap, and a dropped request's outcome time: times another machine wrote, or a label; nothing is removed by it but what the spool's cap already removes"
   }
 }

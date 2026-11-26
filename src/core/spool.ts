@@ -119,6 +119,9 @@ export interface SpoolRules {
   whose?: string;
   // How old an entry is for the flood's cut, lower first: its mtime by default, which the asker sets.
   age?: (e: Entry) => number;
+  // A request-named file root removed unread, so its asker can be told: the flood's cut, or one that
+  // waited past forMs.
+  dropped?: (name: string, why: "flood" | "expired") => void;
 }
 
 export interface SpoolMemory {
@@ -172,6 +175,7 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
   for (const e of old) {
     try {
       unlinkSync(join(spool, e.name));
+      if (r.isRequest(e.name)) r.dropped?.(e.name, "expired");
     } catch {
       mem.stuck.add(e.name);
     }
@@ -186,6 +190,7 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
     for (const e of drop) {
       try {
         unlinkSync(join(spool, e.name));
+        if (r.isRequest(e.name)) r.dropped?.(e.name, "flood");
       } catch {
         mem.stuck.add(e.name);
       }

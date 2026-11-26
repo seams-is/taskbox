@@ -13,6 +13,7 @@
 // So a signature works once, on one box, for one action with its arguments, within 5 minutes.
 // The presence flag is set by software on the signing Mac: it is checked, and never taken as
 // proof of a touch. Lasting changes wait for confirm at the box (pending.ts).
+import { createPublicKey, createHash, verify as ecVerify } from "node:crypto";
 import { fingerprint } from "../approver.ts";
 import { fromB64url, toB64url, verifySignature, type VerifyDeps } from "../workspace/approval.ts";
 import { badKey, isObj, safeParse } from "./rootfile.ts";
@@ -186,7 +187,9 @@ export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readon
   budget.n++;
   let signer: string | undefined;
   // Only the pinned key the signature itself names is tried: one ssh-keygen run, never one per key.
-  for (const key of o.keys.filter((k) => k.split(" ")[1] === signatureKey(parts.signature))) {
+  // Only the pinned key the signature itself names is tried, and only once the signature checks in
+  // process: a forged one costs no ssh-keygen run. ssh-keygen as nobody stays the authority.
+  for (const key of o.keys.filter((k) => k.split(" ")[1] === signatureKey(parts.signature) && signsInProcess(k, parts.statement, parts.signature))) {
     const why = await verifySignature(d, { key, message: parts.statement, signature: parts.signature, namespace: CONTROL_NS }).catch(() => "failed");
     if (why === undefined) {
       signer = fingerprint(key);
@@ -222,4 +225,76 @@ export function argsOf(p: { args: readonly string[]; opts: Record<string, string
   for (const [k, v] of Object.entries(p.opts)) out[k] = Array.isArray(v) ? [...v] : v;
   if (p.args.length) out.words = [...p.args];
   return canonical(out) as Args;
+}
+
+// A cheap first check of a security key's SSH signature (PROTOCOL.sshsig and PROTOCOL.u2f), in
+// process: the armour's key is this pinned key, its namespace taskbox-control, its presence flag set,
+// and its P-256 signature over the message holds. It only ever refuses early. What it passes, ssh-keygen
+// -Y verify as nobody checks again, and that is what the box acts on.
+export function signsInProcess(key: string, message: string, armoured: string): boolean {
+  try {
+    const m = /^-----BEGIN SSH SIGNATURE-----\n([A-Za-z0-9+/=\n]+)-----END SSH SIGNATURE-----\n?$/.exec(armoured);
+    if (!m) return false;
+    const b = Buffer.from(m[1]!.replace(/\n/g, ""), "base64");
+    let off = 0;
+    const take = (n: number) => {
+      if (off + n > b.length) throw new Error("short");
+      return b.subarray(off, (off += n));
+    };
+    const str = (buf = b, at = { o: 0 }) => {
+      if (buf === b) return take(take(4).readUInt32BE(0));
+      const n = buf.readUInt32BE(at.o);
+      if (at.o + 4 + n > buf.length) throw new Error("short");
+      const v = buf.subarray(at.o + 4, at.o + 4 + n);
+      at.o += 4 + n;
+      return v;
+    };
+    if (take(6).toString("latin1") !== "SSHSIG" || take(4).readUInt32BE(0) !== 1) return false;
+    const blob = str();
+    if (blob.toString("base64") !== key.split(" ")[1]) return false;
+    const ns = str();
+    if (ns.toString("latin1") !== CONTROL_NS) return false;
+    const reserved = str();
+    const alg = str().toString("latin1");
+    if (alg !== "sha512" && alg !== "sha256") return false;
+    const sig = str();
+    if (off !== b.length) return false;
+    // The key: its type, curve, point and application.
+    const k = { o: 0 };
+    if (str(blob, k).toString("latin1") !== "sk-ecdsa-sha2-nistp256@openssh.com" || str(blob, k).toString("latin1") !== "nistp256") return false;
+    const q = str(blob, k);
+    const app = str(blob, k);
+    if (q.length !== 65 || q[0] !== 4) return false;
+    // The signature: its type, r and s, the flags and the counter.
+    const g = { o: 0 };
+    if (str(sig, g).toString("latin1") !== "sk-ecdsa-sha2-nistp256@openssh.com") return false;
+    const rs = str(sig, g);
+    if (g.o + 5 !== sig.length) return false;
+    const flags = sig.subarray(g.o, g.o + 1);
+    const counter = sig.subarray(g.o + 1, g.o + 5);
+    if ((flags[0]! & 0x01) === 0) return false;
+    const n = { o: 0 };
+    const int = (v: Buffer) => {
+      let i = 0;
+      while (i < v.length - 1 && v[i] === 0) i++;
+      const t = v.subarray(i);
+      if (t.length > 32) throw new Error("long");
+      return Buffer.concat([Buffer.alloc(32 - t.length), t]);
+    };
+    const r = int(str(rs, n));
+    const s2 = int(str(rs, n));
+    if (n.o !== rs.length) return false;
+    const len = (v: Buffer) => {
+      const l = Buffer.alloc(4);
+      l.writeUInt32BE(v.length);
+      return Buffer.concat([l, v]);
+    };
+    const digest = createHash(alg).update(message, "utf8").digest();
+    const signed = Buffer.concat([Buffer.from("SSHSIG"), len(ns), len(reserved), len(Buffer.from(alg)), len(digest)]);
+    const sk = Buffer.concat([createHash("sha256").update(app).digest(), flags, counter, createHash("sha256").update(signed).digest()]);
+    const pub = createPublicKey({ key: { kty: "EC", crv: "P-256", x: q.subarray(1, 33).toString("base64url"), y: q.subarray(33).toString("base64url") }, format: "jwk" });
+    return ecVerify("sha256", sk, { key: pub, dsaEncoding: "ieee-p1363" }, Buffer.concat([r, s2]));
+  } catch {
+    return false;
+  }
 }

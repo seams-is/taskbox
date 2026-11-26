@@ -12,14 +12,14 @@ import type { CommandSpec } from "../../src/command.ts";
 import { parse } from "../../src/command.ts";
 import { paths } from "../../src/config.ts";
 import { trustFirst, updateApprovers } from "../../src/core/approvers.ts";
-import { type AskDeps, nonceOf, POLL_MS, POLLS, sendSigned } from "../../src/core/asker.ts";
+import { ask, type AskDeps, nonceOf, POLL_MS, POLLS, sendSigned } from "../../src/core/asker.ts";
 import { type Answer, contractProblem, type DispatchDeps, type Handlers, handlersProblem, loadHandlers, requestHandlers, type SignedHandler, takeRequest } from "../../src/core/dispatch.ts";
 import { eventLog, readEvents } from "../../src/core/events.ts";
 import { currentNonce, nonceFor, readNonces, SUBJECT } from "../../src/core/nonces.ts";
 import { NAME } from "../../src/workspace/model.ts";
 import { rootStateOf } from "../../src/core/paths.ts";
 import { readOutcome, readSpoolFile, writeSpoolFile } from "../../src/core/spool.ts";
-import { type Args, argsOf, CONTROL_NS, signedWord, statementFor, statementText } from "../../src/core/statement.ts";
+import { type Args, argsOf, CONTROL_NS, signedWord, signsInProcess, statementFor, statementText } from "../../src/core/statement.ts";
 import { PER_WINDOW, placeSpool, REFRESH, requestsJob, requestsPass, SIGNED_PER_PASS } from "../../src/passes/requests.ts";
 import { registry, registryProblem } from "../../src/registry.ts";
 import { commandFor } from "../../src/shell.ts";
@@ -439,20 +439,20 @@ describe("the spool itself", () => {
     const b = await box();
     const n = (await nonceOf(b.d, "box")) as { nonce: string };
     const out = await sendSigned(line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce })).c, { ...b.d, sleep: async () => {} });
-    expect(out).toMatchObject({ exit: 1, error: { who: "at-the-box", message: expect.stringContaining("didn't take the signed drain") } });
+    expect(out).toMatchObject({ exit: 1, error: { who: "at-the-box", message: expect.stringContaining("hasn't read the signed drain") } });
   });
 
-  test("a request the guard took and hasn't answered yet is never called a guard that is down", async () => {
+  test("a request that left the spool with no answer is said to be just that, never taken and never a guard that is down", async () => {
     const b = await box();
     const n = (await nonceOf(b.d, "box")) as { nonce: string };
-    // The guard takes it from the spool, and its handler is still at work.
+    // Something removes it from the spool, and no outcome comes.
     const take = async () => {
       for (const f of readdirSync(b.s.agentSpool)) rmSync(join(b.s.agentSpool, f));
     };
     const said: string[] = [];
     const l = line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce }));
     const out = await sendSigned({ ...l.c, say: (x: string) => void said.push(x) }, { ...b.d, sleep: take, polls: 60 });
-    expect(out).toMatchObject({ exit: 1, error: { message: expect.stringContaining("may still be applying it") } });
+    expect(out).toMatchObject({ exit: 1, error: { message: expect.stringContaining("left the spool with no answer from the guard"), fix: expect.stringContaining("whether it applied") } });
     expect(JSON.stringify(out)).not.toContain("may be down");
     expect(said).toContain("Waiting for the box's guard, which takes requests in turn.");
   });
@@ -536,20 +536,66 @@ describe("the review's cases", () => {
   };
 
   test(
-    "a flood of forged words with the current nonce: at most SIGNED_PER_PASS checks a pass, and the owner's step still applies",
+    "a flood of forged words with the current nonce: none costs an ssh-keygen run, and the owner's step still applies",
     async () => {
       const k = counting();
       const b = await box({ verify: k.verify });
       const n = (await nonceOf(b.d, "box")) as { nonce: string };
       for (let i = 0; i < 12; i++) writeSpoolFile(b.s.agentSpool, "signed", { word: forged(n.nonce, i + 2), action: "drain", args: drainArgs() }, b.sys);
       await b.job();
-      expect(k.runs.n).toBe(SIGNED_PER_PASS);
+      expect(k.runs.n).toBe(0);
       expect(readdirSync(b.s.agentSpool)).toHaveLength(12 - SIGNED_PER_PASS);
       expect(b.nonce()).toBe(n.nonce);
-      // The owner's own word, sent behind the flood, is taken in the order root saw it, and applies.
       const out = await sendSigned(line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce })).c, { ...b.d, polls: 5 });
       expect(out).toMatchObject({ exit: 0 });
       expect(b.applied).toHaveLength(1);
+      expect(k.runs.n).toBe(1);
+    },
+    SLOW,
+  );
+
+  test(
+    "a flood past the spool's cap with the owner's real request in it: forged ones are dropped first, each with an outcome, and the owner's applies",
+    async () => {
+      const b = await box();
+      const n = (await nonceOf(b.d, "box")) as { nonce: string };
+      const junk: string[] = [];
+      for (let i = 0; i < 30; i++) junk.push(writeSpoolFile(b.s.agentSpool, "signed", { word: forged(n.nonce, i + 2), action: "drain", args: drainArgs() }, b.sys).id);
+      const owner = writeSpoolFile(b.s.agentSpool, "signed", { word: signFor({ action: "drain", args: drainArgs(), nonce: n.nonce }), action: "drain", args: drainArgs() }, b.sys).id;
+      for (let i = 0; i < 30; i++) junk.push(writeSpoolFile(b.s.agentSpool, "signed", { word: forged(n.nonce, i + 40), action: "drain", args: drainArgs() }, b.sys).id);
+      for (let i = 0; i < 12 && readOutcome(b.d.outcomes, owner, me).kind === "missing"; i++) await b.job();
+      expect(readOutcome(b.d.outcomes, owner, me)).toMatchObject({ kind: "ok", value: { ok: true, said: "Draining." } });
+      expect(b.applied).toHaveLength(1);
+      // Every forged one is dropped unread past the cap, refused for its signature, or still waiting
+      // in the spool: none is ever gone with no outcome.
+      const here = readdirSync(b.s.agentSpool).join(" ");
+      const said = junk.map((id) => {
+        const o = readOutcome(b.d.outcomes, id, me);
+        return o.kind === "ok" ? o.value.code : here.includes(id) ? "waiting" : "gone";
+      });
+      expect(said.filter((c) => c === "busy").length).toBe(61 - 50);
+      expect(said.every((c) => c === "busy" || c === "signature" || c === "waiting")).toBe(true);
+    },
+    SLOW,
+  );
+
+  test(
+    "a request root removes unread tells its asker why",
+    async () => {
+      const b = await box();
+      for (let i = 0; i < 40; i++) writeSpoolFile(b.s.agentSpool, "mystery", {}, b.sys);
+      await b.job();
+      await b.job();
+      for (let i = 0; i < 25; i++) writeSpoolFile(b.s.agentSpool, "mystery", {}, b.sys);
+      await b.job();
+      await b.job();
+      // The window is spent; the asker's request waits unread past its 2 minutes, and goes.
+      const old = new Date(T - 3 * 60_000);
+      const r = await ask({ ...b.d, polls: 2, sleep: async () => {
+        for (const f of readdirSync(b.s.agentSpool).filter((x) => x.endsWith(".poll.json"))) utimesSync(join(b.s.agentSpool, f), old, old);
+        await b.job();
+      } }, "poll", { pairing: "p1" });
+      expect(r).toMatchObject({ outcome: { ok: false, code: "expired", said: expect.stringContaining("waited past its 2 minutes in the spool unread") } });
     },
     SLOW,
   );
@@ -783,5 +829,21 @@ describe("--signed through the box's command line", () => {
     expect(registryProblem([base])).toBeUndefined();
     expect(registryProblem([{ ...base, path: ["workspace", "pause", "now"] }])).toContain("a statement can't name workspace.pause.now");
     expect(registryProblem([{ ...base, options: [{ name: "--words", value: "W" }] }])).toContain("--words");
+  });
+});
+
+describe("the in-process first check of a signature", () => {
+  const msg = "the bytes the owner signed";
+  const sig = (o: { namespace?: string; flags?: number } = {}) => sshsig(owner, new TextEncoder().encode(msg), { namespace: o.namespace ?? CONTROL_NS, ...(o.flags !== undefined ? { flags: o.flags } : {}) });
+  test("passes what ssh-keygen passes, and refuses other bytes, keys, namespaces and a missing presence flag", async () => {
+    const good = sig();
+    expect(signsInProcess(owner.key, msg, good)).toBe(true);
+    const { verifySignature } = await import("../../src/workspace/approval.ts");
+    expect(await verifySignature(verifyDeps(), { key: owner.key, message: msg, signature: good, namespace: CONTROL_NS })).toBeUndefined();
+    expect(signsInProcess(owner.key, `${msg}!`, good)).toBe(false);
+    expect(signsInProcess(stranger.key, msg, good)).toBe(false);
+    expect(signsInProcess(owner.key, msg, sig({ namespace: "taskbox-release" }))).toBe(false);
+    expect(signsInProcess(owner.key, msg, sig({ flags: 0x04 }))).toBe(false);
+    expect(signsInProcess(owner.key, msg, "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n")).toBe(false);
   });
 });

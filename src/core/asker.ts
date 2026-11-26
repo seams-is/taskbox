@@ -45,8 +45,9 @@ export const askDeps = (root: string, uid: number, clock: Pick<Clock, "now" | "s
 };
 const waited = (d: AskDeps) => `${((d.polls ?? POLLS) * POLL_MS) / 1000} s`;
 
-// taken: when no outcome came, whether the guard took the request from the spool.
-export type Asked = { id: string; outcome: Outcome | undefined; taken?: boolean } | { no: string };
+// left: when no outcome came, whether the request is still in the spool, unread, or gone from it
+// with no answer. Only an outcome says what the guard did.
+export type Asked = { id: string; outcome: Outcome; left?: undefined } | { id: string; outcome: undefined; left: "unread" | "gone" } | { no: string };
 
 // One request: written, then waited for. no: it couldn't be written, and why.
 export async function ask(d: AskDeps, kind: string, body: Record<string, unknown>): Promise<Asked> {
@@ -64,7 +65,7 @@ export async function ask(d: AskDeps, kind: string, body: Record<string, unknown
     const o = readOutcome(d.outcomes, w.id, d.rootUid ?? 0);
     if (o.kind === "ok") return { id: w.id, outcome: o.value };
   }
-  return { id: w.id, outcome: undefined, taken: !existsSync(join(d.spool, w.file)) };
+  return { id: w.id, outcome: undefined, left: existsSync(join(d.spool, w.file)) ? "unread" : "gone" };
 }
 
 const FIX: Partial<Record<string, string>> = {
@@ -75,9 +76,9 @@ const FIX: Partial<Record<string, string>> = {
 
 // A request's outcome as the command's own answer. Its line is said once, here; the footer's Did
 // line is the command's own.
-function outcomeOf(d: AskDeps, id: string, o: Outcome | undefined, what: string, taken = false): { exit: number; result: Record<string, unknown>; changed?: boolean; error?: ErrorBody } {
-  if (!o && taken) return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message: `The box's guard took ${what} (${id}) and hasn't answered within ${waited(d)}: it may still be applying it.`, fix: "taskbox events at the box says what it did.", who: "at-the-box" } };
-  if (!o) return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message: `The box's guard didn't take ${what} (${id}) in ${waited(d)}, so it may be down.`, fix: "taskbox check at the box says why.", who: "at-the-box" } };
+function outcomeOf(d: AskDeps, id: string, o: Outcome | undefined, what: string, left?: "unread" | "gone"): { exit: number; result: Record<string, unknown>; changed?: boolean; error?: ErrorBody } {
+  if (!o && left === "gone") return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message: `${what[0]!.toUpperCase()}${what.slice(1)} (${id}) left the spool with no answer from the guard in ${waited(d)}.`, fix: "taskbox events at the box says whether it applied.", who: "at-the-box" } };
+  if (!o) return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message: `The box's guard hasn't read ${what} (${id}) in ${waited(d)}, so it may be down. Send it again once taskbox check at the box is clean.`, fix: "taskbox check at the box says why.", who: "at-the-box" } };
   const result = { request: id, ...(o.op ? { op: o.op } : {}) };
   if (o.ok) return { exit: EXIT.ok, changed: true, result };
   const code = o.code ?? "failed";
@@ -99,7 +100,7 @@ export async function sendSigned(c: Pick<BoxCtx, "spec" | "args" | "opts" | "fla
     c.say(r.no);
     return { exit: EXIT.failed, error: { code: "failed", message: r.no, fix: "Send it from the controller, which runs it as the box's agent account.", who: null } };
   }
-  const out = outcomeOf(d, r.id, r.outcome, `the signed ${action}`, r.taken);
+  const out = outcomeOf(d, r.id, r.outcome, `the signed ${action}`, r.left);
   c.say(out.error ? out.error.message : r.outcome!.said);
   if (r.outcome?.op) c.say(`Its op is ${r.outcome.op}.`);
   return out;
@@ -119,7 +120,7 @@ export async function nonceOf(d: AskDeps, subject: string): Promise<NonceRead> {
   if (have) return { ok: true, nonce: have, made: false };
   const r = await ask(d, NONCE, { subject });
   if ("no" in r) return { ok: false, code: "failed", why: r.no };
-  if (!r.outcome) return { ok: false, code: "failed", why: r.taken ? `The box's guard took the nonce request and hasn't answered within ${waited(d)}.` : `The box's guard didn't take the nonce request in ${waited(d)}, so it may be down.` };
+  if (!r.outcome) return { ok: false, code: "failed", why: r.left === "gone" ? `The nonce request left the spool with no answer from the guard in ${waited(d)}.` : `The box's guard hasn't read the nonce request in ${waited(d)}, so it may be down.` };
   if (!r.outcome.ok) return { ok: false, code: r.outcome.code === "not-found" ? "not-found" : "failed", why: r.outcome.said };
   const made = read();
   return made ? { ok: true, nonce: made, made: true } : { ok: false, code: "failed", why: "The guard made the nonce, but nonces.json can't be read." };
