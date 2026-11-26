@@ -17,6 +17,8 @@ import { requestHandlers } from "../handlers/index.ts";
 import { asNobody, type VerifyDeps, verifyFolder } from "../workspace/approval.ts";
 import { agentUid } from "../workspace/pass.ts";
 
+export const REFRESH = 30;
+
 export interface RequestsDeps {
   c: PassCtx;
   handlers: Handlers;
@@ -34,10 +36,14 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
   const events = eventLog("guard", { dir: s.events, owner: root, ...(d.chown ? { chown: d.chown } : {}) }, c.sys);
   const said = new Set<string>();
   let boot: string | undefined;
+  // The agent account's uid is looked up again every REFRESH passes (a minute of ticks), so an idle
+  // spool costs the tick a folder read and no process.
+  let agent: number | undefined;
+  let passes = 0;
   return async () => {
     // No agent account on this box: nothing can write the spool, and there is nothing to read.
     if (c.cfg.accounts.agent === undefined) return;
-    const agent = await agentUid({ sys: c.sys, cfg: c.cfg, p: c.p, rootUid: root });
+    if (passes++ % REFRESH === 0 || agent === undefined) agent = await agentUid({ sys: c.sys, cfg: c.cfg, p: c.p, rootUid: root });
     if (agent === undefined) throw new Error("the agent account isn't the one accounts.json records, so the agent spool is closed");
     placeSpool(s.agentSpool, agent, root, d.chown ?? lchownSync);
     boot ??= await bootId(c.sys);

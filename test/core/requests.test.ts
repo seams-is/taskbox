@@ -19,7 +19,7 @@ import { currentNonce, readNonces } from "../../src/core/nonces.ts";
 import { rootStateOf } from "../../src/core/paths.ts";
 import { readOutcome, readSpoolFile, writeSpoolFile } from "../../src/core/spool.ts";
 import { type Args, CONTROL_NS, signedWord, statementFor, statementText } from "../../src/core/statement.ts";
-import { placeSpool, requestsJob, requestsPass } from "../../src/passes/requests.ts";
+import { placeSpool, REFRESH, requestsJob, requestsPass } from "../../src/passes/requests.ts";
 import { registryProblem } from "../../src/registry.ts";
 import { commandFor } from "../../src/shell.ts";
 import { FakeSys } from "../fake.ts";
@@ -410,6 +410,10 @@ describe("the spool itself", () => {
   test("an agent account that isn't the one accounts.json records closes the spool", async () => {
     const b = await box();
     writeRecord({ chown: () => {}, rootUid: me }, b.p.accountsRecord, { made: { "taskbox-agent": { role: "agent", uid: me + 1 } } });
+    // Looked up again within a minute of ticks.
+    let why = "";
+    for (let i = 0; i < REFRESH && !why; i++) await b.job().catch((e: Error) => void (why = e.message));
+    expect(why).toContain("the agent spool is closed");
     const r = writeSpoolFile(b.s.agentSpool, "poll", { pairing: "p1" }, b.sys);
     await expect(b.job()).rejects.toThrow("the agent spool is closed");
     expect(existsSync(join(b.s.agentSpool, r.file))).toBe(true);
