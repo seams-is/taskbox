@@ -2,8 +2,13 @@
 // `taskbox check` (CHECK_EXTRA) and by `taskbox check --away`, never before a VM. Every row says what to do
 // and where: at the box, from away, or nothing. Rows that need ci or root show, for anyone else, the
 // loop's last recorded result, and never name a user.
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { beatState } from "./beat.ts";
+import { bootId, monoNow } from "./core/boot.ts";
+import { rootStateOf } from "./core/paths.ts";
+import { lapse, readPending } from "./core/pending.ts";
+import { BROKER_ACCOUNT, beatPaths, brokerPlist, guardwatchPlist, readBeat, STALE_MS } from "./guardwatch.ts";
 import type { Check, CheckContext } from "./checks.ts";
 import { awayOf } from "./config.ts";
 import { CLOCK_LIMIT_S, GitHubError, githubLine, githubState } from "./ghfail.ts";
@@ -126,3 +131,127 @@ export const AWAY_ROWS: [string, (c: CheckContext) => Promise<Row>][] = [
   ["macOS updates", macosUpdatesRow],
   ["Restart after power loss", powerRestartRow],
 ];
+
+// v3's rows for leaving: the guard's beat and the key broker's, lasting changes waiting at the box,
+// the tailnet name, the power-loss history and the IP-KVM.
+const warn = (detail: string): Row => ({ status: "WARN", detail });
+const hhmm = (ms: number) => new Date(ms).toTimeString().slice(0, 5);
+
+// A beat's age on the monotonic clock, or why it can't be read.
+async function beatAge(c: CheckContext, file: string, owner: number | undefined): Promise<{ age: number; at: number } | string> {
+  if (owner === undefined) return "its account isn't on the box";
+  const b = readBeat(file, owner);
+  if (!b) return "no beat";
+  const boot = await bootId(c.sys);
+  const mono = await monoNow(c.sys);
+  if (!boot || mono === undefined) return "this boot's clock can't be read";
+  if (b.boot !== boot) return "no beat since the box started";
+  return { age: Math.max(0, mono - b.mono), at: b.at };
+}
+
+const UNSTUCK = "Waits by itself: guardwatch restarts it within a few minutes. If this stays, at the box: as your admin user, type taskbox update";
+
+export async function guardBeatRow(c: CheckContext): Promise<Row> {
+  const root = rootOf(c);
+  const a = await beatAge(c, beatPaths(root).guard, c.rootUid ?? 0);
+  if (typeof a === "string") return fail(`the guard has ${a === "no beat" ? "written no beat" : a.replace(/^no beat/, "written no beat")}, so nothing shows it moves. ${UNSTUCK}`);
+  if (a.age > STALE_MS) return fail(`the guard hasn't moved since ${hhmm(a.at)}. ${UNSTUCK}`);
+  if (!lstatExists(guardwatchPlist(root))) return fail(`the guard beats, but guardwatch, which restarts a stuck guard, isn't installed. ${UPDATE_FIX}`);
+  return ok(`the guard beat ${Math.round(a.age / 1000)} s ago, and guardwatch watches it`);
+}
+
+export async function brokerBeatRow(c: CheckContext): Promise<Row> {
+  const root = rootOf(c);
+  if (!lstatExists(brokerPlist(root))) return skip("this box has no key broker yet");
+  const r = await c.sys.run("/usr/bin/id", ["-u", BROKER_ACCOUNT], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
+  const uid = r.code === 0 && /^\d+$/.test(r.stdout.trim()) ? Number(r.stdout.trim()) : undefined;
+  const a = await beatAge(c, beatPaths(root).broker, uid);
+  if (typeof a === "string") return fail(`the key broker has ${a === "no beat" ? "written no beat" : a.replace(/^no beat/, "written no beat")}, so no VM gets a runner. ${UNSTUCK}`);
+  if (a.age > STALE_MS) return fail(`the key broker hasn't moved since ${hhmm(a.at)}, so no VM gets a runner. ${UNSTUCK}`);
+  return ok(`the key broker beat ${Math.round(a.age / 1000)} s ago`);
+}
+
+// Lasting changes waiting for confirm at the box, which lapse after 24 hours.
+export async function confirmRow(c: CheckContext): Promise<Row> {
+  const r = readPending(rootStateOf(c.paths).pending, c.rootUid ?? 0);
+  if (r.kind === "missing") return ok("no lasting change waits for confirm");
+  if (r.kind !== "ok") return skip("the changes waiting for confirm can't be read");
+  const boot = await bootId(c.sys);
+  const mono = await monoNow(c.sys);
+  const items = lapse(r.value, { wall: c.sys.now(), mono, boot }).state.items;
+  if (!items.length) return ok("no lasting change waits for confirm");
+  return fail(`${items.length} lasting ${items.length === 1 ? "change waits" : "changes wait"} for confirm, and ${items.length === 1 ? "it lapses" : "each lapses"} 24 hours after it was asked. At the box: as your admin user, type taskbox confirm`);
+}
+
+// tailscaled's status through its socket, which lets in root and the service account only.
+type TsStatus = { BackendState?: unknown; Self?: { DNSName?: unknown }; CurrentTailnet?: { Name?: unknown }; Peer?: Record<string, { HostName?: unknown; DNSName?: unknown; Online?: unknown; Tags?: unknown }> };
+async function tsStatus(c: CheckContext): Promise<TsStatus | string> {
+  if (c.uid !== 0 && (c.serviceUid === undefined || c.uid !== c.serviceUid)) return "only the service account can see Tailscale's status";
+  const r = await c.sys.run(c.paths.tailscale, [`--socket=${c.paths.tailscaleSocket}`, "status", "--json"], { timeoutMs: 15_000 }).catch(() => ({ code: 1, stdout: "" }));
+  try {
+    return JSON.parse(r.stdout) as TsStatus;
+  } catch {
+    return "Tailscale's status couldn't be read";
+  }
+}
+const word = (v: unknown, max = 100) => (typeof v === "string" && /^[A-Za-z0-9.-]{1,253}$/.test(v) ? v.replace(/\.$/, "").slice(0, max) : undefined);
+
+export async function tailnetRow(c: CheckContext): Promise<Row> {
+  const st = await tsStatus(c);
+  if (typeof st === "string") return skip(st);
+  if (st.BackendState !== "Running") return skip("the box's Tailscale isn't running. The Tailscale line says what to do");
+  const name = word(st.Self?.DNSName);
+  const tailnet = word(st.CurrentTailnet?.Name);
+  if (!name) return fail("the box has no name in its tailnet, so the controller can't reach it by name. At the box: as your admin user, type taskbox check");
+  return ok(`the box is ${name}${tailnet ? `, in the tailnet ${tailnet}` : ""}`);
+}
+
+// macOS's power log: each shutdown's cause. 5 is a shutdown asked for, 3 a held power button; 0 and
+// the negative causes are a power cut or a crash. The last 30 days' unexpected ones are listed, as a
+// warning: the box came back, and the UPS row says whether a cable is in.
+export const POWER_DAYS = 30;
+export function powerLosses(log: string, now: number): number[] {
+  const out: number[] = [];
+  for (const m of log.matchAll(/^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [+-]\d{4}) .*Shutdown Cause:?\s*(-?\d+)/gm)) {
+    const at = Date.parse(m[1]!.replace(" ", "T").replace(/ ([+-]\d\d)(\d\d)$/, "$1:$2"));
+    if (!Number.isFinite(at) || now - at > POWER_DAYS * 86_400_000 || at > now) continue;
+    if (m[2] === "5" || m[2] === "3") continue;
+    out.push(at);
+  }
+  return out;
+}
+export async function powerHistoryRow(c: CheckContext): Promise<Row> {
+  const r = await c.sys.run("/usr/bin/pmset", ["-g", "log"], { timeoutMs: 60_000 }).catch(() => ({ code: 1, stdout: "" }));
+  if (r.code !== 0) return skip("macOS's power log couldn't be read");
+  const lost = powerLosses(r.stdout, c.sys.now());
+  if (!lost.length) return ok(`no unexpected shutdown in the last ${POWER_DAYS} days`);
+  const days = lost.map((t) => new Date(t).toDateString().slice(4, 10)).slice(-5);
+  return warn(`${lost.length} unexpected ${lost.length === 1 ? "shutdown" : "shutdowns"} in the last ${POWER_DAYS} days (${days.join(", ")}): a power cut or a crash. Worth a look before leaving: the UPS line says whether one is connected`);
+}
+
+// The IP-KVM a kvm restart plan names: online in the box's own tailnet view, with its tag. That the
+// tailnet policy lets only the owner reach it is for the owner to check in the admin console, with
+// what taskbox policy show prints.
+export async function kvmRow(c: CheckContext): Promise<Row> {
+  const a = awayOf(c.cfg);
+  if (a.restartPlan !== "kvm") return skip("the restart plan uses no KVM");
+  if (!a.kvm) return fail(`the restart plan is kvm, but no KVM is named. ${PLAN_STEP.replace("away.restartPlan", "away.kvm (its tailnet name and tag)")}`);
+  const st = await tsStatus(c);
+  if (typeof st === "string") return skip(st);
+  const peer = Object.values(st.Peer ?? {}).find((p) => word(p.HostName)?.toLowerCase() === a.kvm!.tailnetName || word(p.DNSName)?.split(".")[0]?.toLowerCase() === a.kvm!.tailnetName);
+  if (!peer) return fail(`the KVM ${a.kvm.tailnetName} isn't in the box's tailnet, so nothing types the FileVault password after a restart. At the box: check the KVM is on and signed in to Tailscale`);
+  if (!Array.isArray(peer.Tags) || !peer.Tags.includes(a.kvm.tag)) return fail(`the KVM ${a.kvm.tailnetName} doesn't carry ${a.kvm.tag}, so the tailnet policy's entries for it don't hold. From away: in the Tailscale admin console, give it that tag`);
+  if (peer.Online !== true) return fail(`the KVM ${a.kvm.tailnetName} is offline, so nothing types the FileVault password after a restart. At the box: check its power and network`);
+  return ok(`the KVM ${a.kvm.tailnetName} is online with ${a.kvm.tag}. Check in the admin console that only you reach it (taskbox policy show)`);
+}
+
+// / on a box: the folder the paths hang from, read from one of them.
+const rootOf = (c: CheckContext) => dirname(dirname(dirname(dirname(c.paths.guardState))));
+const lstatExists = (p: string) => {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+};

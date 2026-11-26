@@ -64,8 +64,8 @@
     "why": "days until a date and recent logins: display"
   },
   "awaychecks.ts": {
-    "reads": 5,
-    "why": "how long ago the loop's last request and beat were: rows that say OK with a time"
+    "reads": 7,
+    "why": "how long ago the loop's last request and beat were: rows that say OK with a time; the power log's last 30 days, a WARN only; when a lasting change lapses, with mono and the boot beside it"
   },
   "checks.ts": {
     "reads": 5,
