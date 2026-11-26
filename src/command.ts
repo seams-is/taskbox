@@ -29,6 +29,8 @@ export const GLOBAL_FLAGS = {
   tail: { names: ["-n", "--tail"], value: "N" },
   // The owner's signed step, from the controller through the agent account's shell (core/asker.ts).
   signed: { names: ["--signed"], value: "WORD" },
+  // The controller's key for a private answer to a signed step, signed with it (core/sealed.ts).
+  answerKey: { names: ["--answer-key"], value: "KEY" },
 } as const;
 export type GlobalFlag = keyof typeof GLOBAL_FLAGS;
 // Taken by every command: --help, --version, --answers (the reader's version) and --box.
@@ -55,6 +57,7 @@ const GLOBAL_CHECKS: Partial<Record<GlobalFlag, (v: string) => boolean>> = {
   until: (v) => duration(v) !== undefined || /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/.test(v),
   box: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(v),
   signed: isSignedWord,
+  answerKey: (v) => /^[A-Za-z0-9_-]{43}$/.test(v),
 };
 
 // A command's own flag: --away, --to VERSION, --admin NAME given more than once.
@@ -269,7 +272,9 @@ export function parse(specs: readonly CommandSpec[], argv: readonly string[]): P
       const o = (spec.options ?? []).find((x) => x.name === flag);
       if (g) {
         // --box goes with every command: on a box it must name that box, checked once settings are read.
-        if (g !== "box" && !(spec.flags ?? []).includes(g)) return bad(`${name} doesn't take ${flag}.`);
+        // --answer-key goes with every command that takes --signed.
+        const takes = (spec.flags ?? []).includes(g) || (g === "answerKey" && (spec.flags ?? []).includes("signed"));
+        if (g !== "box" && !takes) return bad(`${name} doesn't take ${flag}.`);
         if (flags[g] !== undefined) return bad(`${flag} is given twice.`);
         const def = GLOBAL_FLAGS[g];
         if ("value" in def) {

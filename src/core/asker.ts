@@ -69,7 +69,8 @@ const FIX: Partial<Record<string, string>> = {
 // line is the command's own.
 function outcomeOf(d: AskDeps, id: string, o: Outcome | undefined, what: string): { exit: number; result: Record<string, unknown>; changed?: boolean; error?: ErrorBody } {
   if (!o) return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message: `The box's guard hasn't answered ${what} (${id}) within ${waited(d)}, so it may be down.`, fix: "taskbox check at the box says why.", who: "at-the-box" } };
-  const result = { request: id, ...(o.op ? { op: o.op } : {}) };
+  // A sealed private answer goes to the controller as it came: only its own secret opens it.
+  const result = { request: id, ...(o.op ? { op: o.op } : {}), ...(o.sealed ? { sealed: o.sealed } : {}) };
   if (o.ok) return { exit: EXIT.ok, changed: true, result };
   const code = o.code ?? "failed";
   return { exit: code === "expired" ? EXIT.denied : EXIT.failed, result, error: { code, message: o.said, fix: FIX[code] ?? null, who: null } };
