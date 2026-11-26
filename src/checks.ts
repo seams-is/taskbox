@@ -6,7 +6,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node
 import { readSeen } from "./logins.ts";
 import { dirname, join, relative } from "node:path";
 import { AWAY_ROWS } from "./awaychecks.ts";
-import { awayOf, type Config, DEFAULT_AWAY, GATE_SHELL, type PublicAddressSource, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, sourceKeyPath, sourceOf } from "./config.ts";
+import { awayOf, type Config, DEFAULT_AWAY, GATE_SHELL, type PublicAddressSource, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, sourceKeyPath, sourceOf, vmsAtMostOf } from "./config.ts";
 import { readInstallId, text } from "./answers.ts";
 import { adminState } from "./elevate.ts";
 import { canUnlock, poolProblem, readRecord, recordName, uidOf, userKey } from "./accounts.ts";
@@ -324,7 +324,8 @@ async function appKey(c: CheckContext): Promise<Omit<Check, "name">> {
 // partialBytes: what's on disk of the download now. A pull that stops starts again, so none counts.
 // The image is matched by its full reference, digest included, so a new pin is never counted as held.
 // With more than one VM (v2.2.0), each VM running may still write its whole floor, so the floor is
-// counted for this VM and for each one running: 60 GB for the first VM, 120 GB before a second starts.
+// counted for this VM and for each one running: minFreeDiskGB for each. On a small disk this, not
+// memory, caps how many small VMs run, and a start it refuses waits.
 export function diskNeed(c: CheckContext, partialBytes?: number, notHeld = false): { needGB: number; imageGB: number } {
   const pull = readPull(c.paths.pull);
   // A record from before refs were kept names the image only.
@@ -416,7 +417,7 @@ async function freeDisk(c: CheckContext): Promise<Omit<Check, "name">> {
   const gb = await freeGB(c.sys);
   if (gb === undefined) return fail("could not read free disk");
   // check's own view: the VMs running beside the next start, so never more than the slots less one.
-  const slots = Number.isInteger(c.cfg.vmsAtOnce) && c.cfg.vmsAtOnce! >= 1 ? c.cfg.vmsAtOnce! : 1;
+  const slots = vmsAtMostOf(c.cfg);
   const running = c.vmsRunning ?? Math.min(busySlots(c.paths.loopState), slots - 1);
   const { needGB, imageGB } = diskNeed({ ...c, vmsRunning: running });
   const room = running ? `${c.cfg.minFreeDiskGB} GB to work in for the next VM and for each of the ${running} running` : `${c.cfg.minFreeDiskGB} GB to work in`;

@@ -2,7 +2,7 @@
 // start to its end: the acceptance criteria for the real repo's jobs and the load repo's jobs apart,
 // real jobs that a load VM went ahead of and those that waited for a load job, the checklist as it
 // stood, and the source's reads.
-import { type Config, loadRepoOf } from "./config.ts";
+import { type Config, loadRepoOf, vmsAtMostOf } from "./config.ts";
 import type { JobRecord } from "./jobs.ts";
 import { type LoadFile, type LoadSession, sessionEnd } from "./load.ts";
 import { acceptance, type Criterion, kindTimings } from "./timings.ts";
@@ -75,10 +75,10 @@ export function loadReport(cfg: Config, jobs: JobRecord[], file: LoadFile, gaveW
   const gave = gaveWayLog.filter((g) => g.at >= s.startedAt && g.at <= to);
   const gaveReal = gave.filter((g) => g.role !== "load");
   const gaveLoad = gave.filter((g) => g.role === "load");
-  const slots = Number.isInteger(cfg.vmsAtOnce) ? cfg.vmsAtOnce! : 1;
+  const slots = vmsAtMostOf(cfg);
   // Load holds every slot with only, and every slot but one beside the real repo.
   const loadSlots = s.only ? slots : Math.max(1, slots - 1);
-  const loadCfg: Config = { ...cfg, vmsAtOnce: loadSlots };
+  const loadCfg: Config = { ...cfg, vmsAtMost: loadSlots };
   const realC = acceptance(cfg, real, gaveReal, to, withSource);
   const loadC = acceptance(loadCfg, load, gaveLoad, to, withSource);
   const reads = !s.readsReset && s.readsAtStart !== undefined && s.readsAtEnd !== undefined && s.readsAtEnd >= s.readsAtStart ? s.readsAtEnd - s.readsAtStart : undefined;

@@ -5,11 +5,11 @@ import type { KeyChange } from "../approver.ts";
 import { type EngineName, ENGINES } from "../vm.ts";
 import { checkAccounts } from "./accounts.ts";
 import { type AwaySettings, checkAway } from "./away.ts";
-import { checkKind, checkLabels, IMAGE_PIN, type Kind, type KindSettings, MAX_SLOTS, DEFAULT_TURN_IDLE_MINUTES } from "./kinds.ts";
+import { type BudgetSettings, checkKind, checkLabels, checkSizes, IMAGE_PIN, type Kind, type KindSettings, type SizeSettings, V2_MAX_SLOTS, DEFAULT_TURN_IDLE_MINUTES } from "./kinds.ts";
 import { checkRunnerApp, type RunnerAppSettings } from "./connect.ts";
 import { checkScheduling, type ClassRule, type SourceSettings, type Timings } from "./scheduling.ts";
 
-export interface Config {
+export interface Config extends BudgetSettings {
   org: string; // the GitHub organisation that holds the App, taskbox's repo and the runner group
   repo: string; // taskbox's own repo in org, which the box installs from
   // v2.6.1: the repo in org that v2 releases, tags, tarballs and assets are read from, when it isn't
@@ -39,8 +39,8 @@ export interface Config {
   // Always 1: v2.1.1's update reads the next release's taskbox.json with its own rules, which
   // refuse anything else. vmsAtOnce is the setting from v2.2.0.
   slots: number;
-  // How many VMs may run at once (v2.2.0), 1 to MAX_SLOTS. Absent: 1. macOS VMs are at most
-  // MACOS_MAX of them, Apple's licence.
+  // How many VMs may run at once (v2.2.0), 1 to 4. Absent: 1. vmsAtMost replaces it. macOS VMs are
+  // at most MACOS_MAX of them, Apple's licence.
   vmsAtOnce?: number;
   // A job's own time limit, and its ceiling 10 min later. The loop can't read a job's
   // timeout-minutes from GitHub, so every box job sets one at or under this.
@@ -51,6 +51,10 @@ export interface Config {
   // Shared mode: every VM gets this much, beside the box's other users.
   vmCpus: number;
   vmMemoryMB: number;
+  // The macOS kind's sizes (KindSettings): the default's cap, more sizes, and its waiting VM's size.
+  maxAtOnce?: number;
+  sizes?: SizeSettings[];
+  warmSize?: string;
   // holdUsers and holdMaxHours went with hold and share in v2.2.0, and loadConfig refuses them. v2.1.1's
   // own loadConfig reads a taskbox.json without them as no holders.
   // Whether a box-check job has shown that a VM start leaves the guard's pf rules in place. Until
@@ -124,7 +128,7 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
     throw new Error(`taskbox.json: previousLabelPrefix is an earlier install's launchd label prefix, never ${LABEL_PREFIX}`);
   }
   if (c.slots !== 1) throw new Error("taskbox.json: slots stays 1, since v2.1.1's update refuses anything else. vmsAtOnce is how many VMs run at once");
-  if ("vmsAtOnce" in c && (!Number.isInteger(c.vmsAtOnce) || c.vmsAtOnce! < 1 || c.vmsAtOnce! > MAX_SLOTS)) throw new Error(`taskbox.json: vmsAtOnce is how many VMs may run at once, 1 to ${MAX_SLOTS}`);
+  if ("vmsAtOnce" in c && (!Number.isInteger(c.vmsAtOnce) || c.vmsAtOnce! < 1 || c.vmsAtOnce! > V2_MAX_SLOTS)) throw new Error(`taskbox.json: vmsAtOnce is how many VMs may run at once, 1 to ${V2_MAX_SLOTS}; vmsAtMost takes up to 6`);
   if (typeof c.image !== "string" || !IMAGE_PIN.test(c.image)) {
     throw new Error("taskbox.json: image is pinned by digest, as host/repo@sha256:<64 hex>");
   }
@@ -138,6 +142,7 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
   }
   const labels = [c.label, c.mergeLabel, c.linux?.label, c.linux?.mergeLabel].filter((l) => l !== undefined);
   if (new Set(labels).size !== labels.length) throw new Error("taskbox.json: every label and merge label is different");
+  checkSizes(c);
   checkLabels(c);
   checkScheduling(c, warn);
   checkRunnerApp(c);
