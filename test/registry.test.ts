@@ -128,13 +128,13 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job list --state running --kind linux --since 2h -w", "job list --result passed --class merge --size small", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job list --state lost", "job list -w --json", "job timings --all", "job cancel"] },
   { good: ["job show j_0123abcd", "job show job-j_0123abcd -w", "job logs j_0123abcd -f", "job show 3141592653 --json", "job logs 42 --tail 20 --json", "job cancel j_0123abcd", "job cancel 42 -y --json"], bad: ["job show", "job show j_0123ABCD", "job show ../x", "job show j_0123abcd -w --json", "job logs j_0123abcd -f --json", "job cancel j_0123abcd --json", "job cancel 0", "job cancel j_0123abcd --force", "job show j_0123abcd --net"] },
   { good: ["load status", "load report --session 3 --json", "load start --only --for 2h", "load stop"], bad: ["load report --session x", "load status --json", "load begin"] },
-  { good: ["template show box-check", "template show test-job", "template show load"], bad: ["template show", "template show watchdog", "template show load load"] },
+  { good: ["template show box-check", "template show test-job", "template show load", "template list", "template list --json"], bad: ["template show", "template show watchdog", "template show load load", "template list box-check"] },
   { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
   { good: ["stop", "start", "drain", "prune"], bad: ["stop --now", "start x", "drain --force", "prune --dry-run"] },
   { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
   { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
   { good: ["connect github", "connect github --new-key", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "disconnect"] },
-  { good: ["install --bootstrap /tmp/x", "guard", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
+  { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
   { good: [], bad: ["release nova-1"] },
 ];
@@ -520,8 +520,8 @@ describe("--json: one envelope per command", () => {
   });
 
   test("a command with no v3 answer still answers one envelope, from its text", async () => {
-    const r = await run(["template", "show", "test-job", "--json"]);
-    // template show takes no --json: refused, as one envelope.
+    const r = await run(["unlock", "--json"]);
+    // unlock takes no --json: refused, as one envelope.
     expect(r.code).toBe(2);
     expect(JSON.parse(r.said[0]!).error.code).toBe("usage");
     const h = await run(["hello", "--json"]);

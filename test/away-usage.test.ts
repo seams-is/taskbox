@@ -185,7 +185,7 @@ describe("during a job", () => {
     const line = JSON.parse(readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").at(-1)!);
     expect(line.usage).toMatchObject({ memPeakMB: 4063, memTotalMB: 8192, cpuPeak: 2, cpus: 4 });
     expect(line.usage.samples).toBeGreaterThan(1);
-    expect(line.labels).toEqual([d.cfg.label]);
+    expect(line.labels).toEqual([d.cfg.label, "taskbox-1-macos"]);
   });
 
   test("a guest that reports more than its VM has is ignored, and its job line stays", async () => {

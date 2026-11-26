@@ -1,9 +1,9 @@
 # Workflow templates
 
-Workflows for the repo whose jobs your box runs. taskbox fills each one in from the box's settings and prints it. Save the output in that repo and commit it yourself, so GitHub's failure emails reach you.
+Workflows for the repo whose jobs your box runs. taskbox fills each one in from the box's settings. On the controller, template apply opens one pull request with them, through your own GitHub session; you merge it. `taskbox template show NAME` prints one, and `taskbox template list` says whether the repo's copies match.
 
-- `taskbox template show box-check` prints a workflow that fails when a job for the box has waited too long. It runs on a hosted runner.
-- `taskbox template show test-job` prints a workflow that sends the box one tiny job per VM kind, so the watchdog has a job to watch on a quiet day.
-- `taskbox template show load` prints the load test's workflow, for a test repo of your own.
+- `box-check`: the hourly box check, on a hosted runner. It fails, and GitHub emails you, when jobs for the box wait with no hold, when the box has been held too long, when a workspace request waits too long, or when GitHub's API can't be read on 3 runs in a row. Your controller keeps the box's hold in the repository variable `TASKBOX_HOLD_<BOX>`; it runs out by itself within 12 hours.
+- `test-job`: one tiny job per VM kind on the box, so the hourly box check has a job to watch on a quiet day.
+- `load`: the load test's workflow, for a test repo of your own.
 
-Intervals are the `away` settings in `taskbox.json`. `taskbox check --away` says whether the copies in the repo still match the box. GitHub turns off scheduled workflows in a public repo after 60 days without activity.
+Intervals and limits are the `away` settings. GitHub turns off scheduled workflows in a public repo after 60 days without activity.

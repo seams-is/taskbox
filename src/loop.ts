@@ -33,6 +33,8 @@ import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWo
 import { clean, mirrorPull, PullRecorder, writeReady } from "./progress.ts";
 import { clearRequests } from "./requests.ts";
 import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from "./load.ts";
+import { sourceStep } from "./sourcefail.ts";
+import type { Snapshot } from "./source.ts";
 import { mirrorJson } from "./shared.ts";
 import { clearStopped, markStopped } from "./stopstart.ts";
 import type { Sys } from "./sys.ts";
@@ -149,9 +151,27 @@ export function noteGuardRestart(d: Pick<LoopDeps, "paths" | "log"> & { rootUid?
   countRestart(d.paths, now, { watchKickSeen: k.at });
 }
 
-// The loop is ending on purpose: the guard's watcher leaves it alone, as checkSelf does.
-function markEnding(d: Pick<LoopDeps, "paths" | "sys">): void {
-  if (readLoop(d.paths.loopState).endingAt === undefined) writeLoopState(d.paths, { endingAt: d.sys.now() });
+// The job source's failures in a row (sourcefail.ts), with one job.source-failing event.
+function noteSource(d: Pick<LoopDeps, "paths" | "sys" | "cfg">, s: Snapshot): void {
+  const step = sourceStep(readLoop(d.paths.loopState), s, awayOf(d.cfg).sourceFailures);
+  if (!step) return;
+  writeLoopState(d.paths, { ...step.patch });
+  if (step.failing)
+    try {
+      eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys).write({ type: "job.source-failing", actor: "taskbox", text: `The job source couldn't be read ${awayOf(d.cfg).sourceFailures} times in a row (${step.patch.sourceWhy}), so the box chooses without it.` });
+    } catch {}
+}
+
+// The loop is ending on purpose: the guard's watcher leaves it alone, as checkSelf does. until is
+// the latest it should take: its slots' running jobs finish first, so their beats' deadlines, and
+// the cleanup after. Past it, the guard ends the loop (passes/ending.ts).
+export const ENDING_CLEANUP_MS = 15 * 60_000;
+export function markEnding(d: Pick<LoopDeps, "paths" | "sys">): void {
+  const loop = readLoop(d.paths.loopState);
+  if (loop.endingAt !== undefined) return;
+  const now = d.sys.now();
+  const beats = Object.values(loop.slots ?? {}).flatMap((s) => (s.beat && s.beat.until > now ? [s.beat.until] : []));
+  writeLoopState(d.paths, { endingAt: now, endingUntil: Math.max(now, ...beats) + ENDING_CLEANUP_MS });
 }
 // How often a start that waits for the gate looks again.
 export const GATE_POLL_MS = 2_000;
@@ -1512,7 +1532,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   // already ended its jobs. A logout and login without a restart keeps it, and the loop stops again.
   await dropDrainFromBeforeBoot(d);
   // v2.5.0: the grace for every reader, and a beat through the start.
-  writeLoopState(d.paths, { beatGraceMs: awayOf(d.cfg).heartbeatGraceMinutes * 60_000, endingAt: undefined });
+  writeLoopState(d.paths, { beatGraceMs: awayOf(d.cfg).heartbeatGraceMinutes * 60_000, endingAt: undefined, endingUntil: undefined });
   noteGuardRestart({ ...d, rootUid: d.checks.rootUid }, d.sys.now());
   writeState({ ...d, slot: 1 }, { beat: beatFor("starting the loop", d.sys.now()) });
   // v2.5.0: a slot stuck past its beat's deadline plus the grace ends the loop, so launchd starts it
@@ -1602,7 +1622,10 @@ export async function runLoop(d: LoopDeps): Promise<number> {
         load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now()) : undefined),
         // The slots held for workspaces, read each time a slot asks: the scheduler sees the rest.
         held: () => heldNow({ ...d, box }),
-        seen: (s) => noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.()),
+        seen: (s) => {
+          noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.());
+          noteSource(d, s);
+        },
       }),
   };
   // One worker per slot. A worker that throws stops the others' waiting VMs; their running jobs

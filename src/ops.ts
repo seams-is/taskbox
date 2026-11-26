@@ -9,6 +9,8 @@ import { BOOTOUT_WAIT_S, dropReloadJob, keepInert, labelsBack, RELOAD_JOB, reloa
 export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
 import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, treeProblem } from "./checks.ts";
+import { GUARDWATCH_LABEL, guardStaleSince, watchPaths } from "./guardwatch.ts";
+import { sourceWords } from "./sourcefail.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
 import { checkAnswer, logAnswer, statusAnswer } from "./answers.ts";
 import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } from "./loop.ts";
@@ -37,7 +39,7 @@ import type { Sys } from "./sys.ts";
 import { readLoopState, runningJobs, slotsShown } from "./watch.ts";
 import { commandList, firstWords, registry, shellCommands } from "./registry.ts";
 import { placeTailscaledLog } from "./logins.ts";
-import { bootOutUnknown, KNOWN_DAEMONS, MAX_HOLD_MS, readRollbackWatch, type RollbackWatch, removeRollbackWatch, retryAfterMs, rollbackWatchPaths, rollbackWatchState, writeRollbackWatch } from "./hop.ts";
+import { bootOutUnknown, KNOWN_DAEMONS, laterDaemons, MAX_HOLD_MS, readRollbackWatch, type RollbackWatch, removeRollbackWatch, retryAfterMs, rollbackWatchPaths, rollbackWatchState, writeRollbackWatch } from "./hop.ts";
 
 export interface OpsDeps {
   sys: Sys;
@@ -131,6 +133,7 @@ export function commandsFor(d: OpsDeps, who?: Reader): string {
 }
 
 async function stateFrom(d: OpsDeps): Promise<State> {
+  const loop = readLoopState(d.paths.loopState);
   // As anyone but the service account, whether it has a login session at all. Not known counts as there.
   const sessions = asService(d) ? undefined : await loginSessions(d.sys).catch(() => undefined);
   return computeState({
@@ -140,9 +143,12 @@ async function stateFrom(d: OpsDeps): Promise<State> {
     loopRunning: asService(d) ? await loopRunning(d.sys, d.uid, d.paths.loopLabels) : undefined,
     stoppedAt: readStopped(d.paths)?.at,
     pull: activePull(readPull(d.paths.pull), readPull(d.paths.pullLinux)),
-    loop: readLoopState(d.paths.loopState),
+    loop,
+    sourceLine: sourceWords(loop),
     others: await otherLogins(d.sys, d.paths.service, typist()),
     unfinished: updateUnfinished(d.paths),
+    guardStaleSince: await guardStaleSince(d.sys, d.paths, d.rootUid ?? 0).catch(() => undefined),
+    unwatched: existsSync(d.paths.guardPlist) && !existsSync(watchPaths(d.paths).plist),
   });
 }
 
@@ -558,7 +564,9 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   // v2.6.1: daemons of a later release, which this install doesn't know,
   // are booted out and their plists removed, so they don't run against an install that can't answer them.
   const notEnded: string[] = [];
-  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid, notEnded).catch(() => [] as string[]);
+  // The install gone back to keeps the daemons it ships itself (guardwatch, from v3 on).
+  const ships = laterDaemons(readStateJson<Installed>(d.paths.installed)?.tag);
+  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? [...KNOWN_DAEMONS, ...ships], d.serviceUid, notEnded).catch(() => [] as string[]);
   for (const m of notEnded) d.say(`  An op job couldn't be ended: ${noControl(m).slice(0, 120)}.`);
   if (gone.length) did += ` Stopped ${gone.join(", ")}, which this install doesn't run.`;
   // Back across the label move: the kept code knows only the old labels (install.ts, labelsBack).
@@ -807,7 +815,14 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
   // Each runner is a JIT runner the loop deletes after its job. With the loop stopped, any left is
   // offline and takes no job. Remove never reads ci's key as root, nor touches another box's runners.
   done.push("left this box's runners for GitHub to drop within a day");
-  // The guard, and its pf rules. With them gone, Screen Sharing reaches every network again.
+  // guardwatch first, so it never restarts the guard on its way out; then the guard, and its pf
+  // rules. With them gone, Screen Sharing reaches every network again.
+  const watchPlist = watchPaths(d.paths).plist;
+  if (existsSync(watchPlist)) {
+    await d.sys.run("/bin/launchctl", ["bootout", `system/${GUARDWATCH_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
+    rmSync(watchPlist, { force: true });
+    done.push("removed guardwatch, which restarted a stuck guard");
+  }
   for (const label of [GUARD_LABEL, ...(old ? [old.guard] : [])]) await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
   // Every running op's job, booted out by its label, which ends its child and what that started:
   // launchd owns them, so no pid is signalled. A job that can't be booted out is said.

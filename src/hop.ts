@@ -503,6 +503,14 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
 export const KNOWN_DAEMONS = [GUARD_LABEL, TAILSCALED_LABEL, `${LABEL_PREFIX}.tailscaled-reload`, ROLLBACK_LABEL];
 export const KNOWN_AGENTS = [AGENT_LABEL];
 
+// The daemons of v3 and later that an install keeps, from its install record's tag: guardwatch.
+// Only a tag that says v2 or older drops it; a missing or unreadable tag keeps it, so the guard is
+// never left unwatched (on a v2 install it fails each minute, which check shows).
+export function laterDaemons(tag: unknown): string[] {
+  const major = typeof tag === "string" ? Number(/^v(\d{1,3})\./.exec(tag)?.[1]) : NaN;
+  return major < 3 ? [] : [`${LABEL_PREFIX}.guardwatch`];
+}
+
 // agentsUid: whose gui domain the agents run in (ci's); with none, their plists still go.
 // v3's op jobs (core/child.ts) have their plists in root's ops folder, outside these folders, so with
 // an ops folder there, every op job launchd lists is booted out too.
