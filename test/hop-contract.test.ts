@@ -151,6 +151,9 @@ function plistKeys(xml: string): Map<string, string> {
   return out;
 }
 
+// Real tar, git and ssh-keygen, and a second copy of the tree loaded, under a full suite's load.
+const SLOW = 60_000;
+
 // v2.6.1's hop over this tree, once for every test below: each reads what it left.
 async function hopped() {
   const key = keyPair();
@@ -181,6 +184,7 @@ async function hopped() {
   return { ...box, p, said, out, tarballBytes: bytes.length, now: linkTarget(p.opt) };
 }
 const once = hopped();
+once.catch(() => {}); // each test awaits it and fails with its error
 
 describe("the hop from v2.6.1, run by v2.6.1's own code over this tree", () => {
   test.serial("reaches its swap: the tree is the one the statement names, and it pins what v2.6.1 pins", async () => {
@@ -191,7 +195,7 @@ describe("the hop from v2.6.1, run by v2.6.1's own code over this tree", () => {
     expect(h.now).not.toBe(h.before);
     expect(linkTarget(h.p.prev)).toBe(h.before);
     expect(h.tarballBytes).toBeLessThan(256 * 1024 * 1024);
-  });
+  }, SLOW);
 
   test.serial("the entry points are executable and start with v2's shebang, and bin/ links to them", async () => {
     const h = await once;
@@ -201,12 +205,12 @@ describe("the hop from v2.6.1, run by v2.6.1's own code over this tree", () => {
       expect(readFileSync(path, "utf8").split("\n")[0]).toBe(SHEBANG);
       expect(realpathSync(join(h.now!, "bin", link))).toBe(realpathSync(path));
     }
-  });
+  }, SLOW);
 
   test.serial("the bun config the shebang names is at the tree's top", async () => {
     const h = await once;
     expect(existsSync(join(h.now!, "app/bunfig.run.toml"))).toBe(true);
-  });
+  }, SLOW);
 
   test.serial("both plists are written from the tree, and the loop's keeps v2.6.1's keys", async () => {
     const h = await once;
@@ -218,7 +222,7 @@ describe("the hop from v2.6.1, run by v2.6.1's own code over this tree", () => {
       expect({ k, v: ours.get(k) }).toEqual({ k, v: theirs.get(k) });
     }
     expect(ours.get("LimitLoadToSessionType")).toBe("<string>Aqua</string>");
-  });
+  }, SLOW);
 
   test.serial("taskbox loop exits 0 as another user, and 75 once /opt/taskbox names another install", async () => {
     const h = await once;
@@ -229,7 +233,7 @@ describe("the hop from v2.6.1, run by v2.6.1's own code over this tree", () => {
     relink(h.p.opt, h.before.split("/").pop()!);
     expect(await main(["loop"], deps(502))).toBe(75);
     expect(said).toEqual([]);
-  });
+  }, SLOW);
 });
 
 describe("the signers", () => {

@@ -536,11 +536,13 @@ export async function guardRow(c: CheckContext): Promise<Omit<Check, "name">> {
   return ok(`${g.detail}. The rules went missing at ${new Date(g.missingAt!).toISOString().slice(11, 16)} UTC${start?.rulesWentMissing ? ", while a VM started," : ""} and were put back`);
 }
 
-// The box's own settings, /opt/taskbox-state/box.json (connect-github design, section 3): which keys it
-// sets, or why taskbox set it aside and uses the release's settings alone. Only taskbox connect github
-// and taskbox disconnect github write it.
+// The box's own layers (settings/layers.ts): which keys box.json sets, a layer taskbox set aside and
+// why, and each key passed over for being outside its layer's class. Only taskbox connect github and
+// taskbox disconnect github write box.json.
 export async function boxSettingsRow(c: CheckContext): Promise<Omit<Check, "name">> {
   if (c.cfg.boxProblem) return fail(`${c.paths.boxSettings} is set aside, and the release's settings are used: ${c.cfg.boxProblem}. ${BOX_FIX}`);
+  if (c.cfg.overlayProblem) return fail(`this box's overlay is set aside, and the other layers are used: ${c.cfg.overlayProblem}`);
+  if (c.cfg.boxIgnored?.length) return { status: "WARN", detail: `passed over, since each is outside its layer's keys: ${c.cfg.boxIgnored.join(", ")}` };
   const keys = c.cfg.boxKeys ?? [];
   return ok(keys.length ? `${c.paths.boxSettings} sets ${keys.join(", ")}` : "none: every setting is the release's");
 }

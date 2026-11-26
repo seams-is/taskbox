@@ -382,11 +382,11 @@ describe("taskbox disconnect github", () => {
 });
 
 describe("the Tart run's cases", () => {
-  test("connect over a box.json taskbox set aside leaves its sources only, so it is used again", async () => {
+  test("connect over a box.json holding keys it may not hold leaves its sources only", async () => {
     const b = box();
     mkdirSync(join(b.p.boxSettings, ".."), { recursive: true, mode: 0o755 });
     writeFileSync(b.p.boxSettings, JSON.stringify({ sources: [{ type: "none" }], accounts: { service: "taskbox" }, vmsAtOnce: 2 }), { mode: 0o644 });
-    expect(readBoxFile(b.p.boxSettings, me).problem).toMatch(/box.json sets accounts/);
+    expect(Object.keys(readBoxFile(b.p.boxSettings, me).settings ?? {})).toEqual(["sources", "accounts", "vmsAtOnce"]);
     github(b.sys, { installedAfter: 2 });
     expect(await connectGithub(b.d)).toBe(0);
     expect(JSON.parse(readFileSync(b.p.boxSettings, "utf8"))).toEqual({ sources: [{ type: "github-actions", appId: 5150, repos: ["example-org/app"], app: "example-org-taskbox-1-jobs" }] });
