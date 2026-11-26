@@ -121,3 +121,22 @@ describe("the power-loss history", () => {
     expect((await powerHistoryRow(b.c)).status).toBe("SKIP");
   });
 });
+
+describe("source failures counted", () => {
+  test("each failed read once, however many slots ask; a read that sees the queue starts again; 3 in a row fail", async () => {
+    const { noteSeen } = await import("../src/load.ts");
+    const { sourceRow } = await import("../src/awaychecks.ts");
+    const b = box({ cfg: { sources: { github: { type: "github-actions" } } } as never });
+    mkdirSync(b.p.projectState, { recursive: true });
+    const down = (at: number) => noteSeen(b.p, { known: false, at, why: "GitHub answered 502" }, b.sys.now());
+    const c = { ...b.c, cfg: { ...b.c.cfg, jobsFrom: "example-org/app", actionsAppId: 4242 } as Config };
+    down(1);
+    down(1);
+    down(2);
+    expect(await sourceRow(c)).toMatchObject({ status: "OK", detail: expect.stringMatching(/last read failed \(GitHub answered 502\)/) });
+    down(3);
+    expect(await sourceRow(c)).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/^the job source couldn't be read 3 times in a row \(GitHub answered 502\).*Waits by itself/) });
+    noteSeen(b.p, { known: true, at: 4, items: [] }, b.sys.now());
+    expect(await sourceRow(c)).toEqual({ status: "OK", detail: "the job source's last read saw the queue" });
+  });
+});

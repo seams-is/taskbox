@@ -10,7 +10,8 @@ import { rootStateOf } from "./core/paths.ts";
 import { lapse, readPending } from "./core/pending.ts";
 import { BROKER_ACCOUNT, beatPaths, brokerPlist, guardwatchPlist, readBeat, STALE_MS } from "./guardwatch.ts";
 import type { Check, CheckContext } from "./checks.ts";
-import { awayOf } from "./config.ts";
+import { awayOf, sourceOf } from "./config.ts";
+import { readLoad } from "./load.ts";
 import { CLOCK_LIMIT_S, GitHubError, githubLine, githubState } from "./ghfail.ts";
 import { GitHub } from "./github.ts";
 import { Log } from "./log.ts";
@@ -255,3 +256,14 @@ const lstatExists = (p: string) => {
     return false;
   }
 };
+
+// The job source's reads in a row that couldn't see the queue, as the loop last recorded them.
+export async function sourceRow(c: CheckContext): Promise<Row> {
+  if (sourceOf(c.cfg).type === "none") return skip("the job source is none, so the box follows the jobs its own VMs take");
+  const shared = !(c.uid === 0 || (c.serviceUid !== undefined && c.uid === c.serviceUid));
+  const seen = readLoad(c.paths, shared).seen;
+  if (!seen) return skip("the loop hasn't read the job source yet");
+  const n = seen.failures ?? 0;
+  if (n >= awayOf(c.cfg).githubFailures) return fail(`the job source couldn't be read ${n} times in a row (${seen.why ?? "no reason given"}), so the box can't see what waits. Waits by itself: the loop reads it again each minute. If it stays, from away: type taskbox connect status`);
+  return ok(n ? `the job source's last read failed (${seen.why ?? "no reason given"}); it is read again each minute` : "the job source's last read saw the queue");
+}

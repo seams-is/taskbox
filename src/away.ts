@@ -4,7 +4,7 @@
 // screen ends "Ready to leave." or "N things to do before leaving." remote may run it, as it runs check: no row names a user, and rows that need
 // ci or root say what the loop last recorded. With --json, one line in a versioned shape, for a
 // controller. A later release reuses AWAY_ONLY and awayChecks as they are.
-import { confirmRow, kvmRow, powerHistoryRow, restartPlanRow, tailnetRow } from "./awaychecks.ts";
+import { confirmRow, kvmRow, powerHistoryRow, restartPlanRow, sourceRow, tailnetRow } from "./awaychecks.ts";
 import { upsCheck } from "./ups.ts";
 import { type Check, type CheckContext, freeGB, otherLogins, runChecks, screenSharingOn } from "./checks.ts";
 import { rows } from "./rows/index.ts";
@@ -162,6 +162,7 @@ export const AWAY_ONLY: [string, (c: CheckContext) => Promise<Row>][] = [
   ["Tailscale SSH logins", loginsRow],
   ["Tailnet name", tailnetRow],
   ["Waiting for confirm", confirmRow],
+  ["Job source", sourceRow],
   ["Hourly box check", (c) => deployedRow(c, "watchdog")],
   ["Test job", (c) => deployedRow(c, "canary")],
 ];
