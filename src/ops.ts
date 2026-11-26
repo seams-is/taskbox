@@ -9,7 +9,7 @@ import { BOOTOUT_WAIT_S, dropReloadJob, keepInert, labelsBack, RELOAD_JOB, reloa
 export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
 import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, treeProblem } from "./checks.ts";
-import { GUARDWATCH_LABEL } from "./guardwatch.ts";
+import { GUARDWATCH_LABEL, guardStaleSince } from "./guardwatch.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
 import { checkAnswer, logAnswer, statusAnswer } from "./answers.ts";
 import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } from "./loop.ts";
@@ -144,6 +144,7 @@ async function stateFrom(d: OpsDeps): Promise<State> {
     loop: readLoopState(d.paths.loopState),
     others: await otherLogins(d.sys, d.paths.service, typist()),
     unfinished: updateUnfinished(d.paths),
+    guardStaleSince: await guardStaleSince(d.sys, d.paths, d.rootUid ?? 0).catch(() => undefined),
   });
 }
 

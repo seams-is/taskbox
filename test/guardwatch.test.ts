@@ -168,3 +168,24 @@ describe("its LaunchDaemon", () => {
     expect(RUN_MS).toBe(60_000);
   });
 });
+
+describe("status", () => {
+  test("a guard whose beat stood still reads Failing, with who acts; a fresh one changes nothing", async () => {
+    const { computeState } = await import("../src/state.ts");
+    const { guardStaleSince } = await import("../src/guardwatch.ts");
+    const root = mkdtempSync(join(tmpdir(), "gs-"));
+    const p = paths(root, testBox());
+    mkdirSync(dirname(p.guardState), { recursive: true });
+    const sys = new FakeSys();
+    const mono = sys.clock + sys.monoOffset;
+    const at = Date.parse("2026-11-23T14:02:00");
+    writeBeat(beatPaths(root).guard, { boot: sys.bootUuid, mono: mono - 10_000, pid: 7, at });
+    expect(await guardStaleSince(sys, p, me)).toBeUndefined();
+    writeBeat(beatPaths(root).guard, { boot: sys.bootUuid, mono: mono - STALE_MS - 1, pid: 7, at });
+    const since = await guardStaleSince(sys, p, me);
+    expect(since).toBe(at);
+    const s = computeState({ now: sys.now(), loop: {}, guardStaleSince: since });
+    expect([s.word, s.detail]).toEqual(["Failing", "the guard hasn't moved since 14:02"]);
+    expect(s.next).toMatch(/^Waits by itself: guardwatch restarts it/);
+  });
+});

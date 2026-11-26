@@ -134,6 +134,17 @@ describe("the copies every user reads", () => {
 });
 
 describe("ci's answers for a controller", () => {
+  test("check --away --json is version 4: command check, result.away, every row and the verdict's exit", async () => {
+    // Every row's system read fails: each reads SKIP or FAIL, and the envelope still carries them all.
+    const sys = new FakeSys();
+    sys.responders.push(() => ({ code: 1, stdout: "", stderr: "" }));
+    const r = await run(["check", "--away", "--json"], CALLERS.ci, { sys });
+    const e = JSON.parse(r.said[0]!);
+    expect(readEnvelopes(r.said[0]!, { command: "check" }).ok).toBe(true);
+    expect([e.answers, e.command, e.result.away, e.exit === r.code]).toEqual([4, "check", true, true]);
+    const names = (e.result.checks as { name: string }[]).map((k) => k.name);
+    for (const n of ["Guard beat", "Key broker beat", "Waiting for confirm", "Tailnet name", "Power losses", "KVM", "Job source", "Hourly box check", "Test job"]) expect(names).toContain(n);
+  });
   test("status --json and logs --json are one envelope each, with the box's lines and v3's fields as the result", async () => {
     for (const [cmd, kind] of [["status", "status"], ["logs", "log"]] as const) {
       const r = await run([cmd, "--json"], CALLERS.ci);

@@ -204,9 +204,8 @@ export function noteSeen(p: Paths, snap: Snapshot, now: number, reads?: number, 
     ...(reads !== undefined ? { reads } : {}),
     ...(loadProblem ? { loadProblem: clean(loadProblem, 160) } : {}),
     // Failed reads in a row, each read counted once, however many slots asked (check --away's row).
-    readAt: snap.at,
-    failures: snap.known ? 0 : f.seen?.readAt === snap.at ? (f.seen.failures ?? 1) : (f.seen?.failures ?? 0) + 1,
-    ...(!snap.known ? { why: clean(snap.why, 160) } : {}),
+    // A read that saw the queue carries none of these: no failures.
+    ...(!snap.known ? { readAt: snap.at, failures: f.seen?.readAt === snap.at ? (f.seen.failures ?? 1) : (f.seen?.failures ?? 0) + 1, why: clean(snap.why, 160) } : {}),
   };
   let changed = false;
   let stats = f.stats;

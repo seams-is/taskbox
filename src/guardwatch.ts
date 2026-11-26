@@ -155,3 +155,13 @@ export async function beatNow(sys: Pick<Sys, "run" | "now">, pid: number, boot?:
 
 // The guard's beat beside its record, for code that has the box's paths.
 export const guardBeatOf = (p: { guardState: string }) => join(dirname(p.guardState), "taskbox-guard.beat");
+
+// When the guard's beat last moved, if it has stood still past STALE_MS in this boot: for status.
+// A missing beat, another boot's, or a clock it can't read says nothing here; check's row says it.
+export async function guardStaleSince(sys: Pick<Sys, "run">, p: { guardState: string }, rootUid = 0): Promise<number | undefined> {
+  const b = readBeat(guardBeatOf(p), rootUid);
+  if (!b) return undefined;
+  const boot = await bootId(sys);
+  const mono = await monoNow(sys);
+  return boot === b.boot && mono !== undefined && mono - b.mono > STALE_MS ? b.at : undefined;
+}

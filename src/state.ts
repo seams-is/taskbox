@@ -37,6 +37,7 @@ export interface StateInputs {
   unfinished?: boolean; // /opt/taskbox is still a folder: the update to the links needs its second run
   service?: string; // accounts.service, for the lines that name it
   serviceAway?: boolean; // read as anyone but the service: the service has no login session, so the loop can't be running
+  guardStaleSince?: number; // the guard's beat has stood still since then (guardwatch.ts)
 }
 
 // Another logged-in user's apps share the box's memory and disk with the VM, so the state says so.
@@ -114,6 +115,8 @@ function baseState(i: StateInputs): State {
   if (again) return { ...again, notify: true };
   const stale = beatState(i.loop, i.now);
   if (stale) return { ...stale, notify: true };
+  // The guard frozen: no VM starts without it, and guardwatch restarts it within minutes.
+  if (i.guardStaleSince !== undefined) return { word: "Failing", detail: `the guard hasn't moved since ${new Date(i.guardStaleSince).toTimeString().slice(0, 5)}`, next: "Waits by itself: guardwatch restarts it within a few minutes. If this stays, at the box: as your admin user, type taskbox update.", notify: true };
   if (i.loop.lastCheck === "FAIL") {
     return { word: "Needs you", detail: `a check failed: ${clean((i.loop.failed ?? []).join(", "))}`, next: "Type taskbox check: each FAIL line has its fix.", notify: true };
   }
