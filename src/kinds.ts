@@ -1,6 +1,6 @@
 // Which kind of VM a free slot starts next. The loop asks one function before every VM: schedule(),
 // which asks the scheduler (scheduler.ts). With one slot and no view of the queue, v2.1.0's turns.
-import { type Config, type Role, DEFAULT_QUIET_TURN_MINUTES, DEFAULT_TURN_IDLE_MINUTES, type Kind, KIND_WORD, kindsOf, labelsFor, MACOS_MAX, runnerDefaults, timingsOf } from "./config.ts";
+import { type Budget, capOf, kindCapOf, type Config, type Role, DEFAULT_QUIET_TURN_MINUTES, DEFAULT_TURN_IDLE_MINUTES, type Kind, KIND_WORD, kindsOf, labelsFor, runnerDefaults, sizeOf, sizesOf, timingsOf, warmSizeOf } from "./config.ts";
 import { decide, type KindHistory, type KindView, type SchedulerInput, type SlotState } from "./scheduler.ts";
 import type { JobSource, Snapshot } from "./source.ts";
 
@@ -11,6 +11,8 @@ export interface Turn {
   kind: Kind;
   // The labels its runner registers for. Absent: every label of the kind (labelsFor).
   labels?: string[];
+  // Its size (sizesOf). Absent: the default.
+  size?: string;
   // v2.4.0: why the scheduler started it, and the waiting job it was started for, if any.
   why?: string;
   queuedAt?: number;
@@ -142,6 +144,11 @@ export interface Occupant {
   since?: number; // v2.4.0: when its VM was asked for
   readyAt?: number; // v2.4.0: when its runner started
   role?: Role; // v2.6.0: load, for a VM of the load test
+  // Its size, and what the size declares, so the budget counts what each VM holds.
+  size?: string;
+  memoryMB?: number;
+  cpus?: number;
+  going?: number; // when it was told to give way; its VM still stops
 }
 
 // The chooser for every box from v2.4.0: it reads the job source,
@@ -163,6 +170,8 @@ export interface ScheduleDeps {
   // How many slots are held for workspaces now (held.ts). decide() sees the others only.
   // Absent: none.
   held?: () => number;
+  // The VMs' share of the box now (budgetOf). Absent: no limit but the count.
+  budget?: () => Budget;
 }
 
 export function schedule(d: ScheduleDeps): KindChooser {
@@ -177,16 +186,31 @@ export function schedule(d: ScheduleDeps): KindChooser {
   // cap stays the box's: a job that finishes in a held slot still counts, so macOS never passes
   // Apple's 2, and it never keeps a slot that isn't held from starting a VM.
   const usable = () => Math.max(0, d.slots - (d.held?.() ?? 0));
-  const view = (): KindView[] => kindsOf(d.cfg).map((k) => ({ kind: k, labels: labelsFor(d.cfg, k), defaults: runnerDefaults(k), cap: k === "macos" ? Math.min(MACOS_MAX, d.slots) : d.slots, open: kinds.includes(k) }));
+  const view = (budget: Budget): KindView[] =>
+    kindsOf(d.cfg).map((k) => ({
+      kind: k,
+      labels: labelsFor(d.cfg, k),
+      defaults: runnerDefaults(k),
+      cap: kindCapOf(k, d.slots),
+      open: kinds.includes(k),
+      sizes: sizesOf(d.cfg, k).map((z) => ({ name: z.name, labels: z.labels, cpus: z.vmCpus, memoryMB: z.vmMemoryMB, cap: capOf(z, budget, d.slots) })),
+      warm: warmSizeOf(d.cfg, k).name,
+    }));
   const states = (skip?: number): SlotState[] =>
     d.occupants()
       .filter((o) => o.slot !== skip)
-      .map((o) => ({ slot: o.slot, kind: o.kind, labels: o.labels, state: o.job ? "busy" : "waiting", since: o.since ?? d.ev.now(), ...(o.readyAt !== undefined ? { readySince: o.readyAt } : {}), ...(o.role === "load" ? { role: o.role } : {}) }));
+      .map((o) => ({ slot: o.slot, kind: o.kind, labels: o.labels, state: o.job ? "busy" : "waiting", since: o.since ?? d.ev.now(), ...(o.readyAt !== undefined ? { readySince: o.readyAt } : {}), ...(o.role === "load" ? { role: o.role } : {}), ...sizeFields(o), ...(o.going !== undefined ? { going: o.going } : {}) }));
+  // An occupant's size and what it holds. One from before sizes holds its kind's default.
+  const sizeFields = (o: Occupant) => {
+    const z = sizeOf(d.cfg, o.kind, o.size);
+    return { size: z.name, memoryMB: o.memoryMB ?? z.vmMemoryMB, cpus: o.cpus ?? z.vmCpus };
+  };
   // free: only the slot asking may start a VM, so the best job never goes to a slot that is held back
   // and sleeping.
   const input = (snapshot: Snapshot, skip?: number, free: number[] = []): SchedulerInput => {
     const load = d.load?.();
-    return { now: d.ev.now(), slots: usable(), kinds: view(), slotStates: states(skip), free, snapshot, classes, timings, history: d.history(), ...(load?.on ? { load } : {}) };
+    const budget = d.budget?.();
+    return { now: d.ev.now(), slots: usable(), kinds: view(budget ?? {}), slotStates: states(skip), free, snapshot, classes, timings, history: d.history(), ...(load?.on ? { load } : {}), ...(budget ? { budget } : {}) };
   };
   const turnIdleMs = (d.cfg.turnIdleMinutes ?? DEFAULT_TURN_IDLE_MINUTES) * 60_000;
   const mode = (s: Snapshot) => d.ev.mode?.(s.known ? "source" : d.slots === 1 ? `turns: ${s.why}` : `follow: ${s.why}`);
@@ -202,7 +226,11 @@ export function schedule(d: ScheduleDeps): KindChooser {
       return !!me1 && !me1.job && me1.readyAt !== undefined && d.ev.now() - me1.readyAt >= turnIdleMs;
     }
     const mine = decide(input(snap)).find((x) => x.slot === me && x.do === "give-way");
-    if (mine) d.ev.why?.(me, mine.why);
+    if (mine) {
+      d.ev.why?.(me, mine.why);
+      const o = d.occupants().find((x) => x.slot === me);
+      if (o) o.going = d.ev.now();
+    }
     return !!mine;
   };
   return async (last, served, me = 1) => {
@@ -221,8 +249,9 @@ export function schedule(d: ScheduleDeps): KindChooser {
       d.ev.why?.(me, mine?.why ?? "nothing to start");
       return undefined;
     }
-    d.claim({ slot: me, kind: mine.kind, labels: mine.labels, job: false, since: d.ev.now(), ...(mine.role === "load" ? { role: mine.role } : {}) });
+    const z = sizeOf(d.cfg, mine.kind, mine.size);
+    d.claim({ slot: me, kind: mine.kind, labels: mine.labels, job: false, since: d.ev.now(), ...(mine.role === "load" ? { role: mine.role } : {}), size: z.name, memoryMB: z.vmMemoryMB, cpus: z.vmCpus });
     d.ev.why?.(me, mine.why);
-    return { kind: mine.kind, labels: mine.labels, why: mine.why, ...(mine.role === "load" ? { role: mine.role } : {}), ...(mine.item ? { queuedAt: mine.item.queuedAt, className: mine.item.className } : {}), giveWay: giveWayFor(me) };
+    return { kind: mine.kind, labels: mine.labels, size: z.name, why: mine.why, ...(mine.role === "load" ? { role: mine.role } : {}), ...(mine.item ? { queuedAt: mine.item.queuedAt, className: mine.item.className } : {}), giveWay: giveWayFor(me) };
   };
 }
