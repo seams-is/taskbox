@@ -1,14 +1,21 @@
-# taskbox watchdog. Made by `taskbox template show box-check` from the box's
-# own settings: don't edit the copy in your repo; change the settings and make it again. It goes in
-# .github/workflows/taskbox-watchdog.yml of the repo whose jobs your box runs.
+# The hourly box check. Made by `taskbox template show box-check` from the box's own settings:
+# don't edit the copy in your repo; change the settings and make it again, or type
+# `taskbox template apply` on the laptop. It goes in .github/workflows/taskbox-watchdog.yml of the
+# repo whose jobs your box runs.
 #
 # It runs on a GitHub-hosted runner, so it works when the box is dead, asleep or at the FileVault
-# screen. It fails when a job for one of the box's labels has waited longer than WAIT_MINUTES while
-# no job for the box is running, and GitHub emails you about the failed run. It needs no secret and
-# reads this repo's Actions only. Its run name carries a fingerprint of the settings it was made
-# from, so `taskbox check --away` can tell whether this copy matches the box.
-name: taskbox watchdog
-run-name: taskbox watchdog __FINGERPRINT__${{ inputs.test_alert && ' (test alert)' || '' }}
+# screen. GitHub emails you when a run fails. It fails when:
+# - a job for the box has waited longer than the wait below, none is running, and no hold is current;
+# - a workspace request on the box has waited too long;
+# - the box has been held too long, so a forgotten pause or stop is seen;
+# - GitHub's API couldn't be read on 3 runs in a row.
+# The hold is one repository variable, which only your laptop writes, through your own GitHub
+# session, while the box reports a hold. A hold runs out by itself within its lease. Values reach
+# the script through env only. It needs no secret and reads this repo's Actions only. Its run name
+# carries a fingerprint of the settings it was made from, so `taskbox check --away` can tell
+# whether this copy matches the box.
+name: taskbox hourly box check
+run-name: taskbox hourly box check __FINGERPRINT__${{ inputs.test_alert && ' (test alert)' || '' }}
 
 on:
 __SCHEDULE__
@@ -31,11 +38,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
+      BOX: "__BOX__"
       LABELS: "__LABELS__"
       WAIT_MINUTES: "__WAIT__"
+      LEASE_HOURS: "__LEASE__"
+      HOLD_ALARM_HOURS: "__HOLDALARM__"
+      REQUEST_MINUTES: "__REQUEST__"
+      UNREACHED_SPAN: "__SPAN__"
+      HOLD: ${{ vars.__HOLDVAR__ }}
       TEST_ALERT: ${{ inputs.test_alert || false }}
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
+      # Runs in a row that couldn't read GitHub's API, kept in the Actions cache between runs.
+      COUNT_DIR: .taskbox-box-check
       # A job asks for the box when one of its labels is one of the box's. GitHub matches labels
       # without regard to case, and so does this.
       BOX_JOBS: |
@@ -46,47 +61,102 @@ jobs:
         | ($now - (.created_at | fromdateiso8601)) as $s
         | select($s > $wait * 60)
         | "\(.name) has waited \($s / 60 | floor) min for \(.labels | join(", "))"
+      # The hold, as one line of fields: none, ignored (its until runs further ahead of its at than
+      # the lease), or current, with the minutes it has stood, the minutes a request has waited (-1
+      # for none), when it began and why. Anything out of shape is no hold.
+      READ_HOLD: |
+        def t: if type == "string" then (try fromdateiso8601 catch null) else null end;
+        def clean: tostring | gsub("[^ -~]"; "") | .[0:80];
+        (try fromjson catch null) as $h
+        | if ($h | type) != "object" then "none"
+          else ($h.until | t) as $until | ($h.at | t) as $at | ($h.since | t) as $since
+          | if $until == null or $at == null or $since == null then "none"
+            elif $until - $at > $lease * 3600 then "ignored"
+            elif $until <= $now then "none"
+            else ($h.waitingSince | t) as $ws | ($h.waitingUntil | t) as $wu
+            | (if $ws != null and $wu != null and $wu > $now and $wu - $at <= 7200 then ($now - $ws) / 60 | floor else -1 end) as $waited
+            | "current\t\(($now - $since) / 60 | floor)\t\($waited)\t\($since | strftime("%H:%M UTC on %d %b"))\t\($h.why // "" | clean)"
+            end
+          end
     steps:
-      - name: Jobs waiting for the box
+      - name: Runs in a row that couldn't read GitHub's API
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .taskbox-box-check
+          key: taskbox-box-check-${{ github.run_id }}
+          restore-keys: taskbox-box-check-
+      - name: The box
         shell: bash
         run: |
           set -uo pipefail
           set -f
           if [ "$TEST_ALERT" = "true" ]; then
-            echo "A test alert: this run fails on purpose. If GitHub emails you about it, the watchdog can reach you."
+            echo "A test alert: this run fails on purpose. If GitHub emails you about it, the hourly box check can reach you."
             exit 1
           fi
           now=$(date -u +%s)
+          failed=0
+          mkdir -p "$COUNT_DIR"
+          count=$(cat "$COUNT_DIR/unreached" 2>/dev/null || echo 0)
+          case "$count" in ''|*[!0-9]*) count=0 ;; esac
+          hold=$(printf '%s' "${HOLD:-}" | jq -rRs --argjson now "$now" --argjson lease "$LEASE_HOURS" "$READ_HOLD" 2>/dev/null) || hold=none
+          IFS=$'\t' read -r state held_min waited_min since why <<< "$hold"
+          if [ "$state" = "ignored" ]; then
+            echo "The hold for $BOX runs further ahead than $LEASE_HOURS hours, so it counts as none."
+            state=none
+          fi
+          if [ "$state" = "current" ]; then
+            echo "$BOX is held${why:+ ($why)} since $since."
+            if [ "$held_min" -gt $(( HOLD_ALARM_HOURS * 60 )) ]; then
+              echo "$BOX has been held since $since${why:+ ($why)}, over $HOLD_ALARM_HOURS hours. From the laptop: type taskbox status, then resume the box or end the workspace."
+              failed=1
+            fi
+            if [ "$waited_min" -gt "$REQUEST_MINUTES" ]; then
+              echo "A workspace request on $BOX has waited $waited_min minutes. From the laptop: type taskbox, then approve or deny it."
+              failed=1
+            fi
+          fi
+          unreached() {
+            count=$(( count + 1 ))
+            echo "$count" > "$COUNT_DIR/unreached"
+            if [ "$count" -ge 3 ]; then
+              echo "The hourly box check couldn't reach the box for $UNREACHED_SPAN: GitHub's API didn't answer on $count runs in a row."
+              exit 1
+            fi
+            echo "::warning::GitHub's API didn't answer, so nothing is known about the box this time ($count in a row)."
+            exit "$failed"
+          }
           labels=$(printf '%s\n' $LABELS | jq -R . | jq -s .)
           jobs="$RUNNER_TEMP/jobs.json"
           echo '[]' > "$jobs"
           for status in queued in_progress; do
-            if ! runs=$(gh api --paginate "repos/$REPO/actions/runs?status=$status&per_page=100" --jq '.workflow_runs[].id'); then
-              echo "::warning::GitHub's API didn't answer, so nothing is known about the box this time."
-              exit 0
-            fi
+            runs=$(gh api --paginate "repos/$REPO/actions/runs?status=$status&per_page=100" --jq '.workflow_runs[].id') || unreached
             for run in $runs; do
-              if ! page=$(gh api --paginate "repos/$REPO/actions/runs/$run/jobs?per_page=100"); then
-                echo "::warning::GitHub's API didn't answer, so nothing is known about the box this time."
-                exit 0
-              fi
-              if ! printf '%s' "$page" | jq -s --argjson labels "$labels" "[.[] | $BOX_JOBS] | add // []" > "$RUNNER_TEMP/these.json"; then
-                echo "::warning::A page of jobs couldn't be read, so nothing is known about the box this time."
-                exit 0
-              fi
+              page=$(gh api --paginate "repos/$REPO/actions/runs/$run/jobs?per_page=100") || unreached
+              printf '%s' "$page" | jq -s --argjson labels "$labels" "[.[] | $BOX_JOBS] | add // []" > "$RUNNER_TEMP/these.json" || unreached
               jq -s 'add' "$jobs" "$RUNNER_TEMP/these.json" > "$RUNNER_TEMP/all.json" && mv "$RUNNER_TEMP/all.json" "$jobs"
             done
           done
+          echo 0 > "$COUNT_DIR/unreached"
           running=$(jq '[.[] | select(.status == "in_progress")] | length' "$jobs")
           late=$(jq -r --argjson now "$now" --argjson wait "$WAIT_MINUTES" "$LATE_JOBS" "$jobs")
-          if [ -n "$late" ] && [ "$running" = "0" ]; then
-            printf 'Jobs for the box have waited over %s minutes, and none is running. The box may be off, asleep, at the FileVault screen or offline.\n' "$WAIT_MINUTES"
+          if [ -n "$late" ] && [ "$running" = "0" ] && [ "$state" != "current" ]; then
+            echo "Jobs are waiting and $BOX isn't taking them: over $WAIT_MINUTES minutes, with none running and no hold. The box may be off, asleep, at the FileVault screen or offline."
             printf 'From the laptop, type taskbox status.\n\n%s\n' "$late"
             exit 1
           fi
-          if [ -n "$late" ]; then
+          if [ -n "$late" ] && [ "$state" = "current" ]; then
+            echo "Jobs for $BOX have waited over $WAIT_MINUTES minutes, and it is held, so they wait for the hold to end."
+          elif [ -n "$late" ]; then
             if [ "$running" = "1" ]; then are="1 is"; else are="$running are"; fi
-            echo "Jobs for the box have waited over $WAIT_MINUTES minutes, but $are running: the box is busy."
+            echo "Jobs for $BOX have waited over $WAIT_MINUTES minutes, but $are running: the box is busy."
           else
-            echo "No job for the box has waited over $WAIT_MINUTES minutes."
+            echo "No job for $BOX has waited over $WAIT_MINUTES minutes."
           fi
+          exit "$failed"
+      - name: Keep the count
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .taskbox-box-check
+          key: taskbox-box-check-${{ github.run_id }}-${{ github.run_attempt }}
