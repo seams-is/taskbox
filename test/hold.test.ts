@@ -1,6 +1,6 @@
 // The hold lease (src/hold.ts): set when the box reports a hold, renewed while it answers and still
 // reports it, ended when the hold goes or the box stops answering, capped at 12 hours ahead, and
-// written only by the laptop the box names.
+// written only by the controller the box names.
 import { describe, expect, test } from "bun:test";
 import { endLease, holdVariable, isoSecond, type LeaseMemory, leaseDone, leaseStep, RENEW_MS, writeLease } from "../src/hold.ts";
 
@@ -77,7 +77,7 @@ describe("the lease", () => {
     expect(poll(mem, held, T + 12 * M)).toMatchObject({ do: "write", lease: { waitingSince: null, waitingUntil: null } });
   });
 
-  test("only the laptop the box names writes; another leaves the variable alone", () => {
+  test("only the controller the box names writes; another leaves the variable alone", () => {
     const mem: LeaseMemory = {};
     expect(poll(mem, held, T, false).do).toBe("none");
     expect(poll(mem, { answered: false }, T + 10 * M, false).do).toBe("none");

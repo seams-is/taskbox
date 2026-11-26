@@ -1,5 +1,5 @@
 // The hourly box check's rules, run as GitHub runs them: the template's own bash script and jq, with
-// a stand-in gh that answers from fixtures. Each hold the laptop may leave in the variable (hold.ts)
+// a stand-in gh that answers from fixtures. Each hold the controller may leave in the variable (hold.ts)
 // against jobs waiting, a request waiting, and GitHub's API out of reach.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";

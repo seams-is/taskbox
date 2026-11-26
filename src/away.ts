@@ -3,7 +3,7 @@
 // FAIL with its fix and where it is done, WARN (worth a look, no reason to stay), or SKIP; the
 // screen ends "Ready to leave." or "N things to do before leaving." remote may run it, as it runs check: no row names a user, and rows that need
 // ci or root say what the loop last recorded. With --json, one line in a versioned shape, for a
-// laptop's controller. A later release reuses AWAY_ONLY and awayChecks as they are.
+// controller. A later release reuses AWAY_ONLY and awayChecks as they are.
 import { restartPlanRow } from "./awaychecks.ts";
 import { upsCheck } from "./ups.ts";
 import { type Check, type CheckContext, freeGB, otherLogins, runChecks, screenSharingOn } from "./checks.ts";

@@ -1,6 +1,6 @@
 # The hourly box check. Made by `taskbox template show box-check` from the box's own settings:
 # don't edit the copy in your repo; change the settings and make it again, or type
-# `taskbox template apply` on the laptop. It goes in .github/workflows/taskbox-watchdog.yml of the
+# `taskbox template apply` on the controller. It goes in .github/workflows/taskbox-watchdog.yml of the
 # repo whose jobs your box runs.
 #
 # It runs on a GitHub-hosted runner, so it works when the box is dead, asleep or at the FileVault
@@ -9,7 +9,7 @@
 # - a workspace request on the box has waited too long;
 # - the box has been held too long, so a forgotten pause or stop is seen;
 # - GitHub's API couldn't be read on 3 runs in a row.
-# The hold is one repository variable, which only your laptop writes, through your own GitHub
+# The hold is one repository variable, which only your controller writes, through your own GitHub
 # session, while the box reports a hold. A hold runs out by itself within its lease. Values reach
 # the script through env only. It needs no secret and reads this repo's Actions only. Its run name
 # carries a fingerprint of the settings it was made from, so `taskbox check --away` can tell
@@ -108,11 +108,11 @@ jobs:
           if [ "$state" = "current" ]; then
             echo "$BOX is held${why:+ ($why)} since $since."
             if [ "$held_min" -gt $(( HOLD_ALARM_HOURS * 60 )) ]; then
-              echo "$BOX has been held since $since${why:+ ($why)}, over $HOLD_ALARM_HOURS hours. From the laptop: type taskbox status, then resume the box or end the workspace."
+              echo "$BOX has been held since $since${why:+ ($why)}, over $HOLD_ALARM_HOURS hours. From the controller: type taskbox status, then resume the box or end the workspace."
               failed=1
             fi
             if [ "$waited_min" -gt "$REQUEST_MINUTES" ]; then
-              echo "A workspace request on $BOX has waited $waited_min minutes. From the laptop: type taskbox, then approve or deny it."
+              echo "A workspace request on $BOX has waited $waited_min minutes. From the controller: type taskbox, then approve or deny it."
               failed=1
             fi
           fi
@@ -142,7 +142,7 @@ jobs:
           late=$(jq -r --argjson now "$now" --argjson wait "$WAIT_MINUTES" "$LATE_JOBS" "$jobs")
           if [ -n "$late" ] && [ "$running" = "0" ] && [ "$state" != "current" ]; then
             echo "Jobs are waiting and $BOX isn't taking them: over $WAIT_MINUTES minutes, with none running and no hold. The box may be off, asleep, at the FileVault screen or offline."
-            printf 'From the laptop, type taskbox status.\n\n%s\n' "$late"
+            printf 'From the controller, type taskbox status.\n\n%s\n' "$late"
             exit 1
           fi
           if [ -n "$late" ] && [ "$state" = "current" ]; then

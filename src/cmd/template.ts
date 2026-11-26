@@ -1,6 +1,6 @@
 // taskbox template show and list: the workflows made from this box's settings, for the jobs repo or
 // the test repo (the hourly box check, the test job and the load test), and whether the jobs repo's
-// copies match. `template apply`, which opens the pull request, runs on the laptop (templateapply.ts).
+// copies match. `template apply`, which opens the pull request, runs on the controller (templateapply.ts).
 import type { BoxCtx, CommandSpec } from "../command.ts";
 
 export const TEMPLATES = ["box-check", "test-job", "load"] as const;

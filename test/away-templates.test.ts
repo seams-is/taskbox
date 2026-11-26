@@ -110,7 +110,7 @@ describe("taskbox check --away's check of the copy in the repo", () => {
   test("each way it can be wrong names what to do", async () => {
     const c = ctx();
     const now = (c as { sys: FakeSys }).sys.now();
-    expect(await deployedRow(c, "watchdog", repoWith({}))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/isn't in .*From away: on the laptop, type taskbox template apply/) });
+    expect(await deployedRow(c, "watchdog", repoWith({}))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/isn't in .*From away: on the controller, type taskbox template apply/) });
     expect(await deployedRow(c, "watchdog", repoWith({ path: FILE, state: "disabled_inactivity" }))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/turned off on GitHub \(disabled_inactivity\)\. From away/) });
     expect(await deployedRow(c, "watchdog", repoWith({ path: FILE, title: "taskbox hourly box check 000000000000", at: now }), "taskbox-1")).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/wasn't made from this box's settings/) });
     expect(await deployedRow(c, "watchdog", repoWith({ path: FILE, at: now - 5 * 3600_000 }), "taskbox-1")).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/last ran 5 h ago/) });

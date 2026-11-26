@@ -1,8 +1,8 @@
 // The hold lease: how the hourly box check in the jobs repo tells "the box is dead" from "the owner
-// took CI off the box on purpose". The box never writes to GitHub. The owner's laptop, the one the
+// took CI off the box on purpose". The box never writes to GitHub. The owner's controller, the one the
 // box names as the hold's writer, mirrors the box's hold into one repository variable per box
 // through the owner's own GitHub session, renews it while the box answers and still reports that
-// hold, and ends it when the hold ends or the box stops answering. Nothing renews a lease on a laptop
+// hold, and ends it when the hold ends or the box stops answering. Nothing renews a lease on a controller
 // that sleeps, so it runs out by itself within holdLeaseHours: the failure falls toward an alarm.
 //
 // The lease holds the box's reason and a workspace's id, never a user name, and goes only into the
@@ -27,7 +27,7 @@ export interface BoxView {
 
 // What the notifier keeps between polls, for one box.
 export interface LeaseMemory {
-  lease?: Lease; // the lease this laptop last wrote, until it ended it
+  lease?: Lease; // the lease this controller last wrote, until it ended it
   writtenAt?: number;
   silentSince?: number; // when the box first didn't answer, since it last did
 }
@@ -53,8 +53,8 @@ export const isoSecond = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).
 // The box's reason, as the lease carries it: printable ASCII, 80 characters at most.
 export const holdWhy = (why: string) => why.replace(/[^\x20-\x7e]/g, "").slice(0, 80);
 
-// One poll's step for one box. writer: whether the box names this laptop as the hold's writer; any
-// other laptop leaves the variable alone. mem is changed in place.
+// One poll's step for one box. writer: whether the box names this controller as the hold's writer; any
+// other controller leaves the variable alone. mem is changed in place.
 export function leaseStep(view: BoxView, mem: LeaseMemory, now: number, writer: boolean, leaseHours = MAX_LEASE_HOURS): LeaseStep {
   if (!view.answered) {
     mem.silentSince ??= now;

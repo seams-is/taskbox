@@ -147,7 +147,7 @@ export async function deployedRow(c: CheckContext, which: "watchdog" | "canary",
   const make = `taskbox template show ${which === "watchdog" ? "box-check" : "test-job"}`;
   const file = which === "watchdog" ? WATCHDOG_FILE : CANARY_FILE;
   const settings = which === "watchdog" ? watchdogSettings(c.cfg, box) : canarySettings(c.cfg);
-  const fix = `From away: on the laptop, type taskbox template apply and merge its pull request, or put what ${make} prints in ${file} of ${c.cfg.jobsFrom} yourself (templates/README.md). Then run it once from its Actions tab (Run workflow)`;
+  const fix = `From away: on the controller, type taskbox template apply and merge its pull request, or put what ${make} prints in ${file} of ${c.cfg.jobsFrom} yourself (templates/README.md). Then run it once from its Actions tab (Run workflow)`;
   const mayRead = c.uid === 0 || c.uid === c.serviceUid;
   // remote reads the loop's hourly record, with the jobs repo's name left out: remote isn't told
   // which repo the box serves. Without a job source App there is nothing to read, as for ci.
