@@ -799,7 +799,15 @@ export async function removeGroup(sys: Sys, rec: PoolRecord, group: string): Pro
 // remove: whether the pool account is a record dscl has that never got its ID: made by an install
 // that stopped half way. Only such a record pool.json names is offered.
 export async function halfMade(sys: Sys, name: string): Promise<boolean> {
-  return (await uidOf(sys, name)) === undefined && (await userKey(sys, name, "RecordName")) !== null && (await userKey(sys, name, "UniqueID")) === undefined;
+  return (await halfMadeState(sys, name)) === "half";
+}
+
+// "half": a record with no UniqueID; "none": dscl says there is no such record; "unknown": dscl
+// answered anything else, so nothing is dropped or deleted on it.
+export async function halfMadeState(sys: Sys, name: string): Promise<"half" | "none" | "unknown"> {
+  const r = await sys.run("/usr/bin/dscl", [".", "-read", `/Users/${name}`, "UniqueID"], { timeoutMs: 5_000 }).catch(() => ({ code: -1, stdout: "", stderr: "" }));
+  if (r.code !== 0) return /eDSRecordNotFound|DS Error: -14136/.test(r.stdout + r.stderr) ? "none" : "unknown";
+  return /No such key: UniqueID/.test(r.stdout + r.stderr) ? "half" : "unknown";
 }
 
 // remove: stops every process of a user ID, TERM then KILL, before its account goes. Whether none is left.

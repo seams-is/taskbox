@@ -20,7 +20,7 @@ import { endOpJobs, oneShotPlist, oneShotScript, pidAlive, reloadThroughLaunchd,
 import { begin, end, listOps, type Op, type OpFolder, opEvent, type OpType, toPhase, writeOp } from "./core/ops.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
-import { canUnlock, halfMade, lookup, readRecord, UNLOCK_UNKNOWN, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
+import { canUnlock, halfMadeState, lookup, readRecord, UNLOCK_UNKNOWN, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
 import { readBoxFile } from "./boxsettings.ts";
 import { fingerprint } from "./approver.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "./pin.ts";
@@ -1025,9 +1025,12 @@ async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown
   // The agent account taskbox placed but didn't make, as boxes from before v2.7.0 have. Its shell is
   // set back only while it is a standard account with taskbox's shell, and nobody's person account.
   const agent = d.paths.agent;
-  let agentGone = agent === undefined || (await d.sys.run("/usr/bin/id", ["-u", agent], { timeoutMs: 5_000 })).code !== 0;
+  // Gone only on "no such user": a lookup that failed keeps the agent's home.
+  const agentNow = agent === undefined ? "gone" : await lookup(d.sys, agent);
+  if (agentNow === "unknown") missed.push(`${agent}'s home (taskbox can't tell whether ${agent} is there), left as it is`);
+  let agentGone = agentNow === "gone";
   // One taskbox placed (role placed) is never deleted: only its shell and home go back.
-  if (agent !== undefined && !agentGone && rec.made[agent]?.role !== "agent") {
+  if (agent !== undefined && typeof agentNow === "number" && rec.made[agent]?.role !== "agent") {
     const shell = /UserShell:\s*(\S+)/.exec((await d.sys.run("/usr/bin/dscl", [".", "-read", `/Users/${agent}`, "UserShell"], { timeoutMs: 5_000 })).stdout)?.[1];
     const person = (o.people ?? []).some((p) => p.toLowerCase() === agent.toLowerCase());
     if (shell === REMOTE_SHELL && !person && (await adminState(d.sys, agent)) === "standard") {
@@ -1093,8 +1096,14 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
       continue;
     }
     if (uid === undefined) {
-      if (!(await halfMade(d.sys, name))) {
+      // Dropped only when dscl says there is no such record: a read that failed keeps the entry and its group.
+      const state = await halfMadeState(d.sys, name);
+      if (state === "none") {
         delete rec.made[name];
+        continue;
+      }
+      if (state === "unknown") {
+        missed.push(`the account ${name} (taskbox can't read its record), left as it is`);
         continue;
       }
       if (person || (await d.ask(`Delete ${name}, a workspace account taskbox started to make and didn't finish? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {

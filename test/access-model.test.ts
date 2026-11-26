@@ -545,3 +545,30 @@ describe("remove on missing evidence", () => {
     expect(rec !== "bad" && rec.made["taskbox-ws1"]).toBeTruthy();
   });
 });
+
+describe("remove on missing evidence, the agent's home and a half-made pool account", () => {
+  const deps = (s: ReturnType<typeof setup>) => {
+    s.sys.responders.push((cmd) => (cmd === "/usr/bin/du" ? { code: 0, stdout: "0\t/x\n", stderr: "" } : cmd === "/bin/launchctl" || cmd === "/sbin/pfctl" || cmd === "/usr/bin/sudo" ? { code: 0, stdout: "", stderr: "" } : undefined));
+    return { sys: s.sys, paths: s.p, uid: 0, serviceUid: 502, say: () => {}, ask: async () => "yes", rootUid: ME };
+  };
+  test("an agent whose lookup fails keeps its home folder", async () => {
+    const { remove } = await import("../src/ops.ts");
+    const s = setup(new Dir().user("taskbox-agent", { uid: 470, attrs: {} }));
+    mkdirSync(s.p.agentHome!, { recursive: true });
+    writeFileSync(join(s.p.agentHome!, "kept"), "x");
+    s.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args[0] === "-u" && args[1] === "taskbox-agent" ? { code: 1, stdout: "", stderr: "id: the directory didn't answer" } : undefined));
+    await remove(deps(s), { serviceUid: 502, people: [] });
+    expect(existsSync(join(s.p.agentHome!, "kept"))).toBe(true);
+  });
+  test("a half-made pool entry whose record can't be read is kept, with its group", async () => {
+    const { remove } = await import("../src/ops.ts");
+    const { writePoolRecord, readPoolRecord } = await import("../src/pin.ts");
+    const s = setup(new Dir().group("taskbox-ws1", 471));
+    writePoolRecord(s.d, s.p.poolRecord, { made: { "taskbox-ws1": { uid: 471 } }, groups: { "taskbox-ws1": { gid: 471 } } });
+    s.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[2] === "/Users/taskbox-ws1" ? { code: 1, stdout: "", stderr: "dscl: the directory didn't answer" } : undefined));
+    await remove(deps(s), { serviceUid: 502, people: [] });
+    const rec = readPoolRecord(s.p.poolRecord, ME);
+    expect(rec !== "bad" && rec.made["taskbox-ws1"]).toBeTruthy();
+    expect(s.dir.groups["taskbox-ws1"]).toBeDefined();
+  });
+});
