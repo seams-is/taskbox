@@ -2,12 +2,12 @@
 // code bound to the open op, the key handed to the keeper, and the whole flow against a fake GitHub.
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Config } from "../src/config.ts";
-import { appName, conversionProblem, hookProblem, installationProblem, installationsOf, manifestFor, reposProblem, startPage } from "../src/connect.ts";
-import { adoptV2, askText, cancelConnect, connectGithub, connectStatus, disconnectGithub, type FlowDeps, parseAsk, readCodeInbox, takeConnectCode, waitForCode } from "../src/connectflow.ts";
+import { appName, conversionProblem, hookProblem, installationProblem, installationsOf, manifestFor, publicProblem, reposProblem, startPage } from "../src/connect.ts";
+import { adoptV2, applyCodeRequest, askText, cancelConnect, type CodeInbox, CODES_KEPT, codeRequestProblem, codeWaiter, connectGithub, connectStatus, disconnectGithub, type FlowDeps, oldKeyFiles, openConnectOp, parseAsk, readCodeInbox, takeConnectCode } from "../src/connectflow.ts";
 import { keyFileName, keysDirProblem, listKeys, placePending, promoteKey, readAdoptedKey, readHeldKey } from "../src/keys.ts";
 import { type ListenEvent, parentWatch, serveOnce, setupProblem } from "../src/listen.ts";
 import { Log } from "../src/log.ts";
@@ -75,19 +75,26 @@ describe("the manifests and the page", () => {
 });
 
 describe("GitHub's answers, checked", () => {
+  // GitHub's own example answer, with this box's org, rights and time.
+  const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/github/conversion.json"), "utf8"));
   const good = (role: "runner" | "source") => ({
+    ...FIXTURE,
     id: 5150,
     slug: "example-org-box-jobs-1f2e",
-    owner: { login: "Example-Org", type: "Organization" },
+    owner: { ...FIXTURE.owner, login: "Example-Org", type: "Organization" },
     permissions: role === "runner" ? RUNNER_RIGHTS : SOURCE_RIGHTS,
     events: [],
-    public: false,
     pem: PEMS[0],
     created_at: new Date(SINCE).toISOString(),
-    client_secret: "s",
-    webhook_secret: "w",
   });
   const o = { org: "example-org", since: SINCE, other: 1234 };
+
+  test("GitHub's example answer has no public field, so a real conversion isn't refused for it", () => {
+    expect("public" in FIXTURE).toBe(false);
+    expect(publicProblem(404)).toBeUndefined();
+    expect(publicProblem(500)).toBeUndefined();
+    expect(publicProblem(200)).toMatch(/is public/);
+  });
 
   test("the App asked for is kept: its ID, slug and key, and never the secrets", () => {
     expect(conversionProblem(good("source"), { ...o, role: "source" })).toEqual({ id: 5150, slug: "example-org-box-jobs-1f2e", pem: PEMS[0]! });
@@ -103,7 +110,6 @@ describe("GitHub's answers, checked", () => {
       [{ permissions: { actions: "read" } }, /other rights/],
       [{ events: ["workflow_job"] }, /subscribes to events/],
       [{ public: true }, /is public/],
-      [{ public: undefined }, /is public/],
       [{ created_at: new Date(SINCE - 120_000).toISOString() }, /wasn't made by this connect/],
       [{ id: 1234 }, /the box's other App/],
       [{ pem: "not a key" }, /no private key/],
@@ -217,11 +223,15 @@ function fakeGitHub(sys: FakeSys) {
   const conversions = new Map<string, () => Record<string, unknown>>();
   const iss = (auth: string) => (auth.split(".").length === 3 && auth.startsWith("ey") ? Number(JSON.parse(Buffer.from(auth.split(".")[1]!, "base64url").toString()).iss) : undefined);
   const tokens = new Map<string, number>();
+  const o = { skewMs: 0, publicSlugs: new Set<string>(), down: false };
   sys.fetch = async (url, init) => {
+    if (o.down) throw new TypeError("fetch failed");
     const u = new URL(url);
     const m = init?.method ?? "GET";
     const auth = String((init?.headers as Record<string, string>)?.Authorization ?? "").replace(/^Bearer /, "");
     calls.push(`${m} ${u.pathname}`);
+    const pub = /^\/apps\/([^/]+)$/.exec(u.pathname);
+    if (pub && !auth) return o.publicSlugs.has(pub[1]!) ? json({ slug: pub[1] }) : json({ message: "Not Found" }, 404);
     const conv = /^\/app-manifests\/([^/]+)\/conversions$/.exec(u.pathname);
     if (conv) {
       const code = decodeURIComponent(conv[1]!);
@@ -236,7 +246,7 @@ function fakeGitHub(sys: FakeSys) {
     const id = iss(auth);
     if (id !== undefined) {
       const a = apps.get(id);
-      if (!a || a.deleted) return json({ message: "bad credentials" }, 401);
+      if (!a || a.deleted || o.skewMs) return new Response(JSON.stringify({ message: "bad credentials" }), { status: 401, headers: { date: new Date(sys.now() - o.skewMs).toUTCString() } });
       if (u.pathname === "/app") return json({ id, slug: a.slug, permissions: a.permissions, events: a.events });
       if (u.pathname === "/app/hook/config") return a.hook ? json({ url: a.hook }) : json({}, 404);
       if (u.pathname === "/app/installations" && m === "GET") return json(a.installs.map((i) => ({ id: i.id, account: { login: "example-org" }, target_type: "Organization", repository_selection: i.selection, permissions: a.permissions })));
@@ -288,7 +298,7 @@ function fakeGitHub(sys: FakeSys) {
     };
   };
   const addApp = (aid: number, a: FakeApp) => apps.set(aid, a);
-  return { apps, calls, tokenAsks, willMake, install, installOnPoll, addApp };
+  return { apps, calls, tokenAsks, willMake, install, installOnPoll, addApp, o };
 }
 
 function box(cfg: Config = CFG) {
@@ -511,28 +521,167 @@ describe("connect github, against a fake GitHub", () => {
   });
 });
 
-describe("the controller's code, bound to the open op", () => {
-  const op = (phase: string, state = "running") => ({ id: "op_01J0000000000000000000000A", type: "connect", state, phase });
-
-  test("no open connect, a connect not making an App, or a second code: refused", () => {
-    expect(takeConnectCode([], undefined, "c", 1)).toEqual({ why: "no connect is open on this box" });
-    expect(takeConnectCode([op("making-runner", "succeeded")], undefined, "c", 1)).toEqual({ why: "no connect is open on this box" });
-    expect(takeConnectCode([op("installing-runner")], undefined, "c", 1)).toEqual({ why: "the open connect isn't making an App now" });
-    const first = takeConnectCode([op("making-runner")], undefined, "c1", 1);
-    expect(first).toEqual({ inbox: { v: 1, op: op("x").id, role: "runner", code: "c1", at: 1 } });
-    const inbox = "inbox" in first ? first.inbox : undefined;
-    expect(takeConnectCode([op("making-runner")], inbox, "c2", 2)).toEqual({ why: "this connect took a code for that App already" });
-    expect(takeConnectCode([op("making-source")], inbox, "c3", 3)).toMatchObject({ inbox: { role: "source", code: "c3" } });
+describe("connect github, when things go wrong", () => {
+  test("--jobs moves the source to a new jobs repo once the App is on it, and says what else it needs", async () => {
+    const b = keptBox();
+    b.gh.apps.get(7001)!.repos = ["example-org/other"];
+    expect(await connectGithub(b.d, { jobs: "example-org/other" })).toBe(0);
+    expect(boxJson(b).sources[0].repos).toEqual(["example-org/other"]);
+    expect(b.said.at(-1)).toMatch(/The jobs repo example-org\/other also needs jobsFrom/);
+    expect(connectStatus(b.d).apps.map((a) => [a.role, a.appId, a.key])).toEqual([["runner", 7000, "held"], ["source", 7001, "held"]]);
   });
 
-  test("the child waits for its op's code for its App, and stops at its time", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "taskbox-code-"));
-    const path = join(dir, "connect-code.json");
-    const sys = new FakeSys();
-    writeFileSync(path, JSON.stringify({ v: 1, op: "op_A", role: "source", code: "zz", at: 1 }), { mode: 0o600 });
-    expect(readCodeInbox(path, me)?.code).toBe("zz");
-    expect(await waitForCode({ sys, rootUid: me }, path, "op_A", "source", sys.now() + 5000)).toEqual({ code: "zz" });
-    expect(await waitForCode({ sys, rootUid: me }, path, "op_A", "runner", sys.now() + 3000)).toMatchObject({ stop: expect.stringMatching(/within the hour/) });
+  test("a 401 with the box's clock far off is the clock's: no new App, and the line says to set the clock", async () => {
+    const b = keptBox();
+    b.gh.o.skewMs = 10 * 60_000;
+    expect(await connectGithub(b.d)).toBe(1);
+    expect(b.said.join("\n")).toMatch(/clock is 600 s off GitHub's/);
+    expect(b.phases.some((p) => p.startsWith("making"))).toBe(false);
+  });
+
+  test("v2's App, not adopted yet, gets the move's advice, and no App is made beside it", async () => {
+    const b = box();
+    b.d.v2Keys = ["/opt/taskbox-keys/runner.pem"];
+    expect(await connectGithub(b.d)).toBe(1);
+    expect(b.said.at(-1)).toMatch(/App 1234\) is v2's, and the move to v3 adopts it with its key: as your admin user, type taskbox update/);
+    expect(b.gh.calls).toEqual([]);
+  });
+
+  test("GitHub out of reach: said, and no browser opens", async () => {
+    const b = keptBox();
+    b.gh.o.down = true;
+    expect(await connectGithub(b.d)).toBe(1);
+    expect(b.opened).toEqual([]);
+    expect(b.said.at(-1)).toMatch(/couldn't be checked: GitHub couldn't be reached/);
+  });
+
+  test("a public App is refused by GitHub's own sign: its page answers with no token", async () => {
+    const b = box(withBox(CFG, { runnerApp: { appId: 6000, app: "old" } }));
+    b.gh.addApp(6000, { slug: "old", permissions: {}, events: [], installs: [], repos: [], deleted: true });
+    writeFileSync(join(b.keysDir, "runner-6000.pem"), PEMS[2]!, { mode: 0o600 });
+    b.gh.willMake("code-aaaa", "runner", PEMS[0]!);
+    b.gh.o.publicSlugs.add("example-org-taskbox-1-runners-aaaa");
+    b.codes.push("code-aaaa");
+    expect(await connectGithub(b.d)).toBe(1);
+    expect(b.said.join("\n")).toMatch(/the App is public/);
+    expect(listKeys(b.keysDir).map((k) => k.name)).toEqual(["runner-6000.pem"]);
+  });
+
+  test("a key that can't be promoted stops before box.json, and keeps the record", async () => {
+    const b = box(withBox(CFG, { runnerApp: { appId: 6500, app: "r" } }));
+    b.gh.addApp(6500, { slug: "r", permissions: { ...RUNNER_RIGHTS }, events: [], installs: [{ id: 1, selection: "selected" }], repos: ["example-org/taskbox"] });
+    writeFileSync(join(b.keysDir, "runner-6500.pem"), PEMS[0]!, { mode: 0o600 });
+    b.gh.willMake("code-bbbb", "source", PEMS[1]!);
+    b.codes.push("code-bbbb");
+    const real = b.sys.sleep.bind(b.sys);
+    b.sys.sleep = async (ms) => {
+      if (b.gh.apps.has(7000) && !b.gh.apps.get(7000)!.installs.length) {
+        b.gh.install(7000, ["example-org/app"]);
+        require("node:fs").rmSync(join(b.keysDir, "source-7000.pending.pem"));
+      }
+      return real(ms);
+    };
+    expect(await connectGithub(b.d)).toBe(1);
+    expect(b.said.at(-1)).toMatch(/Not connected: no key for App 7000 is waiting/);
+    expect(existsSync(b.d.boxFile)).toBe(false);
+    expect(existsSync(b.d.pendingFile)).toBe(true);
+  });
+
+  test("an op that ends under the flow (its deadline, or op cancel) drops what it left pending", async () => {
+    const b = box(withBox(CFG, { runnerApp: { appId: 6500, app: "r" } }));
+    b.gh.addApp(6500, { slug: "r", permissions: { ...RUNNER_RIGHTS }, events: [], installs: [{ id: 1, selection: "selected" }], repos: ["example-org/taskbox"] });
+    writeFileSync(join(b.keysDir, "runner-6500.pem"), PEMS[0]!, { mode: 0o600 });
+    b.gh.willMake("code-bbbb", "source", PEMS[1]!);
+    b.codes.push("code-bbbb");
+    let alive = true;
+    b.d.live = () => alive;
+    const real = b.sys.sleep.bind(b.sys);
+    b.sys.sleep = async (ms) => {
+      alive = false;
+      return real(ms);
+    };
+    expect(await connectGithub(b.d)).toBe(1);
+    expect(b.said.join("\n")).toMatch(/The connect ended before it kept anything[\s\S]*Dropped the App example-org-taskbox-1-jobs-bbbb/);
+    expect(listKeys(b.keysDir).map((k) => k.name)).toEqual(["runner-6500.pem"]);
+    expect(existsSync(b.d.boxFile)).toBe(false);
+  });
+
+  test("a source written in another key order is the same source: nothing changes", async () => {
+    const b = keptBox(withBox(CFG, { runnerApp: { appId: 7000, app: "r" }, sources: [{ type: "github-actions", appId: 7001, repos: ["example-org/app"], app: "s" }] }));
+    expect(await connectGithub(b.d)).toBe(0);
+    expect(b.said.at(-1)).toBe("Both Apps pass. Nothing changed.");
+  });
+
+  test("at the box, a second connect is refused while one runs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-ops-"));
+    const ops = { dir, owner: me };
+    const first = openConnectOp({ ops, now: SINCE, boot: "B", actor: "admin x", params: { from: "box" } });
+    expect("op" in first && first.op.type).toBe("connect");
+    expect(openConnectOp({ ops, now: SINCE + 1, boot: "B", actor: "admin x", params: { from: "box" } })).toMatchObject({ why: expect.stringMatching(/running already/) });
+    expect(existsSync(join(dir, `${"op" in first ? first.op.id : ""}.lease`))).toBe(true);
+  });
+
+  test("the old key files the service account could read, for the Old App keys row", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-old-"));
+    writeFileSync(join(dir, "runner.pem"), "x");
+    writeFileSync(join(dir, "actions-4321.pem"), "x");
+    writeFileSync(join(dir, "other.txt"), "x");
+    expect(oldKeyFiles({ key: join(dir, "runner.pem"), oldKey: join(dir, "none.pem"), actionsKeyDir: dir }).sort()).toEqual([join(dir, "actions-4321.pem"), join(dir, "runner.pem")]);
+  });
+});
+
+describe("the controller's code, bound to the open op", () => {
+  const ID = "op_01J0000000000000000000000A";
+  const op = (phase: string, x: Record<string, unknown> = {}) => ({ id: ID, type: "connect", state: "running", phase, params: { from: "controller" }, ...x }) as never;
+
+  test("a code is taken only for the open op, from the controller, while it makes an App", () => {
+    expect(takeConnectCode([], undefined, { op: ID, code: "c" })).toEqual({ why: "no connect by that op is open on this box" });
+    expect(takeConnectCode([op("making-runner")], undefined, { op: "op_01J0000000000000000000000B", code: "c" })).toEqual({ why: "no connect by that op is open on this box" });
+    expect(takeConnectCode([op("making-runner", { state: "succeeded" })], undefined, { op: ID, code: "c" })).toMatchObject({ why: expect.any(String) });
+    expect(takeConnectCode([op("making-runner", { params: { from: "box" } })], undefined, { op: ID, code: "c" })).toEqual({ why: "that connect takes its code at the box" });
+    expect(takeConnectCode([op("installing-runner")], undefined, { op: ID, code: "c" })).toEqual({ why: "the open connect isn't making an App now" });
+  });
+
+  test("a junk code never blocks a real one: each is kept, newest last, up to a cap", () => {
+    let inbox: CodeInbox | undefined;
+    for (const code of ["junk1", "junk2", "real"]) {
+      const t = takeConnectCode([op("making-runner")], inbox, { op: ID, code });
+      inbox = "inbox" in t ? t.inbox : inbox;
+    }
+    expect(inbox).toEqual({ v: 1, op: ID, role: "runner", codes: ["junk1", "junk2", "real"] });
+    for (let i = 0; i < 30; i++) {
+      const t = takeConnectCode([op("making-runner")], inbox, { op: ID, code: `j${i}` });
+      inbox = "inbox" in t ? t.inbox : inbox;
+    }
+    expect(inbox!.codes).toHaveLength(CODES_KEPT);
+    expect(codeRequestProblem({ op: ID, code: "abc" })).toBeUndefined();
+    expect(codeRequestProblem({ code: "abc" })).toBeDefined();
+    expect(codeRequestProblem({ op: ID, code: "abc", role: "runner" })).toBeDefined();
+  });
+
+  test("the child tries each code newest first; a code GitHub refuses is passed over for the next", async () => {
+    const b = box();
+    const inbox = join(dirname(b.d.pendingFile), "connect-code.json");
+    writeFileSync(inbox, JSON.stringify({ v: 1, op: ID, role: "runner", codes: ["code-aaaa", "junk"] }), { mode: 0o600 });
+    b.gh.willMake("code-aaaa", "runner", PEMS[0]!);
+    const waiter = codeWaiter({ sys: b.sys, rootUid: me }, inbox, ID, b.sys.now() + 30_000);
+    b.d.code = (role) => waiter(role);
+    expect(await connectGithub(b.d)).toBe(1); // not installed in the time this test gives
+    expect(b.said.join("\n")).toMatch(/A code GitHub doesn't take was passed over/);
+    expect(listKeys(b.keysDir).map((k) => k.name)).toEqual(["runner-7000.pending.pem"]);
+    expect(await codeWaiter({ sys: b.sys, rootUid: me }, inbox, ID, b.sys.now() + 3000)("source")).toMatchObject({ stop: expect.any(String) });
+  });
+
+  test("the guard writes the inbox only for a code it takes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-inbox-"));
+    const ops = join(dir, "ops");
+    mkdirSync(ops);
+    writeFileSync(join(ops, `${ID}.json`), JSON.stringify({ v: 1, id: ID, type: "connect", subject: "box", state: "running", phase: "making-source", actor: "owner", params: { from: "controller" }, startedAt: 1, endedAt: null, deadline: 2, cancellable: true, pointOfNoReturn: "keeping", phases: ["making-runner", "installing-runner", "making-source", "installing-source", "keeping"], progress: null, result: null, seq: 1 }));
+    const o = { inbox: join(dir, "connect-code.json"), ops: { dir: ops, owner: me }, rootUid: me };
+    expect(applyCodeRequest(o, { op: ID, code: "abc" })).toBeUndefined();
+    expect(readCodeInbox(o.inbox, me)).toEqual({ v: 1, op: ID, role: "source", codes: ["abc"] });
+    expect(lstatSync(o.inbox).mode & 0o777).toBe(0o600);
+    expect(applyCodeRequest(o, { code: "abc" })).toBeDefined();
   });
 });
 
@@ -579,12 +728,12 @@ describe("the keeper's folder", () => {
   });
 
   test("adoption reads a v2 key once, from a plain file of the expected owner, never through a link", () => {
-    const dir = mkdtempSync(join(tmpdir(), "taskbox-v2key-"));
+    const dir = mkdtempSync(join(realpathSync(tmpdir()), "taskbox-v2key-"));
     writeFileSync(join(dir, "app-key.pem"), PEMS[0]!, { mode: 0o600 });
     symlinkSync(join(dir, "app-key.pem"), join(dir, "link.pem"));
-    expect(readAdoptedKey(join(dir, "app-key.pem"), [me])).toBe(PEMS[0]!);
-    expect(readAdoptedKey(join(dir, "link.pem"), [me])).toBeUndefined();
-    expect(readAdoptedKey(join(dir, "app-key.pem"), [me + 1])).toBeUndefined();
+    expect(readAdoptedKey(join(dir, "app-key.pem"), me)).toBe(PEMS[0]!);
+    expect(readAdoptedKey(join(dir, "link.pem"), me)).toBeUndefined();
+    expect(readAdoptedKey(join(dir, "app-key.pem"), me + 1)).toBeUndefined();
   });
 });
 
@@ -593,15 +742,33 @@ describe("adoption from v2.6.0's shape", () => {
     const b = box({ ...CFG, actionsAppId: 4321 } as Config);
     b.gh.addApp(1234, { slug: "runner-app", permissions: { ...RUNNER_RIGHTS }, events: [], installs: [{ id: 1, selection: "selected" }], repos: ["example-org/taskbox"] });
     b.gh.addApp(4321, { slug: "jobs-app", permissions: { ...SOURCE_RIGHTS }, events: [], installs: [{ id: 2, selection: "selected" }], repos: ["example-org/app"] });
-    const v2 = mkdtempSync(join(tmpdir(), "taskbox-v2-"));
+    const v2 = mkdtempSync(join(realpathSync(tmpdir()), "taskbox-v2-"));
     writeFileSync(join(v2, "app-key.pem"), PEMS[0]!, { mode: 0o600 });
     writeFileSync(join(v2, "actions-key.pem"), PEMS[1]!, { mode: 0o600 });
-    const lines = await adoptV2(b.d, { runnerKey: join(v2, "app-key.pem"), sourceKey: join(v2, "actions-key.pem"), owners: [me] });
-    expect(lines).toEqual(["Adopted the runner App runner-app.", "Adopted the job source App jobs-app."]);
+    const attic = join(v2, "attic");
+    const retire = [join(v2, "app-key.pem"), join(v2, "actions-key.pem")];
+    const lines = await adoptV2(b.d, { runnerKey: retire[0]!, sourceKey: retire[1]!, serviceUid: me, attic, retire });
+    expect(lines.slice(0, 2)).toEqual(["Adopted the runner App runner-app.", "Adopted the job source App jobs-app."]);
+    expect(lines.slice(2)).toEqual(retire.map((f) => `Moved the old key file ${f} out of the service account's reach.`));
     expect(boxJson(b)).toEqual({ runnerApp: { appId: 1234, app: "runner-app" }, sources: [{ type: "github-actions", appId: 4321, app: "jobs-app", repos: ["example-org/app"] }] });
     expect(listKeys(b.keysDir).map((k) => k.name).sort()).toEqual(["runner-1234.pem", "source-4321.pem"]);
-    expect(readdirSync(v2).sort()).toEqual(["actions-key.pem", "app-key.pem"]);
+    // Out of the service account's reach, where a rollback to v2 finds them.
+    expect(readdirSync(v2)).toEqual(["attic"]);
+    expect(readdirSync(attic).sort()).toEqual(["actions-key.pem", "app-key.pem"]);
+    expect(lstatSync(attic).mode & 0o777).toBe(0o700);
     expect(b.opened).toEqual([]);
+  });
+
+  test("a key that doesn't prove isn't adopted, and no old file moves while one App is still v2's", async () => {
+    const b = box({ ...CFG, actionsAppId: 4321 } as Config);
+    b.gh.addApp(1234, { slug: "runner-app", permissions: { ...RUNNER_RIGHTS }, events: [], installs: [{ id: 1, selection: "all" }], repos: ["example-org/taskbox"] });
+    const v2 = mkdtempSync(join(realpathSync(tmpdir()), "taskbox-v2-"));
+    writeFileSync(join(v2, "app-key.pem"), PEMS[0]!, { mode: 0o600 });
+    const lines = await adoptV2(b.d, { runnerKey: join(v2, "app-key.pem"), sourceKey: join(v2, "missing.pem"), serviceUid: me, attic: join(v2, "attic"), retire: [join(v2, "app-key.pem")] });
+    expect(lines[0]).toMatch(/wasn't adopted: the App is installed on All repositories/);
+    expect(lines[1]).toMatch(/isn't a key file of the service account's own/);
+    expect(readdirSync(v2)).toEqual(["app-key.pem"]);
+    expect(existsSync(b.d.boxFile)).toBe(false);
   });
 });
 

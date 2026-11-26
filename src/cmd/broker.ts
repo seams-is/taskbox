@@ -8,7 +8,7 @@ export const commands: CommandSpec[] = [
     who: ["launchd"],
     internal: true,
     async run(c) {
-      const { BROKER_ACCOUNT, brokerPathsOf, keysDirProblem } = await import("../keys.ts");
+      const { aclProblem, BROKER_ACCOUNT, brokerPathsOf, keysDirProblem } = await import("../keys.ts");
       const { uidOf } = await import("../accounts.ts");
       const { loadConfig } = await import("../config.ts");
       const { runBroker } = await import("../broker.ts");
@@ -19,7 +19,7 @@ export const commands: CommandSpec[] = [
         return 1;
       }
       const b = brokerPathsOf(c.p);
-      const why = keysDirProblem(b.keys, c.uid);
+      const why = keysDirProblem(b.keys, c.uid) ?? (await aclProblem(sys, b.keys));
       if (why) {
         c.say(`The GitHub key keeper can't start: ${why}. Type taskbox update as your admin user.`);
         return 1;

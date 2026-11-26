@@ -9,7 +9,7 @@ import { type Answer, type Ask, askBroker, BrokerGitHub, type BrokerDeps, broker
 import type { Config } from "../src/config.ts";
 import { Log } from "../src/log.ts";
 import { groupPass } from "../src/passes/connect.ts";
-import { otherRunnersRow, runnerGroupRow } from "../src/rows/connect.ts";
+import { otherRunnersRow, runnerAppRow, runnerGroupRow, sourceAppRow } from "../src/rows/connect.ts";
 import { FakeSys, json } from "./fake.ts";
 import { CFG } from "./helpers.ts";
 
@@ -58,7 +58,8 @@ describe("the closed set of asks", () => {
     expect(JSON.parse(await handle(k.d, "x".repeat(5000), false))).toMatchObject({ ok: false, why: "not an ask" });
     expect(await k.ask({ ask: "app-key" } as unknown as Ask)).toMatchObject({ ok: false, class: "ask" });
     expect(await k.ask({ ask: "jwt" } as unknown as Ask)).toMatchObject({ ok: false, class: "ask" });
-    for (const a of ["settings-files", "runner-repos", "group-workflows"] as const) expect(await k.ask({ ask: a })).toMatchObject({ ok: false, why: "that ask is the guard's alone" });
+    for (const a of ["org-runners", "group-workflows"] as const) expect(await k.ask({ ask: a })).toMatchObject({ ok: false, why: "that ask is the guard's alone" });
+    for (const a of ["settings-files", "runner-repos"]) expect(await k.ask({ ask: a } as unknown as Ask, true)).toMatchObject({ ok: false, class: "ask" });
     expect(k.calls).toEqual([]);
   });
 
@@ -91,13 +92,8 @@ describe("the closed set of asks", () => {
     expect(k.calls.filter((c) => c.m === "DELETE" && c.path.includes("/runners/"))).toHaveLength(1);
   });
 
-  test("the guard's asks on its socket: settings files by SHA, and the group's workflows put back", async () => {
+  test("the guard's asks on its socket: the group's workflows put back", async () => {
     const k = keeper();
-    const sha = "a".repeat(40);
-    expect(await k.ask({ ask: "settings-files", sha, files: ["taskbox.json"] }, true)).toMatchObject({ ok: true, files: { "taskbox.json": '{"a":1}' } });
-    expect(k.calls.find((c) => c.path.endsWith("/access_tokens"))!.body).toEqual({ repositories: ["taskbox"], permissions: { contents: "read" } });
-    expect(await k.ask({ ask: "settings-files", sha: "main", files: ["taskbox.json"] }, true)).toMatchObject({ ok: false });
-    expect(await k.ask({ ask: "settings-files", sha, files: ["../x"] }, true)).toMatchObject({ ok: false });
     expect(await k.ask({ ask: "group-workflows", workflows: [] }, true)).toMatchObject({ ok: true, did: "left" });
     const wf = ["example-org/app/.github/workflows/ci.yml@refs/heads/main"];
     expect(await k.ask({ ask: "group-workflows", workflows: wf }, true)).toMatchObject({ ok: true, did: "corrected" });
@@ -130,24 +126,43 @@ describe("never a key or a JWT", () => {
       [{ ask: "source-token" }, false],
       [{ ask: "jit-config", name: "taskbox-1-0", labels: ["taskbox-macos"] }, false],
       [{ ask: "group-state" }, false],
-      [{ ask: "org-runners" }, false],
+      [{ ask: "org-runners" }, true],
       [{ ask: "remove-runner", id: 77 }, false],
-      [{ ask: "runner-repos" }, true],
-      [{ ask: "settings-files", sha: "b".repeat(40), files: ["a.json"] }, true],
     ];
     for (const [a, g] of asks) expect(leaks(await handle(k.d, JSON.stringify(a), g))).toBe(false);
   });
 
-  test("the counts by hour name asks, never a token", () => {
+  test("the counts by hour name asks, never a token, one line an hour, an empty hour too", () => {
     const lines: string[] = [];
     let now = Date.UTC(2026, 10, 26, 14, 5);
     const u = new Used((l) => lines.push(l), () => now);
     u.count("source-token", true);
     u.count("source-token", true);
     u.count("jit-config", false);
+    now += 30 * 60_000;
+    u.tick();
+    expect(lines).toEqual([]);
+    now += 30 * 60_000;
+    u.tick();
     now += 3600_000;
-    u.count("source-token", true);
-    expect(lines).toEqual([JSON.stringify({ type: "key.used", hour: "2026-11-26T14", counts: { "jit-config.refused": 1, "source-token": 2 } })]);
+    u.tick();
+    expect(lines).toEqual([JSON.stringify({ type: "key.used", hour: "2026-11-26T14", counts: { "jit-config.refused": 1, "source-token": 2 } }), JSON.stringify({ type: "key.used", hour: "2026-11-26T15", counts: {} })]);
+  });
+
+  test("past its hourly cap an ask is refused as rate, before GitHub is asked", async () => {
+    const k = keeper();
+    const u = new Used(() => {}, () => k.sys.now());
+    for (let i = 0; i < 120; i++) u.count("jit-config", true);
+    expect(JSON.parse(await handle(k.d, JSON.stringify({ ask: "jit-config", name: "taskbox-1-0", labels: ["taskbox-macos"] }), false, u))).toMatchObject({ ok: false, class: "rate" });
+    expect(k.calls).toEqual([]);
+  });
+
+  test("a 401 with GitHub's clock far from the box's is the clock's, never the key's", async () => {
+    const k = keeper();
+    k.sys.fetch = async () => new Response("{}", { status: 401, headers: { date: new Date(k.sys.now() - 3600_000).toUTCString() } });
+    expect(await k.ask({ ask: "source-token" })).toMatchObject({ ok: false, class: "clock" });
+    k.sys.fetch = async () => new Response("{}", { status: 401, headers: { date: new Date(k.sys.now()).toUTCString() } });
+    expect(await k.ask({ ask: "source-token" })).toMatchObject({ ok: false, class: "key" });
   });
 });
 
@@ -160,7 +175,7 @@ describe("the sockets", () => {
     const b = serve(k.d, join(dir, "b.sock"), true, used, 0o600);
     try {
       expect(await askBroker(join(dir, "a.sock"), { ask: "group-state" })).toMatchObject({ ok: true, group: { id: 3 } });
-      expect(await askBroker(join(dir, "a.sock"), { ask: "runner-repos" })).toMatchObject({ ok: false, why: "that ask is the guard's alone" });
+      expect(await askBroker(join(dir, "a.sock"), { ask: "org-runners" })).toMatchObject({ ok: false, why: "that ask is the guard's alone" });
       expect(await askBroker(join(dir, "b.sock"), { ask: "group-workflows", workflows: [] })).toMatchObject({ ok: true, did: "left" });
       expect(await askBroker(join(dir, "none.sock"), { ask: "group-state" })).toMatchObject({ ok: false, class: "network" });
     } finally {
@@ -171,7 +186,7 @@ describe("the sockets", () => {
 });
 
 describe("the loop and check through the keeper", () => {
-  const through = (k: ReturnType<typeof keeper>) => (a: Ask) => handle(k.d, JSON.stringify(a), false).then((t) => JSON.parse(t) as Answer);
+  const through = (k: ReturnType<typeof keeper>, guard = false) => (a: Ask) => handle(k.d, JSON.stringify(a), guard).then((t) => JSON.parse(t) as Answer);
 
   test("the loop's GitHub asks the keeper for its group and runners, and holds no token", async () => {
     const k = keeper();
@@ -183,23 +198,28 @@ describe("the loop and check through the keeper", () => {
     expect(await gh.jitConfig(tk, g, "taskbox-1-0-x", ["taskbox-macos"])).toEqual({ encoded: "ENCODED-JIT", runnerId: 88 });
     expect(await gh.groupRunners(tk, g)).toEqual([{ id: 77, name: "taskbox-1-0-abc", labels: ["taskbox-macos"] }]);
     await gh.deleteRunner(tk, 77);
-    await expect(gh.token("contents")).rejects.toThrow();
+    // The release repo isn't the runner App's in v3: the head is unknown, with no failure.
+    expect(await gh.mainCommit(await gh.token("contents"))).toBe("unknown");
     expect(await brokerSourceTokens(through(k))("example-org/app")).toBe(`ghs_${"T".repeat(36)}`);
   });
 
   test("check's rows: another org runner warns; a public group fails", async () => {
     const k = keeper();
     const c = { sys: k.sys, cfg, uid: 0, serviceUid: 1 } as unknown as Parameters<typeof otherRunnersRow>[0];
-    expect(await otherRunnersRow(c, through(k))).toMatchObject({ status: "WARN", detail: expect.stringMatching(/a stolen runner key can take their jobs.*group theirs.*runner someone-else/) });
+    expect(await otherRunnersRow(c, through(k, true))).toMatchObject({ status: "WARN", detail: expect.stringMatching(/a stolen runner key can take their jobs.*group theirs.*runner someone-else/) });
     expect(await runnerGroupRow(c, through(k))).toMatchObject({ status: "OK" });
     expect(await runnerGroupRow(c, through(keeper({ group: { allows_public_repositories: true } })))).toMatchObject({ status: "FAIL" });
+    expect(await runnerAppRow(c, through(k))).toMatchObject({ status: "OK", detail: "r reaches its runner group" });
+    expect(await sourceAppRow(c, through(k))).toMatchObject({ status: "OK" });
+    expect(await sourceAppRow(c, through(keeper({ noKeys: true })))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/key rotate source/) });
+    expect(await runnerAppRow({ ...c, paths: { loginsSeen: "/nowhere/x" } } as never)).toMatchObject({ status: "SKIP" });
   });
 
-  test("the guard's hourly pass writes connect.group-corrected when it puts the workflows back", async () => {
+  test("putting the group's workflows back writes connect.group-corrected", async () => {
     const k = keeper();
     const events: string[] = [];
-    const wcfg = { ...cfg, runnerGroupWorkflows: ["example-org/app/.github/workflows/ci.yml@refs/heads/main"] } as unknown as Config;
-    const did = await groupPass((a) => handle({ ...k.d, settings: () => wcfg }, JSON.stringify(a), true).then((t) => JSON.parse(t)), wcfg, { write: (e) => (events.push(e.type), e as never) }, () => {});
+    const wcfg = cfg;
+    const did = await groupPass((a) => handle({ ...k.d, settings: () => wcfg }, JSON.stringify(a), true).then((t) => JSON.parse(t)), ["example-org/app/.github/workflows/ci.yml@refs/heads/main"], { write: (e) => (events.push(e.type), e as never) }, () => {});
     expect(did).toBe("corrected");
     expect(events).toEqual(["connect.group-corrected"]);
   });

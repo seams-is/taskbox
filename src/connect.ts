@@ -94,7 +94,7 @@ export const CODE = /^[A-Za-z0-9_-]{1,100}$/;
 export type Conversion = { id: number; slug: string; pem: string };
 export type Refused = { why: string; made?: string };
 
-const sameRights = (got: unknown, want: Record<string, string>) => {
+export const sameRights = (got: unknown, want: Record<string, string>) => {
   if (!got || typeof got !== "object" || Array.isArray(got)) return false;
   const g = got as Record<string, unknown>;
   return Object.keys(g).length === Object.keys(want).length && Object.entries(want).every(([k, v]) => g[k] === v);
@@ -132,10 +132,19 @@ export function conversionProblem(raw: unknown, o: { role: AppRole; org: string;
   }
   if (!sameRights(a.permissions, PERMISSIONS[o.role])) return no(`the App has other rights than ${rightsWords(o.role)}`);
   if (!Array.isArray(a.events) || a.events.length) return no("the App subscribes to events");
-  if (a.public !== false) return no("the App is public");
+  // GitHub's App object has no public field (its OpenAPI description, integration). A field that says
+  // so is refused; anything else is settled by publicProblem.
+  if (a.public === true) return no("the App is public");
   const k = keyProblem(a.pem);
   if (k) return no(k);
   return { id: a.id as number, slug, pem: a.pem as string };
+}
+
+// Whether the App is public, by the one sign GitHub gives: a public App's page in the API answers
+// anyone, signed in or not (GET /apps/<slug> with no token). 404 is a private App. Any other answer
+// is no evidence either way, so it refuses nothing.
+export function publicProblem(status: number): string | undefined {
+  return status === 200 ? "the App is public: anyone can read it without signing in" : undefined;
 }
 
 // The App's webhook, as GET /app/hook/config answers with the App's JWT: no hook (404), an empty
@@ -176,22 +185,23 @@ export function installationsOf(raw: unknown): Installation[] | undefined {
 // What an installation must be: one, on the org, selected repositories, exactly these rights.
 // grew: the App reaches more than it should, so its key is never used. waiting: not installed yet,
 // or waiting for the owner's click.
-export type InstallFail = { why: string; grew: boolean; waiting?: true };
+// where: the page that fixes it.
+export type InstallFail = { why: string; grew: boolean; waiting?: true; where?: "install" | "permissions" | "configure" };
 
 export function installationProblem(list: Installation[], o: { role: AppRole; org: string }): InstallFail | Installation {
-  if (list.length === 0) return { why: "the App isn't installed yet", grew: false, waiting: true };
+  if (list.length === 0) return { why: "the App isn't installed yet", grew: false, waiting: true, where: "install" };
   if (list.length !== 1) return { why: `the App is installed ${list.length} times; it may be installed once, on ${o.org}`, grew: true };
   const one = list[0]!;
   if (one.account.toLowerCase() !== o.org.toLowerCase() || (one.accountType !== "" && one.accountType !== "Organization")) {
     return { why: `the App is installed on ${one.account.replace(/[^\x20-\x7e]/g, "").slice(0, 40) || "an account"}, and this box's org is ${o.org}`, grew: true };
   }
-  if (one.selection !== "selected") return { why: "the App is installed on All repositories. On its Configure page, choose Only select repositories", grew: true };
+  if (one.selection !== "selected") return { why: "the App is installed on All repositories. On its Configure page, choose Only select repositories", grew: true, where: "configure" };
   if (one.suspended) return { why: "the App's installation is suspended", grew: false };
   const want: Record<string, string> = PERMISSIONS[o.role];
   if (!sameRights(one.permissions, want)) {
     const more = Object.keys(one.permissions).some((k) => want[k] !== one.permissions[k]);
     if (more) return { why: `the App's installation has other rights than ${rightsWords(o.role)}`, grew: true };
-    return { why: `the App's installation lacks some of ${rightsWords(o.role)}: approve its new permissions on its Configure page`, grew: false, waiting: true };
+    return { why: `the App's installation lacks some of ${rightsWords(o.role)}: approve its new permissions on its Configure page`, grew: false, waiting: true, where: "configure" };
   }
   return one;
 }
@@ -205,9 +215,9 @@ export function reposProblem(names: unknown[], want: readonly string[], may: rea
   const got = new Set(names.map(lower));
   const allowed = new Set([...want, ...may].map(lower));
   const extra = names.filter((n) => !allowed.has(lower(n)));
-  if (extra.length) return { why: `the App also reaches ${extra.slice(0, 3).map((n) => n.replace(/[^\x20-\x7e]/g, "").slice(0, 80)).join(", ")}. On its Configure page, leave only ${want.join(" and ")}`, grew: true };
+  if (extra.length) return { why: `the App also reaches ${extra.slice(0, 3).map((n) => n.replace(/[^\x20-\x7e]/g, "").slice(0, 80)).join(", ")}. On its Configure page, leave only ${want.join(" and ")}`, grew: true, where: "configure" };
   const missing = want.filter((w) => !got.has(lower(w)));
-  if (missing.length) return { why: `the App isn't on ${missing.join(" and ")} yet. On its Configure page, under Only select repositories, add it`, grew: false, waiting: true };
+  if (missing.length) return { why: `the App isn't on ${missing.join(" and ")} yet. On its Configure page, under Only select repositories, add it`, grew: false, waiting: true, where: "install" };
   return undefined;
 }
 

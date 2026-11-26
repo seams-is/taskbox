@@ -52,7 +52,7 @@
     "why": "a GitHub App JWT's iat, for the loop and connect, the offset GitHub reports, and a failure's time for a status line"
   },
   "connectflow.ts": {
-    "reads": 6,
+    "reads": 7,
     "why": "when a connect began (an App made before it isn't this connect's), and the waits for GitHub and a code: a step only ends a wait, which changes nothing and says so"
   },
   "watchdog.ts": {
@@ -176,11 +176,19 @@
     "why": "the agent shell's refusal envelope's at: a label"
   },
   "broker.ts": {
-    "reads": 2,
-    "why": "the hour the GitHub key keeper's counts are kept under: display only"
+    "reads": 3,
+    "why": "the hour the GitHub key keeper's counts are kept under, and GitHub's Date against the box's for the clock guard: display and a reason"
   },
   "cmd/connect.ts": {
+    "reads": 2,
+    "why": "when the connect op began, and how long the listener may live inside the op's deadline: the op's record and GitHub's created_at decide"
+  },
+  "connectchild.ts": {
     "reads": 1,
-    "why": "when the connect op began, for its record and to tell its own App from an older one: GitHub's created_at decides, with a minute's room"
+    "why": "the code wait's end when the op has no deadline: the op's record ends the wait first"
+  },
+  "rows/connect.ts": {
+    "reads": 1,
+    "why": "how old the keeper's counts file is, for a WARN row: display"
   }
 }

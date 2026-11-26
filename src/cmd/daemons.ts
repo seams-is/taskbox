@@ -284,6 +284,8 @@ export const commands: CommandSpec[] = [
         const { askerFor, BrokerGitHub, brokerHere, brokerSourceTokens } = await import("../broker.ts");
         const { brokerPathsOf } = await import("../keys.ts");
         const keeper = brokerHere(brokerPathsOf(p).socket) ? askerFor(brokerPathsOf(p).socket) : undefined;
+        // Once box.json names the runner App, the keeper holds it: the loop never falls back to an old key.
+        if (!keeper && cfg.runnerApp) throw new Error("the GitHub key keeper isn't running, so the loop waits for it");
         const pem = keeper ? "" : readFileSync(p.key, "utf8");
         if (pem) log.secret(pem);
         const gh = keeper ? new BrokerGitHub(sys, cfg, log, keeper) : new GitHub(sys, cfg, pem, log);

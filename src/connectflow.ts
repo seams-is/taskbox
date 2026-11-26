@@ -1,27 +1,23 @@
-// taskbox connect github and disconnect github: the steps that talk to GitHub and change the box.
-// One op makes both of the box's Apps true, the runner App first: an App that is missing is made by
-// GitHub's manifest flow, one that lacks rights or repos sends the owner to the page that fixes it, an
-// unfinished connect is finished, and one that passes is left as it is. Root converts the code GitHub
-// hands back, checks the App before it keeps anything, hands its key to the GitHub key keeper as a
-// pending key, waits for the install, proves it, and only then keeps it. The controller never converts a
-// code or holds a key.
-//
-// Where the code comes from is the caller's: the listener at the box (cmd/connect.ts), or a controller's
-// code through the agent spool (takeConnectCode). Everything else is here, so both paths are one
-// flow. src/connect.ts has the pure checks, keys.ts the key folder, broker.ts the keeper.
+// connect github and disconnect github: one op makes both Apps true, the runner App first. Root
+// converts the code, checks the App, hands its key to the keeper as pending, proves the install, and
+// only then keeps it. The code comes from the listener at the box or from the controller.
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { basename, join } from "node:path";
 import { readBoxFile } from "./boxsettings.ts";
-import { type AppRole, appName, appPage, conversionProblem, deleteLine, hookProblem, type InstallFail, installationProblem, installationsOf, installPage, PERMISSIONS, permissionsPage, reposProblem, ROLE_NAME, SLUG } from "./connect.ts";
-import type { Config, LoadRepo, SourceSettings } from "./config.ts";
-import type { OpType } from "./core/ops.ts";
+import { type AppRole, appName, appPage, conversionProblem, deleteLine, hookProblem, type InstallFail, installationProblem, installationsOf, installPage, PERMISSIONS, permissionsPage, publicProblem, reposProblem, ROLE_NAME, SLUG } from "./connect.ts";
+import type { Config, LoadRepo, Paths, SourceSettings } from "./config.ts";
+import { jobLabel, leasePath, progressPath, type Report, reporter, reportsPath } from "./core/child.ts";
+import { begin, listOps, type Op, type OpFolder, type OpType, writeOp } from "./core/ops.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "./core/rootfile.ts";
+import type { Json } from "./core/statement.ts";
+import { CLOCK_LIMIT_S, clockOffsetS } from "./ghfail.ts";
 import { AppClient, apiCall, bodyOf, revokeToken, runnerGroupsOf, tokenCall, tokenRepos } from "./github.ts";
-import { dropKey, keyFileName, listKeys, placePending, promoteKey, readAdoptedKey, readHeldKey } from "./keys.ts";
+import { dropKey, keyFileName, listKeys, placePending, placeSourceKey, promoteKey, proveActionsKey, readAdoptedKey, readHeldKey } from "./keys.ts";
 import type { Log } from "./log.ts";
+import { readActionsKey } from "./queue.ts";
 import { runnerAppId, settingsRepoOf } from "./settings/connect.ts";
-import { servedRepos, sourceOf } from "./settings/scheduling.ts";
+import { servedRepos, sourceKeyPath, sourceOf } from "./settings/scheduling.ts";
 import type { Sys } from "./sys.ts";
 
 export const WAIT_MS = 10 * 60_000;
@@ -30,12 +26,10 @@ export const CONNECT_MS = 60 * 60_000;
 export const PHASES = ["making-runner", "installing-runner", "making-source", "installing-source", "keeping"] as const;
 export type Phase = (typeof PHASES)[number];
 
-// The op as core/ops.ts runs it: cancellable until it keeps, an hour at most, and a restart fails it
-// (a pending App is found again by the next connect).
+// Cancellable until it keeps; a restart fails it, and the next connect finds a pending App again.
 export const CONNECT_OP: OpType = { type: "connect", phases: [...PHASES], pointOfNoReturn: "keeping", cancellable: true, onBoot: () => "fail" };
 
-// What the person at the browser does, as the op's progress says it: a controller reads these words to
-// know what to open. make: start the listener for this App. open: open this page.
+// What the browser should do, in the op's progress text, for the controller to read back.
 export type BrowserAsk = { make: AppRole; name: string } | { open: string };
 const MAKE = /^make (runner|source) ([a-z0-9][a-z0-9-]{0,33})$/;
 const OPEN = /^open (https:\/\/github\.com\/[A-Za-z0-9/_.-]{1,100})$/;
@@ -48,27 +42,37 @@ export function parseAsk(text: unknown): BrowserAsk | undefined {
   return o ? { open: o[1]! } : undefined;
 }
 
-// A code, or why there is none: the person closed the tab, the listener stopped, or time ran out.
-export type CodeGot = { code: string } | { stop: string };
+// A code, or why there is none. more: another may come, so a code GitHub refuses is passed over.
+export type CodeGot = { code: string; more?: true } | { stop: string };
 
 export interface FlowDeps {
   sys: Pick<Sys, "fetch" | "timeout" | "now" | "sleep">;
   log: Pick<Log, "secret" | "write">;
-  cfg: Config; // the settings in force
+  cfg: Config;
   box: string; // this box's name, for the Apps' names
-  boxFile: string; // /opt/taskbox-state/box.json
-  pendingFile: string; // /opt/taskbox-state/connect-pending.json: root's, 600
+  boxFile: string;
+  pendingFile: string; // root's, 600
   keys: { dir: string; ownerUid: number; ownerGid: number };
   chown?: (path: string, uid: number, gid: number) => void;
   rootUid?: number;
-  since: number; // when the op began: an App made before it isn't this connect's
+  since: number; // when the op began
   say(line: string): void;
-  phase(p: Phase, ask?: BrowserAsk): void; // the op's phase, and what the browser should do now
+  phase(p: Phase, ask?: BrowserAsk): void;
   event(type: string, text: string, data?: Record<string, string | number | boolean>): void;
   code(role: AppRole, name: string, state: string): Promise<CodeGot>;
   open(url: string): void;
+  // Whether the op is still running. Its deadline or op cancel ends it, and the flow then stops.
+  live?(): boolean;
+  // v2's key files still on the box (oldKeyFiles): with them, the product file's App is v2's own.
+  v2Keys?: readonly string[];
   rand?: (n: number) => Buffer;
 }
+
+// The op ended under the flow: its deadline, or op cancel.
+export class Ended extends Error {}
+const check = (d: Pick<FlowDeps, "live">) => {
+  if (d.live && !d.live()) throw new Ended("the connect op ended");
+};
 
 type Pending = { appId: number; slug: string; replacing?: number };
 type PendingFile = { v: 1; apps: Partial<Record<AppRole, Pending>> };
@@ -90,31 +94,29 @@ function readPendingFile(d: Pick<FlowDeps, "pendingFile" | "rootUid">): PendingF
 }
 
 function writePendingFile(d: Pick<FlowDeps, "pendingFile" | "rootUid" | "chown">, f: PendingFile): void {
-  if (!f.apps.runner && !f.apps.source) {
-    rmSync(d.pendingFile, { force: true });
-    return;
-  }
+  if (!f.apps.runner && !f.apps.source) return void rmSync(d.pendingFile, { force: true });
   writeOwnedText(d.pendingFile, `${JSON.stringify(f)}\n`, { mode: 0o600, owner: owner(d), ...(d.chown ? { chown: d.chown } : {}) });
 }
 
-// box.json with some keys set, the rest as it was, by one rename.
-export function writeBoxKeys(d: Pick<FlowDeps, "boxFile" | "rootUid" | "chown">, set: Record<string, unknown>): void {
-  const now = readBoxFile(d.boxFile, owner(d)).settings ?? {};
+// box.json with some keys set, the rest as it was, by one rename. A box.json taskbox set aside is
+// written anew, and the line says so.
+export function writeBoxKeys(d: Pick<FlowDeps, "boxFile" | "rootUid" | "chown"> & { say?: (l: string) => void }, set: Record<string, unknown>): void {
+  const b = readBoxFile(d.boxFile, owner(d));
+  if (b.problem) d.say?.(`box.json was set aside (${b.problem}), so it is written anew with only what connect keeps.`);
   const next: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(now)) if (!(k in set)) next[k] = v;
+  for (const [k, v] of Object.entries(b.settings ?? {})) if (!(k in set)) next[k] = v;
   for (const [k, v] of Object.entries(set)) if (v !== undefined) next[k] = v;
   writeOwnedText(d.boxFile, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o644, owner: owner(d), ...(d.chown ? { chown: d.chown } : {}) });
 }
 
-// The App each role keeps today: its ID and slug, from box.json or the product file.
-export function keptApp(cfg: Config, role: AppRole): { appId: number; slug?: string } | undefined {
-  if (role === "runner") return { appId: runnerAppId(cfg), ...(cfg.runnerApp ? { slug: cfg.runnerApp.app } : {}) };
+// The App each role keeps today. inBox: box.json names it, so it is v3's; else it is v2's, from the
+// product file, which the move to v3 adopts.
+export function keptApp(cfg: Config, role: AppRole): { appId: number; slug?: string; inBox: boolean } | undefined {
+  if (role === "runner") return { appId: runnerAppId(cfg), ...(cfg.runnerApp ? { slug: cfg.runnerApp.app } : {}), inBox: !!cfg.runnerApp };
   const s = sourceOf(cfg);
-  return s.type === "github-actions" ? { appId: s.appId, ...(s.app ? { slug: s.app } : {}) } : undefined;
+  return s.type === "github-actions" ? { appId: s.appId, ...(s.app ? { slug: s.app } : {}), inBox: !!cfg.boxKeys?.includes("sources") } : undefined;
 }
 
-// The repos the source App must be on. jobs: the jobs repo (by --jobs, or the settings). load: the
-// test repo, or off.
 export type Wants = { jobs: string; load?: LoadRepo };
 export function wantsOf(cfg: Config, o: { jobs?: string; load?: LoadRepo | "off" } = {}): Wants {
   const s = sourceOf(cfg);
@@ -122,29 +124,36 @@ export function wantsOf(cfg: Config, o: { jobs?: string; load?: LoadRepo | "off"
   const load = o.load === "off" ? undefined : (o.load ?? kept);
   return { jobs: o.jobs ?? servedRepos(cfg)[0]!.name, ...(load ? { load } : {}) };
 }
-// The runner App: the settings repo only, and the v2 release repo while a v2 install may read it.
+// The runner App: the settings repo, and the v2 release repo while a v2 install may read it.
 const repoWants = (d: Pick<FlowDeps, "cfg">, role: AppRole, w: Wants): { want: string[]; may: string[] } =>
   role === "runner" ? { want: [settingsRepoOf(d.cfg)], may: d.cfg.releaseRepo ? [`${d.cfg.org}/${d.cfg.releaseRepo}`] : [] } : { want: [w.jobs, ...(w.load ? [w.load.name] : [])], may: [] };
 
-// Why an App, as its key signs, isn't true for its role: its own rights and events, its webhook, its
-// one installation, and the repos that installation reaches. A token is made to list the repos, and
-// revoked after. key: GitHub refuses the key. fewer: the App lacks a right its manifest has.
-export type Proof = { ok: true; slug: string; installation: number } | (InstallFail & { ok: false; key?: true; fewer?: true });
+// key: GitHub refuses the key. clock: it refuses because the box's clock is off. fewer: the App lacks
+// a right its manifest has.
+export type Proof = { ok: true; slug: string; installation: number } | (InstallFail & { ok: false; key?: true; clock?: true; fewer?: true });
+const fixable = (p: Proof) => !p.ok && (p.grew || p.waiting === true || p.fewer === true);
+
+// The clock guard from v2: a clock far off gets a 401 for every key, a good one too.
+function refused(r: Response, now: number): Proof {
+  const off = clockOffsetS(r, now);
+  if (off !== null && Math.abs(off) > CLOCK_LIMIT_S) return { ok: false, why: `the box's clock is ${off} s off GitHub's, so GitHub refuses every key. Set the clock right (System Settings, General, Date & Time), then type taskbox connect github again`, grew: false, clock: true };
+  return { ok: false, why: "GitHub refuses the App's key (401): the App was deleted, or its key revoked", grew: false, key: true };
+}
 
 export async function proveApp(d: Pick<FlowDeps, "sys" | "log" | "cfg">, role: AppRole, app: AppClient, w: { want: string[]; may: string[] }): Promise<Proof> {
-  const fail = (why: string, more: { grew?: boolean; key?: true; fewer?: true; waiting?: true } = {}): Proof => ({ ok: false, why, grew: false, ...more });
+  const fail = (why: string, more: { grew?: boolean; fewer?: true; waiting?: true; where?: InstallFail["where"] } = {}): Proof => ({ ok: false, why, grew: false, ...more });
   const a = await app.call("GET", "/app").catch(() => undefined);
   if (!a) return fail("GitHub couldn't be reached");
-  if (a.status === 401) return fail("GitHub refuses the App's key (401): the App was deleted, or its key revoked", { key: true });
+  if (a.status === 401) return refused(a, d.sys.now());
   if (!a.ok) return fail(`GitHub answered ${a.status} for the App`);
   const b = ((await bodyOf(a)) ?? {}) as Record<string, unknown>;
   if (b.id !== app.appId) return fail("the key signs as another App", { grew: true });
   const slug = typeof b.slug === "string" && SLUG.test(b.slug) ? b.slug : `app-${app.appId}`;
   const want: Record<string, string> = PERMISSIONS[role];
   const got = (isObj(b.permissions) ? b.permissions : {}) as Record<string, unknown>;
-  if (Object.keys(got).some((k) => want[k] !== got[k])) return fail(`the App has other rights than its own. On its Permissions page, leave only ${Object.entries(want).map(([k, v]) => `${k} ${v}`).join(", ")}`, { grew: true });
+  if (Object.keys(got).some((k) => want[k] !== got[k])) return fail(`the App has other rights than its own. On its Permissions page, leave only ${Object.entries(want).map(([k, v]) => `${k} ${v}`).join(", ")}`, { grew: true, where: "permissions" });
   const lacks = Object.keys(want).filter((k) => got[k] !== want[k]);
-  if (lacks.length) return fail(`the App lacks ${lacks.map((k) => `${k} ${want[k]}`).join(" and ")}. On its Permissions page, add it, then approve it on its Configure page`, { fewer: true, waiting: true });
+  if (lacks.length) return fail(`the App lacks ${lacks.map((k) => `${k} ${want[k]}`).join(" and ")}. On its Permissions page, add it, then approve it on its Configure page`, { fewer: true, waiting: true, where: "permissions" });
   if (Array.isArray(b.events) && b.events.length) return fail("the App subscribes to webhook events. Turn its webhook off", { grew: true });
   const hook = await app.call("GET", "/app/hook/config").catch(() => undefined);
   const hookWhy = hook ? hookProblem(hook.status, await bodyOf(hook), d.cfg.org) : "GitHub couldn't be reached";
@@ -180,49 +189,53 @@ async function slugOf(app: AppClient): Promise<string | undefined> {
   return typeof s === "string" && SLUG.test(s) ? s : undefined;
 }
 
-// Waits for an App to be true: each poll proves it, a new reason is said once, and the wait goes on
-// while the owner can fix it on GitHub. A refused key ends it.
+// Waits while the owner can fix it on GitHub; each new reason is said once. A refused key ends it.
 async function waitTrue(d: FlowDeps, role: AppRole, app: AppClient, w: Wants, first: Proof): Promise<Proof> {
   const until = d.sys.now() + WAIT_MS;
   let said = "";
   let p = first;
   for (;;) {
-    if (p.ok || p.key) return p;
+    if (p.ok || p.key || p.clock) return p;
     if (p.why !== said) {
       said = p.why;
       d.say(`Not yet: ${p.why}.`);
     }
     if (d.sys.now() >= until) return p;
     await d.sys.sleep(POLL_MS);
+    check(d);
     p = await proveApp(d, role, app, repoWants(d, role, w));
   }
 }
 
-// The page that fixes what the proof named: the install page for a missing installation or repo, the
-// permissions page for a missing right, else the App's installations.
 function fixPage(d: FlowDeps, slug: string, p: Proof): string {
-  if (p.ok) return installPage(slug);
-  if (p.fewer) return permissionsPage(d.cfg.org, slug);
-  if (/isn't installed yet|isn't on .* yet/.test(p.why)) return installPage(slug);
-  return `${appPage(d.cfg.org, slug)}/installations`;
+  if (p.ok || p.where === "install" || p.where === undefined) return installPage(slug);
+  return p.where === "permissions" ? permissionsPage(d.cfg.org, slug) : `${appPage(d.cfg.org, slug)}/installations`;
 }
 
 const repoLine = (d: FlowDeps, role: AppRole, w: Wants) => repoWants(d, role, w).want.join(" and ");
 
-// Making one App: the manifest, the code, the conversion and its checks, the webhook check, then the
-// pending record and the key handed to the keeper as pending. The new App, or undefined with a line.
-async function makeApp(d: FlowDeps, role: AppRole, replacing?: number): Promise<{ id: number; slug: string; pem: string } | undefined> {
+// Making one App: the manifest, the code, the conversion and its checks, then the pending record and
+// the key handed over. A code GitHub doesn't take is passed over when another may come.
+async function makeApp(d: FlowDeps, role: AppRole, other: number | undefined, replacing?: number): Promise<{ id: number; slug: string; pem: string } | undefined> {
   const phase = role === "runner" ? "making-runner" : "making-source";
   const name = appName(d.cfg.org, d.box, role, rand(d, 2).toString("hex"));
   const state = rand(d, 32).toString("hex");
+  check(d);
   d.phase(phase, { make: role, name });
   d.say(`You need to be an owner of ${d.cfg.org}. Your browser opens GitHub to make ${ROLE_NAME[role]}, ${name}: click Create GitHub App.`);
-  const got = await d.code(role, name, state);
-  if ("stop" in got) return void d.say(got.stop);
-  d.log.secret(got.code);
   const appsUrl = `https://github.com/organizations/${d.cfg.org}/settings/apps`;
-  const res = await apiCall(d.sys, "POST", `/app-manifests/${encodeURIComponent(got.code)}/conversions`).catch(() => undefined);
-  if (!res?.ok) {
+  let res: Response | undefined;
+  for (;;) {
+    const got = await d.code(role, name, state);
+    check(d);
+    if ("stop" in got) return void d.say(got.stop);
+    d.log.secret(got.code);
+    res = await apiCall(d.sys, "POST", `/app-manifests/${encodeURIComponent(got.code)}/conversions`).catch(() => undefined);
+    if (res?.ok) break;
+    if (got.more && res && (res.status === 404 || res.status === 422)) {
+      d.say("A code GitHub doesn't take was passed over; taskbox waits for the next.");
+      continue;
+    }
     // A code taken first by someone else converts once, and the box's conversion then fails.
     d.say(`GitHub didn't give the box the App (${res ? `it answered ${res.status}` : "it couldn't be reached"}). If ${name} is listed at ${appsUrl}, delete it there: whoever converted its code first holds its key, and it was never installed. Then type taskbox connect github again.`);
     d.event("connect.refused", `The box's conversion of ${name}'s code failed.`, { role, name });
@@ -230,26 +243,25 @@ async function makeApp(d: FlowDeps, role: AppRole, replacing?: number): Promise<
   }
   const raw = (await bodyOf(res)) as Record<string, unknown> | undefined;
   for (const k of ["pem", "client_secret", "webhook_secret", "client_id"]) if (typeof raw?.[k] === "string") d.log.secret(raw[k] as string);
-  const other = keptApp(d.cfg, role === "runner" ? "source" : "runner")?.appId;
   const conv = conversionProblem(raw, { role, org: d.cfg.org, since: d.since, ...(other !== undefined ? { other } : {}) });
-  if ("why" in conv) {
-    d.say(`GitHub made something the box won't use: ${conv.why}. Nothing was kept.${conv.made ? ` ${deleteLine(d.cfg.org, conv.made)}` : ""}`);
-    d.event("connect.refused", `An App was refused: ${conv.why}.`, { role, ...(conv.made ? { slug: conv.made } : {}) });
+  const refuse = (why: string, slug?: string) => {
+    d.say(`GitHub made something the box won't use: ${why}. Nothing was kept.${slug ? ` ${deleteLine(d.cfg.org, slug)}` : ""}`);
+    d.event("connect.refused", `An App was refused: ${why}.`, { role, ...(slug ? { slug } : {}) });
     return undefined;
-  }
+  };
+  if ("why" in conv) return refuse(conv.why, conv.made);
   const app = clientFor(d, conv.id, conv.pem);
   const hook = await app.call("GET", "/app/hook/config").catch(() => undefined);
   const hookWhy = hook ? hookProblem(hook.status, await bodyOf(hook), d.cfg.org) : "GitHub couldn't be reached for the App's webhook";
-  if (hookWhy) {
-    d.say(`GitHub made something the box won't use: ${hookWhy}. Nothing was kept. ${deleteLine(d.cfg.org, conv.slug)}`);
-    d.event("connect.refused", `An App was refused: ${hookWhy}.`, { role, slug: conv.slug, app: conv.id });
-    return undefined;
-  }
+  if (hookWhy) return refuse(hookWhy, conv.slug);
+  const pub = await apiCall(d.sys, "GET", `/apps/${conv.slug}`).catch(() => undefined);
+  const pubWhy = pub ? publicProblem(pub.status) : undefined;
+  if (pubWhy) return refuse(pubWhy, conv.slug);
   // The record first, then the key, so a stop from here on is found again by the next connect.
   const f = readPendingFile(d);
   f.apps[role] = { appId: conv.id, slug: conv.slug, ...(replacing !== undefined && replacing !== conv.id ? { replacing } : {}) };
   writePendingFile(d, f);
-  const why = placePending({ ...d.keys, chown: d.chown ?? (() => {}) }, role, conv.id, conv.pem);
+  const why = placePending(d.keys, role, conv.id, conv.pem);
   if (why) {
     delete f.apps[role];
     writePendingFile(d, f);
@@ -261,16 +273,16 @@ async function makeApp(d: FlowDeps, role: AppRole, replacing?: number): Promise<
   return { id: conv.id, slug: conv.slug, pem: conv.pem };
 }
 
-// One App, made true: finish a pending one, prove the kept one and send the owner to what it lacks,
-// or make it. What keeping needs, or undefined with a line said.
 type Ready = { role: AppRole; id: number; slug: string; installation: number; pending: boolean; replacing?: number };
 
-async function trueApp(d: FlowDeps, role: AppRole, w: Wants): Promise<Ready | undefined> {
+// One App made true: a pending one finished, a kept one proved and sent to what it lacks, or a new one
+// made. undefined, with a line said, when it can't be.
+async function trueApp(d: FlowDeps, role: AppRole, w: Wants, other?: number): Promise<Ready | undefined> {
   const installing = role === "runner" ? "installing-runner" : "installing-source";
   const pend = readPendingFile(d).apps[role];
   let target: { id: number; slug: string; pem: string; pending: boolean; replacing?: number } | undefined;
   if (pend) {
-    const pem = heldKey(d, role, pend.appId, true);
+    const pem = heldKey(d, role, pend.appId, true) ?? heldKey(d, role, pend.appId);
     if (pem) {
       d.say(`The App ${pend.slug} was made before and isn't kept yet: taskbox finishes it.`);
       target = { id: pend.appId, slug: pend.slug, pem, pending: true, ...(pend.replacing !== undefined ? { replacing: pend.replacing } : {}) };
@@ -282,8 +294,11 @@ async function trueApp(d: FlowDeps, role: AppRole, w: Wants): Promise<Ready | un
     }
   }
   const kept = keptApp(d.cfg, role);
+  let replacing: number | undefined;
   if (!target && kept) {
     const pem = heldKey(d, role, kept.appId);
+    // v2's App, not adopted yet: v2.6.1 still uses it, so no App is made beside it.
+    if (!pem && !kept.inBox && d.v2Keys?.length) return void d.say(`${cap(ROLE_NAME[role])} (App ${kept.appId}) is v2's, and the move to v3 adopts it with its key: as your admin user, type taskbox update. connect github makes no App beside it.`);
     if (pem) {
       const app = clientFor(d, kept.appId, pem);
       const p = await proveApp(d, role, app, repoWants(d, role, w));
@@ -291,10 +306,12 @@ async function trueApp(d: FlowDeps, role: AppRole, w: Wants): Promise<Ready | un
         d.say(`${cap(ROLE_NAME[role])} ${p.slug} passes: on ${repoLine(d, role, w)}, with its own rights and no more.`);
         return { role, id: kept.appId, slug: p.slug, installation: p.installation, pending: false };
       }
-      if (p.key) d.say(`${cap(ROLE_NAME[role])} ${kept.slug ?? `App ${kept.appId}`}: ${p.why}. taskbox makes a new App in its place.`);
-      else {
+      if (p.clock) return void d.say(`Not connected: ${p.why}.`);
+      if (!p.key) {
+        if (!fixable(p)) return void d.say(`${cap(ROLE_NAME[role])} couldn't be checked: ${p.why}. Nothing changed; type taskbox connect github again.`);
         const slug = kept.slug ?? (await slugOf(app)) ?? `app-${kept.appId}`;
         const page = fixPage(d, slug, p);
+        check(d);
         d.phase(installing, { open: page });
         d.open(page);
         d.say(`${cap(ROLE_NAME[role])} ${slug}: ${p.why}. Your browser opens the page that fixes it. Waiting up to 10 minutes.`);
@@ -302,16 +319,22 @@ async function trueApp(d: FlowDeps, role: AppRole, w: Wants): Promise<Ready | un
         if (!done.ok) return void d.say(`Not connected: ${done.why}. Type taskbox connect github again once it is fixed.`);
         return { role, id: kept.appId, slug: done.slug, installation: done.installation, pending: false };
       }
+      d.say(`${cap(ROLE_NAME[role])} ${kept.slug ?? `App ${kept.appId}`}: ${p.why}. taskbox makes a new App in its place.`);
+      replacing = kept.appId;
+    } else if (kept.inBox) {
+      d.say(`${cap(ROLE_NAME[role])} (App ${kept.appId}) has no key with the GitHub key keeper. taskbox makes a new App in its place.`);
+      replacing = kept.appId;
     }
   }
   if (!target) {
-    const made = await makeApp(d, role, kept?.appId);
+    const made = await makeApp(d, role, other, replacing);
     if (!made) return undefined;
-    target = { ...made, pending: true, ...(kept && kept.appId !== made.id ? { replacing: kept.appId } : {}) };
+    target = { ...made, pending: true, ...(replacing !== undefined && replacing !== made.id ? { replacing } : {}) };
   }
   const app = clientFor(d, target.id, target.pem);
   const first = await proveApp(d, role, app, repoWants(d, role, w));
-  if (!first.ok) {
+  check(d);
+  if (fixable(first)) {
     const page = fixPage(d, target.slug, first);
     d.phase(installing, { open: page });
     d.open(page);
@@ -323,13 +346,12 @@ async function trueApp(d: FlowDeps, role: AppRole, w: Wants): Promise<Ready | un
   return { role, id: target.id, slug: done.slug, installation: done.installation, pending: target.pending, ...(target.replacing !== undefined ? { replacing: target.replacing } : {}) };
 }
 
-// Uninstalls an App with its own key, so a copied key reads nothing. Whether every installation went.
+// Uninstalls an App with its own key. Whether every installation went.
 async function uninstallAll(app: AppClient): Promise<boolean> {
   const r = await app.installations().catch(() => undefined);
   if (!r?.ok) return false;
-  const list = installationsOf(await bodyOf(r)) ?? [];
   let all = true;
-  for (const i of list) {
+  for (const i of installationsOf(await bodyOf(r)) ?? []) {
     const del = await app.uninstall(i.id).catch(() => undefined);
     if (!del || (del.status !== 204 && del.status !== 404)) all = false;
   }
@@ -337,81 +359,85 @@ async function uninstallAll(app: AppClient): Promise<boolean> {
 }
 
 const sourceSettings = (id: number, slug: string, w: Wants): SourceSettings => ({ type: "github-actions", appId: id, app: slug, repos: [w.jobs, ...(w.load ? [w.load] : [])] });
+const sameSource = (a: SourceSettings, b: SourceSettings) =>
+  a.type === "github-actions" && b.type === "github-actions" && a.appId === b.appId && a.app === b.app && JSON.stringify(a.repos.map((r) => (typeof r === "string" ? r : [r.name, r.runnerGroup]))) === JSON.stringify(b.repos.map((r) => (typeof r === "string" ? r : [r.name, r.runnerGroup])));
 
-// Keeping, once both Apps are proved: each pending key becomes the App's key, box.json names the Apps
-// by one rename, then each App replaced is uninstalled with its own key and its key file goes.
-async function keep(d: FlowDeps, ready: Ready[], w: Wants): Promise<void> {
+// Keeping, once both are proved: pending keys renamed, box.json written, then each replaced App's key
+// goes. A replaced App's key was refused, so it can't uninstall itself: the line gives its delete link.
+async function keep(d: FlowDeps, ready: Ready[], w: Wants): Promise<boolean> {
+  check(d);
   d.phase("keeping");
-  for (const r of ready) if (r.pending) promoteKey(d.keys.dir, r.role, r.id);
+  for (const r of ready) {
+    const why = r.pending ? promoteKey(d.keys.dir, r.role, r.id) : undefined;
+    if (why) return (d.say(`Not connected: ${why}. Nothing in box.json changed; type taskbox connect github again.`), false);
+  }
   const runner = ready.find((r) => r.role === "runner");
   const source = ready.find((r) => r.role === "source");
-  writeBoxKeys(d, {
-    ...(runner ? { runnerApp: { appId: runner.id, app: runner.slug } } : {}),
-    ...(source ? { sources: [sourceSettings(source.id, source.slug, w)] } : {}),
-  });
+  writeBoxKeys(d, { ...(runner ? { runnerApp: { appId: runner.id, app: runner.slug } } : {}), ...(source ? { sources: [sourceSettings(source.id, source.slug, w)] } : {}) });
   writePendingFile(d, { v: 1, apps: {} });
   for (const r of ready) {
     if (r.replacing === undefined || r.replacing === r.id) continue;
-    const old = heldKey(d, r.role, r.replacing);
-    if (old) {
-      const app = clientFor(d, r.replacing, old);
-      const slug = await slugOf(app);
-      d.say((await uninstallAll(app)) ? `Uninstalled the App it replaces (App ${r.replacing}), so its key reads nothing.` : `The App it replaces (App ${r.replacing}) couldn't be uninstalled. Uninstall it on GitHub.`);
-      if (slug) d.say(deleteLine(d.cfg.org, slug));
-    } else d.say(`The App it replaces (App ${r.replacing}) has no key on this box, so taskbox can't uninstall it. Uninstall it on GitHub, and delete it.`);
+    d.say(`The App it replaces (App ${r.replacing}) can't be reached with its key: uninstall and delete it on GitHub, ${d.cfg.org}'s Settings, GitHub Apps.`);
     dropKey(d.keys.dir, r.role, r.replacing);
   }
   for (const r of ready) d.event("connect.kept", `${cap(ROLE_NAME[r.role])} ${r.slug} is kept.`, { role: r.role, slug: r.slug, app: r.id });
+  return true;
 }
 
 export type ConnectOpts = { jobs?: string; load?: LoadRepo | "off" };
 
-// taskbox connect github: both Apps made true, the runner App first, then kept together. 0 when both
-// pass, 1 when one couldn't be made true (a line says why and what to do).
+// taskbox connect github: 0 when both pass, 1 when one couldn't be made true (a line says why). An op
+// that ends under it (its deadline, op cancel) drops what it left pending, as op cancel does.
 export async function connectGithub(d: FlowDeps, o: ConnectOpts = {}): Promise<number> {
+  try {
+    return await connectOnce(d, o);
+  } catch (e) {
+    if (!(e instanceof Ended)) throw e;
+    d.say("The connect ended before it kept anything (its deadline, or op cancel).");
+    for (const l of await cancelConnect(d)) d.say(l);
+    return 1;
+  }
+}
+
+async function connectOnce(d: FlowDeps, o: ConnectOpts): Promise<number> {
   const w = wantsOf(d.cfg, o);
   const jobsOwner = w.jobs.split("/")[0]!;
   if (jobsOwner.toLowerCase() !== d.cfg.org.toLowerCase()) return (d.say(`The jobs repo, ${w.jobs}, is in ${jobsOwner}, and this box's org is ${d.cfg.org}. The job source App installs only in its own org. Nothing changed.`), 1);
   if (w.load && w.load.runnerGroup === d.cfg.runnerGroup) return (d.say(`The test repo's runner group must be its own, never ${d.cfg.runnerGroup}. Nothing changed.`), 1);
   if (o.load === "off") return loadOff(d, w);
-  const ready: Ready[] = [];
-  for (const role of ["runner", "source"] as const) {
-    const r = await trueApp(d, role, w);
-    if (!r) return 1;
-    ready.push(r);
-  }
+  const runner = await trueApp(d, "runner", w, keptApp(d.cfg, "source")?.appId);
+  if (!runner) return 1;
+  const source = await trueApp(d, "source", w, runner.id);
+  if (!source) return 1;
+  const ready = [runner, source];
   if (w.load) {
-    const why = await loadGroupProblem(d, ready[0]!, w.load);
+    const why = await loadGroupProblem(d, runner, w.load);
     if (why) return (d.say(`Not connected: ${why}. Nothing changed.`), 1);
   }
-  const src = ready[1]!;
-  const changed = ready.some((r) => r.pending) || d.cfg.runnerApp?.appId !== ready[0]!.id || !d.cfg.boxKeys?.includes("sources") || JSON.stringify(sourceOf(d.cfg)) !== JSON.stringify(sourceSettings(src.id, src.slug, w));
+  const kept = sourceOf(d.cfg);
+  const changed = ready.some((r) => r.pending) || d.cfg.runnerApp?.appId !== runner.id || !d.cfg.boxKeys?.includes("sources") || !sameSource(kept, sourceSettings(source.id, source.slug, w));
   if (!changed) return (d.say("Both Apps pass. Nothing changed."), 0);
-  await keep(d, ready, w);
+  if (!(await keep(d, ready, w))) return 1;
   d.say(`Connected: ${ready.map((r) => `${ROLE_NAME[r.role]} ${r.slug}`).join(" and ")}. The loop takes them once no job runs. taskbox check shows them.`);
-  if (o.jobs && o.jobs !== servedRepos(d.cfg)[0]!.name) d.say(`The jobs repo ${o.jobs} also needs jobsFrom and its workflows in runnerGroup.workflows in the settings (a settings PR), and its templates (taskbox template apply).`);
+  if (o.jobs && o.jobs !== servedRepos(d.cfg)[0]!.name) d.say(`The jobs repo ${o.jobs} also needs jobsFrom and its workflows in the settings (a settings PR), and its templates (taskbox template apply).`);
   return 0;
 }
 
-// The test repo's runner group, through the runner App: there, and not the box's own group.
 async function loadGroupProblem(d: FlowDeps, runner: Ready, load: LoadRepo): Promise<string | undefined> {
   const pem = heldKey(d, "runner", runner.id, runner.pending);
   if (!pem) return "the runner App's key isn't with the GitHub key keeper";
-  const app = clientFor(d, runner.id, pem);
-  const t = await app.token(runner.installation, { permissions: { organization_self_hosted_runners: "write" } }).catch(() => ({ status: 0 }));
+  const t = await clientFor(d, runner.id, pem).token(runner.installation, { permissions: { organization_self_hosted_runners: "write" } }).catch(() => ({ status: 0 }));
   if ("status" in t) return `GitHub answered ${t.status || "nothing"} for the runner App's token`;
   try {
     const r = await tokenCall(d.sys, t.token, "GET", `/orgs/${d.cfg.org}/actions/runner-groups?per_page=100`);
     if (!r.ok) return `GitHub answered ${r.status} for the runner groups`;
-    if (!runnerGroupsOf(await bodyOf(r)).some((x) => x.name === load.runnerGroup)) return `there is no runner group named ${load.runnerGroup}`;
-    return undefined;
+    return runnerGroupsOf(await bodyOf(r)).some((x) => x.name === load.runnerGroup) ? undefined : `there is no runner group named ${load.runnerGroup}`;
   } finally {
     await revokeToken(d.sys, t.token);
   }
 }
 
-// --load off: the owner takes the App off the test repo first, then the box's source drops it, so the
-// App is never on a repo the box's settings don't name.
+// --load off: the owner takes the App off the test repo first, then box.json drops it.
 async function loadOff(d: FlowDeps, w: Wants): Promise<number> {
   const kept = keptApp(d.cfg, "source");
   const pem = kept ? heldKey(d, "source", kept.appId) : undefined;
@@ -419,15 +445,16 @@ async function loadOff(d: FlowDeps, w: Wants): Promise<number> {
   const app = clientFor(d, kept.appId, pem);
   const only = { want: [w.jobs], may: [] };
   let done = await proveApp(d, "source", app, only);
-  if (!done.ok && !done.key) {
+  if (!done.ok && fixable(done)) {
     const slug = kept.slug ?? (await slugOf(app)) ?? `app-${kept.appId}`;
     const page = `${appPage(d.cfg.org, slug)}/installations`;
     d.phase("installing-source", { open: page });
     d.open(page);
     d.say(`Take the App ${slug} off the test repo: on its Configure page, under Only select repositories, remove it. Waiting up to 10 minutes.`);
     const until = d.sys.now() + WAIT_MS;
-    while (!done.ok && !done.key && d.sys.now() < until) {
+    while (!done.ok && fixable(done) && d.sys.now() < until) {
       await d.sys.sleep(POLL_MS);
+      check(d);
       done = await proveApp(d, "source", app, only);
     }
   }
@@ -441,8 +468,7 @@ async function loadOff(d: FlowDeps, w: Wants): Promise<number> {
 
 type NoCode = Omit<FlowDeps, "code" | "phase" | "since" | "box" | "open">;
 
-// taskbox disconnect github: the source App is uninstalled with its own key, box.json keeps "none" as
-// the source, and its key goes.
+// taskbox disconnect github: the source App uninstalled with its own key, none kept, its key gone.
 export async function disconnectGithub(d: NoCode): Promise<number> {
   const kept = keptApp(d.cfg, "source");
   if (!kept) return (d.say("This box has no job source App. Nothing changed."), 0);
@@ -459,66 +485,85 @@ export async function disconnectGithub(d: NoCode): Promise<number> {
   return 0;
 }
 
-// op cancel on a connect: a pending App is uninstalled with its own key if it was installed, its key
-// and record go, and the lines give each one's delete link.
-export async function cancelConnect(d: Omit<NoCode, "say" | "event">): Promise<string[]> {
+// op cancel's hook, and the flow's own at its deadline: a pending App is uninstalled with its own key,
+// its key and record go, and the line gives its delete link. A failed uninstall is said.
+export async function cancelConnect(d: Pick<FlowDeps, "sys" | "log" | "cfg" | "keys" | "pendingFile" | "rootUid" | "chown">): Promise<string[]> {
   const f = readPendingFile(d);
   const lines: string[] = [];
   for (const role of ["runner", "source"] as const) {
     const p = f.apps[role];
     if (!p) continue;
-    const pem = heldKey(d, role, p.appId, true);
-    if (pem) await uninstallAll(clientFor(d, p.appId, pem));
+    const pem = heldKey(d, role, p.appId, true) ?? heldKey(d, role, p.appId);
+    const gone = pem ? await uninstallAll(clientFor(d, p.appId, pem)) : true;
     dropKey(d.keys.dir, role, p.appId);
-    lines.push(`Dropped the App ${p.slug} from this box. ${deleteLine(d.cfg.org, p.slug)}`);
+    lines.push(gone ? `Dropped the App ${p.slug} from this box. ${deleteLine(d.cfg.org, p.slug)}` : `Dropped the App ${p.slug}'s key from this box, but it couldn't be uninstalled: uninstall it on GitHub. ${deleteLine(d.cfg.org, p.slug)}`);
   }
   writePendingFile(d, { v: 1, apps: {} });
   return lines;
 }
 
+// The hook op cancel calls for this op's type, once the op cancel command lands (core/ops.ts cancel
+// is pure, and has no hook of its own yet).
+export interface OpCancelHook {
+  type: string;
+  cancel(d: Parameters<typeof cancelConnect>[0]): Promise<string[]>;
+}
+export const CONNECT_CANCEL: OpCancelHook = { type: CONNECT_OP.type, cancel: cancelConnect };
+
 // ---- The controller's code, through the agent spool ----
-// The code is unsigned: GitHub's conversion needs no authentication, so whoever holds a code converts
-// it first, and a signature over it would add nothing. The box takes one code per App, once, and only
-// while a connect op is open and making that App. It says nothing about who sent it.
+// Unsigned: whoever holds a code converts it first, so a signature would add nothing. A code names
+// the op it is for and is taken only while that op is open, comes from the controller, and is making
+// an App. The newest CODES_KEPT are kept, and the child tries each, so a junk code never blocks a
+// real one.
 export const CODE_KIND = "connect-code";
+export const CODES_KEPT = 20;
+const OP_ID = /^op_[0-9A-HJKMNP-TV-Z]{26}$/;
+const CODE_RE = /^[A-Za-z0-9_-]{1,100}$/;
 export function codeRequestProblem(body: Record<string, unknown>): string | undefined {
-  if (!Object.keys(body).every((k) => k === "code")) return "a connect code carries its code alone";
-  return typeof body.code === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(body.code) ? undefined : "a connect code is one code";
+  if (!Object.keys(body).every((k) => k === "code" || k === "op")) return "a connect code carries its op and its code alone";
+  if (typeof body.op !== "string" || !OP_ID.test(body.op)) return "a connect code names its op";
+  return typeof body.code === "string" && CODE_RE.test(body.code) ? undefined : "a connect code is one code";
 }
 
-export type CodeInbox = { v: 1; op: string; role: AppRole; code: string; at: number };
+export type CodeInbox = { v: 1; op: string; role: AppRole; codes: string[] };
 
-// The guard takes a code for the open connect op. running: the ops running now. The inbox to write, or
-// why the code is refused. A code already taken for this op and App refuses any other.
-export function takeConnectCode(running: readonly { id: string; type: string; state: string; phase: string }[], inbox: CodeInbox | undefined, code: string, now: number): { inbox: CodeInbox } | { why: string } {
-  const op = running.find((o) => o.type === CONNECT_OP.type && o.state === "running");
-  if (!op) return { why: "no connect is open on this box" };
+export function takeConnectCode(running: readonly Pick<Op, "id" | "type" | "state" | "phase" | "params">[], inbox: CodeInbox | undefined, req: { op: string; code: string }): { inbox: CodeInbox } | { why: string } {
+  const op = running.find((o) => o.type === CONNECT_OP.type && o.state === "running" && o.id === req.op);
+  if (!op) return { why: "no connect by that op is open on this box" };
+  if (op.params.from !== "controller") return { why: "that connect takes its code at the box" };
   const role: AppRole | undefined = op.phase === "making-runner" ? "runner" : op.phase === "making-source" ? "source" : undefined;
   if (!role) return { why: "the open connect isn't making an App now" };
-  if (inbox && inbox.op === op.id && inbox.role === role) return { why: "this connect took a code for that App already" };
-  return { inbox: { v: 1, op: op.id, role, code, at: now } };
+  const had = inbox && inbox.op === op.id && inbox.role === role ? inbox.codes.filter((c) => c !== req.code) : [];
+  return { inbox: { v: 1, op: op.id, role, codes: [...had, req.code].slice(-CODES_KEPT) } };
 }
 
 export function readCodeInbox(path: string, rootUid = 0): CodeInbox | undefined {
-  const r = readOwnedJson(path, { owner: rootUid, max: 4096 }, (v) => (isObj(v) && v.v === 1 && typeof v.op === "string" && (v.role === "runner" || v.role === "source") && typeof v.code === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(v.code) && Number.isSafeInteger(v.at) ? (v as unknown as CodeInbox) : "not a code"));
+  const r = readOwnedJson(path, { owner: rootUid, max: 8192 }, (v) => (isObj(v) && v.v === 1 && typeof v.op === "string" && (v.role === "runner" || v.role === "source") && Array.isArray(v.codes) && v.codes.length <= CODES_KEPT && v.codes.every((c) => typeof c === "string" && CODE_RE.test(c)) ? (v as unknown as CodeInbox) : "not a code inbox"));
   return r.kind === "ok" ? r.value : undefined;
 }
 
-// The child's side: waits for the guard to put this op's code for this App in the inbox.
-export async function waitForCode(d: Pick<FlowDeps, "sys" | "rootUid">, path: string, op: string, role: AppRole, untilMs: number): Promise<CodeGot> {
-  for (;;) {
-    const c = readCodeInbox(path, d.rootUid ?? 0);
-    if (c && c.op === op && c.role === role) return { code: c.code };
-    if (d.sys.now() >= untilMs) return { stop: "No App was made within the hour. Nothing changed. Type taskbox connect github to start again." };
-    await d.sys.sleep(1000);
-  }
+// The child's side: each code for this op and App it hasn't tried, newest first.
+export function codeWaiter(d: Pick<FlowDeps, "sys" | "rootUid" | "live">, path: string, op: string, untilMs: number) {
+  const tried = new Set<string>();
+  return async (role: AppRole): Promise<CodeGot> => {
+    for (;;) {
+      const c = readCodeInbox(path, d.rootUid ?? 0);
+      const next = c && c.op === op && c.role === role ? [...c.codes].reverse().find((x) => !tried.has(x)) : undefined;
+      if (next) {
+        tried.add(next);
+        return { code: next, more: true };
+      }
+      if (d.sys.now() >= untilMs || (d.live && !d.live())) return { stop: "No App was made in time. Nothing changed. Type taskbox connect github to start again." };
+      await d.sys.sleep(1000);
+    }
+  };
 }
 
-// ---- Adoption from v2.6.0 ----
-// taskbox-1's two Apps are kept with no new App and no click: each key is read once (no link followed,
-// owner, type and size checked), proved, and handed to the keeper; box.json names them. The old files
-// stay while the v2.6.1 install is kept, since it reads only those.
-export async function adoptV2(d: NoCode, o: { runnerKey: string; sourceKey?: string; owners: readonly number[] }): Promise<string[]> {
+// ---- The move from v2.6.0 ----
+// Each v2 key is read once, proved and handed to the keeper; box.json names the Apps. Then the old
+// files move to root's attic, so the service account can no longer read them; a rollback to v2 puts
+// them back from there.
+export async function adoptV2(d: NoCode, o: { runnerKey: string; sourceKey?: string; serviceUid: number; attic: string; retire: string[] }): Promise<string[]> {
   const lines: string[] = [];
   const set: Record<string, unknown> = {};
   const w = wantsOf(d.cfg);
@@ -527,11 +572,11 @@ export async function adoptV2(d: NoCode, o: { runnerKey: string; sourceKey?: str
       const held = heldKey(d, role, id);
       return held ? ((await slugOf(clientFor(d, id, held))) ?? `app-${id}`) : undefined;
     }
-    const pem = readAdoptedKey(path, o.owners);
-    if (!pem) return void lines.push(`${cap(ROLE_NAME[role])}'s key at ${path} can't be read as a key file of its own, so it wasn't adopted.`);
+    const pem = readAdoptedKey(path, o.serviceUid);
+    if (!pem) return void lines.push(`${cap(ROLE_NAME[role])}'s key at ${path} isn't a key file of the service account's own, so it wasn't adopted.`);
     const p = await proveApp(d, role, clientFor(d, id, pem), repoWants(d, role, w));
     if (!p.ok) return void lines.push(`${cap(ROLE_NAME[role])} (App ${id}) wasn't adopted: ${p.why}.`);
-    const why = placePending({ ...d.keys, chown: d.chown ?? (() => {}) }, role, id, pem) ?? promoteKey(d.keys.dir, role, id);
+    const why = placePending(d.keys, role, id, pem) ?? promoteKey(d.keys.dir, role, id);
     if (why) return void lines.push(`${cap(ROLE_NAME[role])} (App ${id}) wasn't adopted: ${why}.`);
     lines.push(`Adopted ${ROLE_NAME[role]} ${p.slug}.`);
     return p.slug;
@@ -539,12 +584,36 @@ export async function adoptV2(d: NoCode, o: { runnerKey: string; sourceKey?: str
   const rslug = await take("runner", d.cfg.appId, o.runnerKey);
   if (rslug) set.runnerApp = { appId: d.cfg.appId, app: rslug };
   const s = sourceOf(d.cfg);
-  if (s.type === "github-actions" && o.sourceKey) {
-    const sslug = await take("source", s.appId, o.sourceKey);
-    if (sslug) set.sources = [sourceSettings(s.appId, sslug, w)];
-  }
+  const sslug = s.type === "github-actions" && o.sourceKey ? await take("source", s.appId, o.sourceKey) : undefined;
+  if (s.type === "github-actions" && sslug) set.sources = [sourceSettings(s.appId, sslug, w)];
   if (Object.keys(set).length) writeBoxKeys(d, set);
+  // Only once every App is with the keeper: the loop then reads no old file.
+  if (rslug && (s.type !== "github-actions" || sslug)) {
+    mkdirSync(o.attic, { recursive: true, mode: 0o700 });
+    for (const f of o.retire) {
+      try {
+        if (!lstatSync(f).isFile()) continue;
+        renameSync(f, join(o.attic, basename(f)));
+        lines.push(`Moved the old key file ${f} out of the service account's reach.`);
+      } catch {}
+    }
+  }
   return lines;
+}
+
+// The old key files the service account can read, for the move and the "Old App keys" row.
+export function oldKeyFiles(p: Pick<Paths, "key" | "oldKey" | "actionsKeyDir">): string[] {
+  let names: string[] = [];
+  try {
+    names = readdirSync(p.actionsKeyDir).filter((n) => /^(actions-.*|runner)\.pem$/.test(n));
+  } catch {}
+  return [...new Set([p.key, p.oldKey, ...names.map((n) => join(p.actionsKeyDir, n))])].filter((f) => {
+    try {
+      return lstatSync(f).isFile();
+    } catch {
+      return false;
+    }
+  });
 }
 
 // ---- taskbox connect status ----
@@ -574,13 +643,12 @@ export function connectStatus(d: Pick<FlowDeps, "cfg" | "keys" | "pendingFile" |
 }
 
 // ---- v2's update path ----
-// An update by v2's install code (install.ts) keeps a release's source in box.json before the new
-// release, which may drop it, is used. It reads the key where v2 placed it. The v3 update and the
-// migration use adoptV2 above instead.
+// v2's install code keeps a release's source in box.json before the new release, which may drop it, is
+// used. It reads the key where v2 placed it.
 export interface ReleaseSourceDeps {
   sys: Sys;
   log: Log;
-  paths: import("./config.ts").Paths;
+  paths: Paths;
   cfg: Config;
   chown(path: string, uid: number, gid: number): void;
   rootUid?: number;
@@ -588,9 +656,6 @@ export interface ReleaseSourceDeps {
 }
 
 export async function adoptSource(d: ReleaseSourceDeps, cfg: Config = d.cfg): Promise<{ slug: string } | { why: string }> {
-  const { proveActionsKey, placeSourceKey } = await import("./keys.ts");
-  const { readActionsKey } = await import("./queue.ts");
-  const { sourceKeyPath } = await import("./settings/scheduling.ts");
   const box = readBoxFile(d.paths.boxSettings, d.rootUid ?? 0);
   if (box.settings && "sources" in box.settings) return { why: "this box keeps its own source already" };
   const src = sourceOf(d.cfg);
@@ -600,27 +665,22 @@ export async function adoptSource(d: ReleaseSourceDeps, cfg: Config = d.cfg): Pr
   const proof = await proveActionsKey(d, cfg, pem, src.appId);
   if (proof) return { why: proof.why };
   const slug = (await slugOf(clientFor(d, src.appId, pem))) ?? `app-${src.appId}`;
-  // The key from before is also written under its App's ID. The old file stays, so an undo to an
-  // older release, which reads only actions-key.pem, keeps its source.
-  const named = join(d.paths.actionsKeyDir, `actions-${src.appId}.pem`);
-  if (sourceKeyPath(d.paths, src.appId) !== named) {
+  // Also under its App's ID; the old file stays for an undo to a release that reads only it.
+  if (sourceKeyPath(d.paths, src.appId) !== join(d.paths.actionsKeyDir, `actions-${src.appId}.pem`)) {
     const why = await placeSourceKey(d, pem, src.appId, d.serviceUid);
     if (why) return { why };
   }
   const s = sourceOf(cfg);
   const load = s.type === "github-actions" ? s.repos.filter((r): r is LoadRepo => typeof r === "object") : [];
-  writeOwnedText(d.paths.boxSettings, `${JSON.stringify({ sources: [{ type: "github-actions", appId: src.appId, repos: [cfg.jobsFrom, ...load], app: slug }] }, null, 2)}\n`, { mode: 0o644, owner: d.rootUid ?? 0, chown: d.chown });
+  writeOwnedText(d.paths.boxSettings, `${JSON.stringify({ sources: [{ type: "github-actions", appId: src.appId, app: slug, repos: [cfg.jobsFrom, ...load] }] }, null, 2)}\n`, { mode: 0o644, owner: d.rootUid ?? 0, chown: d.chown });
   return { slug };
 }
 
-// ---- The op, run at the box ----
-// At the box, the admin's command runs the flow itself, with the listener in the admin's session. It
-// writes the op's first record, holds the op's lease, and sends every later change as a report, so the
-// guard (core/child.ts follow) stays the only writer of the record after that: it applies the reports,
-// ends the op at its deadline, and fails it once the lease is free because the command stopped.
-export async function openConnectOp(o: { ops: import("./core/ops.ts").OpFolder; now: number; boot: string; actor: string; params: Record<string, import("./core/statement.ts").Json> }): Promise<{ op: import("./core/ops.ts").Op; send: (r: import("./core/child.ts").Report) => void } | { why: string }> {
-  const { begin, listOps, writeOp } = await import("./core/ops.ts");
-  const { jobLabel, leasePath, progressPath, reporter, reportsPath } = await import("./core/child.ts");
+// ---- The op ----
+// At the box the admin's command runs the flow and writes the op's first record; from then on it holds
+// the lease and sends reports, and the guard's follow is the record's only writer. from: "box" or
+// "controller", which says where the code comes from.
+export function openConnectOp(o: { ops: OpFolder; now: number; boot: string; actor: string; params: Record<string, Json> }): { op: Op; send: (r: Report) => void } | { why: string } {
   const b = begin(listOps(o.ops).ops, CONNECT_OP, { subject: "box", params: o.params, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
   if (b.kind !== "start") return { why: b.kind === "busy" ? b.why : `A connect (${b.op.id}) is running already. taskbox op show ${b.op.id} -w follows it.` };
   const op = { ...b.op, child: { label: jobLabel(b.op.id), boot: o.boot, spawnedAt: o.now, applied: 0, events: ["connect."], limitMs: CONNECT_MS } };
@@ -628,3 +688,28 @@ export async function openConnectOp(o: { ops: import("./core/ops.ts").OpFolder; 
   const r = reporter({ op: op.id, reports: reportsPath(o.ops, op.id), progress: progressPath(o.ops, op.id), lease: leasePath(o.ops, op.id), exit: (c) => process.exit(c) });
   return { op, send: (x) => r.send(x) };
 }
+
+// Whether a connect op is running: disconnect waits for it.
+export const connectRunning = (ops: Pick<OpFolder, "dir" | "owner">) => listOps(ops).ops.find((x) => x.type === CONNECT_OP.type && x.state === "running");
+
+// The guard's side, for the shared request dispatcher: one connect-code request applied to the inbox
+// (root's, 600). The outcome's why, or undefined when the code was kept.
+export function applyCodeRequest(o: { inbox: string; ops: Pick<OpFolder, "dir" | "owner">; rootUid?: number; chown?: (p: string, u: number, g: number) => void }, body: Record<string, unknown>): string | undefined {
+  const why = codeRequestProblem(body);
+  if (why) return why;
+  const t = takeConnectCode(listOps(o.ops).ops, readCodeInbox(o.inbox, o.rootUid ?? 0), { op: body.op as string, code: body.code as string });
+  if ("why" in t) return t.why;
+  writeOwnedText(o.inbox, `${JSON.stringify(t.inbox)}\n`, { mode: 0o600, owner: o.rootUid ?? 0, ...(o.chown ? { chown: o.chown } : {}) });
+  return undefined;
+}
+
+// The agent spool's connect-code handler, in the shape of the shared dispatcher's unsigned handlers
+// (core/dispatch.ts on its branch): its handlers list adds this one line once it lands.
+export const CONNECT_CODE_HANDLER = {
+  kind: CODE_KIND,
+  check: codeRequestProblem,
+  async apply(c: { state: { dir: string; ops: string }; rootUid: number; chown?: (p: string, u: number, g: number) => void }, r: { body: Record<string, unknown> }) {
+    const why = applyCodeRequest({ inbox: join(c.state.dir, "connect-code.json"), ops: { dir: c.state.ops, owner: c.rootUid }, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) }, r.body);
+    return why ? { ok: false as const, said: why, code: "denied" as const } : { ok: true as const, said: "The box took the code." };
+  },
+};

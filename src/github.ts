@@ -436,11 +436,17 @@ export class AppClient {
 export const tokenCall = (sys: Pick<Sys, "fetch" | "timeout">, token: string, method: string, path: string, body?: unknown) => apiCall(sys, method, path, token, body);
 
 // The repos an installation token reaches, up to a hundred, by full name.
+// Up to five pages, so an App that grew past a hundred repos is seen whole.
 export async function tokenRepos(sys: Pick<Sys, "fetch" | "timeout">, token: string): Promise<string[] | { status: number }> {
-  const r = await tokenCall(sys, token, "GET", "/installation/repositories?per_page=100");
-  if (!r.ok) return { status: r.status };
-  const b = (await bodyOf(r)) as { repositories?: { full_name?: unknown }[] } | undefined;
-  return (b?.repositories ?? []).map((x) => (typeof x?.full_name === "string" ? x.full_name : ""));
+  const all: string[] = [];
+  for (let page = 1; page <= 5; page++) {
+    const r = await tokenCall(sys, token, "GET", `/installation/repositories?per_page=100&page=${page}`);
+    if (!r.ok) return { status: r.status };
+    const got = (((await bodyOf(r)) as { repositories?: { full_name?: unknown }[] } | undefined)?.repositories ?? []).map((x) => (typeof x?.full_name === "string" ? x.full_name : ""));
+    all.push(...got);
+    if (got.length < 100) break;
+  }
+  return all;
 }
 
 // A token is done with: revoked, whatever happens.

@@ -1,18 +1,13 @@
-// The GitHub key keeper (the broker): local.taskbox.broker, a KeepAlive LaunchDaemon running as
-// _taskboxgh. It is the only reader of both Apps' keys (keys.ts, /var/db/taskbox-broker/keys/), and it
-// answers a closed set of asks over two unix sockets:
-//   run/broker.sock: the service account and root reach it (the folder's ACL). The loop's asks.
-//   guard/broker.sock: root alone. The guard's asks as well.
-// It never returns a key, a JWT, or a token wider than the ask. A refusal is an answer too. Each
-// answer is counted by ask and hour, and the counts go to used.jsonl as key.used lines; no token is
-// ever written there.
+// The GitHub key keeper (local.taskbox.broker, as _taskboxgh): the only reader of both Apps' keys. It
+// answers a closed set of asks over run/broker.sock (the service account and root) and
+// guard/broker.sock (root), and never returns a key, a JWT, or a token wider than the ask.
 import { appendFileSync, chmodSync, lstatSync, unlinkSync } from "node:fs";
 import { type Clock, realClock } from "./clock.ts";
 import { type AppRole, installationsOf } from "./connect.ts";
 import type { Config } from "./config.ts";
 import { AppClient, bodyOf, orgRunnersOf, type RunnerGroup, runnerGroupsOf, revokeToken, type TokenAsk, tokenCall } from "./github.ts";
-import { GitHub, type GroupRunner } from "./github.ts";
-import { GitHubError } from "./ghfail.ts";
+import { GitHub, type GroupRunner, type Head } from "./github.ts";
+import { CLOCK_LIMIT_S, clockOffsetS, GitHubError } from "./ghfail.ts";
 import { readHeldKey } from "./keys.ts";
 import type { Log } from "./log.ts";
 import { runnerAppId, settingsRepoOf } from "./settings/connect.ts";
@@ -23,19 +18,19 @@ import { boxLabels } from "./watchdog.ts";
 export const ASK_MAX = 4096;
 export const ANSWER_MAX = 2 * 1024 * 1024;
 export const ASK_MS = 30_000;
-export const FILES_MAX = 20;
-export const FILE_MAX = 1024 * 1024;
 
 // The closed set. Anything else is refused.
-export const ASKS = ["source-token", "jit-config", "group-state", "remove-runner", "org-runners", "settings-files", "runner-repos", "group-workflows"] as const;
+export const ASKS = ["source-token", "jit-config", "group-state", "remove-runner", "org-runners", "group-workflows"] as const;
 export type AskName = (typeof ASKS)[number];
 // Asks served on the guard's socket only.
-export const GUARD_ONLY: ReadonlySet<AskName> = new Set(["settings-files", "runner-repos", "group-workflows"]);
+export const GUARD_ONLY: ReadonlySet<AskName> = new Set(["org-runners", "group-workflows"]);
+// The most of each ask an hour, so a stolen service account can't mint runners without end.
+export const PER_HOUR: Partial<Record<AskName, number>> = { "jit-config": 120, "remove-runner": 240, "source-token": 240 };
 
 export type Ask = { ask: AskName } & Record<string, unknown>;
 export type Answer = ({ ok: true } & Record<string, unknown>) | { ok: false; why: string; class: FailClass };
 // The classes the runner chain counts (ghfail.ts), and refusals of the ask itself.
-export type FailClass = "key" | "gone" | "refused" | "rate" | "timeout" | "network" | "server" | "ask";
+export type FailClass = "key" | "clock" | "gone" | "refused" | "rate" | "timeout" | "network" | "server" | "ask";
 
 export interface BrokerDeps {
   sys: Pick<Sys, "fetch" | "timeout" | "now" | "after" | "every">;
@@ -49,12 +44,15 @@ export interface BrokerDeps {
 const no = (why: string, c: FailClass = "ask"): Answer => ({ ok: false, why, class: c });
 const classOf = (status: number): FailClass => (status === 401 ? "key" : status === 404 ? "gone" : status === 429 ? "rate" : status >= 500 ? "server" : status === 0 ? "network" : "refused");
 const failed = (what: string, status: number): Answer => no(`GitHub answered ${status || "nothing"} for ${what}`, classOf(status));
+// A 401 with GitHub's clock far from the box's is the clock's, never the key's (v2's guard).
+const failedRes = (d: BrokerDeps, what: string, r: Response): Answer => {
+  const off = r.status === 401 ? clockOffsetS(r, d.sys.now()) : null;
+  return off !== null && Math.abs(off) > CLOCK_LIMIT_S ? no(`the box's clock is ${off} s off GitHub's, so GitHub refuses every key`, "clock") : failed(what, r.status);
+};
 
 const REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 const RUNNER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const SHA = /^[0-9a-f]{40}$/;
-const FILE = /^(?!.*\.\.)(?!\/)[A-Za-z0-9._/-]{1,200}$/;
 export const WORKFLOW = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}\/\.github\/workflows\/[A-Za-z0-9._-]{1,100}\.ya?ml@[A-Za-z0-9._/*-]{1,200}$/;
 
 // One App's client, or why there is none: its ID from the settings, its key from the folder.
@@ -76,7 +74,7 @@ async function runnerToken(d: BrokerDeps, cfg: Config, scope: "runners" | { cont
   const app = client(d, "runner", cfg);
   if (typeof app === "string") return no(app, "key");
   const inst = await app.call("GET", `/orgs/${cfg.org}/installation`);
-  if (!inst.ok) return failed("the runner App's installation", inst.status);
+  if (!inst.ok) return failedRes(d, "the runner App's installation", inst);
   const id = ((await bodyOf(inst)) as { id?: unknown } | undefined)?.id;
   if (!Number.isSafeInteger(id)) return no("GitHub's answer for the runner App's installation had no ID", "server");
   const ask: TokenAsk = scope === "runners" ? { permissions: { organization_self_hosted_runners: "write" as const } } : { repositories: [scope.contents.split("/")[1]!], permissions: { contents: "read" as const } };
@@ -132,7 +130,7 @@ async function answerAsk(d: BrokerDeps, a: Ask, guard: boolean): Promise<Answer>
       const app = client(d, "source", cfg);
       if (typeof app === "string") return no(app, "key");
       const inst = await app.call("GET", `/repos/${repo}/installation`);
-      if (!inst.ok) return failed("the job source App's installation", inst.status);
+      if (!inst.ok) return failedRes(d, "the job source App's installation", inst);
       const id = ((await bodyOf(inst)) as { id?: unknown } | undefined)?.id;
       if (!Number.isSafeInteger(id)) return no("GitHub's answer for the job source App's installation had no ID", "server");
       const t = await app.token(id as number, { repositories: [repo.split("/")[1]!], permissions: { actions: "read" } });
@@ -210,59 +208,20 @@ async function answerAsk(d: BrokerDeps, a: Ask, guard: boolean): Promise<Answer>
         if (!g.ok) return failed("the runner groups", g.status);
         const groups = runnerGroupsOf(await bodyOf(g));
         const ours = new Set(servedRepos(cfg).map((r) => r.runnerGroup));
-        const r = await tokenCall(d.sys, t.token, "GET", `/orgs/${cfg.org}/actions/runners?per_page=100`);
-        if (!r.ok) return failed("the org's runners", r.status);
-        const runners = orgRunnersOf(await bodyOf(r));
+        const runners = [];
+        for (let page = 1; page <= 5; page++) {
+          const r = await tokenCall(d.sys, t.token, "GET", `/orgs/${cfg.org}/actions/runners?per_page=100&page=${page}`);
+          if (!r.ok) return failed("the org's runners", r.status);
+          const got = orgRunnersOf(await bodyOf(r));
+          runners.push(...got);
+          if (got.length < 100) break;
+        }
         const ourGroups = new Set(groups.filter((x) => ours.has(x.name)).map((x) => x.id));
         return {
           ok: true,
           groups: groups.map((x) => ({ name: x.name, ours: ours.has(x.name), isDefault: x.isDefault })),
           runners: runners.map((x) => ({ name: x.name, ours: x.groupId !== undefined && ourGroups.has(x.groupId) && x.name.startsWith(`${cfg.runnerNamePrefix}-`) })),
         };
-      } finally {
-        await revokeToken(d.sys, t.token);
-      }
-    }
-    case "runner-repos": {
-      const app = client(d, "runner", cfg);
-      if (typeof app === "string") return no(app, "key");
-      const list = await app.installations();
-      if (!list.ok) return failed("the runner App's installations", list.status);
-      const inst = installationsOf(await bodyOf(list));
-      if (!inst || inst.length !== 1) return no("the runner App must be installed once", "refused");
-      const t = await app.token(inst[0]!.id, { permissions: { metadata: "read" } });
-      if ("status" in t) return failed("the runner App's token", t.status);
-      try {
-        const r = await tokenCall(d.sys, t.token, "GET", "/installation/repositories?per_page=100");
-        if (!r.ok) return failed("the runner App's repositories", r.status);
-        const names = (((await bodyOf(r)) as { repositories?: { full_name?: unknown }[] } | undefined)?.repositories ?? []).map((x) => x?.full_name).filter((x): x is string => typeof x === "string");
-        return { ok: true, repos: names, selection: inst[0]!.selection };
-      } finally {
-        await revokeToken(d.sys, t.token);
-      }
-    }
-    case "settings-files": {
-      // A commit's files by SHA from the settings repo, through a Contents read token on that repo.
-      if (typeof a.sha !== "string" || !SHA.test(a.sha)) return no("a settings commit is named by its full SHA");
-      const files = a.files;
-      if (!Array.isArray(files) || files.length === 0 || files.length > FILES_MAX || !files.every((f) => typeof f === "string" && FILE.test(f))) return no(`one to ${FILES_MAX} file paths in the settings repo`);
-      const repo = settingsRepoOf(cfg);
-      const t = await runnerToken(d, cfg, { contents: repo });
-      if (isAnswer(t)) return t;
-      try {
-        const out: Record<string, string | null> = {};
-        for (const f of files as string[]) {
-          const r = await tokenCall(d.sys, t.token, "GET", `/repos/${repo}/contents/${f.split("/").map(encodeURIComponent).join("/")}?ref=${a.sha}`);
-          if (r.status === 404) {
-            out[f] = null;
-            continue;
-          }
-          if (!r.ok) return failed(`the settings file ${f}`, r.status);
-          const b = (await bodyOf(r)) as { type?: unknown; encoding?: unknown; content?: unknown; size?: unknown } | undefined;
-          if (b?.type !== "file" || b.encoding !== "base64" || typeof b.content !== "string" || typeof b.size !== "number" || b.size > FILE_MAX) return no(`the settings file ${f} isn't a file under 1 MB`, "refused");
-          out[f] = Buffer.from(b.content, "base64").toString("utf8");
-        }
-        return { ok: true, sha: a.sha, files: out };
       } finally {
         await revokeToken(d.sys, t.token);
       }
@@ -298,7 +257,8 @@ const PEM = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
 export const leaks = (text: string) => PEM.test(text) || JWT.test(text);
 
-// Counts of answers by hour and ask, written once an hour is over. No token is in them.
+// Counts of answers by hour and ask. Each hour's line is written once the hour is over, every hour,
+// with no counts too, so a line missing says the keeper isn't writing. No token is in them.
 export class Used {
   private hour = "";
   private counts = new Map<string, number>();
@@ -306,16 +266,23 @@ export class Used {
     private write: (line: string) => void,
     private now: () => number,
   ) {}
-  count(ask: string, ok: boolean): void {
-    const hour = new Date(this.now()).toISOString().slice(0, 13);
-    if (hour !== this.hour) this.flush();
+  private at = () => new Date(this.now()).toISOString().slice(0, 13);
+  // Moves to the hour now, writing the one before it.
+  tick(): void {
+    const hour = this.at();
+    if (hour === this.hour) return;
+    if (this.hour) this.write(JSON.stringify({ type: "key.used", hour: this.hour, counts: Object.fromEntries([...this.counts].sort()) }));
     this.hour = hour;
+    this.counts.clear();
+  }
+  seen(ask: string): number {
+    this.tick();
+    return this.counts.get(ask) ?? 0;
+  }
+  count(ask: string, ok: boolean): void {
+    this.tick();
     const k = `${ask}${ok ? "" : ".refused"}`;
     this.counts.set(k, (this.counts.get(k) ?? 0) + 1);
-  }
-  flush(): void {
-    if (this.counts.size) this.write(JSON.stringify({ type: "key.used", hour: this.hour, counts: Object.fromEntries([...this.counts].sort()) }));
-    this.counts.clear();
   }
 }
 
@@ -330,9 +297,11 @@ export async function handle(d: BrokerDeps, text: string, guard: boolean, used?:
     a = undefined;
   }
   if (!a || typeof a !== "object" || Array.isArray(a) || typeof (a as Ask).ask !== "string") out = no("not an ask");
+  else if (used && PER_HOUR[(a as Ask).ask] !== undefined && used.seen((a as Ask).ask) >= PER_HOUR[(a as Ask).ask]!) out = no(`the GitHub key keeper answers ${(a as Ask).ask} at most ${PER_HOUR[(a as Ask).ask]} times an hour`, "rate");
   else {
     try {
-      out = await answerAsk(d, a as Ask, guard);
+      // The keeper logs no token, so it keeps none to redact: each ask's secrets go with it.
+      out = await answerAsk({ ...d, log: { secret: () => {}, write: (l) => d.log.write(l) } }, a as Ask, guard);
     } catch (e) {
       out = e instanceof GitHubError ? no(e.message, e.kind as FailClass) : no(`GitHub couldn't be reached (${String((e as Error)?.name ?? "error").slice(0, 40)})`, (e as Error)?.name === "TimeoutError" ? "timeout" : "network");
     }
@@ -366,6 +335,7 @@ export interface Served {
 export function serve(d: BrokerDeps, path: string, guard: boolean, used: Used, mode: number): Served {
   clearSocket(path);
   const bufs = new WeakMap<object, string>();
+  const asked = new WeakSet<object>();
   const server = Bun.listen<{ t?: () => void }>({
     unix: path,
     socket: {
@@ -374,6 +344,7 @@ export function serve(d: BrokerDeps, path: string, guard: boolean, used: Used, m
         s.data = { t: d.sys.after(ASK_MS, () => s.end(), { unref: true }) };
       },
       data(s, chunk) {
+        if (asked.has(s)) return; // one ask a connection
         const text = (bufs.get(s) ?? "") + Buffer.from(chunk).toString("utf8");
         if (text.length > ASK_MAX + 1) {
           s.end(`${JSON.stringify(no("not an ask"))}\n`);
@@ -384,7 +355,7 @@ export function serve(d: BrokerDeps, path: string, guard: boolean, used: Used, m
           bufs.set(s, text);
           return;
         }
-        bufs.set(s, `${ASK_MAX + 2}`.padEnd(ASK_MAX + 2, "x")); // one ask only
+        asked.add(s);
         void handle(d, text.slice(0, nl), guard, used).then((line) => s.end(`${line}\n`));
       },
       close(s) {
@@ -408,12 +379,10 @@ export function runBroker(d: BrokerDeps, o: { socket: string; guardSocket: strin
   // guard's folder lets root alone in.
   const a = serve(d, o.socket, false, used, 0o666);
   const b = serve(d, o.guardSocket, true, used, 0o600);
-  // Each hour's counts are written once the hour is over, even when nothing asks.
-  const flush = d.sys.every(60 * 60_000, () => used.flush());
+  const flush = d.sys.every(60_000, () => used.tick());
   return {
     stop: () => {
       flush();
-      used.flush();
       a.stop();
       b.stop();
     },
@@ -487,9 +456,15 @@ export class BrokerGitHub extends GitHub {
     if (!a.ok) raise(a);
     return { offsetS: null };
   }
-  override async token(scope: "contents" | "runners"): Promise<string> {
-    if (scope === "contents") throw new GitHubError("refused", null, "the runner App reads no release repo in v3");
+  override async token(_scope: "contents" | "runners"): Promise<string> {
     return NO_TOKEN;
+  }
+  // The runner App reads no release repo in v3, so the status file's head is unknown, with no line.
+  override async mainCommit(_token: string): Promise<string> {
+    return "unknown";
+  }
+  override async head(_token: string, _ref: string): Promise<Head> {
+    return { sha: "unknown", short: "unknown", pr: 0, title: "", mergedAt: "" };
   }
   override async runnerGroupId(_token: string, group = this.bcfg.runnerGroup, repo = this.bcfg.jobsFrom): Promise<number> {
     const which = repo === this.bcfg.jobsFrom && group === this.bcfg.runnerGroup ? "jobs" : "load";

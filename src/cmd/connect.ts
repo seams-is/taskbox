@@ -36,14 +36,22 @@ async function connect(c: BoxCtx, which: "connect" | "disconnect"): Promise<numb
   const log = new Log();
   const base = { sys, log, cfg, boxFile: c.p.boxSettings, pendingFile: join(dirname(c.p.boxSettings), "connect-pending.json"), keys, chown: c.chown, say };
   const quiet = { ...base, event: () => {} };
-  if (which === "disconnect") return flow.disconnectGithub(quiet);
+  const ops = { dir: state.ops, owner: 0, chown: c.chown };
+  const running = flow.connectRunning(ops);
+  if (which === "disconnect") return running ? (say(`A connect (${running.id}) is running. Wait for it, or taskbox op cancel ${running.id}, then disconnect.`), 1) : flow.disconnectGithub(quiet);
   const boot = await bootId(sys);
   if (!boot) return (say("This boot's identity can't be read, so the connect can't be recorded. Nothing changed."), 1);
   const load = c.opts.load === "off" ? ("off" as const) : typeof c.opts.load === "string" ? { name: c.opts.load, role: "load" as const, runnerGroup: c.opts.group as string } : undefined;
   const jobs = typeof c.opts.jobs === "string" ? c.opts.jobs : undefined;
-  const opened = await flow.openConnectOp({ ops: { dir: state.ops, owner: 0, chown: c.chown }, now: sys.now(), boot, actor: `admin ${adminName}`, params: { ...(jobs ? { jobs } : {}), ...(load ? { load: load === "off" ? "off" : load.name } : {}) } });
+  const opened = flow.openConnectOp({ ops, now: sys.now(), boot, actor: `admin ${adminName}`, params: { from: "box", ...(jobs ? { jobs } : {}), ...(load ? { load: load === "off" ? "off" : load.name } : {}) } });
   if ("why" in opened) return (say(opened.why), 1);
   const { op, send } = opened;
+  const { readOp } = await import("../core/ops.ts");
+  // The op's deadline or op cancel ends its record; the command then stops too.
+  const live = () => {
+    const r = readOp(ops, op.id);
+    return r.kind === "ok" && r.value.state === "running";
+  };
   let listener: { kill(): void } | undefined;
   process.on("SIGINT", () => {
     listener?.kill();
@@ -58,26 +66,32 @@ async function connect(c: BoxCtx, which: "connect" | "disconnect"): Promise<numb
     ...base,
     box: (c.deps.hostname?.() ?? hostname()).split(".")[0]!.toLowerCase(),
     since: op.startedAt,
+    live,
+    v2Keys: flow.oldKeyFiles(c.p),
     phase: (p, a) => send({ phase: p, ...(a ? { progress: { text: flow.askText(a).slice(0, 120) } } : {}) }),
     event: (type, text, data) => send({ event: { type, text: text.slice(0, 240), ...(data ? { data } : {}) } }),
     open: (url) => void sys.run("/bin/launchctl", asAdmin(["/usr/bin/open", url]), { timeoutMs: 15_000 }),
     code: (role, appName, st) =>
       new Promise((resolve) => {
-        const setup = { role, org: cfg.org, appName, state: st, pageToken: randomBytes(32).toString("hex"), minutes: 60, open: true };
+        // No longer than the op has left, and it ends with this command, a SIGKILL too.
+        const minutes = Math.max(1, Math.min(60, Math.floor((op.deadline! - sys.now()) / 60_000)));
+        const setup = { role, org: cfg.org, appName, state: st, pageToken: randomBytes(32).toString("hex"), minutes, open: true, watch: process.pid };
         let done = false;
         const finish = (g: import("../connectflow.ts").CodeGot) => {
           if (done) return;
           done = true;
+          stopWatch();
           listener?.kill();
           resolve(g);
         };
+        const stopWatch = sys.every(2000, () => (live() ? undefined : finish({ stop: "The connect ended (its deadline, or op cancel)." })));
         // In the admin's own session (launchctl asuser), as the admin, so the page reaches their screen.
         const proc = sys.spawn("/bin/launchctl", asAdmin(["/opt/taskbox/bin/bun", "--no-install", "--no-env-file", "--cwd=/", "--config=/opt/taskbox/app/bunfig.run.toml", "/opt/taskbox/app/src/listen.ts"]), {
           stdin: `${JSON.stringify(setup)}\n`,
           onLine: (l) => {
             try {
               const e = JSON.parse(l) as Record<string, unknown>;
-              if (Number.isInteger(e.port)) say(`If the browser doesn't open, open http://127.0.0.1:${e.port}/start/... from the file taskbox opened, or type taskbox connect github again.`);
+              if (Number.isInteger(e.port)) say("If the browser doesn't open, type taskbox connect github again.");
               else if (typeof e.code === "string" && e.state === st) finish({ code: e.code });
               else if (e.timeout === true) finish({ stop: "No App was made within the hour. Nothing changed. Type taskbox connect github to start again." });
             } catch {}
@@ -92,7 +106,7 @@ async function connect(c: BoxCtx, which: "connect" | "disconnect"): Promise<numb
   try {
     exit = await flow.connectGithub(deps, { ...(jobs ? { jobs } : {}), ...(load ? { load } : {}) });
   } finally {
-    send({ end: exit === 0 ? { state: "succeeded" } : { state: "failed", why: "an App couldn't be made true; the command said why" } });
+    if (live()) send({ end: exit === 0 ? { state: "succeeded" } : { state: "failed", why: "an App couldn't be made true; the command said why" } });
   }
   if (exit === 0) say("Sign out of GitHub in that browser window now: your picture, top right, Sign out.");
   return exit;
