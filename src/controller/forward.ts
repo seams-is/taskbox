@@ -5,9 +5,10 @@ import { type CommandSpec, EXIT, type Parsed, parse, usage } from "../command.ts
 import { cleanLine, type Envelope, envelope, resultOf } from "../envelope.ts";
 import { registry } from "../registry.ts";
 import { renamed } from "../renames.ts";
+import { commandFor } from "../shell.ts";
 import { readEnvelopes } from "../schema.ts";
 import type { BoxStatus } from "./commands.ts";
-import { BOX_WORD, type Paired, readConfig } from "./home.ts";
+import { NAME, type Paired, readConfig } from "./home.ts";
 import { ask as boxAsk, chooseBoxes, configOrStop, connectBox, type Connected, type Deps, isStop, linesFor, type Stop, sshDeps, sshStop, tailnetOrStop } from "./reach.ts";
 import { readAnswer } from "./schema.ts";
 import { boxChecksBody, footer, header, jobsBody, logBody, nextFor, nowLine, statusBody } from "./screens.ts";
@@ -34,7 +35,7 @@ export function cutBox(argv: readonly string[]): { sel?: string; rest: string[] 
       continue;
     }
     if (sel !== undefined) return { no: "--box is given twice." };
-    if (v === undefined || !BOX_WORD.test(v)) return { no: "--box takes a paired box's name, such as --box taskbox-1, or all." };
+    if (v === undefined || !NAME.test(v)) return { no: "--box takes a paired box's name, such as --box taskbox-1, or all." };
     sel = v;
   }
   return { sel, rest };
@@ -113,11 +114,8 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
   // The controller draws a watched view again itself, so -w never reaches the box, and --json is added
   // in the version agreed. The agent's own verbs go word for word.
   const words = spec.raw ? cut.rest : cut.rest.filter((w) => w !== "--json" && w !== "-w" && w !== "--watch");
-  const atBox = (why: string): Asked => {
-    const line = `${name} runs at the box: ${why}.`;
-    return { shown: refusal(d, json, spec.path.join("."), EXIT.failed, [line], { code: "refused-over-ssh", message: line, fix: null, who: "at-the-box" }) };
-  };
-  if (!spec.shell || (spec.internal && spec.path[0] !== "hello")) return atBox("the box's agent account doesn't run it");
+  const atBox = (line: string): Asked => ({ shown: refusal(d, json, spec.path.join("."), EXIT.failed, [line], { code: "refused-over-ssh", message: line, fix: null, who: "at-the-box" }) });
+  if (!spec.shell || (spec.internal && spec.path[0] !== "hello")) return atBox(`${name} runs at the box: the box's agent account doesn't run it.`);
   if (cut.sel === "all" && !reads(spec)) {
     const l = `--box all is for commands that read. Name one box for ${name}.`;
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [l], { code: "usage", message: l, fix: null, who: null }) };
@@ -126,7 +124,12 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
   try {
     line = lineFor(spec, words, 4);
   } catch {}
-  if (line === undefined || !sendable(line)) return atBox(spec.raw ? "those words aren't ones the box's shell takes" : "the controller can't read its answer over ssh yet");
+  if (line === undefined || !sendable(line)) {
+    if (!spec.raw) return atBox(`${name} answers only as text the controller can't read yet. Type it at the box.`);
+    // The agent's verbs: the box's own parser says what is wrong with the words.
+    const why = line === undefined ? "Those words have characters the box's shell doesn't take." : (commandFor(line) as { no?: string }).no ?? "The box's shell doesn't take those words.";
+    return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [cleanLine(why)], { code: "usage", message: cleanLine(why), fix: null, who: null }) };
+  }
   return { spec, parsed: p, sel: cut.sel, words, json, watch: !spec.raw && p.flags.watch === true };
 }
 

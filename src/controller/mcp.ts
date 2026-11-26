@@ -8,6 +8,7 @@ import { answers, readLine } from "./forward.ts";
 import { NAME } from "./home.ts";
 import { type Deps, isStop } from "./reach.ts";
 import { readAnswer } from "./schema.ts";
+import { allRows } from "../rows/index.ts";
 
 export const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const ASK = { "anthropic/requiresUserInteraction": true };
@@ -25,7 +26,7 @@ interface Tool {
   _meta?: typeof ASK;
 }
 // Free-text fields a call may ask for by name, per tool.
-const TEXT: Record<string, readonly string[]> = { status: ["job", "name"], job_list: ["name"], check: ["detail"] };
+const TEXT: Record<string, readonly string[]> = { status: ["job", "name"], job_list: ["name"], check: ["name", "detail"] };
 const include = (tool: string) => ({ type: "array", items: { type: "string", enum: [...TEXT[tool]!] }, maxItems: 4, description: "Free-text fields to add, each quoted and labelled as untrusted text from the box." });
 const TABLE: { tool: Tool; kind?: Kind; argv: (a: Args) => string[] }[] = [
   { tool: { name: "status", title: "Box status", description: "The box's state, slots, jobs and release, as named fields. Read only.", inputSchema: { type: "object", properties: { box: BOX, include: include("status") }, additionalProperties: false }, annotations: read }, kind: "status", argv: () => ["status"] },
@@ -55,7 +56,12 @@ const oneOf = (list: readonly string[]) => (v: unknown) => (typeof v === "string
 const match = (re: RegExp) => (v: unknown) => (typeof v === "string" && re.test(v) ? v : null);
 const release = match(/^v?\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.\d{1,4})?$/);
 const commit = match(/^[0-9a-f]{7,40}$/);
-const rowName = match(/^[A-Z][A-Za-z0-9 -]{0,40}$/);
+// A check row's name only when it is one of the rows this release has; any other comes as text, if asked.
+let known: Set<string> | undefined;
+const rowName = (v: unknown) => {
+  known ??= new Set(allRows().map((r) => r.name));
+  return typeof v === "string" && known.has(v) ? v : null;
+};
 
 // Text a call asked for: quoted, cut and labelled.
 export const untrusted = (v: unknown, where: string) => (typeof v === "string" ? { untrusted: `untrusted text from ${where}`, text: JSON.stringify(cleanLine(v).slice(0, 120)) } : null);
@@ -79,7 +85,7 @@ export function fields(kind: Kind, answer: Record<string, unknown>, ask: Readonl
     };
   }
   if (kind === "jobs") return { jobs: list(answer.jobs).map((j) => ({ startedAt: time(j.startedAt), jobAt: time(j.jobAt), endedAt: time(j.endedAt), result: oneOf(RESULTS)(j.result), vmDeleted: typeof j.vmDeleted === "boolean" ? j.vmDeleted : null, ...text("name", j.name) })) };
-  return { checks: list(answer.checks).map((c) => ({ name: rowName(c.name), status: oneOf(STATUSES)(c.status), ...text("detail", c.detail) })) };
+  return { checks: list(answer.checks).map((c) => ({ name: rowName(c.name) ?? (ask.has("name") ? untrusted(c.name, where) : null), status: oneOf(STATUSES)(c.status), ...text("detail", c.detail) })) };
 }
 
 const refuse = (why: string) => ({ content: [{ type: "text", text: why }], isError: true });

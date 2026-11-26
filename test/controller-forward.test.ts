@@ -42,7 +42,7 @@ describe("every command the agent shell runs", () => {
       const argv = [...s.path, ...(s.args?.min ? Array(s.args.min).fill("agent-a-1") : [])];
       const a = readLine(d, argv);
       if ("shown" in a) {
-        expect({ argv, line: a.shown.lines[0] }).toEqual({ argv, line: expect.stringMatching(/runs at the box|^taskbox |Usage|needs|takes/) });
+        expect({ argv, line: a.shown.lines[0] }).toEqual({ argv, line: expect.stringMatching(/runs at the box|answers only as text|^taskbox |^Type taskbox |Usage|needs|takes/) });
         continue;
       }
       const r = await runLine(d, argv);
@@ -55,11 +55,15 @@ describe("every command the agent shell runs", () => {
     const { w, d, box } = v3();
     for (const argv of [["load", "status"], ["template", "show", "load"], ["status", "--state", "/tmp/x"]]) {
       const r = await runLine(d, argv);
-      expect({ argv, code: r.code, line: r.lines[0] }).toEqual({ argv, code: r.code === 2 ? 2 : 1, line: expect.stringMatching(/runs at the box|--state/) });
+      expect({ argv, code: r.code, line: r.lines[0] }).toEqual({ argv, code: r.code === 2 ? 2 : 1, line: expect.stringMatching(/answers only as text the controller can't read yet|--state/) });
     }
     expect(w.calls).toEqual([]);
     await runLine(d, ["workspaces", "--json"]);
     expect(box.sent.at(-1)).toBe("workspaces --json");
+    // The agent's verbs: the box's own parser says what is wrong, as a usage error.
+    const r = await runLine(d, ["deny", "a1"]);
+    expect(r.code).toBe(2);
+    expect(r.lines[0]).not.toMatch(/runs at the box/);
   }, 30_000);
 
   test("one box timing out is its own block; the other answers", async () => {

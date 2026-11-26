@@ -73,9 +73,8 @@ export function isEd25519(b64: string): boolean {
   return raw.readUInt32BE(15) === 32;
 }
 
-// A box's name: a MagicDNS label. BOX_WORD is that, or all.
+// A box's name: a MagicDNS label. The one pattern for it; --box all matches it too.
 export const NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/;
-export const BOX_WORD = NAME;
 // A macOS account name, as the box's agent account is named.
 export const ACCOUNT = /^[A-Za-z_][A-Za-z0-9._-]{0,31}$/;
 // Accounts that are never a box's agent account: root, macOS's own, and names starting with _.

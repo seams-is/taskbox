@@ -3,14 +3,13 @@
 // the Claude tool, also saves that answer to status.json, mode 600. `taskbox statusline` reads only
 // that file: it makes no SSH call and no Tailscale call, and never reaches a box.
 import type { BoxStatus } from "./commands.ts";
-import { type Home, NODE, readSmall, writePrivateFile } from "./home.ts";
+import { type Home, NAME, NODE, readSmall, writePrivateFile } from "./home.ts";
 import { KINDS, WORDS } from "./schema.ts";
 import { hhmm } from "./screens.ts";
 import { scrub } from "./scrub.ts";
 
 export const CONTROLLER_ANSWERS = 1;
 export const STALE_MS = 15 * 60_000;
-const NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
 
 export interface BoxLine {
   name: string;

@@ -108,7 +108,8 @@ describe("--box picks one, or box use", () => {
     expect(readConfig(d.home)).toMatchObject({ ok: true, config: { default: NODE2 } });
     await runLine(d, ["status"]);
     expect(w.sshTo().every((c) => c.startsWith(ADDRESS2))).toBe(true);
-    expect((await boxRemove(d, "taskbox-2", true)).code).toBe(0);
+    d.ask = async () => "taskbox-2";
+    expect((await boxRemove(d, "taskbox-2")).code).toBe(0);
     expect(readConfig(d.home)).toMatchObject({ ok: true, config: { default: null, boxes: [{ node: NODE }] } });
   }, CEILING);
 
@@ -199,20 +200,25 @@ describe("box add with several", () => {
   test("box remove forgets one box and its key file, and nothing else", async () => {
     const { w, d } = two();
     await status(d);
-    const s = await boxRemove(d, "taskbox-2", true);
+    d.ask = async () => "taskbox-2";
+    const s = await boxRemove(d, "taskbox-2");
     expect(s.lines[1]).toBe(`Forgot taskbox-2 (${NODE2}). Nothing changed on the box.`);
     expect(readConfig(d.home)).toMatchObject({ ok: true, config: { boxes: [{ node: NODE }] } });
     expect(existsSync(join(d.home.knownHostsDir, NODE2))).toBe(false);
     expect(existsSync(join(d.home.knownHostsDir, NODE))).toBe(true);
     w.calls = [];
-    expect((await boxRemove(d, "taskbox-9", true)).code).toBe(1);
+    expect((await boxRemove(d, "taskbox-9")).code).toBe(1);
     expect(w.calls).toEqual([]);
   }, CEILING);
 
-  test("box remove asks for the box's name, or takes -y; with no terminal and no -y it refuses", async () => {
+  test("box remove asks for the box's name, always; with no terminal it refuses, and -y isn't one of its flags", async () => {
     const { d } = two();
     d.tty = false;
-    expect((await boxRemove(d, "taskbox-2", false)).lines[1]).toBe("taskbox box remove asks you to type the box's name, so it runs in your own terminal, or with -y.");
+    expect((await boxRemove(d, "taskbox-2")).lines[1]).toBe("taskbox box remove forgets a box's pinned key, so it asks for the box's name to be typed, in your own terminal.");
+    expect((await runLine(d, ["box", "remove", "taskbox-2", "-y"])).code).toBe(2);
+    d.tty = true;
+    d.ask = async () => "taskbox-1";
+    expect((await boxRemove(d, "taskbox-2")).lines[1]).toBe("Not forgotten: the name typed isn't the box's.");
     const c = readConfig(d.home);
     expect(c.ok && c.config.boxes).toHaveLength(2);
   }, CEILING);
@@ -348,6 +354,16 @@ describe("a box whose key or install ID changed", () => {
     const e = deps(w, ["taskbox-1"]);
     writeConfig(e.home, controllerConfig([old]));
     expect(await pair(e, { name: "taskbox-1", yes: true })).toMatchObject({ fresh: true, box: { hostKey: KEY } });
+  }, CEILING);
+
+  test("remove then add, with no terminal, can't pin a changed box either", async () => {
+    const { w, old } = changed();
+    const d = deps(w);
+    writeConfig(d.home, controllerConfig([old]));
+    d.tty = false;
+    expect((await runLine(d, ["box", "remove", "taskbox-1"])).code).toBe(1);
+    expect(await pair(d, { name: "taskbox-1", yes: true })).toMatchObject({ code: 1 });
+    expect(readConfig(d.home)).toMatchObject({ ok: true, config: { boxes: [{ hostKey: old.hostKey }] } });
   }, CEILING);
 
   test("--agent refuses root, macOS's own names and names starting with _", async () => {

@@ -129,19 +129,18 @@ export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fres
   }
 }
 
-// taskbox box remove NAME: forgets one box, its entry and its known-hosts file. Nothing changes
-// on the box.
-export async function boxRemove(d: Deps, sel: string, yes: boolean): Promise<Screen> {
+// taskbox box remove NAME: forgets one box, its entry and its known-hosts file. Nothing changes on
+// the box. It drops a pinned key, so it needs a person at a terminal who types the box's name: no -y,
+// so a remove then an add can't pin a changed box unattended.
+export async function boxRemove(d: Deps, sel: string): Promise<Screen> {
   const c = configOrStop(d);
   if (isStop(c)) return stopScreen(d, c, null);
   const shown = sel.replace(/[^A-Za-z0-9-]/g, "").slice(0, 64);
   const box = findBox(c.config, sel);
   if (!box) return stopScreen(d, { stop: `No paired box is named ${shown}.`, next: "Type taskbox box list to see them." });
-  if (!yes) {
-    if (!d.tty) return stopScreen(d, { stop: "taskbox box remove asks you to type the box's name, so it runs in your own terminal, or with -y.", next: `Type taskbox box remove ${shown} -y.` });
-    const typed = (await d.ask(`Forget ${box.name}? Nothing changes on the box. Type its name: `)).trim();
-    if (typed.toLowerCase() !== box.name.toLowerCase()) return stopScreen(d, { stop: "Not forgotten: the name typed isn't the box's.", next: "Nothing to do." });
-  }
+  if (!d.tty) return stopScreen(d, { stop: "taskbox box remove forgets a box's pinned key, so it asks for the box's name to be typed, in your own terminal.", next: "The owner types it in Terminal." });
+  const typed = (await d.ask(`Forget ${box.name}? Nothing changes on the box. Type its name: `)).trim();
+  if (typed.toLowerCase() !== box.name.toLowerCase()) return stopScreen(d, { stop: "Not forgotten: the name typed isn't the box's.", next: "Nothing to do." });
   const rest = c.config.boxes.filter((b) => b.node !== box.node);
   writeConfig(d.home, { ...c.config, boxes: rest, default: c.config.default === box.node ? null : c.config.default });
   rmSync(knownHostsFor(d.home, box.node), { force: true });
