@@ -36,6 +36,13 @@ export async function readMemory(sys: Sys): Promise<Memory> {
   return { pressure, availableGB: vm?.code === 0 ? parseVmStat(vm.stdout) : undefined, totalGB };
 }
 
+// The box's logical CPUs, for the default cpuBudget. undefined when it can't be read.
+export async function readLogicalCpus(sys: Sys): Promise<number | undefined> {
+  const r = await sys.run("/usr/sbin/sysctl", ["-n", "hw.logicalcpu"], { timeoutMs: 5_000 }).catch(() => undefined);
+  const n = Number(r?.stdout.trim());
+  return r?.code === 0 && Number.isInteger(n) && n >= 1 && n <= 1024 ? n : undefined;
+}
+
 export const MEMORY_SPARE_GB = 4;
 // With more than one VM, what the box keeps for macOS and its users, whatever the VMs hold (v2.2.0).
 // 2 VMs of 8 GB on a 32 GB box leave about 18 GB; a third would leave 10, under this.
@@ -45,7 +52,8 @@ export const BOX_KEEPS_GB = 12;
 // othersMB: the memory of the VMs already running. A VM's memory isn't all in use as it starts, so
 // free memory alone can't show room for a second: their sizes together, and the box's share, must fit
 // in the box's whole memory too.
-export function memoryShort(m: Memory, vmMemoryMB: number, othersMB = 0): string | undefined {
+// keepsGB: boxKeepsGB from the settings.
+export function memoryShort(m: Memory, vmMemoryMB: number, othersMB = 0, keepsGB = BOX_KEEPS_GB): string | undefined {
   if (m.pressure === undefined || m.availableGB === undefined) return "the box can't read its memory";
   if (m.pressure !== 1) return `memory pressure is ${m.pressure === 2 ? "high" : "very high"}`;
   const need = vmMemoryMB / 1000 + MEMORY_SPARE_GB;
@@ -53,7 +61,7 @@ export function memoryShort(m: Memory, vmMemoryMB: number, othersMB = 0): string
   if (othersMB > 0) {
     if (m.totalGB === undefined) return "the box can't read its memory";
     const all = (othersMB + vmMemoryMB) / 1000;
-    if (all + BOX_KEEPS_GB > m.totalGB) return `one more VM would give the VMs ${all.toFixed(1)} GB of the box's ${m.totalGB.toFixed(1)} GB, and the box keeps ${BOX_KEEPS_GB} GB for itself and its users`;
+    if (all + keepsGB > m.totalGB) return `one more VM would give the VMs ${all.toFixed(1)} GB of the box's ${m.totalGB.toFixed(1)} GB, and the box keeps ${keepsGB} GB for itself and its users`;
   }
   return undefined;
 }

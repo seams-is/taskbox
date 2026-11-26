@@ -56,6 +56,8 @@ export class FakeSys implements Sys {
     // The box's two clocks that a wall clock step doesn't move, unless a test answers them itself.
     if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.monotonicclock_usecs") return { code: 0, stdout: `${(this.clock + this.monoOffset) * 1000} 1\n`, stderr: "" };
     if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.bootsessionuuid") return { code: 0, stdout: `${this.bootUuid}\n`, stderr: "" };
+    // 10 logical CPUs, as the box the numbers in the sizes' settings come from, unless a test says otherwise.
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "hw.logicalcpu") return { code: 0, stdout: "10\n", stderr: "" };
     // Plenty of room unless a test says otherwise: 500 GB.
     if (cmd === "/bin/df") return { code: 0, stdout: `F 1 U A C M\n/dev/disk3s5 1 1 ${500e9 / 1024} 1% /\n`, stderr: "" };
     // The Softnet check's process list: launchd is always there, and no Softnet runs as root.

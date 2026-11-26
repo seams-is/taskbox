@@ -70,7 +70,7 @@ function readSlots(v: unknown): Record<string, SlotView> | undefined {
     const beat = readBeat((x as Record<string, unknown>).beat);
     if (beat) s.beat = beat;
     for (const [f, y] of Object.entries(x)) {
-      if (!["slot", "slotAt", "job", "vmKind", "vmSize", "beside", "waitingFor", "why"].includes(f)) continue;
+      if (!["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "waitingFor", "why"].includes(f)) continue;
       if (typeof y === "string") s[f] = clean(y).slice(0, 200);
       else if (typeof y === "number" && Number.isFinite(y)) s[f] = y;
       else if (Array.isArray(y)) s[f] = y.filter((z) => typeof z === "string").map((z) => clean(z).slice(0, 80)).slice(0, 20);

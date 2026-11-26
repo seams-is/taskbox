@@ -7,7 +7,7 @@ import { LABEL_PREFIX, LABEL_PREFIX_SHAPE, PROJECT_NAME } from "./settings/core.
 
 export { type AwaySettings, awayOf, checkAway, CRON_INTERVALS, DEFAULT_AWAY, PUBLIC_ADDRESS_SOURCES, type PublicAddressSource, RESTART_PLANS, type RestartPlan } from "./settings/away.ts";
 export { assetUrl, checkConfig, type Config, LABEL_PREFIX, PROJECT_NAME, releaseRepoOf } from "./settings/core.ts";
-export { ANY_LABEL, DEFAULT_QUIET_TURN_MINUTES, DEFAULT_TURN_IDLE_MINUTES, forKind, type Kind, KIND_WORD, kindOfLabel, type KindSettings, kindsOf, labelsFor, MACOS_MAX, MAX_SLOTS, mergeLabels, pathsForKind, RUNNER_DEFAULT_LABELS, runnerDefaults } from "./settings/kinds.ts";
+export { allLabelsFor, ANY_LABEL, type Budget, budgetOf, bySize, capOf, DEFAULT_BOX_KEEPS_GB, DEFAULT_QUIET_TURN_MINUTES, DEFAULT_SIZE, DEFAULT_TURN_IDLE_MINUTES, forKind, forSize, type Kind, KIND_WORD, kindOfLabel, type KindSettings, kindsOf, labelsFor, MACOS_MAX, MAX_SLOTS, mergeLabels, pathsForKind, RUNNER_DEFAULT_LABELS, runnerDefaults, type Size, sizeOf, sizesOf, sizeWord, smallestSize, vmsAtMostOf, warmSizeOf } from "./settings/kinds.ts";
 export { loadConfig, loadConfigFrom } from "./settings/layers.ts";
 export { CLASS_NAME, checkScheduling, type ClassRule, DEFAULT_TIMINGS, type LabelMatch, type LoadRepo, loadRepoOf, type Role, type ServedRepo, servedRepos, sourceAppId, sourceKeyPath, sourceOf, type SourceSettings, type Timings, timingsOf, withSourceKey } from "./settings/scheduling.ts";
 
