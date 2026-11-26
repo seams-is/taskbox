@@ -170,8 +170,12 @@ jobs:
           chmod 644 LICENSE-tailscale LICENSE-go
           tar --owner=0 --group=0 --numeric-owner --mtime='2000-01-01 00:00Z' -czf tailscale.tar.gz tailscale tailscaled LICENSE-tailscale LICENSE-go
           shasum -a 256 tailscale tailscaled tailscale.tar.gz | tee SHA256SUMS
-          tag="tailscale-${TAILSCALE_VERSION}"
-          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "tailscale ${TAILSCALE_VERSION} for the box" \
+          # A published release's tag stays reserved for good, even after the repo is renamed. The
+          # run's ID makes the tag new, and making it here means a refused tag fails this run
+          # instead of the owner's publish.
+          tag="tailscale-${TAILSCALE_VERSION}-run${GITHUB_RUN_ID}"
+          gh api "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${tag}" -f sha="$GITHUB_SHA" > /dev/null
+          gh release create "$tag" --draft --verify-tag --title "tailscale ${TAILSCALE_VERSION} for the box" \
             --notes "tailscale and tailscaled ${TAILSCALE_VERSION}, built twice with Go ${GO_VERSION} by run ${GITHUB_RUN_ID} at ${GITHUB_SHA}. Not a taskbox release." \
             tailscale.tar.gz SHA256SUMS
           {

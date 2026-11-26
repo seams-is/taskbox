@@ -591,6 +591,16 @@ describe("pins", () => {
     expect(v.bun.url).toBe(`https://github.com/oven-sh/bun/releases/download/bun-v${v.bun.version}/bun-darwin-aarch64.zip`);
   });
 
+  test("the tailscale build makes a tag no release has used, before its draft", () => {
+    const wf = readFileSync(join(repo, ".github/workflows/build-tailscale.yml"), "utf8");
+    // A published release's tag stays reserved for good, even after the repo is renamed.
+    expect(wf).toContain('tag="tailscale-${TAILSCALE_VERSION}-run${GITHUB_RUN_ID}"');
+    const makeTag = wf.indexOf('git/refs" -f ref="refs/tags/${tag}"');
+    const draft = wf.indexOf('gh release create "$tag" --draft --verify-tag');
+    expect(makeTag).toBeGreaterThan(-1);
+    expect(draft).toBeGreaterThan(makeTag);
+  });
+
   test("every pin is https on a known host with a full SHA-256", () => {
     const v = JSON.parse(readFileSync(join(repo, "versions.json"), "utf8")) as Record<string, unknown>;
     for (const [k, pin] of Object.entries(v)) {
