@@ -18,7 +18,7 @@ function boxSys(b: Box): FakeSys {
       const n = Object.entries(b.uids).find(([, u]) => String(u) === args[1])?.[0];
       return n ? out(`${n}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user` };
     }
-    if (cmd === "/usr/bin/id") return b.uids[args[1]!] !== undefined ? out(`${b.uids[args[1]!]}\n`) : out("", 1);
+    if (cmd === "/usr/bin/id") return b.uids[args[1]!] !== undefined ? out(`${b.uids[args[1]!]}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user` };
     if (cmd === "/usr/sbin/dseditgroup") return out("", (b.admins ?? []).includes(args[3]!) ? 0 : 67);
     if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "RecordName") return out(`RecordName: ${b.spelled?.[args[2]!.slice(7)] ?? args[2]!.slice(7)}\n`);
     if (cmd === "/usr/bin/dscl" && args[1] === "-list" && args[2] === "/Groups") return out(Object.entries(b.gids ?? {}).map(([n, g]) => `${n} ${g}`).join("\n"));

@@ -1,16 +1,16 @@
-// taskbox remove: takes taskbox off the box, as an op in phases. As root, at the box; refuses over
-// SSH. The box's own name is typed first, unless --yes.
+// taskbox remove: takes taskbox off the box, as an op in phases. As root, at the box's terminal;
+// refuses over SSH and with no terminal. The box's own name is typed first, and each account and
+// home deleted asks its own yes: no flag answers them.
 import type { CommandSpec } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
 
 export const commands: CommandSpec[] = [
   {
     path: ["remove"],
-    summary: "Takes taskbox off this box, in phases, after its name is typed. -y answers every question yes. At the box only.",
+    summary: "Takes taskbox off this box, in phases, after its name is typed. At the box's terminal only.",
     who: ["admin"],
     root: true,
     typed: true,
-    flags: ["yes"],
     options: [{ name: "--keep-images" }],
     async run(c) {
       const { loadConfig } = await import("../config.ts");
@@ -23,7 +23,7 @@ export const commands: CommandSpec[] = [
       // The name the box goes by on the network. Without it, a typed yes.
       const host = await c.ops.sys.run("/usr/sbin/scutil", ["--get", "LocalHostName"], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
       const name = host.code === 0 && /^[A-Za-z0-9-]{1,63}$/.test(host.stdout.trim()) ? host.stdout.trim() : undefined;
-      return remove(c.ops, { serviceUid: c.cu, people, chown: c.chown, overSsh: await overSsh(c), yes: c.flags.yes !== undefined, keepImages: c.opts["keep-images"] === true, ...(name ? { boxName: name } : {}), proc: process });
+      return remove(c.ops, { serviceUid: c.cu, people, chown: c.chown, overSsh: await overSsh(c), keepImages: c.opts["keep-images"] === true, ...(name ? { boxName: name } : {}), proc: process });
     },
   },
 ];

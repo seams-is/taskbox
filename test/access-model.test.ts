@@ -510,3 +510,38 @@ describe("Screen Sharing's list and people made after the yes", () => {
     expect(s.dir.groups["com.apple.access_screensharing"]!.members).toEqual(["pat"]);
   });
 });
+
+describe("remove on missing evidence", () => {
+  // id that doesn't answer for one account: a timeout, or opendirectoryd restarting.
+  const flaky = (s: ReturnType<typeof setup>, name: string) => s.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args[0] === "-u" && args[1] === name ? { code: 1, stdout: "", stderr: "id: the directory didn't answer" } : undefined));
+  const removeDeps = (s: ReturnType<typeof setup>, asked: string[]) => {
+    s.sys.responders.push((cmd) => (cmd === "/usr/bin/du" ? { code: 0, stdout: "0\t/x\n", stderr: "" } : cmd === "/bin/launchctl" || cmd === "/sbin/pfctl" || cmd === "/usr/bin/sudo" ? { code: 0, stdout: "", stderr: "" } : undefined));
+    return { sys: s.sys, paths: s.p, uid: 0, serviceUid: 502, say: () => {}, ask: async (q: string) => (asked.push(q), "yes"), rootUid: ME };
+  };
+  test("taskbox's own account whose lookup fails keeps its account, its record and its group", async () => {
+    const { remove } = await import("../src/ops.ts");
+    const s = setup();
+    await placeSystem(s.d, "_taskboxgh", s.p.accountsRecord);
+    flaky(s, "_taskboxgh");
+    const asked: string[] = [];
+    await remove(removeDeps(s, asked), { serviceUid: 502, people: [] });
+    expect(s.dir.users._taskboxgh).toBeDefined();
+    expect(s.dir.groups._taskboxgh).toBeDefined();
+    expect(readRecord(s.p.accountsRecord).made._taskboxgh?.role).toBe("gh");
+    expect(asked.some((q) => q.includes("_taskboxgh"))).toBe(false);
+  });
+  test("a pool account whose lookup fails keeps its account, its record and its group", async () => {
+    const { remove } = await import("../src/ops.ts");
+    const { placePool } = await import("../src/accounts.ts");
+    const { readPoolRecord } = await import("../src/pin.ts");
+    const s = setup();
+    expect(typeof (await placePool(s.d, s.p, "taskbox-ws1", "taskbox-ws1", GATE_SHELL))).toBe("number");
+    flaky(s, "taskbox-ws1");
+    const asked: string[] = [];
+    await remove(removeDeps(s, asked), { serviceUid: 502, people: [] });
+    expect(s.dir.users["taskbox-ws1"]).toBeDefined();
+    expect(s.dir.groups["taskbox-ws1"]).toBeDefined();
+    const rec = readPoolRecord(s.p.poolRecord, ME);
+    expect(rec !== "bad" && rec.made["taskbox-ws1"]).toBeTruthy();
+  });
+});

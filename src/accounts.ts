@@ -98,6 +98,14 @@ export function writeRecord(d: Pick<AccountDeps, "chown" | "rootUid">, path: str
   renameSync(tmp, path);
 }
 
+// The account's uid, "gone" only when id says there is no such user, or "unknown" for any other
+// answer (a timeout, opendirectoryd restarting). Deletes act on "gone" alone: never on missing evidence.
+export async function lookup(sys: Sys, user: string): Promise<number | "gone" | "unknown"> {
+  const r = await sys.run("/usr/bin/id", ["-u", user], { timeoutMs: 5_000 }).catch(() => ({ code: -1, stdout: "", stderr: "" }));
+  if (r.code === 0 && /^\d+$/.test(r.stdout.trim())) return Number(r.stdout.trim());
+  return r.code !== 0 && /no such user/i.test(r.stderr) ? "gone" : "unknown";
+}
+
 export async function uidOf(sys: Sys, user: string): Promise<number | undefined> {
   const r = await sys.run("/usr/bin/id", ["-u", user], { timeoutMs: 5_000 });
   return r.code === 0 && /^\d+$/.test(r.stdout.trim()) ? Number(r.stdout.trim()) : undefined;
@@ -341,7 +349,12 @@ export async function removable(sys: Sys, rec: AccountsRecord, people: readonly 
   const out: { delete: { name: string; role: MadeRole }[]; left: string[] } = { delete: [], left: [] };
   const lower = people.map((p) => p.toLowerCase());
   for (const [name, m] of Object.entries(rec.made)) {
-    if ((await uidOf(sys, name)) === undefined) continue;
+    const now = await lookup(sys, name);
+    if (now === "gone") continue;
+    if (now === "unknown") {
+      out.left.push(`${name} (taskbox can't tell whether it is there)`);
+      continue;
+    }
     if (m.role === "placed") continue;
     if (!(await stillMade(sys, name, m))) out.left.push(`${name} (its ID isn't the one taskbox made)`);
     else if (m.role === "person" || lower.includes(name.toLowerCase())) out.left.push(`${name} (a person's account)`);

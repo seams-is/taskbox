@@ -109,14 +109,16 @@ describe("remove as an op", () => {
       expect(ops(p).map((o) => o.state)).toEqual(["cancelled"]);
     }
   });
-  test("--yes asks nothing typed; --keep-images keeps the images without asking", async () => {
+  test("--keep-images keeps the images without asking; the name and each delete are still asked", async () => {
     const { d, p, said } = removeDeps();
     mkdirSync(join(p.serviceHome, ".tart"), { recursive: true });
     const asked: string[] = [];
-    d.ask = async (q) => (asked.push(q), "no");
+    d.ask = async (q) => (asked.push(q), q.startsWith("Type this box's name") ? "BOX-1" : "no");
     d.rootUid = process.getuid!();
-    expect(await remove(d, { serviceUid: 502, boxName: "box-1", yes: true, keepImages: true })).toBe(0);
-    expect(asked.filter((q) => /box's name|images/.test(q))).toEqual([]);
+    expect(await remove(d, { serviceUid: 502, boxName: "box-1", keepImages: true })).toBe(0);
+    // The name is typed, in any case; the images aren't asked about.
+    expect(asked[0]).toBe("Type this box's name, box-1, to remove it: ");
+    expect(asked.some((q) => /images/.test(q))).toBe(false);
     expect(said.find((l) => l.startsWith("Did: "))).toContain("kept the images");
     expect(existsSync(join(p.serviceHome, ".tart"))).toBe(true);
   });

@@ -20,7 +20,7 @@ import { endOpJobs, oneShotPlist, oneShotScript, pidAlive, reloadThroughLaunchd,
 import { begin, end, listOps, type Op, type OpFolder, opEvent, type OpType, toPhase, writeOp } from "./core/ops.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
-import { canUnlock, halfMade, readRecord, UNLOCK_UNKNOWN, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
+import { canUnlock, halfMade, lookup, readRecord, UNLOCK_UNKNOWN, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
 import { readBoxFile } from "./boxsettings.ts";
 import { fingerprint } from "./approver.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "./pin.ts";
@@ -715,7 +715,7 @@ async function staleRemoves(f: OpFolder, sys: Sys, alive: (pid: number) => boole
   }
 }
 
-type RemoveOpts = { serviceUid?: number; overSsh?: boolean; people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void; yes?: boolean; keepImages?: boolean; boxName?: string; proc?: Stoppable; alive?: (pid: number) => boolean };
+type RemoveOpts = { serviceUid?: number; overSsh?: boolean; people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void; keepImages?: boolean; boxName?: string; proc?: Stoppable; alive?: (pid: number) => boolean };
 
 // Under the update lock, so an update, a rollback or another remove never runs beside it.
 export async function remove(d: OpsDeps, o: RemoveOpts): Promise<number> {
@@ -779,9 +779,10 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
   proc?.on("SIGTERM", onSig);
   try {
   d.say(`This removes taskbox from this box: the loop, the guard that keeps Screen Sharing to Tailscale, taskbox's Tailscale, /opt/taskbox and its kept copy, the App key, and each project's state. Jobs stop running here. The box leaves your tailnet, so Tailscale SSH and Screen Sharing over Tailscale stop: run this at the box. A Tailscale app of your own is untouched. Turn Screen Sharing off first, and log ${d.paths.service} out, so remove can offer to delete the accounts taskbox made.`);
-  // The box's own name, typed, unless --yes: a remove meant for another box stops here.
+  // The box's own name, typed by a person at the box's terminal: a remove meant for another box stops
+  // here, and no flag stands in for it. Every account and home deleted below asks its own yes too.
   const word = o.boxName ?? "yes";
-  if (!o.yes) {
+  {
     const typed = (await d.ask(o.boxName ? `Type this box's name, ${o.boxName}, to remove it: ` : "Type yes to remove it: ")).trim();
     // LocalHostName is often mixed case: the name is compared in lower case.
     if (typed.toLowerCase() !== word.toLowerCase()) {
@@ -824,7 +825,7 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
   if (existsSync(tart) && o.keepImages) done.push("kept the images");
   else if (existsSync(tart)) {
     const kb = Number((await d.sys.run("/usr/bin/du", ["-sk", tart])).stdout.trim().split(/\s+/)[0]) || 0;
-    if (o.yes || (await d.ask(`Also delete the downloaded images, about ${(kb / 1024 / 1024).toFixed(0)} GB? Type yes to delete them: `)).trim().toLowerCase() === "yes") {
+    if ((await d.ask(`Also delete the downloaded images, about ${(kb / 1024 / 1024).toFixed(0)} GB? Type yes to delete them: `)).trim().toLowerCase() === "yes") {
       const r = await runAsService(d.sys, o.serviceUid, ["/bin/rm", "-rf", "--", tart]);
       if (r) missed.push(`the images (${r})`);
       else done.push(`deleted the images, about ${(kb / 1024 / 1024).toFixed(0)} GB`);
@@ -961,7 +962,7 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
 // The accounts step of remove. An account taskbox made (accounts.json, with a matching ID) is offered
 // for deletion, one question each. One it didn't make is never deleted: the agent's shell is set back
 // so no Tailscale SSH login reaches a taskbox that is gone, and the owner is told what is left.
-async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void; yes?: boolean }, done: string[], missed: string[]): Promise<{ kept: boolean; keptNames: string[]; byHand: string[] }> {
+async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void }, done: string[], missed: string[]): Promise<{ kept: boolean; keptNames: string[]; byHand: string[] }> {
   const rec = readRecord(d.paths.accountsRecord);
   const w = { chown: o.chown ?? (() => {}), rootUid: d.rootUid ?? 0 };
   // Written after each change, so a remove stopped part way leaves a record that is true.
@@ -970,8 +971,8 @@ async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown
       writeRecord(w, d.paths.accountsRecord, rec);
     } catch {}
   };
-  // Names whose account is gone are dropped: nothing is left to offer.
-  for (const name of Object.keys(rec.made)) if ((await uidOf(d.sys, name)) === undefined) delete rec.made[name];
+  // Names whose account is gone are dropped: only on "no such user", never on a lookup that failed.
+  for (const name of Object.keys(rec.made)) if ((await lookup(d.sys, name)) === "gone") delete rec.made[name];
   // Screen Sharing's list: only those taskbox added come off it. Anyone else stays.
   const ss = await undoScreenSharing(d.sys, rec);
   if (ss.removed.length) done.push(`took ${ss.removed.join(" and ")} off Screen Sharing's list`);
@@ -989,7 +990,7 @@ async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown
     // taskbox's own two have no home of their own: /var/empty is the system's, so only their record goes.
     const homeless = role === "net" || role === "gh";
     const what = role === "service" ? "the account that ran jobs, and its home folder" : role === "agent" ? "the account agents reached over Tailscale SSH, and its home folder" : role === "net" ? "taskbox's account for network capture" : role === "gh" ? "taskbox's account for the GitHub key keeper" : "an account taskbox made";
-    if (!o.yes && (await d.ask(`Delete ${name}, ${what}? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
+    if ((await d.ask(`Delete ${name}, ${what}? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
       done.push(`kept the account ${name}`);
       continue;
     }
@@ -1069,7 +1070,7 @@ async function removeAccounts(d: OpsDeps, o: { people?: readonly string[]; chown
 // account and logged out; or a record macOS has that never got its ID, from an install that stopped
 // half way. Its processes stop first, then it goes, then its lines in cron.deny and at.deny, then
 // its group. The record stays while either is left. What was kept, by name.
-async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void; yes?: boolean }, logged: { users: string[]; known: boolean }, done: string[], missed: string[]): Promise<{ kept: string[] }> {
+async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (path: string, uid: number, gid: number) => void }, logged: { users: string[]; known: boolean }, done: string[], missed: string[]): Promise<{ kept: string[] }> {
   const w = { chown: o.chown ?? (() => {}), rootUid: d.rootUid ?? 0 };
   const read = readPoolRecord(d.paths.poolRecord, w.rootUid);
   if (read === "bad") {
@@ -1083,14 +1084,20 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
     return { kept: [...Object.keys(rec.made), ...Object.keys(rec.groups).map((g) => `the group ${g}`)] };
   }
   for (const [name, m] of Object.entries(rec.made)) {
-    const uid = await uidOf(d.sys, name);
+    const now = await lookup(d.sys, name);
+    const uid = typeof now === "number" ? now : undefined;
     const person = (o.people ?? []).some((p) => p.toLowerCase() === name.toLowerCase());
+    // A lookup that failed keeps the account, its record and its group: never a delete on missing evidence.
+    if (now === "unknown") {
+      missed.push(`the account ${name} (taskbox can't tell whether it is there), left as it is`);
+      continue;
+    }
     if (uid === undefined) {
       if (!(await halfMade(d.sys, name))) {
         delete rec.made[name];
         continue;
       }
-      if (person || (!o.yes && (await d.ask(`Delete ${name}, a workspace account taskbox started to make and didn't finish? Type yes to delete it: `)).trim().toLowerCase() !== "yes")) {
+      if (person || (await d.ask(`Delete ${name}, a workspace account taskbox started to make and didn't finish? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
         done.push(`kept the account ${name}`);
         continue;
       }
@@ -1113,7 +1120,7 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
       missed.push(`the account ${name} (${logged.known ? "it is logged in" : "taskbox can't tell whether it is logged in"}: log it out, then delete it in System Settings, Users & Groups)`);
       continue;
     }
-    if (!o.yes && (await d.ask(`Delete ${name}, the account workspaces ran in, and its home folder, with the files agents saved there? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
+    if ((await d.ask(`Delete ${name}, the account workspaces ran in, and its home folder, with the files agents saved there? Type yes to delete it: `)).trim().toLowerCase() !== "yes") {
       done.push(`kept the account ${name}`);
       continue;
     }

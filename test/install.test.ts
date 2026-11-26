@@ -185,6 +185,35 @@ describe("install", () => {
   });
 });
 
+describe("the agent accounts.agent named before", () => {
+  test.serial("is left as it is when a later step stops the install: only an install that ends puts it back", async () => {
+    const sys = new FakeSys();
+    healthyBox(sys);
+    githubRoutes(sys);
+    // The old agent, made by taskbox, with taskbox's shell: the release names another.
+    sys.responders.unshift((cmd, args) => {
+      const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
+      if (!args.some((a) => a === "old-agent" || a === "/Users/old-agent")) return undefined;
+      if (cmd === "/usr/bin/id") return out("480\n");
+      if (cmd === "/usr/sbin/dseditgroup") return out("", 67);
+      if (cmd === "/usr/bin/dscl" && args[3] === "UserShell") return out("UserShell: /opt/taskbox/bin/taskbox-shell\n");
+      if (cmd === "/usr/bin/dscl" && args[3] === "GeneratedUID") return out("GeneratedUID: 0F0F0F0F-0000-0000-0000-000000000480\n");
+      return undefined;
+    });
+    stageRelease(sys, CFG, (v) => (v.tailscale = { version: "1.104.5", url: "", sha256: "", files: { tailscale: "", tailscaled: "" } }));
+    const { d, root, said } = installDeps(sys, "yes");
+    d.paths = paths(root, { ...testBox(), agent: "old-agent" });
+    mkdirSync(dirname(d.paths.accountsRecord), { recursive: true });
+    writeFileSync(d.paths.accountsRecord, JSON.stringify({ made: { "old-agent": { role: "agent", uid: 480, guid: "0F0F0F0F-0000-0000-0000-000000000480" } } }));
+    await expect(install(d, { first: true })).rejects.toThrow("tailscaled has no download pinned yet");
+    // Planned and said before the yes, and never done: the install stopped first.
+    expect(said.some((l) => l.includes("It deletes old-agent"))).toBe(true);
+    const touched = sys.calls.filter((c) => c.args.some((a) => a === "old-agent" || a === "/Users/old-agent") && (c.cmd === "/usr/sbin/sysadminctl" || (c.cmd === "/usr/bin/dscl" && (c.args[1] === "-create" || c.args[1] === "-delete")) || c.cmd === "/usr/bin/pkill"));
+    expect(touched).toEqual([]);
+    expect(JSON.parse(readFileSync(d.paths.accountsRecord, "utf8")).made["old-agent"]).toBeDefined();
+  });
+});
+
 describe("an install run to the end", () => {
   // What launchd was asked, in order, with where /opt/taskbox pointed at each bootstrap.
   function launchdLog(sys: FakeSys, opt: string): string[] {
