@@ -26,7 +26,7 @@ import { fingerprint } from "./approver.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "./pin.ts";
 import { adminState } from "./elevate.ts";
 import { activePull, clean as noControl, pullLine, readPull } from "./progress.ts";
-import { type Config, forKind, KIND_WORD, kindsOf, loadRepoOf, MACOS_MAX, sourceOf } from "./config.ts";
+import { type Config, forKind, KIND_WORD, kindsOf, loadRepoOf, MACOS_MAX, sourceOf, vmsAtMostOf } from "./config.ts";
 import { LAST_CLASS } from "./classes.ts";
 import { timingsLine } from "./timings.ts";
 import { readJobs } from "./jobs.ts";
@@ -108,7 +108,7 @@ export function sourceLine(cfg: Config): string {
 
 // check's line for the slots (v2.2.0): how many VMs at once, and what each start checks.
 export function slotsLine(cfg: Config): string {
-  const n = Number.isInteger(cfg.vmsAtOnce) && cfg.vmsAtOnce! >= 1 ? cfg.vmsAtOnce! : 1;
+  const n = vmsAtMostOf(cfg);
   if (n <= 1) return `one VM at a time. Before it starts: memory for it, and ${cfg.minFreeDiskGB} GB free disk`;
   const merge = kindsOf(cfg).flatMap((k) => forKind(cfg, k).mergeLabel ?? []);
   return `${n} VMs at once, macOS at most ${Math.min(MACOS_MAX, n)} (Apple's licence). Before each start: memory for one more VM, and ${cfg.minFreeDiskGB} GB free disk for it and for each VM running, so ${cfg.minFreeDiskGB * n} GB with ${n}${merge.length ? `. Merge jobs first: ${merge.join(", ")}` : ""}`;

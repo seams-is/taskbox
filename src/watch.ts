@@ -31,6 +31,8 @@ export interface LoopView {
   vmSize?: string; // "4 CPUs, 8 GB" while a job runs
   beside?: string[]; // the box's other users logged in when the VM started
   vmKind?: string; // "macos" or "linux": the kind of the VM in the slot now
+  size?: string; // its size, such as small; default for the kind's own
+  budget?: string; // what the VMs hold of the box's memory and CPUs (sizes.ts holdsLine)
   kindPaused?: string; // a kind whose VMs kept failing, paused for an hour
   kindChoice?: string; // "queue", or "turns: <why>"
   linuxProof?: string; // "passed: ..." or "FAIL: ...": the Linux Softnet proof
@@ -54,6 +56,7 @@ export interface SlotView {
   job?: string;
   vmKind?: string;
   vmSize?: string;
+  size?: string;
   beside?: string[];
   waitingFor?: string;
   why?: string; // v2.4.0: the scheduler's reason for what this slot does now
@@ -70,7 +73,7 @@ function readSlots(v: unknown): Record<string, SlotView> | undefined {
     const beat = readBeat((x as Record<string, unknown>).beat);
     if (beat) s.beat = beat;
     for (const [f, y] of Object.entries(x)) {
-      if (!["slot", "slotAt", "job", "vmKind", "vmSize", "beside", "waitingFor", "why"].includes(f)) continue;
+      if (!["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "waitingFor", "why"].includes(f)) continue;
       if (typeof y === "string") s[f] = clean(y).slice(0, 200);
       else if (typeof y === "number" && Number.isFinite(y)) s[f] = y;
       else if (Array.isArray(y)) s[f] = y.filter((z) => typeof z === "string").map((z) => clean(z).slice(0, 80)).slice(0, 20);
@@ -145,7 +148,7 @@ export function vmWords(loop: SlotView, now: number): string {
   const size = loop.vmSize ? `, ${clean(loop.vmSize)}${loop.beside?.length ? `, beside ${loop.beside.join(" and ")}` : ""}` : "";
   const job = loop.slot === "running a job" && loop.job ? `: ${clean(loop.job)}${size}` : "";
   const since = loop.slotAt ? ` (for ${ago(now - loop.slotAt)})` : "";
-  const kind = loop.slot && loop.slot !== "idle" && !waiting ? kindPrefix(loop) : "";
+  const kind = loop.slot && loop.slot !== "idle" && !waiting ? kindPrefix(loop).replace(/: $/, loop.size && loop.size !== "default" ? ` ${clean(loop.size)}: ` : ": ") : "";
   return `${kind}${words}${job}${since}`;
 }
 
@@ -184,6 +187,7 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   const why = (s: SlotView) => (s.why ? [`${" ".repeat(11)}Why: ${clean(s.why)}.`] : []);
   if (shown.length) for (const [k, s] of shown) lines.push(`${`VM ${k}:`.padEnd(11)}${vmWords(s, o.now)}`, ...why(s));
   else if (pull?.state === "ready" || loop.slot) lines.push(`VM:        ${vmWords(loop, o.now)}`, ...why(loop));
+  if (loop.budget) lines.push(`Budget:    ${clean(loop.budget)}`);
   if (loop.lastCheck === "FAIL") lines.push(`Checks:    FAIL: ${clean((loop.failed ?? []).join(", "))}. Type taskbox check for the fix.`);
   else if (loop.lastCheck === "OK") lines.push("Checks:    all OK");
   // Shown for a day after it happens.

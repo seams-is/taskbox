@@ -28,7 +28,7 @@ import { poolNames, poolOf } from "../access.ts";
 import { readRecord, uidOf } from "../accounts.ts";
 import { readInstallId } from "../answers.ts";
 import { trustedKey } from "../approver.ts";
-import type { Config, Paths } from "../config.ts";
+import { type Config, type Paths, vmsAtMostOf } from "../config.ts";
 import { heldSlotsEmpty } from "../held.ts";
 import { readOwnedJson } from "../loopwatch.ts";
 import { FIRST_HIDDEN_ID, LAST_HIDDEN_ID, readPin, readPoolRecord } from "../pin.ts";
@@ -277,7 +277,7 @@ async function closeAccount(d: WsDeps, mem: WsMemory, a: PoolAccount, r: PassRep
   return !left;
 }
 
-const slotsOf = (cfg: Config) => (Number.isInteger(cfg.vmsAtOnce) && cfg.vmsAtOnce! >= 1 ? cfg.vmsAtOnce! : 1);
+const slotsOf = (cfg: Config) => vmsAtMostOf(cfg);
 
 // The loop's own word on its held slots, from its state file read as root, with only the fields
 // heldSlotsEmpty reads.

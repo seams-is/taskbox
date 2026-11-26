@@ -14,6 +14,7 @@ import { GUARD_ROWS } from "./guard.ts";
 import { OP_ROWS } from "./ops.ts";
 import { CLOCK_ROWS } from "./clock.ts";
 import { ACCOUNT_ROWS } from "./accounts.ts";
+import { SIZE_ROWS } from "./sizes.ts";
 
 function v2Rows(): Row[] {
   return [
@@ -29,7 +30,7 @@ function v2Rows(): Row[] {
 let built: Row[] | undefined;
 export function allRows(): Row[] {
   if (built) return built;
-  const rows = [...v2Rows(), ...GUARD_ROWS, ...OP_ROWS, ...CLOCK_ROWS, ...ACCOUNT_ROWS];
+  const rows = [...v2Rows(), ...GUARD_ROWS, ...OP_ROWS, ...CLOCK_ROWS, ...SIZE_ROWS, ...ACCOUNT_ROWS];
   const why = rowsProblem(rows);
   if (why) throw new Error(`the check rows can't be used: ${why}`);
   return (built = rows);

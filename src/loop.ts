@@ -13,7 +13,7 @@ import { loopState } from "./core/paths.ts";
 import { afterEnd, beforeStart, type JobHook, withHookFields } from "./core/hooks.ts";
 import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
-import { AGENT_LABEL, awayOf, forKind, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf } from "./config.ts";
+import { AGENT_LABEL, awayOf, budgetOf, DEFAULT_SIZE, keepsOf, forKind, forSize, sizeOf, sizesOf, sizeWord, smallestSize, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf, vmsAtMostOf } from "./config.ts";
 import { guestOf } from "./guest.ts";
 import { installedCommit, peerTargets, PROOF_RETRY_MS, proofHolds, proofResult, proofScript, proofTargets, readProof, writeProof } from "./proof.ts";
 import { type KindChooser, type Occupant, QUEUE_POLL_MS, schedule, type Turn } from "./kinds.ts";
@@ -22,13 +22,14 @@ import { NoSource, type JobSource } from "./source.ts";
 import { type GitHub, repoMissing } from "./github.ts";
 import { RunnerChain } from "./ghfail.ts";
 import { beatFor, RESTARTS_WINDOW_MS, staleBeat } from "./beat.ts";
+import { holdsLine } from "./sizes.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
 import { readLoop } from "./watch.ts";
 import { heldOf, holdReason, isHeld, type WorkspacesNow } from "./held.ts";
 import { readKick } from "./loopwatch.ts";
 import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
-import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readMemory } from "./memory.ts";
+import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readLogicalCpus, readMemory } from "./memory.ts";
 import { clean, mirrorPull, PullRecorder, writeReady } from "./progress.ts";
 import { clearRequests } from "./requests.ts";
 import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from "./load.ts";
@@ -187,18 +188,39 @@ export class Slots {
   readonly gaveWay: Partial<Record<Kind, number>> = {};
   readonly jobStarts: Partial<Record<Kind, { at: number; labels: string[] }[]>> = {};
   readonly gaveWayAt: Partial<Record<Kind, number>> = {};
+  // The same per size, by "kind/size", for the sizes above the warm one (scheduler.ts).
+  readonly sizeTimes: Record<string, { fastAt?: number; gaveWayAt?: number; lastEnd?: number }> = {};
+  // What the VMs' budget is made from: the box's memory as last read, and its logical CPUs.
+  totalGB: number | undefined;
+  logicalCpus: number | undefined;
+  budgetShown: string | undefined; // status's budget line, as last written
   startedAt = 0;
 
   constructor(readonly count: number) {}
 
   // What the scheduler reads per kind (scheduler.ts KindHistory).
-  history(kinds: Kind[]): Partial<Record<Kind, KindHistory>> {
+  history(kinds: Kind[], sizes?: (k: Kind) => string[]): Partial<Record<Kind, KindHistory>> {
     const out: Partial<Record<Kind, KindHistory>> = {};
     for (const k of kinds) {
       const has = [...this.held.values()].some((o) => o.kind === k);
-      out[k] = { ...(this.fastAt[k] !== undefined ? { fastAt: this.fastAt[k] } : {}), ...(has ? {} : { noVmSince: this.lastVmEnd[k] ?? this.startedAt }), jobStarts: [...(this.jobStarts[k] ?? [])], ...(this.gaveWayAt[k] !== undefined ? { gaveWayAt: this.gaveWayAt[k] } : {}) };
+      out[k] = { ...(this.fastAt[k] !== undefined ? { fastAt: this.fastAt[k] } : {}), ...(has ? {} : { noVmSince: this.lastVmEnd[k] ?? this.startedAt }), jobStarts: [...(this.jobStarts[k] ?? [])], ...(this.gaveWayAt[k] !== undefined ? { gaveWayAt: this.gaveWayAt[k] } : {}), sizes: this.sizesOf(k, sizes?.(k) ?? []) };
     }
     return out;
+  }
+
+  private sizesOf(k: Kind, names: string[]): NonNullable<KindHistory["sizes"]> {
+    const out: NonNullable<KindHistory["sizes"]> = {};
+    for (const n of names) {
+      const t = this.sizeTimes[`${k}/${n}`] ?? {};
+      const has = [...this.held.values()].some((x) => x.kind === k && (x.size ?? DEFAULT_SIZE) === n);
+      out[n] = { ...(t.fastAt !== undefined ? { fastAt: t.fastAt } : {}), ...(t.gaveWayAt !== undefined ? { gaveWayAt: t.gaveWayAt } : {}), ...(has ? {} : { noVmSince: t.lastEnd ?? this.startedAt }) };
+    }
+    return out;
+  }
+  // One size's time: when its VM took a job fast, or gave way.
+  sizeTime(kind: Kind, size: string | undefined, what: "fastAt" | "gaveWayAt", now: number): void {
+    const t = (this.sizeTimes[`${kind}/${size ?? DEFAULT_SIZE}`] ??= {});
+    t[what] = now;
   }
 
   // A slot's VM is gone: its kind may now have none. A start the box's checks refused made no VM,
@@ -207,6 +229,7 @@ export class Slots {
     const o = this.held.get(slot);
     this.held.delete(slot);
     if (o?.up && ![...this.held.values()].some((x) => x.kind === o.kind)) this.lastVmEnd[o.kind] = now;
+    if (o?.up && ![...this.held.values()].some((x) => x.kind === o.kind && x.size === o.size)) (this.sizeTimes[`${o.kind}/${o.size ?? DEFAULT_SIZE}`] ??= {}).lastEnd = now;
   }
 
   // A VM of this kind took a job now. The last few, for the job source's lag (scheduler.ts).
@@ -253,12 +276,13 @@ export class Slots {
   }
 }
 
-// How many VMs this box may run at once.
-export const slotCount = (cfg: Config) => (Number.isInteger(cfg.vmsAtOnce) && cfg.vmsAtOnce! >= 1 ? cfg.vmsAtOnce! : 1);
+// How many VMs this box may run at once: vmsAtMost, or v2's vmsAtOnce. The budget packs within it.
+export const slotCount = (cfg: Config) => vmsAtMostOf(cfg);
 
 // The loop's settings and paths as one kind sees them: its label, image, size and download record.
-export function kindDeps(d: LoopDeps, kind: Kind): LoopDeps {
-  const cfg = forKind(d.cfg, kind);
+// size: one of the kind's sizes (sizesOf), whose CPUs and memory the VM gets. Absent: the default.
+export function kindDeps(d: LoopDeps, kind: Kind, size?: string): LoopDeps {
+  const cfg = forSize(d.cfg, kind, size);
   const paths = pathsForKind(d.paths, kind);
   // The pre-start checks see the same kind: its image, size and download record.
   return { ...d, cfg, paths, checks: { ...d.checks, cfg, paths } };
@@ -471,7 +495,7 @@ export async function ensureImage(d: LoopDeps, stopIf: () => boolean | string = 
 
 // Each slot's own fields (v2.2.0) go under slots, by slot number. The top-level copies are the
 // busiest slot's, so a reader from before v2.2.0 still reads one slot.
-export const SLOT_KEYS = ["slot", "slotAt", "job", "vmKind", "vmSize", "beside", "runner", "registeredAt", "waitingFor", "labels", "why", "beat"];
+export const SLOT_KEYS = ["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "runner", "registeredAt", "waitingFor", "labels", "why", "beat"];
 // Busiest first: a job running anywhere is what the box is doing.
 // A slot that waits for memory while another has a VM up shows that VM: the box is ready.
 const SLOT_ORDER = ["running a job", "checks failed", "no public address", "proving Linux", "starting a VM", "waiting for a job", "waiting", "cleaning up", "idle"];
@@ -661,9 +685,9 @@ export function endOldHold(d: LoopDeps): void {
   }
 }
 
-// The memory of the other slots' VMs, in MB.
+// The memory of the other slots' VMs, in MB: each one's own size.
 function othersMB(d: LoopDeps): number {
-  return (d.box?.othersUp(d.slot) ?? []).reduce((n, o) => n + forKind(d.cfg, o.kind).vmMemoryMB, 0);
+  return (d.box?.othersUp(d.slot) ?? []).reduce((n, o) => n + (o.memoryMB ?? sizeOf(d.cfg, o.kind, o.size).vmMemoryMB), 0);
 }
 
 // How many of the box's slots are held for workspaces now, and whether this slot is one of them.
@@ -694,7 +718,9 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
     return { key: "guard", text: "the guard's rules went missing when a VM started, so no VM starts while Screen Sharing is on" };
   }
   const mem = await (d.memory ?? (() => readMemory(d.sys)))();
-  const short = up ? memoryShortWhileUp(mem) : memoryShort(mem, d.cfg.vmMemoryMB, othersMB(d));
+  // The last good read stands for the budget; a start still fails closed below.
+  if (d.box && mem.totalGB !== undefined) d.box.totalGB = mem.totalGB;
+  const short = up ? memoryShortWhileUp(mem) : memoryShort(mem, d.cfg.vmMemoryMB, othersMB(d), keepsOf(d.cfg, mem.totalGB ?? 0));
   if (short) return { key: "memory", text: `${short}, so the box starts no new VM` };
   return undefined;
 }
@@ -712,8 +738,9 @@ export function infraProofLine(held: boolean, detail: string, nextAt: number): {
 export const PROOF_INFRA_FAST = 4;
 // infra (v2.5.0): the proof couldn't run, so it says nothing about Softnet and tries again soon.
 export type ProofRun = { ok: boolean; detail: string; notRun?: boolean; peers?: number; infra?: boolean };
+// It runs at the smallest Linux size: its network rules don't depend on size.
 export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
-  const d = kindDeps(d0, "linux");
+  const d = kindDeps(d0, "linux", smallestSize(d0.cfg, "linux").name);
   const t = engineOf(d);
   const pubs = (await publicAddresses(d.sys, awayOf(d.cfg).publicAddress)).addresses;
   const pub = pubs[0];
@@ -797,7 +824,7 @@ export async function oneJob(d0: LoopDeps, installedCommit: () => string, startC
 }
 
 async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCommit: string, waits: Wait[], turn: Turn, leave: () => void): Promise<JobOutcome> {
-  const d = kindDeps(d0, turn.kind);
+  const d = kindDeps(d0, turn.kind, turn.size);
   const kind = turn.kind;
   const others = d.box?.othersUp(d.slot) ?? [];
   // v2.4.0: when each phase of this VM began, in ms after it was asked for (jobs.ts Phases).
@@ -868,7 +895,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   const net = netFor(d.cfg, pubs);
   if (d.box?.halt !== undefined) return "halted";
   // A start that gets this far clears a failure, unless another slot is stopping the loop for one.
-  writeState(d, { lastCheck: "OK", failed: [], slot: "starting a VM", slotAt: d.sys.now(), vmKind: kind, waitingFor: undefined, ...(turn.why ? { why: turn.why } : {}), ...(d.box?.halt === undefined ? { failing: undefined } : {}) });
+  writeState(d, { lastCheck: "OK", failed: [], slot: "starting a VM", slotAt: d.sys.now(), vmKind: kind, size: turn.size ?? DEFAULT_SIZE, waitingFor: undefined, ...(turn.why ? { why: turn.why } : {}), ...(d.box?.halt === undefined ? { failing: undefined } : {}) });
 
   // The head of main is for the status file only, so an odd head never stops a job.
   let mainHead = "unknown";
@@ -1101,12 +1128,15 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
         jobAt = started;
         mark("jobStarted");
         // A job this soon after the runner started was already waiting: this kind is busy.
-        if (d.box && started - readyAt <= timingsOf(d.cfg).busyWithinSeconds * 1000) d.box.fastAt[kind] = started;
+        if (d.box && started - readyAt <= timingsOf(d.cfg).busyWithinSeconds * 1000) {
+          d.box.fastAt[kind] = started;
+          d.box.sizeTime(kind, turn.size, "fastAt", started);
+        }
         d.box?.jobStarted(kind, started, labels);
         jobName = clean(m[1]!).slice(0, 120);
         const me = d.box?.held.get(d.slot);
         if (me) me.job = true;
-        writeState(d, { why: undefined, slot: "running a job", job: clean(m[1]!).slice(0, 120), slotAt: started, vmSize: `${KIND_WORD[kind]}, ${d.cfg.vmCpus} CPUs, ${d.cfg.vmMemoryMB / 1024} GB`, beside });
+        writeState(d, { why: undefined, slot: "running a job", job: clean(m[1]!).slice(0, 120), slotAt: started, vmSize: `${sizeWord(kind, turn.size)}, ${d.cfg.vmCpus} CPUs, ${d.cfg.vmMemoryMB / 1024} GB`, beside });
       }
     });
     writeState(d, { slot: "waiting for a job", slotAt: d.sys.now() });
@@ -1198,6 +1228,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
           if (d.box) {
             d.box.gaveWay[kind] = (d.box.gaveWay[kind] ?? 0) + 1;
             d.box.gaveWayAt[kind] = d.sys.now();
+            d.box.sizeTime(kind, turn.size, "gaveWayAt", d.box.gaveWayAt[kind]);
             // A dated log of give-ways, kept across restarts for a week and at most 500, for the
             // acceptance criteria in taskbox job timings.
             const now = d.sys.now();
@@ -1340,7 +1371,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
         .catch((e) => d.log.write(`could not delete runner ${jit.runnerId}: ${(e as Error).message}`));
     }
     d.log.write(`job ${vm} ${outcome}`);
-    writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined, job: undefined, runner: undefined, registeredAt: undefined, labels: undefined });
+    writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined, size: undefined, job: undefined, runner: undefined, registeredAt: undefined, labels: undefined });
   }
 }
 
@@ -1517,6 +1548,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   };
   const source: JobSource = d.source ?? new NoSource();
   box.startedAt = d.sys.now();
+  box.logicalCpus ??= await readLogicalCpus(d.sys);
   // With more than one slot, the proof waits for another job VM to be up, so it can try that VM too,
   // for at most PEER_WAIT_MS: a box whose other kind can't start still proves Linux.
   let peerWaitFrom: number | undefined;
@@ -1557,7 +1589,9 @@ export async function runLoop(d: LoopDeps): Promise<number> {
         slots: n,
         occupants: () => [...box.held.values()],
         claim: (o) => box.held.set(o.slot, o),
-        history: () => box.history(kindsOf(d.cfg)),
+        history: () => box.history(kindsOf(d.cfg), (k) => sizesOf(d.cfg, k).map((z) => z.name)),
+        // The VMs' share of the box: its memory as last read, less boxKeepsGB, and its CPUs.
+        budget: () => budgetOf(d.cfg, box.totalGB, box.logicalCpus),
         // v2.6.0: the load test's window, read each time a slot asks (load.ts).
         load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now()) : undefined),
         // The slots held for workspaces, read each time a slot asks: the scheduler sees the rest.
@@ -1737,10 +1771,11 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     // The Linux proof takes this slot, one proof at a time.
     if (c.proofDue() && !c.proving) {
       c.proving = true;
-      c.box.held.set(d.slot, { slot: d.slot, kind: "linux", labels: [], job: true, up: true });
+      const small = smallestSize(d.cfg, "linux");
+      c.box.held.set(d.slot, { slot: d.slot, kind: "linux", labels: [], job: true, up: true, size: small.name, memoryMB: small.vmMemoryMB, cpus: small.vmCpus });
       try {
         // The same pre-start checks as any VM's start.
-        const dl = kindDeps(d, "linux");
+        const dl = kindDeps(d, "linux", small.name);
         const ctx = { ...dl.checks, vmsRunning: c.box.others(d.slot).length };
         const pre = await (dl.prestart ? dl.prestart(ctx) : runChecks(rows("prestart", ctx), ctx)).catch(() => [{ name: "Pre-start check", status: "FAIL" as const, detail: "errored" }]);
         if (!allOk(pre)) {
@@ -1807,6 +1842,12 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     // A free slot: VMs left from jobs go, at most every LEAK_CHECK_MS (v2.5.0).
     if (!c.box.held.has(d.slot) && d.sys.now() - c.box.leakCheckAt >= LEAK_CHECK_MS) await cleanLeakedVms({ ...d, box: c.box });
     const chosen = await c.choose(last, c.served(), d.slot);
+    // status's budget line, written when it changes.
+    const budgetNow = holdsLine(budgetOf(d.cfg, c.box.totalGB, c.box.logicalCpus), [...c.box.held.values()]);
+    if (budgetNow !== c.box.budgetShown) {
+      c.box.budgetShown = budgetNow;
+      writeLoopState(d.paths, { budget: budgetNow });
+    }
     // A VM waiting for a job gives way once the proof is due, such as when the second update brings
     // the Linux runner mid-wait. The proof then runs at the top of the loop. A VM with a job keeps it.
     // With more than one slot, only when no slot is free, and only the highest waiting slot.
@@ -1832,7 +1873,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       await d.sys.sleep(multi ? QUEUE_POLL_MS : 60_000);
       continue;
     }
-    c.box.held.set(d.slot, { slot: d.slot, kind: turn.kind, labels: turn.labels?.length ? turn.labels : labelsFor(d.cfg, turn.kind), job: false, since: c.box.held.get(d.slot)?.since ?? d.sys.now(), ...(turn.role === "load" ? { role: turn.role } : {}) });
+    const z = sizeOf(d.cfg, turn.kind, turn.size);
+    c.box.held.set(d.slot, { slot: d.slot, kind: turn.kind, labels: turn.labels?.length ? turn.labels : labelsFor(d.cfg, turn.kind), job: false, since: c.box.held.get(d.slot)?.since ?? d.sys.now(), ...(turn.role === "load" ? { role: turn.role } : {}), size: z.name, memoryMB: z.vmMemoryMB, cpus: z.vmCpus });
     let outcome: JobOutcome;
     try {
       outcome = await oneJob(d, c.commitNow, c.startCommit, waits.slice(-10), turn);

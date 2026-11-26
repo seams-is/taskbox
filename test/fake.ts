@@ -59,6 +59,8 @@ export class FakeSys implements Sys {
     // The system's own lookup of a hidden ID agrees with dscl's list, unless a test answers it.
     if (cmd === "/usr/bin/id" && args[0] === "-nu" && /^\d+$/.test(args[1] ?? "")) return { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user\n` };
     if (cmd === "/usr/bin/dscacheutil" && args[0] === "-q" && args[1] === "group") return { code: 0, stdout: "", stderr: "" };
+    // 10 logical CPUs, as the box the numbers in the sizes' settings come from, unless a test says otherwise.
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "hw.logicalcpu") return { code: 0, stdout: "10\n", stderr: "" };
     // Plenty of room unless a test says otherwise: 500 GB.
     if (cmd === "/bin/df") return { code: 0, stdout: `F 1 U A C M\n/dev/disk3s5 1 1 ${500e9 / 1024} 1% /\n`, stderr: "" };
     // The Softnet check's process list: launchd is always there, and no Softnet runs as root.

@@ -26,9 +26,9 @@ describe("memory", () => {
     expect(await readMemory(odd)).toEqual({ pressure: undefined, availableGB: undefined });
   });
   test("a VM starts only at normal pressure with its memory and 4 GB to spare", () => {
-    expect(memoryShort({ pressure: 1, availableGB: 12.2 }, 8192)).toBeUndefined();
-    expect(memoryShort({ pressure: 1, availableGB: 12 }, 8192)).toContain("a VM needs 12.2 GB");
-    expect(memoryShort({ pressure: 4, availableGB: 30 }, 8192)).toBe("memory pressure is very high");
-    expect(memoryShort({ pressure: 1, availableGB: undefined }, 8192)).toBe("the box can't read its memory");
+    expect(memoryShort({ pressure: 1, availableGB: 12.2 }, 8192, 0, 12)).toBeUndefined();
+    expect(memoryShort({ pressure: 1, availableGB: 12 }, 8192, 0, 12)).toContain("a VM needs 12.2 GB");
+    expect(memoryShort({ pressure: 4, availableGB: 30 }, 8192, 0, 12)).toBe("memory pressure is very high");
+    expect(memoryShort({ pressure: 1, availableGB: undefined }, 8192, 0, 12)).toBe("the box can't read its memory");
   });
 });
