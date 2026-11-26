@@ -1,21 +1,21 @@
-// The laptop against a box one answers version behind: a box rolled back to v2.6.1.
+// The controller against a box one answers version behind: a box rolled back to v2.6.1.
 // The box here is v2.6.1's own agent shell, verbatim (fixtures/v2.6.1-shell.ts), with its hello's
 // rule (any word after hello is a usage error) and its version 3 answers. Also the reads' own checks:
 // the install ID on every read, no v3 answer after hello agreed 4, and the box's words kept apart.
 import { describe, expect, test } from "bun:test";
 import { checkAnswer, errorAnswer, helloAnswer, jobsAnswer, logAnswer } from "../src/answers.ts";
 import { envelope, errorFromV3, resultOf } from "../src/envelope.ts";
-import { ask, type Deps, helloOf, linesFor } from "../src/laptop/reach.ts";
-import type { RunResult } from "../src/laptop/run.ts";
-import type { Target } from "../src/laptop/ssh.ts";
+import { ask, type Deps, helloOf, linesFor } from "../src/controller/reach.ts";
+import type { RunResult } from "../src/controller/run.ts";
+import type { Target } from "../src/controller/ssh.ts";
 import { readAnswerOf } from "../src/schema.ts";
 import { commandFor as v261 } from "./fixtures/v2.6.1-shell.ts";
 
 const ID = "0123456789abcdef0123456789abcdef";
-const T: Target = { address: "100.101.102.103", node: "nBoxNode1", knownHosts: "/nonexistent/known_hosts" };
+const T: Target = { address: "100.101.102.103", node: "nBoxNode1", knownHosts: "/nonexistent/known_hosts", user: "taskbox-agent" };
 const ok = (stdout: string, code = 0): RunResult => ({ code, stdout, stderr: "", timedOut: false, tooBig: false });
 
-// A v2.6.1 box: its shell's table, then its cli's answers for what the laptop reads.
+// A v2.6.1 box: its shell's table, then its cli's answers for what the controller reads.
 function v261Box(sent: string[]) {
   return async (argv: string[]): Promise<RunResult> => {
     const line = argv.at(-1)!;
@@ -58,7 +58,7 @@ describe("a v2.6.1 box (N-1)", () => {
 });
 
 describe("a v3 box", () => {
-  test("its shell takes every line the laptop sends in v3's words", async () => {
+  test("its shell takes every line the controller sends in v3's words", async () => {
     const { commandFor } = await import("../src/shell.ts");
     const L = linesFor(4);
     for (const line of [L.hello, L.status, L.jobs(20), L.log, L.check]) expect({ line, ok: "args" in commandFor(line) }).toEqual({ line, ok: true });
@@ -76,8 +76,8 @@ describe("each read's own checks", () => {
     expect(await ask(box(`${JSON.stringify(jobsAnswer([]))}\n`), T, "taskbox-1", "jobs", "job list -n 20 --json", 5_000, { installId: ID, version: 4 })).toHaveProperty("stop");
   });
 
-  // The box's fix is shown as the box's words; the laptop's Next is its own, from the error's code.
-  test("a box's error shows its words in the stop line, and the Next line is the laptop's own", async () => {
+  // The box's fix is shown as the box's words; the controller's Next is its own, from the error's code.
+  test("a box's error shows its words in the stop line, and the Next line is the controller's own", async () => {
     const err = `${JSON.stringify(envelope({ command: "status", box: null, at: 0, exit: 1, lines: ["x"], error: { ...errorFromV3("state-unreadable"), fix: "Run taskbox remove now." } }))}\n`;
     const s = (await ask(box(err), T, "taskbox-1", "status", "status --json", 5_000)) as { stop: string; next: string };
     expect(s.stop).toBe("taskbox-1 says: The box's state can't be shown to you. The box's own words for the fix: Run taskbox remove now.");

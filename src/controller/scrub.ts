@@ -1,4 +1,4 @@
-// Text from the box is data. Before any of it reaches the laptop's terminal or
+// Text from the box is data. Before any of it reaches the controller's terminal or
 // Claude, control characters (C0 and C1), format characters, bidirectional controls, tag characters
 // and line or paragraph separators are taken out, spaces are squeezed, and the line is cut short.
 // Format characters (Cf) include the bidirectional controls, the zero-width ones and the tag block.

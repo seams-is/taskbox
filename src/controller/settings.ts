@@ -1,4 +1,4 @@
-// The laptop's own settings for workspaces, in ~/Library/Application Support/taskbox/laptop.json at
+// The controller's own settings for workspaces, in ~/Library/Application Support/taskbox/controller.json at
 // mode 600: the box's Tailscale name, the box's agent account, and the approver key's handle.
 // taskbox approver writes it. The handle is the file ssh-keygen -K wrote for the Secure Enclave key:
 // it names the key and holds no secret, since the key itself never leaves the Secure Enclave.
@@ -9,7 +9,7 @@ import { approverKeyProblem, fingerprint } from "../approver.ts";
 import { APPROVER_KEY } from "../workspace/approval.ts";
 import { BOX_NAME } from "./box.ts";
 
-export interface Laptop {
+export interface Controller {
   v: 1;
   box: string;
   agent: string; // the box's accounts.agent
@@ -18,13 +18,13 @@ export interface Laptop {
 }
 
 export const ACCOUNT = /^[A-Za-z_][A-Za-z0-9._-]{0,31}$/;
-export const laptopFile = (home: string) => join(home, "Library/Application Support/taskbox/laptop.json");
+export const controllerFile = (home: string) => join(home, "Library/Application Support/taskbox/controller.json");
 export const keyDir = (home: string) => join(home, ".ssh/taskbox-approve");
 
 const handleOk = (v: unknown) => v === null || (typeof v === "string" && isAbsolute(v) && v.length < 1024 && !/[\x00-\x1f]/.test(v));
 
-// Why a laptop.json value isn't one readLaptop takes, or undefined.
-export function laptopProblem(v: Record<string, unknown>): string | undefined {
+// Why a controller.json value isn't one readController takes, or undefined.
+export function controllerProblem(v: Record<string, unknown>): string | undefined {
   if (v.v !== 1) return "its version";
   if (typeof v.box !== "string" || !BOX_NAME.test(v.box)) return "the box's name";
   if (typeof v.agent !== "string" || !ACCOUNT.test(v.agent)) return "the agent account";
@@ -32,23 +32,23 @@ export function laptopProblem(v: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-export type LaptopRead = { ok: true; laptop: Laptop } | { ok: false; why: string };
+export type ControllerRead = { ok: true; controller: Controller } | { ok: false; why: string };
 
-export function readLaptop(home: string): LaptopRead {
-  const f = laptopFile(home);
+export function readController(home: string): ControllerRead {
+  const f = controllerFile(home);
   const setup = "Type taskbox approver --box <the box's Tailscale name> --agent <the box's agent account> once.";
   let fd: number;
   try {
     fd = openSync(f, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
-    return { ok: false, why: `This laptop isn't set up for workspaces yet. ${setup}` };
+    return { ok: false, why: `This controller isn't set up for workspaces yet. ${setup}` };
   }
   try {
     const st = fstatSync(fd);
     if (!st.isFile() || st.uid !== process.getuid?.() || (st.mode & 0o077) !== 0 || st.size > 8192) return { ok: false, why: `${f} isn't this user's own file at mode 600. ${setup}` };
     const v = JSON.parse(readFileSync(fd, "utf8")) as Record<string, unknown>;
-    if (laptopProblem(v)) return { ok: false, why: `${f} isn't one taskbox reads. ${setup}` };
-    return { ok: true, laptop: { v: 1, box: v.box as string, agent: v.agent as string, key: (v.key as string | null) ?? null, next: (v.next as string | null) ?? null } };
+    if (controllerProblem(v)) return { ok: false, why: `${f} isn't one taskbox reads. ${setup}` };
+    return { ok: true, controller: { v: 1, box: v.box as string, agent: v.agent as string, key: (v.key as string | null) ?? null, next: (v.next as string | null) ?? null } };
   } catch {
     return { ok: false, why: `${f} isn't one taskbox reads. ${setup}` };
   } finally {
@@ -57,11 +57,11 @@ export function readLaptop(home: string): LaptopRead {
 }
 
 // Written whole to a new name at mode 600 and renamed, in a folder of this user's at mode 700.
-// Never anything readLaptop would refuse: this throws instead.
-export function writeLaptop(home: string, l: Laptop): void {
-  const bad = laptopProblem({ ...l });
-  if (bad) throw new Error(`laptop.json would not read back: ${bad}`);
-  const f = laptopFile(home);
+// Never anything readController would refuse: this throws instead.
+export function writeController(home: string, l: Controller): void {
+  const bad = controllerProblem({ ...l });
+  if (bad) throw new Error(`controller.json would not read back: ${bad}`);
+  const f = controllerFile(home);
   mkdirSync(dirname(f), { recursive: true, mode: 0o700 });
   chmodSync(dirname(f), 0o700);
   const tmp = `${f}.new`;

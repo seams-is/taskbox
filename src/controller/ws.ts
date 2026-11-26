@@ -1,18 +1,15 @@
-#!/usr/bin/env bun
-// taskbox on the owner's laptop, for workspaces. It is the
-// repo's own code, run by Bun from a checkout: no install, no daemon. It talks to the box over
-// Tailscale SSH, and signs the owner's steps with the approver key.
-//
-//   bun src/laptop/main.ts            the owner's screen
-//   bun src/laptop/main.ts approve nova-1
+// The controller's workspace steps in their first form, before signed requests had a statement shared
+// with the box: approve, deny, pause, resume, end and approver. They are not on the controller's command
+// line. They are kept, with their tests, for the box's approver install test, until the owner's steps
+// are rebuilt on core/statement.ts.
 import { homedir } from "node:os";
 import { connect, isWrapped, wrapped } from "./agents.ts";
-import type { LaptopDeps, RunOpts, RunResult } from "./box.ts";
+import type { ControllerDeps, RunOpts, RunResult } from "./box.ts";
 import { approver, type ApproverArgs, ownerDeny, ownerStep } from "./owner.ts";
 import { ownerScreen } from "./screen.ts";
 import { realClock } from "../clock.ts";
 
-export const LAPTOP_USAGE = [
+export const CONTROLLER_USAGE = [
   "taskbox                                  the owner's screen: each workspace, redrawn every 3 s",
   "taskbox approve <name>                   Touch ID",
   'taskbox deny <name> [--reason "<words>"]',
@@ -50,10 +47,10 @@ function flags(args: readonly string[], valued: readonly string[], alone: readon
   return { pos, f };
 }
 
-export async function laptopMain(d: LaptopDeps, argv: readonly string[], o: { rounds?: number } = {}): Promise<number> {
+export async function wsMain(d: ControllerDeps, argv: readonly string[], o: { rounds?: number } = {}): Promise<number> {
   const [cmd, ...rest] = argv;
   const usage = () => {
-    for (const l of LAPTOP_USAGE) d.out(l);
+    for (const l of CONTROLLER_USAGE) d.out(l);
     return 1;
   };
   if (cmd === undefined) return ownerScreen(d, { rounds: o.rounds, clear: true });
@@ -96,7 +93,7 @@ export async function laptopMain(d: LaptopDeps, argv: readonly string[], o: { ro
 // The real commands. Each gets the environment it is given and no other, so ssh-keygen never sees
 // SSH_AUTH_SOCK and nothing reaches an agent.
 // The most of a command's stdout and stderr kept. The rest is read and dropped, so a command that
-// prints without end can't fill the laptop's memory.
+// prints without end can't fill the controller's memory.
 export const STDOUT_MAX = 2_000_000;
 export const STDERR_MAX = 64_000;
 
@@ -140,19 +137,4 @@ async function ask(q: string): Promise<string> {
   process.stdout.write(q);
   for await (const line of console) return line;
   return "";
-}
-
-if (import.meta.main) {
-  const d: LaptopDeps = {
-    run: realRun,
-    tty: async (argv) => await Bun.spawn(argv, { env: baseEnv(), stdin: "inherit", stdout: "inherit", stderr: "inherit" }).exited,
-    out: (l) => console.log(l),
-    ask,
-    now: () => realClock.now(),
-    sleep: (ms) => realClock.sleep(ms),
-    home: homedir(),
-    env: baseEnv(),
-    isTty: process.stdin.isTTY === true,
-  };
-  process.exit(await laptopMain(d, process.argv.slice(2)));
 }

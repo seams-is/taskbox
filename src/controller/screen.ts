@@ -1,9 +1,9 @@
-// The owner's screen on the laptop: taskbox on its
+// The owner's screen on the controller: taskbox on its
 // own. One card per workspace, redrawn every 3 s, read from the box as the agent account, and a
 // macOS notification when a new request comes in. Everything on it is the box's text, scrubbed.
 import { OPEN, QUIET_MS } from "../workspace/model.ts";
-import { type BoxView, type BoxWs, type LaptopDeps, readBox, scrub } from "./box.ts";
-import { readLaptop } from "./settings.ts";
+import { type BoxView, type BoxWs, type ControllerDeps, readBox, scrub } from "./box.ts";
+import { readController } from "./settings.ts";
 
 export const REDRAW_MS = 3_000;
 // A Saving workspace not saved after this long: the card asks whether to pause it now.
@@ -62,7 +62,7 @@ export function screenLines(v: BoxView, box: string, now: number): string[] {
   if (v.fence && !v.fence.ok) out.push(`The fence doesn't hold: ${v.fence.why}`);
   if (v.ok && !v.workspaces.length) out.push("No workspaces now.");
   for (const w of v.workspaces) out.push(...card(w, now), "");
-  if (v.unread) out.push(`${v.unread} workspace${v.unread === 1 ? "" : "s"} on the box can't be read here. Update taskbox on this laptop.`);
+  if (v.unread) out.push(`${v.unread} workspace${v.unread === 1 ? "" : "s"} on the box can't be read here. Update taskbox on this controller.`);
   if (v.history.length) {
     out.push("Last steps the box applied:");
     for (const e of v.history.slice(-5)) out.push(`  ${clock(e.at)}  ${e.text}`);
@@ -85,8 +85,8 @@ export function newRequests(v: BoxView, seen: Set<string>): BoxWs[] {
 }
 
 // The screen: read, draw, notify, every REDRAW_MS. rounds: how many, for tests; forever otherwise.
-export async function ownerScreen(d: LaptopDeps, o: { rounds?: number; clear?: boolean } = {}): Promise<number> {
-  const l = readLaptop(d.home);
+export async function ownerScreen(d: ControllerDeps, o: { rounds?: number; clear?: boolean } = {}): Promise<number> {
+  const l = readController(d.home);
   if (!l.ok) {
     d.out(l.why);
     return 1;
@@ -94,9 +94,9 @@ export async function ownerScreen(d: LaptopDeps, o: { rounds?: number; clear?: b
   const seen = new Set<string>();
   let first = true;
   for (let i = 0; o.rounds === undefined || i < o.rounds; i++) {
-    const v = await readBox(d, l.laptop.agent, l.laptop.box);
+    const v = await readBox(d, l.controller.agent, l.controller.box);
     const now = d.now();
-    const lines = "why" in v ? [`taskbox workspaces on ${l.laptop.box}, at ${clock(now)}`, "", v.why, "Trying again."] : screenLines(v, l.laptop.box, now);
+    const lines = "why" in v ? [`taskbox workspaces on ${l.controller.box}, at ${clock(now)}`, "", v.why, "Trying again."] : screenLines(v, l.controller.box, now);
     if (o.clear) d.out("\x1b[H\x1b[2J");
     for (const line of lines) d.out(line);
     if (!("why" in v)) {

@@ -1,6 +1,6 @@
 // Each paired box's last agreed answers version and release, kept beside the pairing in
 // answers.json (0600). A box that drops to an older version, as after a rollback to v2.6.1, reads
-// on (N-1), and the laptop says so once.
+// on (N-1), and the controller says so once.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Home, NODE, writePrivateFile } from "./home.ts";

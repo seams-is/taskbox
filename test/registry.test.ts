@@ -10,8 +10,8 @@ import { paths } from "../src/config.ts";
 import { CMD_DIR, loadRegistry, parseLine, registry, registryProblem } from "../src/registry.ts";
 import { renamed } from "../src/renames.ts";
 import { readEnvelopes } from "../src/schema.ts";
-import { readAnswer } from "../src/laptop/schema.ts";
-import { boxChecksBody } from "../src/laptop/screens.ts";
+import { readAnswer } from "../src/controller/schema.ts";
+import { boxChecksBody } from "../src/controller/screens.ts";
 import { FakeSys } from "./fake.ts";
 import { fakeLaunchd, healthyBox, quietBox, readAsRoot, tempRoot, testBox } from "./helpers.ts";
 

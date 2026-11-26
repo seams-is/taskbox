@@ -15,33 +15,29 @@
     "reads": 1,
     "why": "the watch screen's now: display"
   },
-  "laptop/commands.ts": {
-    "reads": 5,
-    "why": "when a status was read and a screen drawn: display"
-  },
-  "laptop/home.ts": {
+  "controller/home.ts": {
     "reads": 1,
     "why": "a temp file's unique name"
   },
-  "laptop/main.ts": {
-    "reads": 1,
-    "why": "the laptop's Clock: passed on to the lines here"
+  "controller/main.ts": {
+    "reads": 4,
+    "why": "the controller's Clock, and the time on its own envelopes and events: labels"
   },
-  "laptop/owner.ts": {
+  "controller/owner.ts": {
     "reads": 1,
     "why": "the time a signed statement carries; the box judges its 5 minutes"
   },
-  "laptop/pair.ts": {
-    "reads": 1,
-    "why": "when a box was paired: a label"
+  "controller/pair.ts": {
+    "reads": 4,
+    "why": "when a box was paired, and the time on the controller's events: labels"
   },
-  "laptop/screen.ts": {
+  "controller/screen.ts": {
     "reads": 1,
     "why": "how long a workspace has waited to save: display"
   },
-  "laptop/update.ts": {
-    "reads": 4,
-    "why": "when the laptop last looked for an update: a step only looks sooner or later"
+  "controller/update.ts": {
+    "reads": 6,
+    "why": "when the controller last looked for an update, and the time on its events: a step only looks sooner or later"
   },
   "actionskey.ts": {
     "reads": 3,
@@ -174,5 +170,9 @@
   "shell.ts": {
     "reads": 1,
     "why": "the agent shell's refusal envelope's at: a label"
+  },
+  "controller/forward.ts": {
+    "reads": 4,
+    "why": "the time on an envelope the controller makes, and when a status was read: display"
   }
 }

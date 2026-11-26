@@ -100,7 +100,7 @@ export function releaseProblem(why: Exclude<Got<unknown>, { ok: true }>["why"], 
   const where = `${s.owner}/${s.repo}`;
   switch (why) {
     case "offline":
-      return `GitHub couldn't be reached for ${where}'s releases. Check this laptop is online, then try again.`;
+      return `GitHub couldn't be reached for ${where}'s releases. Check this controller is online, then try again.`;
     case "not-found":
       return tag ? `${where} has no release ${tag}.` : `${where} has no release yet.`;
     case "refused":

@@ -1,8 +1,9 @@
-// The laptop's way to the box: Tailscale SSH as the box's
+// The controller's way to the box: Tailscale SSH as the box's
 // agent account, whose login shell runs taskbox's own commands and nothing else (src/shell.ts).
 // Everything the box says is data. Each answer is read in a strict shape, and every string in it is
 // cut to printable ASCII and a length before anything shows it.
-import { words } from "../shell.ts";
+import { remoteLine } from "./ssh.ts";
+export { remoteLine };
 import { INSTALL_ID } from "../answers.ts";
 import { FINGERPRINT } from "../approver.ts";
 import { AGENT, isSize, NAME, NONCE, PHASES, PHASE_WORD, POOL_USER, type Phase, type Size } from "../workspace/model.ts";
@@ -10,7 +11,7 @@ import { AGENT, isSize, NAME, NONCE, PHASES, PHASE_WORD, POOL_USER, type Phase, 
 export const SSH = "/usr/bin/ssh";
 // How long one read or step over SSH may take. Tailscale SSH can ask the owner to check in a browser first.
 export const BOX_MS = 60_000;
-// The most of the box's answer the laptop reads.
+// The most of the box's answer the controller reads.
 export const ANSWER_MAX = 1_000_000;
 
 export type RunResult = { code: number; stdout: string; stderr: string; timedOut?: boolean };
@@ -23,8 +24,8 @@ export interface RunOpts {
   onLine?: (line: string) => void;
 }
 
-// What the laptop commands touch, so tests can give a fake ssh, ssh-keygen, sc_auth and osascript.
-export interface LaptopDeps {
+// What the controller commands touch, so tests can give a fake ssh, ssh-keygen, sc_auth and osascript.
+export interface ControllerDeps {
   run(argv: string[], o?: RunOpts): Promise<RunResult>;
   // A command with the terminal: connect's shell or command, with stdin, stdout and stderr its own.
   tty(argv: string[]): Promise<number>;
@@ -44,15 +45,6 @@ export const scrub = (v: unknown, max = 200): string => (typeof v === "string" ?
 // The box's Tailscale name: a MagicDNS name, or a host name on its own.
 export const BOX_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
-// The line the box's shell gets, from words. A word with a space goes in double quotes. The line
-// must split back into the same words with the shell's own filter, or nothing is sent.
-export function remoteLine(ws: readonly string[]): string {
-  const line = ws.map((w) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(w) ? w : `"${w}"`)).join(" ");
-  const back = words(line);
-  if (!back || back.length !== ws.length || back.some((w, i) => w !== ws[i])) throw new Error("words the box's shell can't take");
-  return line;
-}
-
 // ssh's options for every connection to the box. -F /dev/null: the owner's ssh config is never read,
 // so no Host block can add a ProxyCommand, a LocalCommand, a forward or an agent. No agent, no X11,
 // no forwards, no shared connection: Tailscale SSH needs none of them, only user and host.
@@ -70,7 +62,7 @@ export const SSH_FAILED = 255;
 export const cantReach = (box: string, user: string) => `taskbox couldn't reach ${box} over Tailscale SSH as ${user}. Check Tailscale is on, and the tailnet policy lets you in as ${user}.`;
 
 // One command on the box as user, its output captured.
-export async function onBox(d: LaptopDeps, user: string, box: string, ws: readonly string[], o: { onLine?: (l: string) => void; timeoutMs?: number } = {}): Promise<RunResult> {
+export async function onBox(d: ControllerDeps, user: string, box: string, ws: readonly string[], o: { onLine?: (l: string) => void; timeoutMs?: number } = {}): Promise<RunResult> {
   return d.run(sshArgv(user, box, remoteLine(ws)), { timeoutMs: o.timeoutMs ?? BOX_MS, onLine: o.onLine, env: d.env });
 }
 
@@ -85,7 +77,7 @@ export interface BoxWs {
   name: string;
   agent: string;
   user: string | null;
-  size: Size | null; // null: a size this laptop doesn't know
+  size: Size | null; // null: a size this controller doesn't know
   sizeWord: string;
   phase: Phase;
   state: string; // the box's own line for the state, scrubbed
@@ -106,7 +98,7 @@ export interface BoxView {
   installId: string | null;
   approver: { fingerprint: string | null; gen: number } | null;
   workspaces: BoxWs[];
-  unread: number; // entries the box sent that aren't in a shape this laptop reads
+  unread: number; // entries the box sent that aren't in a shape this controller reads
   fence: { ok: boolean; why: string } | null;
   history: { at: number; text: string }[];
 }
@@ -160,7 +152,7 @@ export function readView(stdout: string): BoxView | { why: string } {
   } catch {
     v = undefined;
   }
-  if (!v || typeof v.ok !== "boolean" || !Array.isArray(v.workspaces)) return { why: "The box's answer isn't one this laptop reads. Update taskbox on the laptop or the box." };
+  if (!v || typeof v.ok !== "boolean" || !Array.isArray(v.workspaces)) return { why: "The box's answer isn't one this controller reads. Update taskbox on the controller or the box." };
   const b = obj(v.box);
   const installId = typeof b?.installId === "string" && INSTALL_ID.test(b.installId) ? b.installId : null;
   const a = obj(b?.approver);
@@ -189,7 +181,7 @@ export function readView(stdout: string): BoxView | { why: string } {
 }
 
 // The box's state, read as the agent account, or why not, in one line.
-export async function readBox(d: LaptopDeps, user: string, box: string): Promise<BoxView | { why: string }> {
+export async function readBox(d: ControllerDeps, user: string, box: string): Promise<BoxView | { why: string }> {
   const r = await onBox(d, user, box, ["workspaces", "--json"]);
   if (r.timedOut) return { why: `${box} didn't answer within ${BOX_MS / 1000} s.` };
   if (r.code === SSH_FAILED) return { why: cantReach(box, user) };
@@ -205,5 +197,5 @@ export function readAnswer(r: RunResult, box: string, user: string): { ok: boole
     const v = obj(JSON.parse(line));
     if (v && typeof v.ok === "boolean") return { ok: v.ok && r.code === 0, said: scrub(v.said, 300) || (v.ok ? "Done." : "The box refused it.") };
   } catch {}
-  return { ok: false, said: `The box's answer isn't one this laptop reads: ${scrub(line, 120) || "nothing"}` };
+  return { ok: false, said: `The box's answer isn't one this controller reads: ${scrub(line, 120) || "nothing"}` };
 }

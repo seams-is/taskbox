@@ -13,10 +13,10 @@ import { earlierWorkspaces, install, type InstallDeps, TRUST_FILES, trustFilesLi
 import { FakeSys, githubRoutes } from "./fake.ts";
 import { Dir } from "./fake-dir.ts";
 import { CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
-import { laptopMain } from "../src/laptop/main.ts";
-import { keyDir, writeLaptop } from "../src/laptop/settings.ts";
-import { SSH } from "../src/laptop/box.ts";
-import { SSH_KEYGEN } from "../src/laptop/owner.ts";
+import { wsMain } from "../src/controller/ws.ts";
+import { keyDir, writeController } from "../src/controller/settings.ts";
+import { SSH } from "../src/controller/box.ts";
+import { SSH_KEYGEN } from "../src/controller/owner.ts";
 import { boxFacts, workspacesJson } from "../src/workspace/show.ts";
 import { approver, realKeygen } from "./ws-helpers.ts";
 import { keyChangeVerifier } from "../src/workspace/approval.ts";
@@ -30,9 +30,9 @@ async function rotateBlock(old: ReturnType<typeof approver>, next: ReturnType<ty
   writeFileSync(h, "handle\n");
   writeFileSync(`${h}.pub`, `${old.key}\n`);
   writeFileSync(join(home, "new.pub"), `${next.key}\n`);
-  writeLaptop(home, { v: 1, box: "taskbox-1", agent: "taskbox-agent", key: h, next: null });
+  writeController(home, { v: 1, box: "taskbox-1", agent: "taskbox-agent", key: h, next: null });
   const out: string[] = [];
-  const code = await laptopMain(
+  const code = await wsMain(
     {
       home,
       isTty: true,

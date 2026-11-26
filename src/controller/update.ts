@@ -1,4 +1,4 @@
-// The controller's install and `taskbox update`. A laptop
+// The controller's install, `taskbox self update` and `taskbox self rollback`. A controller
 // installs from the public repo. Each release is checked with verifyRelease before anything is
 // unpacked: the owner's signature over the statement, against the pinned signers file, then the
 // tarball's SHA-256. The screen shows the tag, the private PR, its merge date and the commit from
@@ -18,6 +18,7 @@ import { basename, join } from "node:path";
 import { relink } from "../layout.ts";
 import { describeStatement, type Statement, type Verdict, verifyRelease } from "../release.ts";
 import type { Deps } from "./reach.ts";
+import { appendEvent } from "./events.ts";
 import { type Home, readConfig, setUpController, type Source } from "./home.ts";
 import { type Fetch, findRelease, get, MAX, newer, RELEASE_TAG, releaseProblem, SIGNATURE, STATEMENT, tarballName } from "./releases.ts";
 import { footer, header, type Screen } from "./screens.ts";
@@ -43,12 +44,12 @@ export const signersIn = (app: string) => join(app, "signers", "allowed_signers"
 // without the tarball's hash, which verifyRelease has checked.
 export const describe = (s: Statement): string[] => describeStatement(s).filter((l) => !l.trimStart().startsWith("Tarball:"));
 
-// bin/taskbox: the one file outside a release. It names this laptop's own folder.
+// bin/taskbox: the one file outside a release. It names this controller's own folder.
 export function wrapper(h: Home): string {
   const q = `'${h.dir.replace(/'/g, `'\\''`)}'`;
   return [
     "#!/bin/sh",
-    "# taskbox on this laptop, as a controller. Written by taskbox's install: it runs the release in use.",
+    "# taskbox on this controller. Written by taskbox's install: it runs the release in use.",
     `d=${q}`,
     'exec "$d/current/bun" --no-install --no-env-file --cwd=/ --config="$d/current/app/bunfig.run.toml" "$d/current/app/src/controller/main.ts" "$@"',
     "",
@@ -96,7 +97,7 @@ async function placeBun(d: UpdateDeps, app: string, stage: string, work: string)
     }
   } catch {}
   const zip = await get(d.fetch, pin.url, 150_000_000, 300_000);
-  if (!zip.ok) throw new Stop(`bun ${pin.version} couldn't be downloaded (${zip.why}).`, "Check this laptop is online, then type taskbox update again.");
+  if (!zip.ok) throw new Stop(`bun ${pin.version} couldn't be downloaded (${zip.why}).`, "Check this controller is online, then type taskbox update again.");
   if (sha256(zip.value) !== pin.sha256) throw new Stop(`The bun download doesn't match its pin, so nothing was installed.`);
   writeFileSync(join(work, "bun.zip"), zip.value, { mode: 0o600 });
   const out = join(work, "bun");
@@ -130,14 +131,15 @@ const currentTag = (h: Home) => {
 
 export interface UpdateAsk {
   tag?: string; // a release asked for by name; else the newest
+  check?: boolean; // --check: say what it would take, and install nothing
   first?: { from: Source; bootstrap: string }; // the first install, from the folder the owner downloaded
 }
 
 export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> {
   const r0 = readConfig(d.home);
   const top = header(r0.ok ? r0.config.boxes.map((b) => b.name) : null, d.version);
-  const screen = (stop: string, next: string, did = "Nothing installed.", code = 1): Screen => ({ lines: [top, stop, ...footer(`taskbox ${d.version} on this laptop.`, did, next)], code });
-  if (a.tag !== undefined && !RELEASE_TAG.test(a.tag)) return screen("taskbox update takes a release, such as v2.1.0, or nothing.", "Type taskbox update.");
+  const screen = (stop: string, next: string, did = "Nothing installed.", code = 1): Screen => ({ lines: [top, stop, ...footer(`taskbox ${d.version} on this controller.`, did, next)], code });
+  if (a.tag !== undefined && !RELEASE_TAG.test(a.tag)) return screen("taskbox self update --to takes a release, such as v3.0.0.", "Type taskbox self update.");
 
   // The first install: the role is set once, and the public repo is the one the owner names. The
   // release is checked against the signers file in the folder the owner downloaded.
@@ -145,7 +147,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
   let source: Source;
   let signers: string;
   if (a.first) {
-    if (existsSync(d.home.current) || isLink(d.home.current)) return screen("taskbox is installed on this laptop already.", "Type taskbox update.");
+    if (existsSync(d.home.current) || isLink(d.home.current)) return screen("taskbox is installed on this controller already.", "Type taskbox self update.");
     if (!d.tty) return screen(`The install didn't start. ${typed}`, "Type the install line in Terminal.");
     try {
       setUpController(d.home, a.first.from);
@@ -156,11 +158,11 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     signers = signersIn(a.first.bootstrap);
   } else {
     const c = readConfig(d.home);
-    if (!c.ok) return screen("taskbox isn't set up as a controller on this Mac.", "Install taskbox for a laptop, from its release page.");
-    if (!c.config.source) return screen("taskbox doesn't know which public repo it updates from.", "Install taskbox for a laptop again, from its release page.");
+    if (!c.ok) return screen("taskbox isn't installed for a controller on this Mac.", "Install taskbox for a controller, from its release page.");
+    if (!c.config.source) return screen("taskbox doesn't know which public repo it updates from.", "Install taskbox for a controller again, from its release page.");
     source = c.config.source;
     signers = signersIn(join(d.home.current, "app"));
-    if (!existsSync(signers)) return screen("This laptop's taskbox has no signers file, so no release can be checked.", "Install taskbox for a laptop again, from its release page.");
+    if (!existsSync(signers)) return screen("This controller's taskbox has no signers file, so no release can be checked.", "Install taskbox for a controller again, from its release page.");
   }
 
   const found = await findRelease(d.fetch, source, a.tag);
@@ -168,11 +170,12 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
   const tag = found.value.tag;
   const inUse = currentTag(d.home);
   if (!a.first && !a.tag && inUse && !newer(tag, inUse)) return screen(`taskbox ${inUse} is the newest release.`, "Nothing to do.", "Nothing to install.", 0);
-  if (!a.first && !inUse) return screen("This laptop's taskbox has no release in use taskbox can read.", "Install taskbox for a laptop again, from its release page.");
+  if (!a.first && !inUse) return screen("This controller's taskbox has no release in use taskbox can read.", "Install taskbox for a controller again, from its release page.");
   if (inUse === tag) return screen(`taskbox ${tag} is installed already.`, "Nothing to do.", "Nothing to install.", 0);
   // Only a newer release installs, so an old signed release can't be put back.
   if (!a.first && inUse && !newer(tag, inUse)) return screen(`${tag} isn't newer than the installed ${inUse}, and taskbox installs newer releases only.`, "Nothing to do.");
-  if (!d.tty) return screen(`taskbox ${tag} is out. ${typed}`, "Type taskbox update in Terminal.");
+  if (a.check) return screen(`taskbox ${tag} is out for this controller, which runs ${inUse ?? d.version}.`, "Type taskbox self update.", "Nothing installed.", 0);
+  if (!d.tty) return screen(`taskbox ${tag} is out. ${typed}`, "Type taskbox self update in Terminal.");
 
   mkdirSync(d.home.releases, { recursive: true, mode: 0o755 });
   const work = join(d.home.releases, `.work-${randomBytes(6).toString("hex")}`);
@@ -190,7 +193,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     if (!v.ok) return screen(`Not installed: ${v.why.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}.`, "Nothing to do: agents look. Don't install a release by hand.");
 
     d.out(top);
-    d.out(a.first ? `This installs taskbox ${tag} on this laptop, as a controller:` : `This updates this laptop from taskbox ${d.version} to ${tag}:`);
+    d.out(a.first ? `This installs taskbox ${tag} on this controller:` : `This updates this controller from taskbox ${d.version} to ${tag}:`);
     for (const l of describe(v.statement)) d.out(l);
     if (a.first) d.out(`It is checked against the release key in the folder you downloaded. Later updates are checked against the key ${tag} carries.`);
     const yes = (await d.ask("Type yes to install it: ")).trim().toLowerCase();
@@ -224,7 +227,8 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     prune(d.home, [tag, ...(inUse ? [inUse] : [])]);
     writeFileSync(d.home.updateCheck, JSON.stringify({ checkedAt: d.now(), latest: tag }), { mode: 0o600 });
     const did = `Installed taskbox ${tag}, from #${v.statement.source.pr}, commit ${v.statement.source.commit.slice(0, 7)}.`;
-    return { lines: [header(null, tag), did, ...footer(`taskbox ${tag} on this laptop.`, did, a.first ? "Type taskbox pair." : "Nothing to do.")], code: 0 };
+    appendEvent(d.home, d.now(), "self.updated", did, { tag, from: inUse ?? null });
+    return { lines: [header(null, tag), did, ...footer(`taskbox ${tag} on this controller.`, did, a.first ? "Type taskbox box add." : "Nothing to do.")], code: 0 };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -260,5 +264,23 @@ export async function updateNote(d: UpdateDeps): Promise<string | undefined> {
       writeFileSync(d.home.updateCheck, JSON.stringify({ checkedAt: d.now(), latest }), { mode: 0o600 });
     } catch {}
   }
-  return newer(latest, own) ? `taskbox ${latest} is out for this laptop. Type taskbox update to see it.` : undefined;
+  return newer(latest, own) ? `taskbox ${latest} is out for this controller. Type taskbox self update to see it.` : undefined;
+}
+
+// taskbox self rollback: back to the release kept beside the one in use. It was verified when it was
+// installed, so nothing is downloaded; current moves in one step.
+export function rollback(d: Deps): Screen {
+  const inUse = currentTag(d.home);
+  const top = header(null, d.version);
+  const screen = (stop: string, next: string, code = 1): Screen => ({ lines: [top, stop, ...footer(`taskbox ${inUse ?? d.version} on this controller.`, code ? "Nothing changed." : stop, next)], code });
+  if (!inUse) return screen("This controller's taskbox has no release in use taskbox can read.", "Install taskbox for a controller again, from its release page.");
+  let kept: string[] = [];
+  try {
+    kept = readdirSync(d.home.releases).filter((n) => RELEASE_TAG.test(n) && n !== inUse && existsSync(join(d.home.releases, n, "bun")) && existsSync(join(d.home.releases, n, "app", "src", "controller", "main.ts")));
+  } catch {}
+  const back = kept.sort((x, y) => (newer(x, y) ? -1 : newer(y, x) ? 1 : 0))[0];
+  if (!back) return screen("No other release is kept on this controller.", "Nothing to do.");
+  relink(d.home.current, join("releases", back));
+  appendEvent(d.home, d.now(), "self.rolled-back", `Rolled back from ${inUse} to ${back}.`, { tag: back, from: inUse });
+  return screen(`Rolled back from taskbox ${inUse} to ${back}. ${inUse} is kept, and taskbox self update takes the newest again.`, "Nothing to do.", 0);
 }

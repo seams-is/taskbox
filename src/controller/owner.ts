@@ -1,6 +1,6 @@
-// The owner's workspace commands on the laptop:
+// The owner's workspace commands on the controller:
 // approve, pause, resume and end, each signed with the approver key, which asks for Touch ID; deny,
-// unsigned, as the label laptop; and approver, which makes the key once and names a new one.
+// unsigned, as the label controller; and approver, which makes the key once and names a new one.
 //
 // Each signed step reads the box's state as the agent account, builds the exact statement with the
 // box's own approval.ts, signs it with ssh-keygen and the Secure Enclave key, and sends it base64url
@@ -11,8 +11,8 @@ import { join, resolve } from "node:path";
 import { APPROVER_NAMESPACE, keyChangeText } from "../approver.ts";
 import { type Action, NAMESPACE, parseStatement, type Statement, statementText, toB64url } from "../workspace/approval.ts";
 import { FINAL, HOLDS, NAME, PHASE_WORD, type Phase, cleanWords, WORDS_MAX } from "../workspace/model.ts";
-import { BOX_NAME, type BoxView, type BoxWs, type LaptopDeps, onBox, readAnswer, readBox, scrub } from "./box.ts";
-import { ACCOUNT, type Laptop, keyDir, keyHash, privateHandle, publicKey, readLaptop, writeLaptop } from "./settings.ts";
+import { BOX_NAME, type BoxView, type BoxWs, type ControllerDeps, onBox, readAnswer, readBox, scrub } from "./box.ts";
+import { ACCOUNT, type Controller, keyDir, keyHash, privateHandle, publicKey, readController, writeController } from "./settings.ts";
 
 export const SSH_KEYGEN = "/usr/bin/ssh-keygen";
 export const SC_AUTH = "/usr/sbin/sc_auth";
@@ -20,49 +20,49 @@ export const SK_PROVIDER = "/usr/lib/ssh-keychain.dylib";
 export const KEY_LABEL = "taskbox-approve";
 // How long Touch ID may take.
 export const SIGN_MS = 90_000;
-// The label an owner's deny from the laptop carries. It is unsigned, so it never says owner.
-export const DENY_AS = "laptop";
+// The label an owner's deny from the controller carries. It is unsigned, so it never says owner.
+export const DENY_AS = "controller";
 
 const ARMOUR = /^-----BEGIN SSH SIGNATURE-----\n[A-Za-z0-9+/=\n]{100,2000}-----END SSH SIGNATURE-----\n?$/;
 
 // ssh-keygen's environment: no SSH_AUTH_SOCK, so the key is never offered to or read from an agent.
-const keygenEnv = (d: LaptopDeps) => ({ PATH: "/usr/bin:/bin", HOME: d.home, SSH_SK_PROVIDER: SK_PROVIDER });
+const keygenEnv = (d: ControllerDeps) => ({ PATH: "/usr/bin:/bin", HOME: d.home, SSH_SK_PROVIDER: SK_PROVIDER });
 
 // The owner's signature over text with the key's handle. macOS asks for Touch ID. The text goes in
 // whole on stdin, so the bytes signed are the bytes sent.
-export async function sign(d: LaptopDeps, handle: string, text: string, namespace = NAMESPACE): Promise<string | { stop: string }> {
+export async function sign(d: ControllerDeps, handle: string, text: string, namespace = NAMESPACE): Promise<string | { stop: string }> {
   const r = await d.run([SSH_KEYGEN, "-Y", "sign", "-n", namespace, "-f", handle], { stdin: text, timeoutMs: SIGN_MS, env: keygenEnv(d) });
   if (r.code === 0 && ARMOUR.test(r.stdout)) return r.stdout;
   return { stop: r.timedOut ? "Touch ID wasn't given in time. Nothing was sent." : "The approver key didn't sign. Nothing was sent. Try again, and touch the sensor when macOS asks." };
 }
 
-type Ready = { laptop: Laptop; view: BoxView };
+type Ready = { controller: Controller; view: BoxView };
 
-async function ready(d: LaptopDeps): Promise<Ready | { stop: string }> {
-  const l = readLaptop(d.home);
+async function ready(d: ControllerDeps): Promise<Ready | { stop: string }> {
+  const l = readController(d.home);
   if (!l.ok) return { stop: l.why };
-  const view = await readBox(d, l.laptop.agent, l.laptop.box);
+  const view = await readBox(d, l.controller.agent, l.controller.box);
   if ("why" in view) return { stop: view.why };
-  return { laptop: l.laptop, view };
+  return { controller: l.controller, view };
 }
 
-// The handle whose key the box pinned: the laptop's key, or the new one taskbox approver --rotate
-// named, once the box has taken it. The new one then becomes the laptop's key.
-function pinnedHandle(d: LaptopDeps, r: Ready): string | { stop: string } {
+// The handle whose key the box pinned: the controller's key, or the new one taskbox approver --rotate
+// named, once the box has taken it. The new one then becomes the controller's key.
+function pinnedHandle(d: ControllerDeps, r: Ready): string | { stop: string } {
   const pinned = r.view.approver?.fingerprint ?? null;
   if (!pinned) return { stop: "The box has no approver key pinned yet, so it can't take a signed step. Put the key taskbox approver shows in the box's taskbox.json, in a PR, then taskbox update at the box." };
-  const { key, next } = r.laptop;
-  if (!key) return { stop: "This laptop has no approver key yet. Type taskbox approver." };
+  const { key, next } = r.controller;
+  if (!key) return { stop: "This controller has no approver key yet. Type taskbox approver." };
   for (const h of [key, next]) {
     if (!h) continue;
     const p = publicKey(h);
     if ("key" in p && p.fingerprint === pinned) {
-      if (h === next) writeLaptop(d.home, { ...r.laptop, key: next, next: null });
+      if (h === next) writeController(d.home, { ...r.controller, key: next, next: null });
       return h;
     }
   }
   const mine = publicKey(key);
-  return { stop: `The box pinned the approver key ${pinned}, and this laptop's is ${"fingerprint" in mine ? mine.fingerprint : "unreadable"}. Nothing was signed.` };
+  return { stop: `The box pinned the approver key ${pinned}, and this controller's is ${"fingerprint" in mine ? mine.fingerprint : "unreadable"}. Nothing was signed.` };
 }
 
 export type OwnerAct = Action;
@@ -95,7 +95,7 @@ export function describe(w: BoxWs, act: OwnerAct): string {
 export function statementFor(view: BoxView, w: BoxWs, act: OwnerAct, now: number): Statement | { stop: string } {
   if (!view.installId) return { stop: "The box shows no install ID, so nothing can be signed for it. At the box, type taskbox check." };
   if (!w.nonce) return { stop: `The box shows no nonce for ${w.name}. Update taskbox on the box.` };
-  if (act === "approve" && w.size === null) return { stop: `${w.name} asks for ${w.sizeWord}, a size this laptop doesn't know. Update taskbox on this laptop.` };
+  if (act === "approve" && w.size === null) return { stop: `${w.name} asks for ${w.sizeWord}, a size this controller doesn't know. Update taskbox on this controller.` };
   const s: Statement = { v: 1, box: view.installId, do: act, name: w.name, agent: w.agent, ...(act === "approve" ? { size: w.size! } : {}), nonce: w.nonce, at: now };
   return parseStatement(statementText(s)) ? s : { stop: "The statement isn't one the box reads. Nothing was signed." };
 }
@@ -107,7 +107,7 @@ const describe0 = (act: OwnerAct, name: string) => ({ approve: "Approving", paus
 export const NOW_ASK = (name: string) => `Pausing ${name} now stops its processes before the agent saves, and unsaved work is lost. Type yes to pause it now: `;
 
 // approve, pause [--now], resume or end: read, build, sign, send, and the box's outcome.
-export async function ownerStep(d: LaptopDeps, act: OwnerAct, name: string): Promise<number> {
+export async function ownerStep(d: ControllerDeps, act: OwnerAct, name: string): Promise<number> {
   if (!NAME.test(name)) {
     d.out("A workspace's name is its agent and a number, such as nova-1.");
     return 1;
@@ -121,7 +121,7 @@ export async function ownerStep(d: LaptopDeps, act: OwnerAct, name: string): Pro
   if ("stop" in st) return stop(d, st.stop);
   const h = pinnedHandle(d, r);
   if (typeof h !== "string") return stop(d, h.stop);
-  // A person at a terminal types the name: a command run by another program on the laptop can't
+  // A person at a terminal types the name: a command run by another program on the controller can't
   // pass this by giving stdin.
   if (!d.isTty) return stop(d, NO_TTY);
   const typed = await d.ask(NAME_ASK(name, act));
@@ -134,24 +134,24 @@ export async function ownerStep(d: LaptopDeps, act: OwnerAct, name: string): Pro
   const text = statementText(st);
   const sig = await sign(d, h, text);
   if (typeof sig !== "string") return stop(d, sig.stop);
-  const a = readAnswer(await onBox(d, r.laptop.agent, r.laptop.box, ["signed", toB64url(text), toB64url(sig), "--json"]), r.laptop.box, r.laptop.agent);
+  const a = readAnswer(await onBox(d, r.controller.agent, r.controller.box, ["signed", toB64url(text), toB64url(sig), "--json"]), r.controller.box, r.controller.agent);
   d.out(a.said);
   return a.ok ? 0 : 1;
 }
 
-// deny: unsigned, as laptop. The box shows it as "Withdrawn by laptop (unsigned)".
-export async function ownerDeny(d: LaptopDeps, name: string, reason: string | undefined): Promise<number> {
+// deny: unsigned, as controller. The box shows it as "Withdrawn by controller (unsigned)".
+export async function ownerDeny(d: ControllerDeps, name: string, reason: string | undefined): Promise<number> {
   if (!NAME.test(name)) return stop(d, "A workspace's name is its agent and a number, such as nova-1.");
   const why = reason === undefined ? undefined : cleanWords(reason);
   if (reason !== undefined && why === undefined) return stop(d, `The reason takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`);
-  const l = readLaptop(d.home);
+  const l = readController(d.home);
   if (!l.ok) return stop(d, l.why);
-  const a = readAnswer(await onBox(d, l.laptop.agent, l.laptop.box, ["deny", name, "--as", DENY_AS, ...(why ? ["--reason", why] : []), "--json"]), l.laptop.box, l.laptop.agent);
+  const a = readAnswer(await onBox(d, l.controller.agent, l.controller.box, ["deny", name, "--as", DENY_AS, ...(why ? ["--reason", why] : []), "--json"]), l.controller.box, l.controller.agent);
   d.out(a.said);
   return a.ok ? 0 : 1;
 }
 
-function stop(d: LaptopDeps, said: string): number {
+function stop(d: ControllerDeps, said: string): number {
   d.out(said);
   return 1;
 }
@@ -185,7 +185,7 @@ function keysIn(dir: string): string[] {
     .sort();
 }
 
-function showKey(d: LaptopDeps, handle: string): number {
+function showKey(d: ControllerDeps, handle: string): number {
   const p = publicKey(handle);
   if ("why" in p) return stop(d, p.why);
   d.out(`Approver key: ${p.fingerprint}`);
@@ -201,18 +201,18 @@ export interface ApproverArgs {
   rotate?: string;
 }
 
-// approver: the key, made once, and the box's name and agent account, kept in laptop.json.
-export async function approver(d: LaptopDeps, o: ApproverArgs): Promise<number> {
+// approver: the key, made once, and the box's name and agent account, kept in controller.json.
+export async function approver(d: ControllerDeps, o: ApproverArgs): Promise<number> {
   if (o.rotate !== undefined) return rotate(d, o.rotate);
   if (o.box !== undefined && !BOX_NAME.test(o.box)) return stop(d, "--box is the box's Tailscale name, such as taskbox-1.");
   if (o.agent !== undefined && !ACCOUNT.test(o.agent)) return stop(d, "--agent is the box's agent account: its macOS short name, as accounts.agent in its taskbox.json.");
-  const had = readLaptop(d.home);
-  const box = o.box ?? (had.ok ? had.laptop.box : undefined);
-  const agent = o.agent ?? (had.ok ? had.laptop.agent : undefined);
+  const had = readController(d.home);
+  const box = o.box ?? (had.ok ? had.controller.box : undefined);
+  const agent = o.agent ?? (had.ok ? had.controller.agent : undefined);
   if (box === undefined || agent === undefined) return stop(d, "Type taskbox approver --box <the box's Tailscale name> --agent <the box's agent account>.");
-  const base: Laptop = { v: 1, box, agent, key: had.ok ? had.laptop.key : null, next: had.ok ? had.laptop.next : null };
+  const base: Controller = { v: 1, box, agent, key: had.ok ? had.controller.key : null, next: had.ok ? had.controller.next : null };
   if (base.key && "key" in publicKey(base.key)) {
-    writeLaptop(d.home, base);
+    writeController(d.home, base);
     return showKey(d, base.key);
   }
   const dir = keyDir(d.home);
@@ -255,14 +255,14 @@ export async function approver(d: LaptopDeps, o: ApproverArgs): Promise<number> 
     }
   }
   if (mine.length !== 1) return stop(d, `${dir} holds ${mine.length} copies of the ${KEY_LABEL} key. Keep one, move the others out, and type taskbox approver again.`);
-  writeLaptop(d.home, { ...base, key: mine[0]! });
+  writeController(d.home, { ...base, key: mine[0]! });
   return showKey(d, mine[0]!);
 }
 
-const scEnv = (d: LaptopDeps) => ({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: d.home });
+const scEnv = (d: ControllerDeps) => ({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: d.home });
 
 // The public key hashes sc_auth lists for the taskbox-approve label, upper case, or why not.
-async function labelled(d: LaptopDeps): Promise<{ hashes: string[] } | { stop: string }> {
+async function labelled(d: ControllerDeps): Promise<{ hashes: string[] } | { stop: string }> {
   const r = await d.run([SC_AUTH, "list-ctk-identities"], { timeoutMs: 30_000, env: scEnv(d) });
   if (r.code !== 0) return { stop: `sc_auth couldn't list the Secure Enclave's identities: ${scrub(r.stderr || r.stdout, 200) || `exit ${r.code}`}` };
   return { hashes: labelHashes(r.stdout, KEY_LABEL) };
@@ -284,7 +284,7 @@ export function labelHashes(out: string, label: string): string[] {
 // approver --rotate <new key>: the old key signs a statement naming the new one, for the box's
 // settings. The box takes the new key at taskbox update only with that statement, at the generation
 // it pinned.
-async function rotate(d: LaptopDeps, file: string): Promise<number> {
+async function rotate(d: ControllerDeps, file: string): Promise<number> {
   const r = await ready(d);
   if ("stop" in r) return stop(d, r.stop);
   const next = publicKey(resolve(file));
@@ -299,8 +299,8 @@ async function rotate(d: LaptopDeps, file: string): Promise<number> {
   d.out(`Sign the change from ${pin.fingerprint} to ${next.fingerprint} with the old key. Touch ID asks next.`);
   const sig = await sign(d, h, text, APPROVER_NAMESPACE);
   if (typeof sig !== "string") return stop(d, sig.stop);
-  const cur = readLaptop(d.home);
-  writeLaptop(d.home, { ...(cur.ok ? cur.laptop : r.laptop), next: privateHandle(resolve(file)) });
+  const cur = readController(d.home);
+  writeController(d.home, { ...(cur.ok ? cur.controller : r.controller), next: privateHandle(resolve(file)) });
   d.out("Put these lines in the box's taskbox.json, in a PR, in place of its approverKey:");
   d.out(`  "approverKey": "${next.key}",`);
   d.out(`  "approverKeyChange": { "statement": "${toB64url(text)}", "signature": "${toB64url(sig)}" }`);

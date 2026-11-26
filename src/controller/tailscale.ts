@@ -47,7 +47,7 @@ export interface Peer {
 }
 
 export interface TailnetState {
-  running: boolean; // this laptop's BackendState is Running
+  running: boolean; // this controller's BackendState is Running
   backendState: string;
   peers: Peer[];
 }
