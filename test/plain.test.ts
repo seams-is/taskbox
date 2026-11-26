@@ -64,7 +64,9 @@ describe("a root command typed by someone who isn't root", () => {
     expect(ok("update", "v2.0.0", "--to", "v2.0.0")).toBe(false);
     expect(ok("update", "--preserve-env")).toBe(false);
     expect(ok("rollback")).toBe(true);
-    expect(ok("remove", "-y")).toBe(false);
+    expect(ok("remove", "-y")).toBe(true);
+    expect(ok("remove", "--keep-images")).toBe(true);
+    expect(ok("remove", "box-1")).toBe(false);
     expect(ok("unlock", "ci")).toBe(false);
   });
 

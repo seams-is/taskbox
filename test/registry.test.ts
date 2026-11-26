@@ -130,7 +130,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
   { good: ["stop", "start", "drain", "prune"], bad: ["stop --now", "start x", "drain --force", "prune --dry-run"] },
   { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
-  { good: ["rollback", "remove", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
+  { good: ["rollback", "remove", "remove -y --keep-images", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove box-1", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
   { good: ["connect github", "connect github --new-key", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "disconnect"] },
   { good: ["install --bootstrap /tmp/x", "guard", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
@@ -189,7 +189,10 @@ describe("the command line", () => {
 
   test("a typed confirmation with no terminal is exit 2 before anything runs", async () => {
     const r = await run(["remove"], CALLERS["root via sudo"], { terminal: false });
-    expect([r.code, r.said]).toEqual([2, ["taskbox remove asks for a typed yes, and there is no terminal here. Run it at the box's own terminal."]]);
+    expect([r.code, r.said]).toEqual([2, ["taskbox remove asks for a typed yes, and there is no terminal here. Add --yes to answer it."]]);
+    // unlock's fdesetup asks at the terminal, so it has no --yes.
+    const u = await run(["unlock"], CALLERS["root via sudo"], { terminal: false });
+    expect([u.code, u.said]).toEqual([2, ["taskbox unlock asks for a typed yes, and there is no terminal here. Run it at the box's own terminal."]]);
     const j = await run(["workspace", "clear", "nova"], CALLERS["root via sudo"], { terminal: false });
     expect(j.code).toBe(2);
   });
