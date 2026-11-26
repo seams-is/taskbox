@@ -132,7 +132,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
   { good: ["stop", "start", "drain", "prune"], bad: ["stop --now", "start x", "drain --force", "prune --dry-run"] },
   { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
-  { good: ["rollback", "remove", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
+  { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
   { good: ["connect github", "connect github --new-key", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "disconnect"] },
   { good: ["install --bootstrap /tmp/x", "guard", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
@@ -191,7 +191,14 @@ describe("the command line", () => {
 
   test("a typed confirmation with no terminal is exit 2 before anything runs", async () => {
     const r = await run(["remove"], CALLERS["root via sudo"], { terminal: false });
-    expect([r.code, r.said]).toEqual([2, ["taskbox remove asks for a typed yes, and there is no terminal here. Run it at the box's own terminal."]]);
+    // remove needs a person at the box's terminal: no flag answers its typed name or its deletes.
+    expect([r.code, r.said]).toEqual([2, ["taskbox remove asks a person at the terminal, and there is no terminal here. Run it at the box's own terminal."]]);
+    expect((await run(["remove", "-y"], CALLERS["root via sudo"], { terminal: false })).code).toBe(2);
+    // unlock's fdesetup asks at the terminal, so it has no --yes.
+    const u = await run(["unlock"], CALLERS["root via sudo"], { terminal: false });
+    expect([u.code, u.said]).toEqual([2, ["taskbox unlock asks a person at the terminal, and there is no terminal here. Run it at the box's own terminal."]]);
+    // And -y can't stand in for the terminal: unlock takes no -y at all.
+    expect((await run(["unlock", "-y"], CALLERS["root via sudo"], { terminal: false })).code).toBe(2);
     const j = await run(["workspace", "clear", "nova"], CALLERS["root via sudo"], { terminal: false });
     expect(j.code).toBe(2);
   });
@@ -563,5 +570,42 @@ describe("a v2.x handler's JSON line", () => {
     const { oneJsonLine } = await import("../src/cmdkit.ts");
     expect(oneJsonLine(['{"answers":3,"kind":"check","checks":[]}', ""])).toEqual({ answers: 3, kind: "check", checks: [] });
     for (const lines of [["FAIL Sleep: after 10 minutes", '{"answers":3}'], ["not json"], [], ["[1]"]]) expect(oneJsonLine(lines)).toBeUndefined();
+  });
+});
+
+describe("policy show --json, for the controller's --box all", () => {
+  const agentThere = (sys: FakeSys) =>
+    sys.responders.push((cmd, args) =>
+      cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : cmd === "/usr/bin/id" && args[0] === "-u" && args[1] === "taskbox-agent" ? { code: 0, stdout: "470\n", stderr: "" } : undefined,
+    );
+  const recorded = (p: ReturnType<typeof paths>) => {
+    mkdirSync(dirname(p.accountsRecord), { recursive: true });
+    writeFileSync(p.accountsRecord, JSON.stringify({ made: { "taskbox-agent": { role: "agent", uid: 470 } } }));
+  };
+  test("answers with the box's tag and rules, with the owner it was given, which the controller reads back whole", async () => {
+    const { policyOfAnswer, policyFor } = await import("../src/policy.ts");
+    const { validateAccounts } = await import("../src/access.ts");
+    const r = await run(["policy", "show", "--json", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere, prep: recorded });
+    expect(r.code).toBe(0);
+    const e = JSON.parse(r.said[0]!);
+    expect([e.result.tag, e.result.owners]).toEqual(["tag:taskbox", ["owner@example.com"]]);
+    expect(JSON.stringify(e.result)).not.toMatch(/"(OWNER|ADMIN)/);
+    // The controller reads it with the install ID it paired with, and its own owner.
+    const back = policyOfAnswer(e.result, "a".repeat(32), "owner@example.com");
+    if (typeof back === "string") throw new Error(back);
+    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { owner: "owner@example.com", admins: ["owner"] }).ssh);
+  });
+  test("--json without --owner is refused before anything is read: it would answer a placeholder", async () => {
+    const r = await run(["policy", "show", "--json"], CALLERS.ci);
+    expect(r.code).toBe(2);
+  });
+  test("an agent the settings name that taskbox didn't make refuses the policy; one not made yet is left out", async () => {
+    const refused = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere });
+    expect(refused.code).toBe(1);
+    expect(refused.said[0]).toMatch(/^taskbox-agent, the agent the settings name, isn't the account taskbox made, so no policy lets it in/);
+    const later = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)) });
+    expect(later.code).toBe(0);
+    expect(later.said.join("\n")).not.toContain('"accept"');
+    expect(later.said.join("\n")).toContain("taskbox-agent isn't made yet, so the policy leaves it out");
   });
 });

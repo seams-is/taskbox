@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { oldKeyProblem, unknownAccountKeys, validateAccounts } from "../src/access.ts";
+import { oldKeyProblem, poolNames, unknownAccountKeys, validateAccounts } from "../src/access.ts";
 
 const example = { service: "taskbox", agent: "taskbox-agent", people: ["pat"] };
 
@@ -16,7 +16,19 @@ describe("validateAccounts", () => {
   });
 
   test("a key this release doesn't know is passed over, so a newer release's block still reads", () => {
-    expect(validateAccounts({ service: "ci", workspaces: { pool: "w" } })).toEqual({ service: "ci", people: [] });
+    expect(validateAccounts({ service: "ci", later: { x: 1 } })).toEqual({ service: "ci", people: [] });
+  });
+
+  test("a person may be { user, tailnet }: the name goes in people, the login beside it", () => {
+    expect(validateAccounts({ service: "taskbox", people: ["pat", { user: "sam", tailnet: "sam@example.com" }, { user: "lee" }], ssh: ["sam"] })).toEqual({ service: "taskbox", people: ["pat", "sam", "lee"], tailnet: { sam: "sam@example.com" }, ssh: ["sam"] });
+  });
+
+  test("workspaces names the pool's prefix and size; left out, it is one account, taskbox-ws1", () => {
+    expect(poolNames(validateAccounts({ service: "taskbox" }))).toEqual(["taskbox-ws1"]);
+    const a = validateAccounts({ service: "taskbox", workspaces: { pool: "ws", size: 3 } });
+    expect(a.workspaces).toEqual({ pool: "ws", size: 3 });
+    expect(poolNames(a)).toEqual(["ws1", "ws2", "ws3"]);
+    expect(poolNames(validateAccounts({ service: "taskbox", workspaces: { size: 2 } }))).toEqual(["taskbox-ws1", "taskbox-ws2"]);
   });
 
   const refused: [string, unknown, RegExp][] = [
@@ -34,6 +46,22 @@ describe("validateAccounts", () => {
     ["a repeated person", { service: "taskbox", people: ["pat", "pat"] }, /names pat twice/],
     ["a person who is the service, in another case", { service: "taskbox", people: ["Taskbox"] }, /taskbox and Taskbox, which macOS counts as one account/],
     ["the agent equal to the service", { service: "taskbox", agent: "taskbox" }, /twice/],
+    ["a person object with another key", { service: "taskbox", people: [{ user: "pat", admin: true }] }, /people\[0\] has only "user" and "tailnet"/],
+    ["a person object with a bad name", { service: "taskbox", people: [{ user: "root" }] }, /people\[0\]\.user names root/],
+    ["a tailnet login that isn't one", { service: "taskbox", people: [{ user: "pat", tailnet: "tag:taskbox" }] }, /people\[0\]\.tailnet is a Tailscale login/],
+    ["a person twice, once as an object", { service: "taskbox", people: ["pat", { user: "Pat" }] }, /pat and Pat, which macOS counts as one account/],
+    ["ssh naming a person object's login, not its user", { service: "taskbox", people: [{ user: "pat", tailnet: "pat@example.com" }], ssh: ["pat@example.com"] }, /accounts\.ssh\[0\]/],
+    ["workspaces not an object", { service: "taskbox", workspaces: 3 }, /accounts\.workspaces is/],
+    ["a pool size of 0", { service: "taskbox", workspaces: { size: 0 } }, /from 1 to 8/],
+    ["a pool size of 9", { service: "taskbox", workspaces: { size: 9 } }, /from 1 to 8/],
+    ["a pool size that isn't whole", { service: "taskbox", workspaces: { size: 1.5 } }, /from 1 to 8/],
+    ["a pool prefix too long for its number", { service: "taskbox", workspaces: { pool: "a".repeat(32) } }, /at most 31/],
+    ["a pool prefix with a leading _", { service: "taskbox", workspaces: { pool: "_ws" } }, /macOS keeps for itself/],
+    ["a pool account that is the service", { service: "ws1", workspaces: { pool: "ws" } }, /ws1, which is a workspace account's name/],
+    ["a pool account that is a person, in another case", { service: "taskbox", people: ["WS2"], workspaces: { pool: "ws", size: 2 } }, /WS2, which is a workspace account's name \(ws2\)/],
+    ["a reserved name: wheel", { service: "wheel" }, /macOS keeps for itself/],
+    ["a reserved name: shared", { service: "taskbox", agent: "Shared" }, /macOS keeps for itself/],
+    ["taskbox's own account", { service: "taskbox", agent: "_taskboxgh" }, /macOS keeps for itself/],
   ];
   for (const [what, raw, line] of refused) {
     test(`refuses ${what}`, () => {
@@ -83,5 +111,6 @@ describe("oldKeyProblem", () => {
     expect(oldKeyProblem({ accounts: { ...example, people: [] }, screenSharingUsers: [] })).toBeUndefined();
     expect(oldKeyProblem({ accounts: example, screenSharingUsers: ["sam"] })).toMatch(/differ/);
     expect(oldKeyProblem({ accounts: example, screenSharingUsers: [] })).toMatch(/differ/);
+    expect(oldKeyProblem({ accounts: { ...example, people: [{ user: "pat", tailnet: "pat@example.com" }] }, screenSharingUsers: ["pat"] })).toBeUndefined();
   });
 });

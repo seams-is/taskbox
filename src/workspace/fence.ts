@@ -7,6 +7,7 @@
 // and the pool's block on lo0 comes before the guard's own pass in quick on lo0 port 5900 (not
 // checked on a Mac yet: the Tart run reads the order back). A failure here never touches ANCHOR.
 import type { Sys } from "../sys.ts";
+import { POOL_USER } from "./model.ts";
 
 export const PFCTL = "/sbin/pfctl";
 export const WS_ANCHOR = "com.apple/240.taskbox-ws";
@@ -288,7 +289,8 @@ export async function bootOut(sys: Sys, uid: number): Promise<void> {
 // Every process of the account at once, by kill -9 -1 run as the account itself: the kernel signals
 // all of them in one call, so none can fork past it. pkill rounds (stopAll) follow as a backstop.
 export async function killAllAs(sys: Sys, user: string): Promise<void> {
-  if (!/^taskbox-ws[1-9]$/.test(user)) return;
+  // Any pool account's name (the settings' prefix, then 1 to 8); the caller passes only one pool.json records.
+  if (!POOL_USER.test(user)) return;
   await sys.run("/usr/bin/sudo", ["-n", "-u", user, "--", "/bin/kill", "-9", "-1"], { timeoutMs: 10_000 }).catch(() => undefined);
 }
 

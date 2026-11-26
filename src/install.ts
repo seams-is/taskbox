@@ -32,15 +32,17 @@ import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from
 import { rows } from "./rows/index.ts";
 import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./actionskey.ts";
 import { type EngineName, kitFor } from "./vm.ts";
-import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
+import { AGENT_LABEL, assetUrl, awayOf, LAUNCHCTL_MS, type Config, GATE_SHELL, GUARD_LABEL, loadConfigFrom, sourceKeyPath, sourceOf, previousLabels, REMOTE_SHELL, TAILNET_TAG, TAILNET_TAG_SHAPE, tagOf, TAILSCALED_LABEL, type Installed, loadConfig, loadVersions, type Paths, type Pin, readJson } from "./config.ts";
 import { compareTags, GitHub, type Head, mergeDate, RELEASE_TAG, repoMissing } from "./github.ts";
 import { gitTreeSha, gunzippedSize, hopTag, HopStop, placeRollbackWatch, publicRelease, parseStatement, removeRollbackWatch, ROLLBACK_AFTER_MS, SAFE_UNTAR, SIGNERS_IN_TREE, statementProblem, TARBALL_LIMIT, tarListProblem, UNPACKED_LIMIT, verifySignature } from "./hop.ts";
 import { clean } from "./progress.ts";
 import { commandLinkProblem, linkTarget, placeCommandLink, prune, relink, swapIn, withUpdateLock } from "./layout.ts";
-import { POOL_GROUP, POOL_USER, poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
+import { poolOf, unknownAccountKeys, validateAccounts, workspacesProblem } from "./access.ts";
 import { BOX_FIX, readBoxFile } from "./boxsettings.ts";
 import { adoptSource, type ConnectDeps } from "./connectflow.ts";
-import { type AccountDeps, agentSteps, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAgent, placePool, planPool, planScreenSharing, planService, readRecord, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
+import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, recordedIds, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
+import { eventLog } from "./core/events.ts";
+import { rootStateOf } from "./core/paths.ts";
 import { adminState } from "./elevate.ts";
 import { readActionsKey } from "./queue.ts";
 import { placeTailscaledLog } from "./logins.ts";
@@ -185,7 +187,12 @@ const stateIn = (d: InstallDeps) => () => {
 };
 // A first install has no taskbox command yet, so its lines say to run install.sh again.
 type AgentDeps = Pick<InstallDeps, "sys" | "paths" | "say" | "ask" | "tty" | "chown" | "rootUid" | "bootstrap">;
-const accountDeps = (d: AgentDeps): AccountDeps => ({ sys: d.sys, say: d.say, ask: d.ask, tty: d.tty, chown: d.chown, rootUid: d.rootUid ?? 0, again: d.bootstrap ? "Run sh ~/Downloads/taskbox-main/install.sh again" : "Type taskbox update again" });
+const accountDeps = (d: AgentDeps): AccountDeps => ({ sys: d.sys, say: d.say, ask: d.ask, tty: d.tty, chown: d.chown, rootUid: d.rootUid ?? 0, recorded: () => recordedIds(d.paths.accountsRecord, d.paths.poolRecord, d.rootUid ?? 0), again: d.bootstrap ? "Run sh ~/Downloads/taskbox-main/install.sh again" : "Type taskbox update again" });
+// account.made, account.placed and account.deleted, in root's event log.
+const accountEvent = (d: Pick<InstallDeps, "sys" | "paths" | "rootUid">): AccountEvent => {
+  const log = eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys);
+  return (type, subject, text) => void log.write({ type, subject, actor: "install", text });
+};
 // Where an agent's empty home goes: /private/var/taskbox-<agent>, beside the install's own root.
 const agentHomeFor = (d: Pick<InstallDeps, "paths">, user: string) => join(dirname(dirname(d.paths.opt)), "private/var", `taskbox-${user}`);
 
@@ -327,9 +334,12 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // The pool account, while the box trusts the release's key, or pins it at this yes. One taskbox
   // didn't make is left alone.
   const trusted = "key" in approver ? approver.key : undefined;
-  const pool = poolOf(trusted).length ? await planPool(d.sys, readPoolRecord(d.paths.poolRecord, d.rootUid ?? 0), POOL_USER, POOL_GROUP) : undefined;
+  // The rest of the accounts: the pool, taskbox's own two, people to make, and the agent named before.
+  const step = await planAccountsStep(d.sys, d.paths, relAccounts, poolOf(relAccounts, trusted), d.paths.agent, REMOTE_SHELL, d.rootUid ?? 0);
+  // Screen Sharing's list of users, from accounts.people, with any person made after the yes.
+  const list = await planScreenSharing(d.sys, relAccounts.people, readRecord(d.paths.accountsRecord), step.people);
   // Screen Sharing's list of users, from accounts.people: planned now, changed after the yes.
-  const list = await planScreenSharing(d.sys, relAccounts.people, readRecord(d.paths.accountsRecord));
+
   d.say("This installs:");
   for (const line of describe(head, changed)) d.say(line);
   // The update that moves the services' names: said before the yes, so a same-release update with no
@@ -344,8 +354,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if (keyLine) d.say(`  ${keyLine}`);
   for (const l of trustFilesLine(changes)) d.say(`  ${l}`);
   if (opts.first) for (const l of earlierWorkspaces(pinNow, readPoolRecord(d.paths.poolRecord, d.rootUid ?? 0))) d.say(`  ${l}`);
-  if (pool && "leave" in pool) d.say(`  ${pool.leave}`);
-  else if (pool?.make) d.say(`  It also makes ${POOL_USER}, the account a workspace runs in: hidden, standard, with no password, in a group of its own, and denied cron and at. Its shell opens nothing until a later release.`);
+  for (const l of step.lines) d.say(`  ${l}`);
   // Passed over, so a box reads a newer release's block, but never without a word: a typo shows here.
   const unknown = unknownAccountKeys(rawAccounts).map((k) => k.replace(/[^\x20-\x7e]/g, "").slice(0, 40));
   if (unknown.length) d.say(`  This taskbox passes over keys it doesn't know in the release's taskbox.json: ${unknown.map((k) => `accounts.${k}`).join(", ")}. If one is a typo, don't type yes: an agent fixes it in a PR.`);
@@ -371,8 +380,11 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // Tailscale refuses the box's tag until the policy names its owner, so the owner saves it first.
   if (opts.first) {
     d.say(`  Before you type yes: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
-    d.say(`    "${TAILNET_TAG}": ["OWNER"]`);
+    d.say(`    "${tagOf(relCfg ?? {})}": ["OWNER"]`);
   }
+  // A new tag moves the box onto other rules of the tailnet's, so it is said before the yes.
+  const relTag = typeof relSettings.tailnetTag === "string" && TAILNET_TAG_SHAPE.test(relSettings.tailnetTag) ? relSettings.tailnetTag : TAILNET_TAG;
+  if (!opts.first && relTag !== tagOf(installedCfg)) d.say(`  It also moves the box on the tailnet from ${tagOf(installedCfg)} to ${relTag}, so the policy's rules for ${relTag} reach it from then on. On the controller, type taskbox policy show --box all, and paste it first.`);
   // Who may log in by Tailscale SSH: the console holds the rules, so a change is the owner's step.
   if (!opts.first) {
     let before: string[] | undefined;
@@ -388,6 +400,11 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if (approver.change === "rotate" && !rotateConfirmed(approver.fingerprint, await d.ask(ROTATE_ASK))) throw new Stop(`That isn't the end of ${approver.fingerprint}, so the box keeps ${approver.from}. Nothing was installed.`, true);
   const answer = (await d.ask(`Type yes to install ${clean(rel.tag).slice(0, 20)}: `)).trim().toLowerCase();
   if (answer !== "yes") throw new Stop(`You typed "${answer.replace(/[^\x20-\x7e]/g, "").slice(0, 40)}". Stopped. Nothing was installed.`);
+  // An account taskbox didn't make becomes the agent only when an admin types its name here.
+  const claimed = "claim" in agentPlan && agentPlan.claim === true && relAccounts.agent !== undefined;
+  if (claimed && (await d.ask(`Type ${relAccounts.agent} to let taskbox take that account as its agent: `)).trim() !== relAccounts.agent) {
+    throw new Stop(`That isn't ${relAccounts.agent}, so taskbox doesn't take it as the agent. Nothing was installed. Name a new account in accounts.agent, and taskbox makes it.`, true);
+  }
 
   const work = mkdtempSync(join(d.workRoot, "taskbox-"));
   chmodSync(work, 0o700);
@@ -414,7 +431,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     if (unlockWhy) throw new Stop(`${unlockWhy} Nothing else was installed.`, true);
     // The service whose state this box keeps, so a later install refuses to leave it behind.
     const rec = readRecord(d.paths.accountsRecord);
-    if (rec.service !== d.paths.service) writeRecord(d, d.paths.accountsRecord, { ...rec, service: d.paths.service });
+    if (rec.inUse?.service !== d.paths.service) writeRecord(d, d.paths.accountsRecord, { ...rec, inUse: { service: d.paths.service } });
     // The source is adopted from the INSTALLED settings, which hold it today, before the
     // new release, which may drop it, is used (Tart run of #34, C.1b). A failure stops the update
     // before anything changes, so the box never loses its source.
@@ -427,13 +444,11 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     }
     // The agent, before anything is installed, so a step that doesn't take leaves the old release
     // current and running. The tree's accounts are relAccounts, proved above.
-    if (relAccounts.agent !== undefined) await placeAgent(d, relAccounts.agent, agentHomeFor(d, relAccounts.agent));
-    // The pool account, then the approver key, both before anything is installed.
-    if (pool && !("leave" in pool)) {
-      const placed = await placePool(accountDeps(d), d.paths, POOL_USER, POOL_GROUP, GATE_SHELL);
-      if (typeof placed === "string") throw new Stop(placed, true);
-      if (pool.make) d.say(`  Made the account ${POOL_USER}, for workspaces. It has no password, and its shell opens nothing yet.`);
-    }
+    if (relAccounts.agent !== undefined) await placeAgent(d, relAccounts.agent, agentHomeFor(d, relAccounts.agent), claimed);
+    // The rest of the accounts, then the approver key, all before anything is installed.
+    const stepDone = await applyAccountsStep(accountDeps(d), d.paths, step, { poolShell: GATE_SHELL, event: accountEvent(d) });
+    for (const l of stepDone.said) d.say(`  ${l}`);
+    if (stepDone.stop) throw new Stop(stepDone.stop, true);
     if (approver.change === "first" || approver.change === "rotate") writePin(d, d.paths.approverPin, { key: approver.key, gen: approver.gen, cleared: approver.cleared });
     const versions = loadVersions(src);
     const files: Record<string, string> = {};
@@ -478,7 +493,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     placeInstallId(d.paths, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
     // The workspace spool, while the box has its pool account: the agent's, where agent commands
     // leave requests for the guard.
-    if (pool && !("leave" in pool) && relAccounts.agent !== undefined) {
+    if (step.pool.some((x) => !("leave" in x.plan)) && relAccounts.agent !== undefined) {
       const agentUid = await uidOf(d, relAccounts.agent);
       if (agentUid === undefined) throw new Stop(`${relAccounts.agent} isn't there, so the workspace spool can't be made. Type taskbox update again.`, true);
       placeSpool(d, agentUid);
@@ -598,7 +613,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     const sockWhy = await keepSocket(d.sys, d.paths, newSocketMemory(), d.rootUid ?? 0).catch((e: Error) => e.message);
     if (sockWhy) d.say(`  tailscaled's socket folder: ${sockWhy}. The guard puts it right on its next pass, and taskbox check says so.`);
     await loadDaemon(d, TAILSCALED_LABEL, d.paths.tailscaledPlist, "tailscaled");
-    await tailscaleUp(d, cfg.runnerNamePrefix);
+    await tailscaleUp(d, cfg.runnerNamePrefix, tagOf(cfg));
 
     // 7. The service's home, then, unless the update placed them, the keys in root's folder.
     if (opts.first) await makeServiceHome(d);
@@ -608,7 +623,9 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
       rmSync(d.bootstrap, { recursive: true, force: true });
       rmSync(d.bootstrap + ".zip", { force: true });
     }
-    if (cfg.accounts.agent !== undefined) d.say(`  Agents and laptops reach the box as ${cfg.accounts.agent}: taskbox pair on a laptop asks for that name.`);
+    // The agent named before, last: the new release is in place and its services run.
+    for (const l of await applyOldAgentStep(accountDeps(d), d.paths, step, { ...(d.paths.agent !== undefined ? { oldAgentHome: agentHomeFor(d, d.paths.agent) } : {}), event: accountEvent(d) })) d.say(`  ${l}`);
+    if (cfg.accounts.agent !== undefined) d.say(`  Agents and the controller reach the box as ${cfg.accounts.agent}: the controller pairs with that name.`);
     d.say(opts.first ? `Installed. Now log in as ${d.paths.service}. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -941,19 +958,25 @@ export async function labelsBack(d: Pick<InstallDeps, "sys" | "paths" | "say">, 
 // install). /Users/<agent> is left as it is. An agent that isn't there is made (v2.7.0). planAgent
 // has refused any other account before the yes, so this one is taskbox's and a standard user.
 // Every install puts it back as it should be (agentSteps). Each failure stops the install.
-export async function placeAgent(d: AgentDeps, user: string, target: string = agentHomeFor(d, user)): Promise<void> {
+// claimed: an admin typed the name of an account v2 placed (planAgent's claim), so it is taken as
+// the agent, recorded as placed. Without that, an account taskbox didn't make is never taken.
+export async function placeAgent(d: AgentDeps, user: string, target: string = agentHomeFor(d, user), claimed = false): Promise<void> {
   const deps = accountDeps(d);
   const uid = await uidOf(d, user);
   if (uid === undefined) {
     const made = await makeAgent(deps, user, REMOTE_SHELL, target, d.paths.accountsRecord);
     if (typeof made === "string") throw new Stop(made, true);
-    d.say(`  Made the account ${user}, for agents and laptops over Tailscale SSH. It has no password.`);
-  } else if (readRecord(d.paths.accountsRecord).made[user]?.role !== "agent") {
-    // The one agent from before v2.7.0 (planAgent): taskbox's own from now on, said before the yes.
+    d.say(`  Made the account ${user}, for agents and the controller over Tailscale SSH. It has no password.`);
+  } else if (!["agent", "placed"].includes(readRecord(d.paths.accountsRecord).made[user]?.role ?? "")) {
+    if (!claimed) throw new Stop(`${user} is an account taskbox didn't make, and no admin has typed its name at the box to take it as the agent. Nothing else was installed. At the box, as your admin user, type taskbox update.`, true);
+    // The one agent from before v2.7.0 (planAgent): placed, never made, so nothing deletes it.
     const rec = readRecord(d.paths.accountsRecord);
     const guid = await guidOf(d.sys, user);
-    rec.made[user] = { role: "agent", uid, ...(guid ? { guid } : {}) };
+    rec.made[user] = { role: "placed", uid, ...(guid ? { guid } : {}) };
     writeRecord(d, d.paths.accountsRecord, rec);
+    try {
+      accountEvent(d)("account.placed", user, `Took the account ${user} as the agent, after an admin's yes at the box.`);
+    } catch {}
   }
   const root = d.rootUid ?? 0;
   if (!lstatExistsI(target)) {
@@ -976,6 +999,8 @@ export async function keepAgent(d: Pick<InstallDeps, "sys" | "paths" | "chown" |
     if (user === undefined || (await uidOf(d, user)) === undefined) return undefined;
     const plan = await planAgent(d.sys, user, readRecord(d.paths.accountsRecord), REMOTE_SHELL);
     if ("stop" in plan) return plan.stop;
+    // Never taken here: an account taskbox didn't make waits for an admin's typed yes at the box.
+    if (plan.claim) return `${user} waits for an admin to type its name at the box, in taskbox update, before taskbox takes it as the agent`;
     await placeAgent({ ...d, say: () => {}, ask: async () => "", tty: () => 1 }, user);
     return undefined;
   } catch (e) {
@@ -1014,16 +1039,19 @@ const printable = (t: string) => t.replace(/[^\x20-\x7e]/g, " ").trim();
 // default rule for a user's own devices, which allows root. Its key doesn't expire. The owner opens the link it prints.
 // MagicDNS's answers stay off the box (--accept-dns=false): the box's DNS is what every VM asks, and
 // no VM learns the tailnet's names. The box's tailnet name is never written to GitHub.
-export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<void> {
+export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string = TAILNET_TAG): Promise<void> {
   const ts = (args: string[]) => d.sys.run(d.paths.tailscale, [`--socket=${d.paths.tailscaleSocket}`, ...args], { timeoutMs: 20_000 });
   // tailscaled may have restarted a moment ago, for this update. Wait while it is still starting, so a
   // box already signed in isn't taken for one that needs to sign in (v2.2.1).
   let state = "";
+  let tags: unknown;
   const until = d.sys.now() + TAILSCALE_SETTLE_MS;
   for (;;) {
     const r = await ts(["status", "--json"]);
     try {
-      state = (JSON.parse(r.stdout) as { BackendState?: string }).BackendState ?? "";
+      const j = JSON.parse(r.stdout) as { BackendState?: string; Self?: { Tags?: unknown } };
+      state = j.BackendState ?? "";
+      tags = j.Self?.Tags;
     } catch {}
     if ((state && !TAILSCALE_STARTING.includes(state)) || d.sys.now() >= until) break;
     await d.sys.sleep(2000);
@@ -1033,7 +1061,12 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
     d.say("Tailscale is still starting, so its settings weren't checked. Type taskbox update again in a few minutes.");
     return;
   }
-  if (state === "Running") {
+  // Signed in with another tag (tailnetTag changed): signed in again below, with the new tag, so the
+  // policy's rules for it are the ones that reach the box. Not checked: whether Tailscale asks for a
+  // new sign-in to change a tag.
+  const retag = state === "Running" && Array.isArray(tags) && tags.length > 0 && !tags.includes(tag);
+  if (retag) d.say(`The box is on the tailnet with another tag than ${tag}, so it signs in again with ${tag}.`);
+  if (state === "Running" && !retag) {
     // Already signed in: make sure SSH is on and DNS is off, and that the box takes no routes and
     // offers none, with no exit node, app connector or web client, without signing in again. These
     // are what the Tailscale row checks. accept-routes is on by default on macOS (Tailscale 1.104.5,
@@ -1045,11 +1078,11 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
   // Tailscale refuses the tag until the policy names its owner (tailscale.com/kb/1068), so that
   // entry goes in first. The rest of the policy comes after the sign-in: taskbox policy show prints it.
   d.say(`Before the box signs in: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
-  d.say(`  "${TAILNET_TAG}": ["OWNER"]`);
+  d.say(`  "${tag}": ["OWNER"]`);
   // A line for the owner only when Tailscale gives a link: a box that signs in without one needs nothing.
   let asked = false;
   let approve = false;
-  const p = d.sys.spawn(d.paths.tailscale, [`--socket=${d.paths.tailscaleSocket}`, "up", "--ssh", "--accept-dns=false", ...TAILSCALE_OFF, `--advertise-tags=${TAILNET_TAG}`, `--hostname=${hostname}`, "--timeout=15m"], {
+  const p = d.sys.spawn(d.paths.tailscale, [`--socket=${d.paths.tailscaleSocket}`, "up", "--ssh", "--accept-dns=false", ...TAILSCALE_OFF, `--advertise-tags=${tag}`, `--hostname=${hostname}`, "--timeout=15m"], {
     onLine: (l) => {
       const login = LOGIN_LINK.exec(l)?.[0];
       if (login) {
@@ -1068,7 +1101,8 @@ export async function tailscaleUp(d: InstallDeps, hostname: string): Promise<voi
   });
   const code = await p.exited;
   if (code === 0) d.say("The box is on the tailnet, with Tailscale SSH.");
-  else d.say(`The box didn't sign in to Tailscale. Check that "tagOwners" has "${TAILNET_TAG}", then type taskbox update again${asked ? ", and open the link it prints" : approve ? ", once the box is approved" : ""}.`);
+  else if (retag) d.say(`The box didn't move to ${tag} on the tailnet: Tailscale may not take a new tag on a box already signed in. Check that "tagOwners" has "${tag}", then type taskbox update again. If it stays so, sign the box out of Tailscale's admin console (Machines), and update again to sign it in with ${tag}.`);
+  else d.say(`The box didn't sign in to Tailscale. Check that "tagOwners" has "${tag}", then type taskbox update again${asked ? ", and open the link it prints" : approve ? ", once the box is approved" : ""}.`);
 }
 
 // Writes a LaunchDaemon's plist from the install and loads it again, so it runs the new code.

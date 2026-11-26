@@ -23,6 +23,7 @@ type Acct = { uid?: number; guid?: string; attrs: Record<string, string>; admin?
 // failCreate and stuck make one step fail; deleteMissingExit is dscl's exit for a key that isn't there.
 class Dir {
   users: Record<string, Acct> = {};
+  groups: Record<string, { gid?: number }> = {};
   failCreate?: string;
   stuck?: string;
   fdesetupWorks = true;
@@ -56,7 +57,16 @@ class Dir {
         return out("");
       }
       if (cmd !== "/usr/bin/dscl") return undefined;
+      if (args[1] === "-list" && args[2] === "/Groups") return out(Object.entries(this.groups).filter(([, g]) => g.gid !== undefined).map(([n, g]) => `${n} ${g.gid}`).join("\n"));
+      if (args[1] === "-list" && args[3] === "PrimaryGroupID") return out(Object.entries(this.users).filter(([, u]) => u.attrs.PrimaryGroupID !== undefined).map(([n, u]) => `${n} ${u.attrs.PrimaryGroupID}`).join("\n"));
       if (args[1] === "-list") return out(Object.entries(this.users).filter(([, u]) => u.uid !== undefined).map(([n, u]) => `${n} ${u.uid}`).join("\n"));
+      if (args[2]?.startsWith("/Groups/")) {
+        const g = this.groups[args[2].slice(8)];
+        if (args[1] === "-read") return !g ? { code: 56, stdout: "", stderr: "<dscl_cmd> DS Error: -14136 (eDSRecordNotFound)" } : g.gid !== undefined ? out(`PrimaryGroupID: ${g.gid}\n`) : out("No such key: PrimaryGroupID\n");
+        if (args[1] === "-create" && args[3] === undefined) this.groups[args[2].slice(8)] ??= {};
+        else if (args[1] === "-create" && args[3] === "PrimaryGroupID" && g) g.gid = Number(args[4]);
+        return out("");
+      }
       const name = args[2]?.startsWith("/Users/") ? args[2].slice(7) : undefined;
       if (name === undefined) return undefined;
       const u = this.users[name];
@@ -122,10 +132,13 @@ describe("a missing agent is made", () => {
     };
     expect(await planAgent(sys, AGENT, { made: {} }, REMOTE_SHELL)).toEqual({});
     await placeAgent(d, AGENT, p.agentHome);
-    expect(steps(sys)).toEqual(["-create", "-create Password", "-create IsHidden", "-create UserShell", "-create NFSHomeDirectory", "-delete AuthenticationAuthority", "-delete ShadowHashData", "-create UniqueID", "-create PrimaryGroupID", "-create RealName"]);
+    // Its own group comes after the steps that take its password, before its ID.
+    expect(steps(sys)).toEqual(["-create", "-create Password", "-create IsHidden", "-create UserShell", "-create NFSHomeDirectory", "-delete AuthenticationAuthority", "-delete ShadowHashData", "-create", "-create PrimaryGroupID", "-create Password", "-create RealName", "-create UniqueID", "-create PrimaryGroupID", "-create RealName"]);
+    expect(dir.groups[AGENT]).toEqual({ gid: 471 });
+    expect(readRecord(p.accountsRecord).groups).toEqual({ [AGENT]: { gid: 471 } });
     expect(recordedAtPassword?.made[AGENT]).toEqual({ role: "agent", uid: 470 });
     expect(readRecord(p.accountsRecord).made[AGENT]).toEqual({ role: "agent", uid: 470, guid: guidFor(470) });
-    expect(dir.users[AGENT]!.attrs).toEqual({ Password: "*", IsHidden: "1", UserShell: REMOTE_SHELL, NFSHomeDirectory: p.agentHome!, PrimaryGroupID: "20", RealName: "taskbox agent" });
+    expect(dir.users[AGENT]!.attrs).toEqual({ Password: "*", IsHidden: "1", UserShell: REMOTE_SHELL, NFSHomeDirectory: p.agentHome!, PrimaryGroupID: "471", RealName: "taskbox agent" });
   });
 
   for (const key of ["Password", "IsHidden", "UserShell", "NFSHomeDirectory", "UniqueID", "PrimaryGroupID", "RealName"]) {
@@ -218,11 +231,15 @@ describe("an existing agent is put back on every install", () => {
     const sys = dir.sys();
     const { d, p } = placeDeps(sys);
     const plan = await planAgent(sys, "remote", readRecord(p.accountsRecord), REMOTE_SHELL);
-    expect(plan).toEqual({ line: "remote's password goes and it leaves the login window, since agents reach it over Tailscale SSH. From now on taskbox counts remote as its own, so taskbox remove offers to delete it. Its old folder /Users/remote stays." });
+    expect(plan).toEqual({ line: "remote is the agent an earlier taskbox set up in an account it didn't make. If you type its name at the box, its password goes and it leaves the login window, since agents reach it over Tailscale SSH. taskbox never deletes it: remove gives its shell back. Its old folder /Users/remote stays.", claim: true });
     const home = join(dirname(p.agentHome!), "taskbox-remote");
-    await placeAgent(d, "remote", home);
+    // Not taken without an admin's typed yes.
+    expect(await placeAgent(d, "remote", home).catch((x: unknown) => x)).toBeInstanceOf(Stop);
+    expect(steps(sys)).toEqual([]);
+    await placeAgent(d, "remote", home, true);
     expect(steps(sys)).toEqual(["fdesetup remove", "-create Password", "-create IsHidden", "-create UserShell", "-create NFSHomeDirectory", "-delete AuthenticationAuthority", "-delete ShadowHashData"]);
-    expect(readRecord(p.accountsRecord).made.remote).toEqual({ role: "agent", uid: 503, guid: guidFor(503) });
+    // Placed, never made: remove never deletes it.
+    expect(readRecord(p.accountsRecord).made.remote).toEqual({ role: "placed", uid: 503, guid: guidFor(503) });
     const u = dir.users.remote!;
     expect([u.unlocks, u.attrs.AuthenticationAuthority, u.attrs.ShadowHashData, u.attrs.IsHidden, u.attrs.Password]).toEqual([false, undefined, undefined, "1", "*"]);
     // From now on it is the recorded agent: no line, no fdesetup, and nothing changes.
@@ -239,7 +256,7 @@ describe("an existing agent is put back on every install", () => {
     dir.fdesetupWorks = false;
     const sys = dir.sys();
     const { d, p } = placeDeps(sys);
-    const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote")).catch((x: unknown) => x);
+    const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote"), true).catch((x: unknown) => x);
     expect((e as Stop).message).toBe("taskbox couldn't take remote off the disk's unlock list (fdesetup ended with 1). Nothing else was installed. If remote is the last account that unlocks the disk, add your admin user first: as your admin user, type taskbox unlock.");
     expect(steps(sys)).toEqual(["fdesetup remove"]);
   });
@@ -249,7 +266,7 @@ describe("an existing agent is put back on every install", () => {
     dir.stuck = "ShadowHashData";
     const sys = dir.sys();
     const { d, p } = placeDeps(sys);
-    const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote")).catch((x: unknown) => x);
+    const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote"), true).catch((x: unknown) => x);
     expect((e as Stop).message).toBe("dscl didn't delete remote's ShadowHashData. Nothing else was installed. Type taskbox update again.");
   });
 });
@@ -261,15 +278,26 @@ describe("the guard puts the agent back", () => {
     return { g: { sys, paths: p, chown: d.chown, rootUid: d.rootUid }, p };
   };
 
-  test("the earlier agent, after an update an earlier release ran: no password, hidden, off the unlock list, and taskbox's own", async () => {
+  test("the earlier agent is never taken at the guard's start: it waits for an admin's typed yes", async () => {
     const dir = new Dir().add("remote", earlier());
     const sys = dir.sys();
     const { g, p } = guardDeps(sys);
+    const before = dir.snapshot();
+    expect(await keepAgent(g, "remote")).toBe("remote waits for an admin to type its name at the box, in taskbox update, before taskbox takes it as the agent");
+    expect(dir.snapshot()).toBe(before);
+    expect(writes(sys)).toEqual([]);
+    expect(readRecord(p.accountsRecord).made.remote).toBeUndefined();
+  });
+
+  test("once placed, the guard puts it back: no password, hidden, off the unlock list", async () => {
+    const dir = new Dir().add("remote", earlier());
+    const sys = dir.sys();
+    const { g, p } = guardDeps(sys);
+    record(p, { made: { remote: { role: "placed", uid: 503, guid: guidFor(503) } } });
     expect(await keepAgent(g, "remote")).toBeUndefined();
     const u = dir.users.remote!;
     expect([u.unlocks, u.attrs.AuthenticationAuthority, u.attrs.ShadowHashData, u.attrs.IsHidden, u.attrs.Password]).toEqual([false, undefined, undefined, "1", "*"]);
     expect(u.attrs.NFSHomeDirectory).toBe(join(dirname(p.agentHome!), "taskbox-remote"));
-    expect(readRecord(p.accountsRecord).made.remote).toEqual({ role: "agent", uid: 503, guid: guidFor(503) });
   });
 
   test("an agent that isn't there isn't made: only an install makes it, after the yes", async () => {
@@ -300,7 +328,8 @@ describe("the guard puts the agent back", () => {
 
   test("an agent put back writes nothing to the guard's log", async () => {
     const dir = new Dir().add("remote", earlier());
-    const { g } = guardDeps(dir.sys());
+    const { g, p } = guardDeps(dir.sys());
+    record(p, { made: { remote: { role: "placed", uid: 503, guid: guidFor(503) } } });
     const file = join(mkdtempSync(join(tmpdir(), "guardlog-")), "taskbox-guard.log");
     await guardAgent(g, "remote", new Log(file));
     expect(existsSync(file)).toBe(false);
@@ -309,7 +338,8 @@ describe("the guard puts the agent back", () => {
   test("a step that doesn't take is said, not thrown", async () => {
     const dir = new Dir().add("remote", earlier({ unlocks: false }));
     dir.stuck = "ShadowHashData";
-    const { g } = guardDeps(dir.sys());
+    const { g, p } = guardDeps(dir.sys());
+    record(p, { made: { remote: { role: "placed", uid: 503, guid: guidFor(503) } } });
     expect(await keepAgent(g, "remote")).toBe("dscl didn't delete remote's ShadowHashData. Nothing else was installed. Type taskbox update again.");
   });
 });
