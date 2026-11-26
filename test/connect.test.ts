@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Config } from "../src/config.ts";
 import { appName, conversionProblem, hookProblem, installationProblem, installationsOf, manifestFor, publicProblem, reposProblem, startPage } from "../src/connect.ts";
-import { adoptV2, applyCodeRequest, askText, cancelConnect, type CodeInbox, CODES_KEPT, codeRequestProblem, codeWaiter, connectGithub, connectStatus, disconnectGithub, type FlowDeps, oldKeyFiles, openConnectOp, parseAsk, readCodeInbox, takeConnectCode } from "../src/connectflow.ts";
+import { adoptV2, applyCodeRequest, askText, cancelConnect, cleanEndedConnects, CONNECT_CODE_HANDLER, codeRequestProblem, codeWaiter, confirmPhase, openControllerConnect, v2AdoptFrom, connectGithub, connectStatus, disconnectGithub, type FlowDeps, oldKeyFiles, openConnectOp, parseAsk, readCodeInbox, takeConnectCode } from "../src/connectflow.ts";
 import { keyFileName, keysDirProblem, listKeys, placePending, promoteKey, readAdoptedKey, readHeldKey } from "../src/keys.ts";
 import { type ListenEvent, parentWatch, serveOnce, setupProblem } from "../src/listen.ts";
 import { Log } from "../src/log.ts";
@@ -92,7 +92,8 @@ describe("GitHub's answers, checked", () => {
   test("GitHub's example answer has no public field, so a real conversion isn't refused for it", () => {
     expect("public" in FIXTURE).toBe(false);
     expect(publicProblem(404)).toBeUndefined();
-    expect(publicProblem(500)).toBeUndefined();
+    expect(publicProblem(500)).toMatch(/didn.t say the App is private/);
+    expect(publicProblem(0)).toMatch(/couldn.t be reached/);
     expect(publicProblem(200)).toMatch(/is public/);
   });
 
@@ -223,7 +224,7 @@ function fakeGitHub(sys: FakeSys) {
   const conversions = new Map<string, () => Record<string, unknown>>();
   const iss = (auth: string) => (auth.split(".").length === 3 && auth.startsWith("ey") ? Number(JSON.parse(Buffer.from(auth.split(".")[1]!, "base64url").toString()).iss) : undefined);
   const tokens = new Map<string, number>();
-  const o = { skewMs: 0, publicSlugs: new Set<string>(), down: false };
+  const o = { skewMs: 0, publicSlugs: new Set<string>(), down: false, appsStatus: 0 };
   sys.fetch = async (url, init) => {
     if (o.down) throw new TypeError("fetch failed");
     const u = new URL(url);
@@ -231,7 +232,7 @@ function fakeGitHub(sys: FakeSys) {
     const auth = String((init?.headers as Record<string, string>)?.Authorization ?? "").replace(/^Bearer /, "");
     calls.push(`${m} ${u.pathname}`);
     const pub = /^\/apps\/([^/]+)$/.exec(u.pathname);
-    if (pub && !auth) return o.publicSlugs.has(pub[1]!) ? json({ slug: pub[1] }) : json({ message: "Not Found" }, 404);
+    if (pub && !auth) return o.appsStatus ? json({}, o.appsStatus) : o.publicSlugs.has(pub[1]!) ? json({ slug: pub[1] }) : json({ message: "Not Found" }, 404);
     const conv = /^\/app-manifests\/([^/]+)\/conversions$/.exec(u.pathname);
     if (conv) {
       const code = decodeURIComponent(conv[1]!);
@@ -531,6 +532,66 @@ describe("connect github, when things go wrong", () => {
     expect(connectStatus(b.d).apps.map((a) => [a.role, a.appId, a.key])).toEqual([["runner", 7000, "held"], ["source", 7001, "held"]]);
   });
 
+  test("the public check fails closed: only GitHub's 404 for a private App passes", async () => {
+    for (const status of [403, 500]) {
+      const b = box();
+      b.gh.willMake("code-aaaa", "runner", PEMS[0]!);
+      b.gh.o.appsStatus = status;
+      b.codes.push("code-aaaa");
+      expect(await connectGithub(b.d)).toBe(1);
+      expect(b.said.join("\n")).toMatch(/GitHub didn't say the App is private[\s\S]*type taskbox connect github again/);
+      expect(b.gh.calls.filter((c) => c === "GET /apps/example-org-taskbox-1-runners-aaaa")).toHaveLength(3);
+      expect(listKeys(b.keysDir)).toEqual([]);
+    }
+  });
+
+  test("an op's pending App is dropped only by that op's end: cancelled or past its deadline", async () => {
+    const b = box();
+    b.d.op = "op_01J0000000000000000000000A";
+    b.gh.willMake("code-aaaa", "runner", PEMS[0]!);
+    b.codes.push("code-aaaa");
+    expect(await connectGithub(b.d)).toBe(1); // left pending, not installed
+    expect(await cancelConnect(b.d, "op_01J0000000000000000000000B")).toEqual([]);
+    expect(listKeys(b.keysDir)).toHaveLength(1);
+    const ops = mkdtempSync(join(tmpdir(), "taskbox-ops-"));
+    const rec = (state: string, why?: string) => writeFileSync(join(ops, "op_01J0000000000000000000000A.json"), JSON.stringify({ v: 1, id: "op_01J0000000000000000000000A", type: "connect", subject: "box", state, phase: "installing-runner", actor: "owner", params: {}, startedAt: 1, endedAt: state === "running" ? null : 2, deadline: 3, cancellable: true, pointOfNoReturn: "keeping", phases: ["making-runner", "installing-runner", "making-source", "installing-source", "keeping"], progress: null, result: null, seq: 1, ...(why ? { why } : {}) }));
+    rec("failed", "an App couldn't be made true; the command said why");
+    expect(await cleanEndedConnects(b.d, { dir: ops, owner: me })).toEqual([]);
+    rec("running");
+    expect(await cleanEndedConnects(b.d, { dir: ops, owner: me })).toEqual([]);
+    rec("cancelled");
+    expect((await cleanEndedConnects(b.d, { dir: ops, owner: me }))[0]).toMatch(/Dropped the App example-org-taskbox-1-runners-aaaa/);
+    expect(listKeys(b.keysDir)).toEqual([]);
+    expect(existsSync(b.d.pendingFile)).toBe(false);
+  });
+
+  test("keeping waits for the op's record to show it, and stops if the op ended", async () => {
+    const sys = new FakeSys();
+    const seen = ["installing-source", "keeping"];
+    await confirmPhase({ sys, read: () => ({ state: "running", phase: seen.shift() ?? "keeping" }) as never }, "keeping");
+    expect(seen).toEqual([]);
+    await expect(confirmPhase({ sys, read: () => ({ state: "cancelled", phase: "installing-source" }) as never }, "keeping")).rejects.toThrow("ended");
+  });
+
+  test("v2's Apps are adopted first when box.json names none, then proved with no new App", async () => {
+    const b = box({ ...CFG, actionsAppId: 4321 } as Config);
+    b.gh.addApp(1234, { slug: "runner-app", permissions: { ...RUNNER_RIGHTS }, events: [], installs: [{ id: 1, selection: "selected" }], repos: ["example-org/taskbox"] });
+    b.gh.addApp(4321, { slug: "jobs-app", permissions: { ...SOURCE_RIGHTS }, events: [], installs: [{ id: 2, selection: "selected" }], repos: ["example-org/app"] });
+    const v2 = mkdtempSync(join(realpathSync(tmpdir()), "taskbox-v2-"));
+    mkdirSync(join(v2, "opt/taskbox-keys"), { recursive: true });
+    const p = { key: join(v2, "opt/taskbox-keys/runner.pem"), oldKey: join(v2, "home/app-key.pem"), actionsKeyDir: join(v2, "opt/taskbox-keys"), installId: join(v2, "state/install-id") } as never;
+    writeFileSync(join(v2, "opt/taskbox-keys/runner.pem"), PEMS[0]!, { mode: 0o600 });
+    writeFileSync(join(v2, "opt/taskbox-keys/actions-4321.pem"), PEMS[1]!, { mode: 0o600 });
+    const from = v2AdoptFrom(p, b.d.cfg, me);
+    expect(from.sourceKey).toBe(join(v2, "opt/taskbox-keys/actions-4321.pem"));
+    b.d.adopt = { o: from, reload: () => withBox({ ...CFG, actionsAppId: 4321 } as Config, JSON.parse(readFileSync(b.d.boxFile, "utf8"))) };
+    expect(await connectGithub(b.d)).toBe(0);
+    expect(b.said[0]).toBe("Adopted the runner App runner-app.");
+    expect(b.said.at(-1)).toBe("Both Apps pass. Nothing changed.");
+    expect(readdirSync(join(v2, "opt/taskbox-keys"))).toEqual([]);
+    expect(b.phases.some((x) => x.startsWith("making"))).toBe(false);
+  });
+
   test("a 401 with the box's clock far off is the clock's: no new App, and the line says to set the clock", async () => {
     const b = keptBox();
     b.gh.o.skewMs = 10 * 60_000;
@@ -630,58 +691,58 @@ describe("connect github, when things go wrong", () => {
   });
 });
 
-describe("the controller's code, bound to the open op", () => {
+describe("the controller's code, bound to the op's state", () => {
   const ID = "op_01J0000000000000000000000A";
+  const ST = { v: 1 as const, op: ID, runner: "1".repeat(64), source: "2".repeat(64) };
   const op = (phase: string, x: Record<string, unknown> = {}) => ({ id: ID, type: "connect", state: "running", phase, params: { from: "controller" }, ...x }) as never;
+  const req = (code: string, state = ST.runner) => ({ op: ID, state, code });
 
-  test("a code is taken only for the open op, from the controller, while it makes an App", () => {
-    expect(takeConnectCode([], undefined, { op: ID, code: "c" })).toEqual({ why: "no connect by that op is open on this box" });
-    expect(takeConnectCode([op("making-runner")], undefined, { op: "op_01J0000000000000000000000B", code: "c" })).toEqual({ why: "no connect by that op is open on this box" });
-    expect(takeConnectCode([op("making-runner", { state: "succeeded" })], undefined, { op: ID, code: "c" })).toMatchObject({ why: expect.any(String) });
-    expect(takeConnectCode([op("making-runner", { params: { from: "box" } })], undefined, { op: ID, code: "c" })).toEqual({ why: "that connect takes its code at the box" });
-    expect(takeConnectCode([op("installing-runner")], undefined, { op: ID, code: "c" })).toEqual({ why: "the open connect isn't making an App now" });
+  test("a code is taken only for the open op, from the controller, while it makes an App, with that App's state", () => {
+    expect(takeConnectCode([], ST, undefined, req("c"))).toEqual({ why: "no connect by that op is open on this box" });
+    expect(takeConnectCode([op("making-runner", { state: "succeeded" })], ST, undefined, req("c"))).toMatchObject({ why: expect.any(String) });
+    expect(takeConnectCode([op("making-runner", { params: { from: "box" } })], ST, undefined, req("c"))).toEqual({ why: "that connect takes its code at the box" });
+    expect(takeConnectCode([op("installing-runner")], ST, undefined, req("c"))).toEqual({ why: "the open connect isn't making an App now" });
+    expect(takeConnectCode([op("making-runner")], ST, undefined, req("c", ST.source))).toEqual({ why: "that code doesn't carry this connect's state" });
+    expect(takeConnectCode([op("making-runner")], undefined, undefined, req("c"))).toEqual({ why: "that code doesn't carry this connect's state" });
+    expect(takeConnectCode([op("making-runner")], ST, undefined, req("c"))).toEqual({ inbox: { v: 1, op: ID, role: "runner", code: "c" } });
+    expect(codeRequestProblem({ op: ID, state: ST.runner, code: "abc" })).toBeUndefined();
+    expect(codeRequestProblem({ op: ID, code: "abc" })).toBeDefined();
+    expect(codeRequestProblem({ op: ID, state: ST.runner, code: "abc", role: "runner" })).toBeDefined();
   });
 
-  test("a junk code never blocks a real one: each is kept, newest last, up to a cap", () => {
-    let inbox: CodeInbox | undefined;
-    for (const code of ["junk1", "junk2", "real"]) {
-      const t = takeConnectCode([op("making-runner")], inbox, { op: ID, code });
-      inbox = "inbox" in t ? t.inbox : inbox;
-    }
-    expect(inbox).toEqual({ v: 1, op: ID, role: "runner", codes: ["junk1", "junk2", "real"] });
-    for (let i = 0; i < 30; i++) {
-      const t = takeConnectCode([op("making-runner")], inbox, { op: ID, code: `j${i}` });
-      inbox = "inbox" in t ? t.inbox : inbox;
-    }
-    expect(inbox!.codes).toHaveLength(CODES_KEPT);
-    expect(codeRequestProblem({ op: ID, code: "abc" })).toBeUndefined();
-    expect(codeRequestProblem({ code: "abc" })).toBeDefined();
-    expect(codeRequestProblem({ op: ID, code: "abc", role: "runner" })).toBeDefined();
-  });
-
-  test("the child tries each code newest first; a code GitHub refuses is passed over for the next", async () => {
-    const b = box();
-    const inbox = join(dirname(b.d.pendingFile), "connect-code.json");
-    writeFileSync(inbox, JSON.stringify({ v: 1, op: ID, role: "runner", codes: ["code-aaaa", "junk"] }), { mode: 0o600 });
-    b.gh.willMake("code-aaaa", "runner", PEMS[0]!);
-    const waiter = codeWaiter({ sys: b.sys, rootUid: me }, inbox, ID, b.sys.now() + 30_000);
-    b.d.code = (role) => waiter(role);
-    expect(await connectGithub(b.d)).toBe(1); // not installed in the time this test gives
-    expect(b.said.join("\n")).toMatch(/A code GitHub doesn't take was passed over/);
-    expect(listKeys(b.keysDir).map((k) => k.name)).toEqual(["runner-7000.pending.pem"]);
-    expect(await codeWaiter({ sys: b.sys, rootUid: me }, inbox, ID, b.sys.now() + 3000)("source")).toMatchObject({ stop: expect.any(String) });
-  });
-
-  test("the guard writes the inbox only for a code it takes", () => {
+  test("a flood of junk codes, then the real one: only the real one is taken, and GitHub is never asked", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inbox-"));
     const ops = join(dir, "ops");
     mkdirSync(ops);
-    writeFileSync(join(ops, `${ID}.json`), JSON.stringify({ v: 1, id: ID, type: "connect", subject: "box", state: "running", phase: "making-source", actor: "owner", params: { from: "controller" }, startedAt: 1, endedAt: null, deadline: 2, cancellable: true, pointOfNoReturn: "keeping", phases: ["making-runner", "installing-runner", "making-source", "installing-source", "keeping"], progress: null, result: null, seq: 1 }));
-    const o = { inbox: join(dir, "connect-code.json"), ops: { dir: ops, owner: me }, rootUid: me };
-    expect(applyCodeRequest(o, { op: ID, code: "abc" })).toBeUndefined();
-    expect(readCodeInbox(o.inbox, me)).toEqual({ v: 1, op: ID, role: "source", codes: ["abc"] });
-    expect(lstatSync(o.inbox).mode & 0o777).toBe(0o600);
-    expect(applyCodeRequest(o, { code: "abc" })).toBeDefined();
+    const opened = openControllerConnect({ ops: { dir: ops, owner: me }, statesFile: join(dir, "connect-states.json"), now: SINCE, actor: "owner", params: {}, rootUid: me });
+    if (!("op" in opened)) throw new Error(opened.why);
+    expect(lstatSync(join(dir, "connect-states.json")).mode & 0o777).toBe(0o600);
+    const rec = JSON.parse(readFileSync(join(ops, `${opened.op.id}.json`), "utf8"));
+    writeFileSync(join(ops, `${opened.op.id}.json`), JSON.stringify({ ...rec, phase: "making-runner" }));
+    const sys = new FakeSys();
+    let fetched = 0;
+    sys.fetch = async () => (fetched++, json({}));
+    const o = { inbox: join(dir, "connect-code.json"), states: join(dir, "connect-states.json"), ops: { dir: ops, owner: me }, rootUid: me };
+    for (let i = 0; i < 500; i++) expect(applyCodeRequest(o, { op: opened.op.id, state: (i % 2 ? "a" : "b").repeat(64), code: `junk${i}` })).toBe("that code doesn't carry this connect's state");
+    expect(existsSync(o.inbox)).toBe(false);
+    expect(applyCodeRequest(o, { op: opened.op.id, state: opened.states.runner, code: "real" })).toBeUndefined();
+    expect(applyCodeRequest(o, { op: opened.op.id, state: opened.states.runner, code: "second" })).toBe("this connect took a code for that App already");
+    expect(readCodeInbox(o.inbox, me)).toEqual({ v: 1, op: opened.op.id, role: "runner", code: "real" });
+    expect(await codeWaiter({ sys, rootUid: me }, o.inbox, opened.op.id, sys.now() + 3000)("runner")).toEqual({ code: "real" });
+    expect(fetched).toBe(0);
+    const h = await CONNECT_CODE_HANDLER.apply({ state: { dir, ops }, rootUid: me }, { body: { op: opened.op.id, state: "c".repeat(64), code: "x" } });
+    expect(h).toMatchObject({ ok: false, code: "denied" });
+  });
+
+  test("the child converts its one code once: a code GitHub refuses ends the op, with nothing kept", async () => {
+    const b = box();
+    const inbox = join(dirname(b.d.pendingFile), "connect-code.json");
+    writeFileSync(inbox, JSON.stringify({ v: 1, op: ID, role: "runner", code: "junk" }), { mode: 0o600 });
+    const waiter = codeWaiter({ sys: b.sys, rootUid: me }, inbox, ID, b.sys.now() + 30_000);
+    b.d.code = (role) => waiter(role);
+    expect(await connectGithub(b.d)).toBe(1);
+    expect(b.gh.calls.filter((c) => c.includes("/conversions"))).toHaveLength(1);
+    expect(listKeys(b.keysDir)).toEqual([]);
   });
 });
 

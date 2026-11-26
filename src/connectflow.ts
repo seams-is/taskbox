@@ -1,14 +1,14 @@
 // connect github and disconnect github: one op makes both Apps true, the runner App first. Root
 // converts the code, checks the App, hands its key to the keeper as pending, proves the install, and
 // only then keeps it. The code comes from the listener at the box or from the controller.
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { readBoxFile } from "./boxsettings.ts";
 import { type AppRole, appName, appPage, conversionProblem, deleteLine, hookProblem, type InstallFail, installationProblem, installationsOf, installPage, PERMISSIONS, permissionsPage, publicProblem, reposProblem, ROLE_NAME, SLUG } from "./connect.ts";
 import type { Config, LoadRepo, Paths, SourceSettings } from "./config.ts";
 import { jobLabel, leasePath, progressPath, type Report, reporter, reportsPath } from "./core/child.ts";
-import { begin, listOps, type Op, type OpFolder, type OpType, writeOp } from "./core/ops.ts";
+import { begin, listOps, type Op, type OpFolder, type OpType, readOp, writeOp } from "./core/ops.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "./core/rootfile.ts";
 import type { Json } from "./core/statement.ts";
 import { CLOCK_LIMIT_S, clockOffsetS } from "./ghfail.ts";
@@ -42,8 +42,8 @@ export function parseAsk(text: unknown): BrowserAsk | undefined {
   return o ? { open: o[1]! } : undefined;
 }
 
-// A code, or why there is none. more: another may come, so a code GitHub refuses is passed over.
-export type CodeGot = { code: string; more?: true } | { stop: string };
+// A code, or why there is none.
+export type CodeGot = { code: string } | { stop: string };
 
 export interface FlowDeps {
   sys: Pick<Sys, "fetch" | "timeout" | "now" | "sleep">;
@@ -65,6 +65,14 @@ export interface FlowDeps {
   live?(): boolean;
   // v2's key files still on the box (oldKeyFiles): with them, the product file's App is v2's own.
   v2Keys?: readonly string[];
+  // v2's Apps, adopted before anything else when box.json doesn't name the runner App yet; then the
+  // settings are read again.
+  adopt?: { o: AdoptFrom; reload(): Config };
+  // This op's ID: a pending App is recorded under it, so only its own op's end drops it.
+  op?: string;
+  // Once the keeping phase is reported, waits for the op's record to show it: past that point a
+  // cancel is refused, so nothing is kept for an op recorded as cancelled.
+  confirmKeeping?(): Promise<void>;
   rand?: (n: number) => Buffer;
 }
 
@@ -74,7 +82,7 @@ const check = (d: Pick<FlowDeps, "live">) => {
   if (d.live && !d.live()) throw new Ended("the connect op ended");
 };
 
-type Pending = { appId: number; slug: string; replacing?: number };
+type Pending = { appId: number; slug: string; replacing?: number; op?: string };
 type PendingFile = { v: 1; apps: Partial<Record<AppRole, Pending>> };
 
 const rand = (d: Pick<FlowDeps, "rand">, n: number) => (d.rand ?? randomBytes)(n);
@@ -87,7 +95,7 @@ function readPendingFile(d: Pick<FlowDeps, "pendingFile" | "rootUid">): PendingF
   if (r.kind === "ok") {
     for (const role of ["runner", "source"] as const) {
       const p = r.value.apps[role] as Record<string, unknown> | undefined;
-      if (p && Number.isSafeInteger(p.appId) && (p.appId as number) > 0 && typeof p.slug === "string" && SLUG.test(p.slug)) apps[role] = { appId: p.appId as number, slug: p.slug, ...(Number.isSafeInteger(p.replacing) ? { replacing: p.replacing as number } : {}) };
+      if (p && Number.isSafeInteger(p.appId) && (p.appId as number) > 0 && typeof p.slug === "string" && SLUG.test(p.slug)) apps[role] = { appId: p.appId as number, slug: p.slug, ...(Number.isSafeInteger(p.replacing) ? { replacing: p.replacing as number } : {}), ...(typeof p.op === "string" && OP_ID.test(p.op) ? { op: p.op } : {}) };
     }
   }
   return { v: 1, apps };
@@ -224,18 +232,13 @@ async function makeApp(d: FlowDeps, role: AppRole, other: number | undefined, re
   d.phase(phase, { make: role, name });
   d.say(`You need to be an owner of ${d.cfg.org}. Your browser opens GitHub to make ${ROLE_NAME[role]}, ${name}: click Create GitHub App.`);
   const appsUrl = `https://github.com/organizations/${d.cfg.org}/settings/apps`;
-  let res: Response | undefined;
-  for (;;) {
-    const got = await d.code(role, name, state);
-    check(d);
-    if ("stop" in got) return void d.say(got.stop);
-    d.log.secret(got.code);
-    res = await apiCall(d.sys, "POST", `/app-manifests/${encodeURIComponent(got.code)}/conversions`).catch(() => undefined);
-    if (res?.ok) break;
-    if (got.more && res && (res.status === 404 || res.status === 422)) {
-      d.say("A code GitHub doesn't take was passed over; taskbox waits for the next.");
-      continue;
-    }
+  const got = await d.code(role, name, state);
+  check(d);
+  if ("stop" in got) return void d.say(got.stop);
+  d.log.secret(got.code);
+  // One conversion per App per op.
+  const res = await apiCall(d.sys, "POST", `/app-manifests/${encodeURIComponent(got.code)}/conversions`).catch(() => undefined);
+  if (!res?.ok) {
     // A code taken first by someone else converts once, and the box's conversion then fails.
     d.say(`GitHub didn't give the box the App (${res ? `it answered ${res.status}` : "it couldn't be reached"}). If ${name} is listed at ${appsUrl}, delete it there: whoever converted its code first holds its key, and it was never installed. Then type taskbox connect github again.`);
     d.event("connect.refused", `The box's conversion of ${name}'s code failed.`, { role, name });
@@ -254,12 +257,17 @@ async function makeApp(d: FlowDeps, role: AppRole, other: number | undefined, re
   const hook = await app.call("GET", "/app/hook/config").catch(() => undefined);
   const hookWhy = hook ? hookProblem(hook.status, await bodyOf(hook), d.cfg.org) : "GitHub couldn't be reached for the App's webhook";
   if (hookWhy) return refuse(hookWhy, conv.slug);
-  const pub = await apiCall(d.sys, "GET", `/apps/${conv.slug}`).catch(() => undefined);
-  const pubWhy = pub ? publicProblem(pub.status) : undefined;
-  if (pubWhy) return refuse(pubWhy, conv.slug);
+  // Only a definite private answer passes; GitHub is asked again a few times first.
+  let pubWhy: string | undefined = "GitHub couldn't be asked whether the App is private";
+  for (let i = 0; i < 3 && pubWhy; i++) {
+    if (i) await d.sys.sleep(2000);
+    const pub = await apiCall(d.sys, "GET", `/apps/${conv.slug}`).catch(() => undefined);
+    pubWhy = publicProblem(pub ? pub.status : 0);
+  }
+  if (pubWhy) return refuse(`${pubWhy}. Delete it, then type taskbox connect github again`, conv.slug);
   // The record first, then the key, so a stop from here on is found again by the next connect.
   const f = readPendingFile(d);
-  f.apps[role] = { appId: conv.id, slug: conv.slug, ...(replacing !== undefined && replacing !== conv.id ? { replacing } : {}) };
+  f.apps[role] = { appId: conv.id, slug: conv.slug, ...(replacing !== undefined && replacing !== conv.id ? { replacing } : {}), ...(d.op ? { op: d.op } : {}) };
   writePendingFile(d, f);
   const why = placePending(d.keys, role, conv.id, conv.pem);
   if (why) {
@@ -285,6 +293,11 @@ async function trueApp(d: FlowDeps, role: AppRole, w: Wants, other?: number): Pr
     const pem = heldKey(d, role, pend.appId, true) ?? heldKey(d, role, pend.appId);
     if (pem) {
       d.say(`The App ${pend.slug} was made before and isn't kept yet: taskbox finishes it.`);
+      if (d.op && pend.op !== d.op) {
+        const f = readPendingFile(d);
+        f.apps[role] = { ...pend, op: d.op };
+        writePendingFile(d, f);
+      }
       target = { id: pend.appId, slug: pend.slug, pem, pending: true, ...(pend.replacing !== undefined ? { replacing: pend.replacing } : {}) };
     } else {
       const f = readPendingFile(d);
@@ -367,6 +380,7 @@ const sameSource = (a: SourceSettings, b: SourceSettings) =>
 async function keep(d: FlowDeps, ready: Ready[], w: Wants): Promise<boolean> {
   check(d);
   d.phase("keeping");
+  await d.confirmKeeping?.();
   for (const r of ready) {
     const why = r.pending ? promoteKey(d.keys.dir, r.role, r.id) : undefined;
     if (why) return (d.say(`Not connected: ${why}. Nothing in box.json changed; type taskbox connect github again.`), false);
@@ -390,11 +404,15 @@ export type ConnectOpts = { jobs?: string; load?: LoadRepo | "off" };
 // that ends under it (its deadline, op cancel) drops what it left pending, as op cancel does.
 export async function connectGithub(d: FlowDeps, o: ConnectOpts = {}): Promise<number> {
   try {
+    if (d.adopt && !d.cfg.runnerApp && d.adopt.o.retire.length) {
+      for (const l of await adoptV2(d, d.adopt.o)) d.say(l);
+      d.cfg = d.adopt.reload();
+    }
     return await connectOnce(d, o);
   } catch (e) {
     if (!(e instanceof Ended)) throw e;
     d.say("The connect ended before it kept anything (its deadline, or op cancel).");
-    for (const l of await cancelConnect(d)) d.say(l);
+    for (const l of await cancelConnect(d, d.op)) d.say(l);
     return 1;
   }
 }
@@ -487,18 +505,20 @@ export async function disconnectGithub(d: NoCode): Promise<number> {
 
 // op cancel's hook, and the flow's own at its deadline: a pending App is uninstalled with its own key,
 // its key and record go, and the line gives its delete link. A failed uninstall is said.
-export async function cancelConnect(d: Pick<FlowDeps, "sys" | "log" | "cfg" | "keys" | "pendingFile" | "rootUid" | "chown">): Promise<string[]> {
+// op: only that op's pending Apps; undefined drops every one.
+export async function cancelConnect(d: Pick<FlowDeps, "sys" | "log" | "cfg" | "keys" | "pendingFile" | "rootUid" | "chown">, op?: string): Promise<string[]> {
   const f = readPendingFile(d);
   const lines: string[] = [];
   for (const role of ["runner", "source"] as const) {
     const p = f.apps[role];
-    if (!p) continue;
+    if (!p || (op !== undefined && p.op !== op)) continue;
+    delete f.apps[role];
     const pem = heldKey(d, role, p.appId, true) ?? heldKey(d, role, p.appId);
     const gone = pem ? await uninstallAll(clientFor(d, p.appId, pem)) : true;
     dropKey(d.keys.dir, role, p.appId);
     lines.push(gone ? `Dropped the App ${p.slug} from this box. ${deleteLine(d.cfg.org, p.slug)}` : `Dropped the App ${p.slug}'s key from this box, but it couldn't be uninstalled: uninstall it on GitHub. ${deleteLine(d.cfg.org, p.slug)}`);
   }
-  writePendingFile(d, { v: 1, apps: {} });
+  writePendingFile(d, f);
   return lines;
 }
 
@@ -506,53 +526,69 @@ export async function cancelConnect(d: Pick<FlowDeps, "sys" | "log" | "cfg" | "k
 // is pure, and has no hook of its own yet).
 export interface OpCancelHook {
   type: string;
-  cancel(d: Parameters<typeof cancelConnect>[0]): Promise<string[]>;
+  cancel(d: Parameters<typeof cancelConnect>[0], op?: string): Promise<string[]>;
 }
 export const CONNECT_CANCEL: OpCancelHook = { type: CONNECT_OP.type, cancel: cancelConnect };
 
 // ---- The controller's code, through the agent spool ----
-// Unsigned: whoever holds a code converts it first, so a signature would add nothing. A code names
-// the op it is for and is taken only while that op is open, comes from the controller, and is making
-// an App. The newest CODES_KEPT are kept, and the child tries each, so a junk code never blocks a
-// real one.
+// Unsigned, so anyone with the agent account can send one. Each code must carry the state the op
+// handed the controller for that App, in the private answer to its signed connect github, compared in
+// constant time. A code without it is refused here, with no GitHub call. The first code with it is the
+// one conversion that App gets in this op.
 export const CODE_KIND = "connect-code";
-export const CODES_KEPT = 20;
 const OP_ID = /^op_[0-9A-HJKMNP-TV-Z]{26}$/;
 const CODE_RE = /^[A-Za-z0-9_-]{1,100}$/;
+const STATE_RE = /^[0-9a-f]{64}$/;
 export function codeRequestProblem(body: Record<string, unknown>): string | undefined {
-  if (!Object.keys(body).every((k) => k === "code" || k === "op")) return "a connect code carries its op and its code alone";
+  if (!Object.keys(body).every((k) => k === "code" || k === "op" || k === "state")) return "a connect code carries its op, its state and its code alone";
   if (typeof body.op !== "string" || !OP_ID.test(body.op)) return "a connect code names its op";
+  if (typeof body.state !== "string" || !STATE_RE.test(body.state)) return "a connect code carries its op's state";
   return typeof body.code === "string" && CODE_RE.test(body.code) ? undefined : "a connect code is one code";
 }
 
-export type CodeInbox = { v: 1; op: string; role: AppRole; codes: string[] };
+// The op's states, one per App: root's, 600, made when a controller's connect opens.
+export type ConnectStates = { v: 1; op: string; runner: string; source: string };
+export function newConnectStates(path: string, op: string, o: { rootUid?: number; chown?: (p: string, u: number, g: number) => void; rand?: (n: number) => Buffer } = {}): ConnectStates {
+  const r = o.rand ?? randomBytes;
+  const s: ConnectStates = { v: 1, op, runner: r(32).toString("hex"), source: r(32).toString("hex") };
+  writeOwnedText(path, `${JSON.stringify(s)}\n`, { mode: 0o600, owner: o.rootUid ?? 0, ...(o.chown ? { chown: o.chown } : {}) });
+  return s;
+}
+export function readConnectStates(path: string, rootUid = 0): ConnectStates | undefined {
+  const r = readOwnedJson(path, { owner: rootUid, max: 1024 }, (v) => (isObj(v) && v.v === 1 && typeof v.op === "string" && typeof v.runner === "string" && STATE_RE.test(v.runner) && typeof v.source === "string" && STATE_RE.test(v.source) ? (v as unknown as ConnectStates) : "not states"));
+  return r.kind === "ok" ? r.value : undefined;
+}
 
-export function takeConnectCode(running: readonly Pick<Op, "id" | "type" | "state" | "phase" | "params">[], inbox: CodeInbox | undefined, req: { op: string; code: string }): { inbox: CodeInbox } | { why: string } {
+export type CodeInbox = { v: 1; op: string; role: AppRole; code: string };
+
+const sameState = (a: string, b: string) => {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
+
+export function takeConnectCode(running: readonly Pick<Op, "id" | "type" | "state" | "phase" | "params">[], states: ConnectStates | undefined, inbox: CodeInbox | undefined, req: { op: string; state: string; code: string }): { inbox: CodeInbox } | { why: string } {
   const op = running.find((o) => o.type === CONNECT_OP.type && o.state === "running" && o.id === req.op);
   if (!op) return { why: "no connect by that op is open on this box" };
   if (op.params.from !== "controller") return { why: "that connect takes its code at the box" };
   const role: AppRole | undefined = op.phase === "making-runner" ? "runner" : op.phase === "making-source" ? "source" : undefined;
   if (!role) return { why: "the open connect isn't making an App now" };
-  const had = inbox && inbox.op === op.id && inbox.role === role ? inbox.codes.filter((c) => c !== req.code) : [];
-  return { inbox: { v: 1, op: op.id, role, codes: [...had, req.code].slice(-CODES_KEPT) } };
+  if (!states || states.op !== op.id || !sameState(req.state, states[role])) return { why: "that code doesn't carry this connect's state" };
+  if (inbox && inbox.op === op.id && inbox.role === role) return { why: "this connect took a code for that App already" };
+  return { inbox: { v: 1, op: op.id, role, code: req.code } };
 }
 
 export function readCodeInbox(path: string, rootUid = 0): CodeInbox | undefined {
-  const r = readOwnedJson(path, { owner: rootUid, max: 8192 }, (v) => (isObj(v) && v.v === 1 && typeof v.op === "string" && (v.role === "runner" || v.role === "source") && Array.isArray(v.codes) && v.codes.length <= CODES_KEPT && v.codes.every((c) => typeof c === "string" && CODE_RE.test(c)) ? (v as unknown as CodeInbox) : "not a code inbox"));
+  const r = readOwnedJson(path, { owner: rootUid, max: 4096 }, (v) => (isObj(v) && v.v === 1 && typeof v.op === "string" && (v.role === "runner" || v.role === "source") && typeof v.code === "string" && CODE_RE.test(v.code) ? (v as unknown as CodeInbox) : "not a code inbox"));
   return r.kind === "ok" ? r.value : undefined;
 }
 
-// The child's side: each code for this op and App it hasn't tried, newest first.
+// The child's side: this op's code for this App, once.
 export function codeWaiter(d: Pick<FlowDeps, "sys" | "rootUid" | "live">, path: string, op: string, untilMs: number) {
-  const tried = new Set<string>();
   return async (role: AppRole): Promise<CodeGot> => {
     for (;;) {
       const c = readCodeInbox(path, d.rootUid ?? 0);
-      const next = c && c.op === op && c.role === role ? [...c.codes].reverse().find((x) => !tried.has(x)) : undefined;
-      if (next) {
-        tried.add(next);
-        return { code: next, more: true };
-      }
+      if (c && c.op === op && c.role === role) return { code: c.code };
       if (d.sys.now() >= untilMs || (d.live && !d.live())) return { stop: "No App was made in time. Nothing changed. Type taskbox connect github to start again." };
       await d.sys.sleep(1000);
     }
@@ -563,7 +599,8 @@ export function codeWaiter(d: Pick<FlowDeps, "sys" | "rootUid" | "live">, path: 
 // Each v2 key is read once, proved and handed to the keeper; box.json names the Apps. Then the old
 // files move to root's attic, so the service account can no longer read them; a rollback to v2 puts
 // them back from there.
-export async function adoptV2(d: NoCode, o: { runnerKey: string; sourceKey?: string; serviceUid: number; attic: string; retire: string[] }): Promise<string[]> {
+export type AdoptFrom = { runnerKey: string; sourceKey?: string; serviceUid: number; attic: string; retire: readonly string[] };
+export async function adoptV2(d: NoCode, o: AdoptFrom): Promise<string[]> {
   const lines: string[] = [];
   const set: Record<string, unknown> = {};
   const w = wantsOf(d.cfg);
@@ -590,6 +627,8 @@ export async function adoptV2(d: NoCode, o: { runnerKey: string; sourceKey?: str
   // Only once every App is with the keeper: the loop then reads no old file.
   if (rslug && (s.type !== "github-actions" || sslug)) {
     mkdirSync(o.attic, { recursive: true, mode: 0o700 });
+    const st = lstatSync(o.attic);
+    if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== owner(d) || (st.mode & 0o077) !== 0) return [...lines, `${o.attic} isn't root's alone, so the old key files stay where they are.`];
     for (const f of o.retire) {
       try {
         if (!lstatSync(f).isFile()) continue;
@@ -694,10 +733,10 @@ export const connectRunning = (ops: Pick<OpFolder, "dir" | "owner">) => listOps(
 
 // The guard's side, for the shared request dispatcher: one connect-code request applied to the inbox
 // (root's, 600). The outcome's why, or undefined when the code was kept.
-export function applyCodeRequest(o: { inbox: string; ops: Pick<OpFolder, "dir" | "owner">; rootUid?: number; chown?: (p: string, u: number, g: number) => void }, body: Record<string, unknown>): string | undefined {
+export function applyCodeRequest(o: { inbox: string; states: string; ops: Pick<OpFolder, "dir" | "owner">; rootUid?: number; chown?: (p: string, u: number, g: number) => void }, body: Record<string, unknown>): string | undefined {
   const why = codeRequestProblem(body);
   if (why) return why;
-  const t = takeConnectCode(listOps(o.ops).ops, readCodeInbox(o.inbox, o.rootUid ?? 0), { op: body.op as string, code: body.code as string });
+  const t = takeConnectCode(listOps(o.ops).ops, readConnectStates(o.states, o.rootUid ?? 0), readCodeInbox(o.inbox, o.rootUid ?? 0), { op: body.op as string, state: body.state as string, code: body.code as string });
   if ("why" in t) return t.why;
   writeOwnedText(o.inbox, `${JSON.stringify(t.inbox)}\n`, { mode: 0o600, owner: o.rootUid ?? 0, ...(o.chown ? { chown: o.chown } : {}) });
   return undefined;
@@ -709,7 +748,57 @@ export const CONNECT_CODE_HANDLER = {
   kind: CODE_KIND,
   check: codeRequestProblem,
   async apply(c: { state: { dir: string; ops: string }; rootUid: number; chown?: (p: string, u: number, g: number) => void }, r: { body: Record<string, unknown> }) {
-    const why = applyCodeRequest({ inbox: join(c.state.dir, "connect-code.json"), ops: { dir: c.state.ops, owner: c.rootUid }, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) }, r.body);
+    const why = applyCodeRequest({ inbox: join(c.state.dir, "connect-code.json"), states: join(c.state.dir, "connect-states.json"), ops: { dir: c.state.ops, owner: c.rootUid }, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) }, r.body);
     return why ? { ok: false as const, said: why, code: "denied" as const } : { ok: true as const, said: "The box took the code." };
   },
 };
+
+// A controller's connect, opened by the guard for its signed connect github: the op's record and its
+// two states, which go back in the private answer and nowhere else. The guard then starts the child
+// (connectchild.ts) through runChild.
+export function openControllerConnect(o: { ops: OpFolder; statesFile: string; now: number; actor: string; params: Record<string, Json>; rootUid?: number; chown?: (p: string, u: number, g: number) => void; rand?: (n: number) => Buffer }): { op: Op; states: ConnectStates } | { why: string } {
+  const b = begin(listOps(o.ops).ops, CONNECT_OP, { subject: "box", params: { ...o.params, from: "controller" }, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
+  if (b.kind !== "start") return { why: b.kind === "busy" ? b.why : `A connect (${b.op.id}) is running already. taskbox op show ${b.op.id} -w follows it.` };
+  writeOp(o.ops, b.op);
+  return { op: b.op, states: newConnectStates(o.statesFile, b.op.id, o) };
+}
+
+// Waits for the op's record to show the keeping phase, at most a minute: the guard applies reports
+// each tick. An op that ended stops the flow.
+export async function confirmPhase(d: { sys: Pick<Sys, "sleep" | "now">; read(): Op | undefined }, phase: Phase): Promise<void> {
+  const until = d.sys.now() + 60_000;
+  for (;;) {
+    const op = d.read();
+    if (!op || op.state !== "running") throw new Ended("the connect op ended");
+    if (op.phase === phase) return;
+    if (d.sys.now() >= until) throw new Ended("the guard didn't record the keeping phase");
+    await d.sys.sleep(1000);
+  }
+}
+
+// The guard's cleanup: a pending App whose op was cancelled or passed its deadline is dropped, as op
+// cancel does, whichever process ran the op. A connect that failed on its own keeps its App for the
+// next connect to finish.
+export async function cleanEndedConnects(d: Pick<FlowDeps, "sys" | "log" | "cfg" | "keys" | "pendingFile" | "rootUid" | "chown">, ops: Pick<OpFolder, "dir" | "owner">): Promise<string[]> {
+  const f = readPendingFile(d);
+  const lines: string[] = [];
+  for (const id of new Set([f.apps.runner?.op, f.apps.source?.op].filter((x): x is string => !!x))) {
+    const r = readOp(ops, id);
+    const ended = r.kind === "ok" && (r.value.state === "cancelled" || (r.value.state === "failed" && r.value.why === "it passed its deadline"));
+    if (ended) lines.push(...(await cancelConnect(d, id)));
+  }
+  return lines;
+}
+
+// Where v2 put its keys, for the move: the runner key in root's folder (v2.8.0) or the service's
+// home, the source key under its App's ID, and every old file to move once both are kept.
+export function v2AdoptFrom(p: Paths, cfg: Config, serviceUid: number): AdoptFrom {
+  const s = sourceOf(cfg);
+  return {
+    runnerKey: existsSync(p.key) ? p.key : p.oldKey,
+    ...(s.type === "github-actions" ? { sourceKey: sourceKeyPath(p, s.appId) } : {}),
+    serviceUid,
+    attic: join(dirname(p.installId), "v2-keys"),
+    retire: oldKeyFiles(p),
+  };
+}

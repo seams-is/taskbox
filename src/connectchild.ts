@@ -8,7 +8,7 @@ import { uidOf } from "./accounts.ts";
 import type { Report } from "./core/child.ts";
 import { readOp } from "./core/ops.ts";
 import { rootStateIn } from "./core/paths.ts";
-import { askText, codeWaiter, connectGithub, type FlowDeps, oldKeyFiles } from "./connectflow.ts";
+import { askText, codeWaiter, confirmPhase, connectGithub, type FlowDeps, oldKeyFiles } from "./connectflow.ts";
 import { boxNames, loadConfig, paths } from "./config.ts";
 import { BROKER_ACCOUNT, brokerPathsOf } from "./keys.ts";
 import { Log } from "./log.ts";
@@ -52,7 +52,9 @@ export async function runConnectChild(c: ChildRun): Promise<number> {
     ...(c.rootUid !== undefined ? { rootUid: c.rootUid } : {}),
     since: op.startedAt,
     live,
+    op: op.id,
     v2Keys: oldKeyFiles(p),
+    confirmKeeping: () => confirmPhase({ sys: c.sys, read: () => { const r = readOp(ops, op.id); return r.kind === "ok" ? r.value : undefined; } }, "keeping"),
     say: c.out,
     phase: (ph, a) => c.send({ phase: ph, ...(a ? { progress: { text: askText(a).slice(0, 120) } } : {}) }),
     event: (type, text, data) => c.send({ event: { type, text: text.slice(0, 240), ...(data ? { data } : {}) } }),

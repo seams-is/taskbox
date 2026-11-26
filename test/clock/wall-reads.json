@@ -52,8 +52,8 @@
     "why": "a GitHub App JWT's iat, for the loop and connect, the offset GitHub reports, and a failure's time for a status line"
   },
   "connectflow.ts": {
-    "reads": 7,
-    "why": "when a connect began (an App made before it isn't this connect's), and the waits for GitHub and a code: a step only ends a wait, which changes nothing and says so"
+    "reads": 9,
+    "why": "when a connect began, and the waits for GitHub, a code and the keeping phase: a step only ends a wait, which changes nothing and says so"
   },
   "watchdog.ts": {
     "reads": 3,

@@ -1,6 +1,11 @@
-// The guard's hourly pass over the GitHub key keeper: its counts of what it handed out go into root's
-// event log as key.used, each hour once. By the one writer only.
-import { readFileSync } from "node:fs";
+// The guard's pass over connect and the GitHub key keeper: ended connects cleaned up, and the
+// keeper's counts into root's event log as key.used, each hour once. By the one writer only.
+import { existsSync, readFileSync } from "node:fs";
+import { uidOf } from "../accounts.ts";
+import { cleanEndedConnects } from "../connectflow.ts";
+import { GUARD_FULL_MS } from "../guard.ts";
+import { BROKER_ACCOUNT } from "../keys.ts";
+import { Log } from "../log.ts";
 import { join } from "node:path";
 import type { Asker } from "../broker.ts";
 import { eventLog, type EventLog } from "../core/events.ts";
@@ -9,7 +14,6 @@ import { rootStateOf } from "../core/paths.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "../core/rootfile.ts";
 import { brokerPathsOf } from "../keys.ts";
 
-export const KEEPER_PASS_MS = 60 * 60_000;
 const HOUR = /^\d{4}-\d{2}-\d{2}T\d{2}$/;
 
 // The keeper's hours after the last one written, as events. The last hour written is kept in root's
@@ -55,14 +59,23 @@ export async function groupPass(ask: Asker, workflows: string[], events: Pick<Ev
   return did;
 }
 
+// Each full pass: a connect op that was cancelled or passed its deadline has its pending App dropped,
+// and the keeper's hours not yet in root's log are written there.
 export const connectPass: PassMaker = {
   name: "key-keeper",
   make(c) {
     if (!c.writer) return undefined;
     const s = rootStateOf(c.p);
-    const events = eventLog("guard", { dir: s.events, owner: c.rootUid ?? 0 }, c.sys);
-    return everyPass("key-keeper", "after", KEEPER_PASS_MS, async () => {
-      usedToEvents({ usedFile: brokerPathsOf(c.p).used, mark: join(s.dir, "key-used.json"), ...(c.rootUid !== undefined ? { rootUid: c.rootUid } : {}) }, events);
+    const root = c.rootUid ?? 0;
+    const events = eventLog("guard", { dir: s.events, owner: root }, c.sys);
+    return everyPass("key-keeper", "after", GUARD_FULL_MS, async () => {
+      usedToEvents({ usedFile: brokerPathsOf(c.p).used, mark: join(s.dir, "key-used.json"), rootUid: root }, events);
+      const pendingFile = join(s.dir, "connect-pending.json");
+      if (!existsSync(pendingFile)) return;
+      const uid = await uidOf(c.sys, BROKER_ACCOUNT);
+      if (uid === undefined) return;
+      const d = { sys: c.sys, log: new Log(), cfg: c.cfg, keys: { dir: brokerPathsOf(c.p).keys, ownerUid: uid, ownerGid: 0 }, pendingFile, rootUid: root };
+      for (const l of await cleanEndedConnects(d, { dir: s.ops, owner: root })) c.log.write(l);
     });
   },
 };

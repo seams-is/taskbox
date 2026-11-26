@@ -140,11 +140,12 @@ export function conversionProblem(raw: unknown, o: { role: AppRole; org: string;
   return { id: a.id as number, slug, pem: a.pem as string };
 }
 
-// Whether the App is public, by the one sign GitHub gives: a public App's page in the API answers
-// anyone, signed in or not (GET /apps/<slug> with no token). 404 is a private App. Any other answer
-// is no evidence either way, so it refuses nothing.
+// Whether the App is private, by the one sign GitHub gives: a public App's page in the API answers
+// anyone, with no token (GET /apps/<slug>), and a private App's answers 404. Only that 404 passes.
 export function publicProblem(status: number): string | undefined {
-  return status === 200 ? "the App is public: anyone can read it without signing in" : undefined;
+  if (status === 404) return undefined;
+  if (status === 200) return "the App is public: anyone can read it without signing in";
+  return `GitHub didn't say the App is private (${status ? `it answered ${status}` : "it couldn't be reached"})`;
 }
 
 // The App's webhook, as GET /app/hook/config answers with the App's JWT: no hook (404), an empty
