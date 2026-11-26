@@ -714,7 +714,7 @@ describe("the rollback watcher and undo", () => {
     }
   });
 
-  test.serial("undo by hand boots out daemons the install gone back to doesn't know, and keeps its own", async () => {
+  test.serial("undo by hand boots out daemons the install gone back to doesn't ship, and keeps its own", async () => {
     const h = await hopBox();
     const daemons = dirname(h.d.paths.guardPlist);
     for (const l of ["local.taskbox.guardwatch", "local.taskbox.netwatch"]) {
@@ -727,8 +727,10 @@ describe("the rollback watcher and undo", () => {
     const said: string[] = [];
     const code = await undo({ ...opsOf(h), say: (l) => said.push(l), ask: async () => "yes" });
     expect([code, said]).toEqual([0, expect.anything()]);
-    expect(said.join("\n")).toContain("Stopped local.taskbox.guardwatch, local.taskbox.netwatch, which this install doesn't run.");
-    for (const l of ["local.taskbox.guardwatch", "local.taskbox.netwatch"]) expect(existsSync(join(daemons, `${l}.plist`))).toBe(false);
+    // The install gone back to ships guardwatch itself, so it stays; netwatch it doesn't know.
+    expect(said.join("\n")).toContain("Stopped local.taskbox.netwatch, which this install doesn't run.");
+    expect(existsSync(join(daemons, "local.taskbox.netwatch.plist"))).toBe(false);
+    expect(existsSync(join(daemons, "local.taskbox.guardwatch.plist"))).toBe(true);
     for (const l of [GUARD_LABEL, TAILSCALED_LABEL, ROLLBACK_LABEL]) expect(existsSync(join(daemons, `${l}.plist`))).toBe(true);
     expect(existsSync(join(daemons, "com.example.other.plist"))).toBe(true);
     expect(boots).toEqual([`${GUARD_LABEL}.plist: <?xml`]);

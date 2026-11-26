@@ -9,6 +9,7 @@ import { BOOTOUT_WAIT_S, dropReloadJob, keepInert, labelsBack, RELOAD_JOB, reloa
 export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
 import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, treeProblem } from "./checks.ts";
+import { GUARDWATCH_LABEL } from "./guardwatch.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
 import { checkAnswer, logAnswer, statusAnswer } from "./answers.ts";
 import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } from "./loop.ts";
@@ -558,7 +559,15 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   // v2.6.1: daemons of a later release, which this install doesn't know,
   // are booted out and their plists removed, so they don't run against an install that can't answer them.
   const notEnded: string[] = [];
-  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? KNOWN_DAEMONS, d.serviceUid, notEnded).catch(() => [] as string[]);
+  // The install gone back to keeps the daemons it ships itself (guardwatch, from v3 on).
+  const ships = (() => {
+    try {
+      return readdirSync(join(d.paths.app, "launchd")).flatMap((n) => /^(local\.taskbox\.[A-Za-z0-9.-]{1,60})\.plist$/.exec(n)?.[1] ?? []);
+    } catch {
+      return [];
+    }
+  })();
+  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? [...KNOWN_DAEMONS, ...ships], d.serviceUid, notEnded).catch(() => [] as string[]);
   for (const m of notEnded) d.say(`  An op job couldn't be ended: ${noControl(m).slice(0, 120)}.`);
   if (gone.length) did += ` Stopped ${gone.join(", ")}, which this install doesn't run.`;
   // Back across the label move: the kept code knows only the old labels (install.ts, labelsBack).
@@ -717,7 +726,14 @@ export async function remove(d: OpsDeps, o: { serviceUid?: number; overSsh?: boo
   // Each runner is a JIT runner the loop deletes after its job. With the loop stopped, any left is
   // offline and takes no job. Remove never reads ci's key as root, nor touches another box's runners.
   done.push("left this box's runners for GitHub to drop within a day");
-  // The guard, and its pf rules. With them gone, Screen Sharing reaches every network again.
+  // guardwatch first, so it never restarts the guard on its way out; then the guard, and its pf
+  // rules. With them gone, Screen Sharing reaches every network again.
+  const watchPlist = join(dirname(d.paths.guardPlist), `${GUARDWATCH_LABEL}.plist`);
+  if (existsSync(watchPlist)) {
+    await d.sys.run("/bin/launchctl", ["bootout", `system/${GUARDWATCH_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
+    rmSync(watchPlist, { force: true });
+    done.push("removed guardwatch, which restarted a stuck guard");
+  }
   for (const label of [GUARD_LABEL, ...(old ? [old.guard] : [])]) await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
   // Every running op's job, booted out by its label, which ends its child and what that started:
   // launchd owns them, so no pid is signalled. A job that can't be booted out is said.

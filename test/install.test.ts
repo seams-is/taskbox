@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, rmSync, mkdtempSync, readdirSync, rea
 import { tmpdir } from "node:os";
 import { dirname, join, basename } from "node:path";
 import { assetUrl, type Versions, paths, AGENT_LABEL, GUARD_LABEL, loadConfig, loadVersions, TAILSCALED_LABEL } from "../src/config.ts";
+import { GUARDWATCH_LABEL } from "../src/guardwatch.ts";
 import { describe as describeHead, install, type InstallDeps, refuseOddEntries, Stop } from "../src/install.ts";
 import { hashTree } from "../src/checks.ts";
 import { Log } from "../src/log.ts";
@@ -217,8 +218,8 @@ describe("an install run to the end", () => {
     for (const [label, file] of [[AGENT_LABEL, d.paths.agentPlist], [GUARD_LABEL, d.paths.guardPlist], [TAILSCALED_LABEL, d.paths.tailscaledPlist]] as const) {
       expect(readFileSync(file, "utf8")).toContain(`<string>${label}</string>`);
     }
-    expect(log.filter((l) => l.startsWith("bootstrap"))).toEqual([`bootstrap ${GUARD_LABEL} on ${folder}`, `bootstrap ${TAILSCALED_LABEL} on ${folder}`]);
-    expect([...loaded].sort()).toEqual([GUARD_LABEL, TAILSCALED_LABEL].sort());
+    expect(log.filter((l) => l.startsWith("bootstrap"))).toEqual([`bootstrap ${GUARD_LABEL} on ${folder}`, `bootstrap ${GUARDWATCH_LABEL} on ${folder}`, `bootstrap ${TAILSCALED_LABEL} on ${folder}`]);
+    expect([...loaded].sort()).toEqual([GUARD_LABEL, GUARDWATCH_LABEL, TAILSCALED_LABEL].sort());
     // Signed in to the tailnet once, and the App key moved to the service.
     expect(sys.spawned.filter((p) => p.cmd.endsWith("/tailscale") && p.args.includes("up"))).toHaveLength(1);
     expect(readFileSync(d.paths.key, "utf8")).toBe(PEM);
@@ -276,8 +277,8 @@ describe("an install run to the end", () => {
     // The kept install is inert: its Softnet has no setuid bit.
     expect(statSync(join(root, "opt", before, "softnet/softnet")).mode & 0o4000).toBe(0);
     // The old names go first, so two guards or two tailscaleds never run, then the new ones load.
-    expect(log).toEqual([`bootout ${OLD}.guard`, `bootout ${OLD}.tailscaled`, `bootout ${GUARD_LABEL}`, `bootstrap ${GUARD_LABEL} on ${now}`, `bootout ${TAILSCALED_LABEL}`, `bootstrap ${TAILSCALED_LABEL} on ${now}`]);
-    expect([...loaded].sort()).toEqual([GUARD_LABEL, TAILSCALED_LABEL].sort());
+    expect(log).toEqual([`bootout ${OLD}.guard`, `bootout ${OLD}.tailscaled`, `bootout ${GUARD_LABEL}`, `bootstrap ${GUARD_LABEL} on ${now}`, `bootout ${GUARDWATCH_LABEL}`, `bootstrap ${GUARDWATCH_LABEL} on ${now}`, `bootout ${TAILSCALED_LABEL}`, `bootstrap ${TAILSCALED_LABEL} on ${now}`]);
+    expect([...loaded].sort()).toEqual([GUARD_LABEL, GUARDWATCH_LABEL, TAILSCALED_LABEL].sort());
     for (const l of [`${OLD}.guard`, `${OLD}.tailscaled`]) expect(existsSync(join(daemons, `${l}.plist`))).toBe(false);
     // The owner reads that the services move before the yes, and that they moved after it.
     const moves = said.indexOf("  It also moves taskbox's services to their new names. The loop follows by itself once no job runs.");
@@ -321,8 +322,8 @@ describe("an install run to the end", () => {
     const now = basename(linkTarget(d.paths.opt)!);
     expect(now).toMatch(/^taskbox-beef000def56-/);
     expect(basename(linkTarget(d.paths.prev)!)).toBe(before);
-    expect(log).toEqual([`bootout ${GUARD_LABEL}`, `bootstrap ${GUARD_LABEL} on ${now}`, `bootout ${TAILSCALED_LABEL}`, `bootstrap ${TAILSCALED_LABEL} on ${now}`]);
-    expect([...loaded].sort()).toEqual([GUARD_LABEL, TAILSCALED_LABEL].sort());
+    expect(log).toEqual([`bootout ${GUARD_LABEL}`, `bootstrap ${GUARD_LABEL} on ${now}`, `bootout ${GUARDWATCH_LABEL}`, `bootstrap ${GUARDWATCH_LABEL} on ${now}`, `bootout ${TAILSCALED_LABEL}`, `bootstrap ${TAILSCALED_LABEL} on ${now}`]);
+    expect([...loaded].sort()).toEqual([GUARD_LABEL, GUARDWATCH_LABEL, TAILSCALED_LABEL].sort());
     expect(said.some((l) => l.includes("new names"))).toBe(false);
     expect(said.at(-1)).toBe("Installed. The loop restarts on the new commit once the current job or the image download ends.");
   });
