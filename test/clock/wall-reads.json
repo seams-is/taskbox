@@ -100,8 +100,8 @@
     "why": "when the queue was read and a run's queued time when GitHub gives none: the scheduler's order"
   },
   "kinds.ts": {
-    "reads": 7,
-    "why": "the scheduler's now: when slots became ready or busy, and an idle VM's turn: a step only reorders a choice or gives an idle VM's turn away; no running job is ended"
+    "reads": 8,
+    "why": "the scheduler's now: when slots became ready or busy, an idle VM's turn, and when a VM was told to give way: a step only reorders a choice, gives an idle VM's turn away or ends a wait for a VM to go; no running job is ended"
   },
   "gate.ts": {
     "reads": 2,

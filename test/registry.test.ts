@@ -87,13 +87,13 @@ describe("the registry", () => {
     // The new file alone, in a folder of its own: loading it reads nothing of the rest, so the test
     // stays fast under --concurrent. Beside the registry it fits, and its line parses.
     const dir = tempRoot();
-    writeFileSync(join(dir, "size.ts"), `export const commands = [{ path: ["size", "list"], summary: "Every VM size.", who: ["anyone"], flags: ["json"], shell: true, run: async () => 0 }];\n`);
+    writeFileSync(join(dir, "tool.ts"), `export const commands = [{ path: ["tool", "list"], summary: "Every pinned tool.", who: ["anyone"], flags: ["json"], shell: true, run: async () => 0 }];\n`);
     writeFileSync(join(dir, "Not-a-command.ts"), "throw new Error('loaded');\n");
     const added = loadRegistry(dir);
-    expect(added.map((s) => s.path.join(" "))).toEqual(["size list"]);
+    expect(added.map((s) => s.path.join(" "))).toEqual(["tool list"]);
     const specs = [...registry(), ...added];
     expect(registryProblem(specs)).toBeUndefined();
-    expect(parse(specs, ["size", "list", "--json"]).ok).toBe(true);
+    expect(parse(specs, ["tool", "list", "--json"]).ok).toBe(true);
     // Loading a new file runs bun's transpiler, which a full suite under load has made take seconds.
   }, 30_000);
 
@@ -125,6 +125,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["logins", "logins --all --json"], bad: ["logins --refused", "logins x"] },
   { good: ["hello", "hello --json --answers 4,3"], bad: ["hello x", "hello --answers"] },
   { good: ["nonce box", "nonce rules --json", "nonce nova-1"], bad: ["nonce", "nonce Box", "nonce box rules", "nonce box --signed a.b", "nonce ../x"] },
+  { good: ["size list", "size list --json"], bad: ["size", "size list small", "size list -n 5", "size list --force"] },
   { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job timings --all", "job cancel"] },
   { good: ["load status", "load report --session 3 --json", "load start --only --for 2h", "load stop"], bad: ["load report --session x", "load status --json", "load begin"] },
   { good: ["template show box-check", "template show test-job", "template show load"], bad: ["template show", "template show watchdog", "template show load load"] },
