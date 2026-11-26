@@ -99,6 +99,15 @@ describe.skipIf(!JQ)("the hourly box check's rules", () => {
     expect(r.count).toBe("0");
   });
 
+  test.serial("a job asking only for a size's labels is watched too", () => {
+    const sized = { ...CFG, linux: { label: "taskbox-linux", image: "ghcr.io/x/y@sha256:" + "1".repeat(64), vmCpus: 4, vmMemoryMB: 8192, sizes: [{ name: "small", labels: ["taskbox-linux-small"], vmCpus: 2, vmMemoryMB: 4096 }] } } as unknown as Config;
+    const v = valuesOf(sized);
+    expect(v.labels).toContain("taskbox-linux-small");
+    const r = run({ y: boxCheckYaml(v), jobs: [{ name: "app/lint", status: "queued", labels: ["taskbox-linux-small"], minutes: 90 }] });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("app/lint has waited 90 min for taskbox-linux-small");
+  }, SLOW);
+
   test.serial("a job's name never starts a line, and loses what isn't printable", () => {
     const r = run({ queuedMinutes: 90, jobName: "::error title=x::forged\u0007" });
     expect(r.out).toContain("  - ::error title=x::forged has waited");
