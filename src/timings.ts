@@ -3,7 +3,7 @@
 // a job waited, how long it ran and how long the cleanup took. Then each timing setting beside what
 // the numbers suggest. It suggests; the owner, or an agent's PR, changes taskbox.json. The box never
 // changes its own settings, so what it does stays predictable and in git.
-import { type Config, DEFAULT_TIMINGS, type Kind, KIND_WORD, kindsOf, timingsOf, type Timings } from "./config.ts";
+import { type Config, DEFAULT_TIMINGS, type Kind, KIND_WORD, kindsOf, timingsOf, type Timings, vmsAtMostOf } from "./config.ts";
 import type { JobRecord } from "./jobs.ts";
 import { labelUsage, labelUsageLines } from "./usage.ts";
 import { LAST_CLASS } from "./classes.ts";
@@ -157,8 +157,8 @@ export function acceptance(cfg: Config, jobs: JobRecord[], gaveWayLog: { at: num
   // 1. Linux bursts keep the slots busy: over each burst, from its first Linux job to the end of its
   // last, the share of the slots' time spent running jobs of any kind. The median burst must reach
   // ACCEPT.burstSharePercent. A slot that sits on a VM no job comes to while Linux jobs wait, as on
-  // 17 Nov, brings it down; each job's own boot and cleanup keep it under 100%.
-  const slots = Number.isInteger(cfg.vmsAtOnce) ? cfg.vmsAtOnce! : 1;
+  // the burst replayed in test/scheduler.test.ts, brings it down; each job's own boot and cleanup keep it under 100%.
+  const slots = vmsAtMostOf(cfg);
   const linux = ran.filter((j) => j.vmKind === "linux").sort((a, b) => a.jobAt! - b.jobAt!);
   const limit1 = `${ACCEPT.burstSharePercent}%`;
   if (slots < 2 || !kindsOf(cfg).includes("linux")) out.push({ id: "linux-burst", name: "Linux bursts keep the slots busy", value: "one slot or no Linux kind", limit: limit1, status: "NOT MEASURED" });

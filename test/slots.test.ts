@@ -8,7 +8,7 @@ import { type Config, labelsFor, loadConfig, MACOS_MAX } from "../src/config.ts"
 import { jobLines, jobLines as lines, type JobRecord, validJob } from "../src/jobs.ts";
 import type { Occupant } from "../src/kinds.ts";
 import { busiest, DRAIN_REFUSALS, GATE_CEILING_MS, RESTART, runLoop, Slots, slotCount, vmStartGuard, writeLoopState } from "../src/loop.ts";
-import { BOX_KEEPS_GB, type Memory, memoryShort, memoryShortWhileUp } from "../src/memory.ts";
+import { type Memory, memoryShort, memoryShortWhileUp } from "../src/memory.ts";
 import { slotsLine } from "../src/ops.ts";
 import { sharedPaths } from "../src/shared.ts";
 import { computeState } from "../src/state.ts";
@@ -57,9 +57,9 @@ describe("the setting", () => {
     expect([c.vmCpus, c.vmMemoryMB, c.linux!.vmCpus, c.linux!.vmMemoryMB]).toEqual([4, 8192, 4, 4096]);
     const box: Memory = { pressure: 1, availableGB: 9, totalGB: 34.36 };
     const mac = c.vmMemoryMB!, lin = c.linux!.vmMemoryMB!;
-    expect(memoryShort(box, lin, 2 * mac)).toBeUndefined();
-    expect(memoryShort(box, lin, 2 * mac + lin)).toBeDefined();
-    expect(memoryShort(box, mac, 2 * mac)).toBeDefined();
+    expect(memoryShort(box, lin, 2 * mac, 12)).toBeUndefined();
+    expect(memoryShort(box, lin, 2 * mac + lin, 12)).toBeDefined();
+    expect(memoryShort(box, mac, 2 * mac, 12)).toBeDefined();
   });
 
   test("vmsAtOnce is 1 to 4, slots stays 1, and every label is its own", () => {
@@ -91,14 +91,14 @@ describe("room for one more VM", () => {
 
   test("memory: free memory for the VM, and with others running, every VM's size and the box's share within its whole memory", () => {
     const box = { pressure: 1 as const, availableGB: 20, totalGB: 34.36 };
-    expect(memoryShort(box, 8192)).toBeUndefined();
+    expect(memoryShort(box, 8192, 0, 12)).toBeUndefined();
     // A second VM of 8 GB: 16.4 GB of VMs and 12 GB for the box fit in 34.4 GB.
-    expect(memoryShort(box, 8192, 8192)).toBeUndefined();
+    expect(memoryShort(box, 8192, 8192, 12)).toBeUndefined();
     // A third doesn't.
-    expect(memoryShort(box, 8192, 16384)).toContain(`the box keeps ${BOX_KEEPS_GB} GB`);
+    expect(memoryShort(box, 8192, 16384, 12)).toContain("the box keeps 12 GB");
     // Without the box's whole memory, a second VM never starts.
-    expect(memoryShort({ pressure: 1, availableGB: 20 }, 8192, 8192)).toBe("the box can't read its memory");
-    expect(memoryShort({ pressure: 1, availableGB: 20 }, 8192)).toBeUndefined();
+    expect(memoryShort({ pressure: 1, availableGB: 20 }, 8192, 8192, 12)).toBe("the box can't read its memory");
+    expect(memoryShort({ pressure: 1, availableGB: 20 }, 8192, 0, 12)).toBeUndefined();
   });
 
   test("a VM already up keeps waiting while 4 GB stays free at normal pressure", () => {

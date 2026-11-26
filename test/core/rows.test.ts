@@ -16,7 +16,7 @@ describe("the check-row registry", () => {
     // v3 adds the beats and the guard's passes after the Screen Sharing guard's (rows/away.ts, rows/guard.ts).
     const extra = names(CHECK_EXTRA);
     extra.splice(extra.indexOf("Screen Sharing guard") + 1, 0, "Guard beat", "Key broker beat", "Guard passes", "Op deadlines", "Loop clock");
-    expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...extra, SECOND_KEY_ROW]);
+    expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...extra, SECOND_KEY_ROW, "Sizes"]);
     expect(names(rows("away", ctx()))).toEqual([...names(AWAY_ONLY), ...names(PRESTART), ...extra]);
     expect(names(rows("preflight"))).toEqual(names(INSTALL_PREFLIGHT));
   });
