@@ -1,23 +1,38 @@
-// The one way the controller reaches a box: /usr/bin/ssh as `remote`, over
+// The one way the controller reaches a box: /usr/bin/ssh as the box's agent account, over
 // Tailscale SSH in accept mode, with no key or password offered, the paired host key only, no
 // forwarding and no terminal. It runs with run.ts's fixed environment, so nothing the caller passes
-// on reaches ssh. The address is the box's Tailscale address from this laptop's own status, checked
+// on reaches ssh. The address is the box's Tailscale address from this controller's own status, checked
 // to be one. Every command has a time limit.
-import { NODE } from "./home.ts";
+import { commandFor, words } from "../shell.ts";
+import { ACCOUNT, NODE } from "./home.ts";
 import type { RunResult, Runner } from "./run.ts";
 import { isTailscaleAddress } from "./tailscale.ts";
 
 export const SSH = "/usr/bin/ssh";
-export const REMOTE = "remote";
+// The agent account's name when box add isn't told one.
+export const AGENT_DEFAULT = "taskbox-agent";
 
-// The box's commands a controller may send, as remote's shell takes them (src/shell.ts).
-// The lines the laptop sends, in v3's words and in v2.6.1's (reach.ts linesFor). Nothing else goes.
-const LINE = /^(?:hello --json --answers 4,3|job list -n [1-9]\d{0,3} --json|logs --json|hello|status --json|jobs [1-9]\d{0,3} --json|log --json|check --json)$/;
+// v2.6.1's reads, which its shell takes and v3's would refuse (reach.ts linesFor).
+const V261 = /^(?:hello|status --json|jobs [1-9]\d{0,3} --json|log --json|check --json)$/;
+
+// A line the box's agent shell takes: one this release's own shell (src/shell.ts) would run, or one
+// of v2.6.1's reads. Nothing else is sent.
+export const sendable = (line: string): boolean => V261.test(line) || "args" in commandFor(line);
+
+// The line the box's shell gets, from words. A word with a space goes in double quotes. The line
+// must split back into the same words with the shell's own filter, or nothing is sent.
+export function remoteLine(ws: readonly string[]): string {
+  const line = ws.map((w) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(w) ? w : `"${w}"`)).join(" ");
+  const back = words(line);
+  if (!back || back.length !== ws.length || back.some((w, i) => w !== ws[i])) throw new Error("words the box's shell can't take");
+  return line;
+}
 
 export interface Target {
   address: string; // the box's Tailscale address
   node: string; // its StableNodeID, which names its key in known_hosts
   knownHosts: string; // the controller's own file
+  user: string; // the box's agent account, as paired
 }
 
 // A file path as an ssh option's value. ssh splits an unquoted value on whitespace, and the
@@ -31,7 +46,7 @@ export function sshPath(p: string): string {
 export function sshOptions(t: Target, connectTimeoutS = 10): string[] {
   const o = (k: string, v: string | number) => ["-o", `${k}=${v}`];
   return [
-    "-F", "/dev/null", "-n", "-l", REMOTE,
+    "-F", "/dev/null", "-n", "-l", t.user,
     // No keys and no passwords.
     ...o("BatchMode", "yes"), ...o("IdentitiesOnly", "yes"), ...o("IdentityFile", "none"), ...o("IdentityAgent", "none"), ...o("PKCS11Provider", "none"), ...o("PasswordAuthentication", "no"), ...o("KbdInteractiveAuthentication", "no"),
     // The stored host key only.
@@ -65,12 +80,13 @@ export interface Ssh {
   path?: string; // tests point it at a fake ssh
 }
 
-// Runs one of the box's commands as remote. exit 255 is ssh's own failure; any other code is the
-// command's, and its stdout is returned for the caller to read as data.
+// Runs one of the box's commands as the agent account. exit 255 is ssh's own failure; any other code
+// is the command's, and its stdout is returned for the caller to read as data.
 export async function boxCall(d: Ssh, t: Target, line: string, limitMs: number, maxBytes = 2_000_000): Promise<SshResult> {
   if (!isTailscaleAddress(t.address)) throw new Error("not a Tailscale address");
   if (!NODE.test(t.node)) throw new Error("not a StableNodeID");
-  if (!LINE.test(line)) throw new Error("not a command a controller sends");
+  if (typeof t.user !== "string" || !ACCOUNT.test(t.user)) throw new Error("not an account name");
+  if (!sendable(line)) throw new Error("not a command the controller sends");
   const connect = Math.max(1, Math.min(10, Math.floor(limitMs / 2000)));
   const r = await d.run([d.path ?? SSH, ...sshOptions(t, connect), "--", t.address, line], { limitMs, maxBytes });
   if (r.timedOut || r.tooBig || r.code === 255 || r.code === null) return { ok: false, why: cause(r), code: r.code };

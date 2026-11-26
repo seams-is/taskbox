@@ -15,33 +15,25 @@
     "reads": 1,
     "why": "the watch screen's now: display"
   },
-  "laptop/commands.ts": {
-    "reads": 5,
-    "why": "when a status was read and a screen drawn: display"
+  "controller/forward.ts": {
+    "reads": 4,
+    "why": "the time on an envelope the controller makes, and when a status was read: display"
   },
-  "laptop/home.ts": {
+  "controller/home.ts": {
     "reads": 1,
     "why": "a temp file's unique name"
   },
-  "laptop/main.ts": {
-    "reads": 1,
-    "why": "the laptop's Clock: passed on to the lines here"
-  },
-  "laptop/owner.ts": {
-    "reads": 1,
-    "why": "the time a signed statement carries; the box judges its 5 minutes"
-  },
-  "laptop/pair.ts": {
-    "reads": 1,
-    "why": "when a box was paired: a label"
-  },
-  "laptop/screen.ts": {
-    "reads": 1,
-    "why": "how long a workspace has waited to save: display"
-  },
-  "laptop/update.ts": {
+  "controller/main.ts": {
     "reads": 4,
-    "why": "when the laptop last looked for an update: a step only looks sooner or later"
+    "why": "the controller's Clock, and the time on its own envelopes and events: labels"
+  },
+  "controller/pair.ts": {
+    "reads": 4,
+    "why": "when a box was paired, and the time on the controller's events: labels"
+  },
+  "controller/update.ts": {
+    "reads": 6,
+    "why": "when the controller last looked for an update, and the time on its events: a step only looks sooner or later"
   },
   "actionskey.ts": {
     "reads": 3,
@@ -148,7 +140,7 @@
     "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
   },
   "loop.ts": {
-    "reads": 103,
+    "reads": 101,
     "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both"
   },
   "cmd/daemons.ts": {
@@ -156,8 +148,8 @@
     "why": "moved from cli.ts: the load session's wanted read and the workspaces hold's freshness for the loop, which fails closed both ways. The guard's step-down proof reads no clock: a new guard record file"
   },
   "cmd/job.ts": {
-    "reads": 1,
-    "why": "moved from cli.ts: the now job timings' acceptance rows are read against: display"
+    "reads": 6,
+    "why": "the timings' now, --since back from now, how long a live job has run, which queued lines are fresh, and when a stop was asked: display and labels"
   },
   "cmd/logins.ts": {
     "reads": 1,
@@ -174,5 +166,9 @@
   "shell.ts": {
     "reads": 1,
     "why": "the agent shell's refusal envelope's at: a label"
+  },
+  "jobs.ts": {
+    "reads": 1,
+    "why": "when a stop was asked: a label in the stop's file"
   }
 }

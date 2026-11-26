@@ -4,7 +4,7 @@
 // sign, so a box can't set its own. A peer shared in from another tailnet is refused, and the
 // controller talks to a box only while its own Tailscale reads Running and the box reads Online.
 import { existsSync } from "node:fs";
-import { isEd25519 } from "./home.ts";
+import { isEd25519, NAME } from "./home.ts";
 import type { Runner } from "./run.ts";
 import { scrub } from "./scrub.ts";
 
@@ -47,7 +47,7 @@ export interface Peer {
 }
 
 export interface TailnetState {
-  running: boolean; // this laptop's BackendState is Running
+  running: boolean; // this controller's BackendState is Running
   backendState: string;
   peers: Peer[];
 }
@@ -68,7 +68,7 @@ export function isTailscaleAddress(a: unknown): a is string {
 // assign, or else its host name. Letters, digits and hyphens only.
 function nameOf(p: Record<string, unknown>): string {
   const dns = typeof p.DNSName === "string" ? p.DNSName.split(".")[0]! : "";
-  const raw = /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(dns) ? dns : scrub(p.HostName, 63).replace(/[^A-Za-z0-9-]/g, "-").replace(/^-+/, "");
+  const raw = NAME.test(dns) ? dns : scrub(p.HostName, 63).replace(/[^A-Za-z0-9-]/g, "-").replace(/^-+/, "");
   return raw || "unnamed";
 }
 

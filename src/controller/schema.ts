@@ -1,11 +1,11 @@
-// The box's answers as the laptop reads them: hello, and --json on status, job list, logs and check.
+// The box's answers as the controller reads them: hello, and --json on status, job list, logs and check.
 // Version 4 is the envelope; a box on version 3 (v2.6.1, N-1) answers its v2.x line. Both are read by
 // the one schema module the box shares (src/schema.ts), which fails closed.
 import { ANSWERS_V4, READS } from "../envelope.ts";
 import { KINDS, type Kind, OUTCOMES, type Read, readAnswerOf, RESULTS, STATUSES, WORDS } from "../schema.ts";
 
 export { KINDS, type Kind, OUTCOMES, READS, RESULTS, STATUSES, WORDS };
-// The version this laptop asks for first.
+// The version this controller asks for first.
 export const ANSWERS = ANSWERS_V4;
 
 export interface Hello {

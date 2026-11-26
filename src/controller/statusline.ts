@@ -2,16 +2,14 @@
 // prints one line of JSON for the boxes it read. Each status read, by the command line, watch or
 // the Claude tool, also saves that answer to status.json, mode 600. `taskbox statusline` reads only
 // that file: it makes no SSH call and no Tailscale call, and never reaches a box.
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import type { BoxStatus } from "./commands.ts";
-import { type Home, NODE, writePrivateFile } from "./home.ts";
+import { type Home, NAME, NODE, readSmall, writePrivateFile } from "./home.ts";
 import { KINDS, WORDS } from "./schema.ts";
 import { hhmm } from "./screens.ts";
 import { scrub } from "./scrub.ts";
 
 export const CONTROLLER_ANSWERS = 1;
 export const STALE_MS = 15 * 60_000;
-const NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
 
 export interface BoxLine {
   name: string;
@@ -67,25 +65,15 @@ function boxLine(v: unknown): BoxLine | undefined {
 }
 
 export function readSaved(h: Home): ControllerStatus | undefined {
-  let fd: number;
+  const f = readSmall(statusFile(h), 200_000);
+  if ("why" in f) return undefined;
   try {
-    fd = openSync(statusFile(h), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch {
-    return undefined;
-  }
-  try {
-    const st = fstatSync(fd);
-    if (!st.isFile() || st.size > 200_000) return undefined;
-    const buf = Buffer.alloc(st.size);
-    readSync(fd, buf, 0, st.size, 0);
-    const v = JSON.parse(buf.toString("utf8"));
+    const v = JSON.parse(f.text);
     if (v?.answers !== CONTROLLER_ANSWERS || v.kind !== "controller-status" || !Array.isArray(v.boxes) || v.boxes.length > 32) return undefined;
     const boxes = v.boxes.map(boxLine);
     return boxes.some((b: BoxLine | undefined) => !b) ? undefined : { answers: CONTROLLER_ANSWERS, kind: "controller-status", boxes };
   } catch {
     return undefined;
-  } finally {
-    closeSync(fd);
   }
 }
 

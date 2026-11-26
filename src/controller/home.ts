@@ -1,16 +1,18 @@
-// Where the controller lives: ~/Library/Application Support/taskbox/, the
-// user's own, with config.json at mode 0600 holding the role and the pairing. The user can change
-// every file here, so the controller is as trusted as the user's account, and the box trusts it no
-// more than any other `remote` session.
+// The controller's folder, ~/Library/Application Support/taskbox/ at 0700, and config.json at 0600:
+// the role, the pairings, the default box and the channel. A box trusts the controller no more than
+// any other session of its agent account.
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { realClock } from "../clock.ts";
+import { INSTALL_ID } from "../answers.ts";
+import { RELEASE_TAG as RELEASE_FOLDER } from "../github.ts";
 
 export interface Paired {
   name: string; // the box's name in Tailscale when it was paired, for screens
   node: string; // its StableNodeID
   installId: string; // from hello
   hostKey: string; // the ed25519 key, base64, from the map at pairing
+  agent: string; // the box's agent account, which every command reaches it as
   pairedAt: number;
 }
 
@@ -20,10 +22,14 @@ export interface Source {
   repo: string;
 }
 
+export type Channel = "stable" | "beta";
+
 export interface Config {
   role: "controller";
   boxes: Paired[]; // each paired box, names and nodes unique
   source: Source | null;
+  default: string | null; // the StableNodeID box use set
+  channel: Channel;
 }
 
 export const MAX_BOXES = 32;
@@ -36,11 +42,13 @@ export interface Home {
   current: string; // a link to the release in use
   bin: string; // bin/taskbox and bin/bun
   updateCheck: string; // when taskbox last looked for a newer release
+  events: string; // the controller's own event log, one file a day
+  status: string; // the last status read of each box, for the status line
 }
 
 export function home(userHome: string): Home {
   const dir = join(userHome, "Library", "Application Support", "taskbox");
-  return { dir, config: join(dir, "config.json"), knownHostsDir: join(dir, "known_hosts.d"), releases: join(dir, "releases"), current: join(dir, "current"), bin: join(dir, "bin"), updateCheck: join(dir, "update-check.json") };
+  return { dir, config: join(dir, "config.json"), knownHostsDir: join(dir, "known_hosts.d"), releases: join(dir, "releases"), current: join(dir, "current"), bin: join(dir, "bin"), updateCheck: join(dir, "update-check.json"), events: join(dir, "events"), status: join(dir, "status.json") };
 }
 
 // A GitHub owner or repo name.
@@ -54,7 +62,7 @@ function source(v: unknown): Source | null | undefined {
 }
 
 export const NODE = /^[A-Za-z0-9]{2,64}$/;
-export const INSTALL_ID = /^[0-9a-f]{32}$/;
+export { INSTALL_ID };
 
 // An ed25519 public key in the form ssh writes it: the key type as a length-prefixed string, then
 // the 32 bytes of the key. 68 characters of base64.
@@ -65,7 +73,36 @@ export function isEd25519(b64: string): boolean {
   return raw.readUInt32BE(15) === 32;
 }
 
-const NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/;
+// A box's name: a MagicDNS label. The one pattern for it; --box all matches it too.
+export const NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/;
+// A macOS account name, as the box's agent account is named.
+export const ACCOUNT = /^[A-Za-z_][A-Za-z0-9._-]{0,31}$/;
+// Accounts that are never a box's agent account: root, macOS's own, and names starting with _.
+export const RESERVED = new Set(["root", "daemon", "nobody", "admin", "administrator", "guest", "Shared"]);
+export const agentProblem = (a: string): string | undefined => (!ACCOUNT.test(a) ? "isn't an account name" : RESERVED.has(a) || a.startsWith("_") ? "is a name taskbox never uses for an agent account" : undefined);
+
+// A small file of the owner's own, read without following a link: its text, or why not.
+export function readSmall(path: string, max: number): { text: string; mode: number } | { why: "missing" | "not-a-file" | "unreadable" } {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return { why: code === "ENOENT" ? "missing" : code === "ELOOP" ? "not-a-file" : "unreadable" };
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return { why: "not-a-file" };
+    if (st.size > max || st.uid !== process.getuid?.()) return { why: "unreadable" };
+    const buf = Buffer.alloc(st.size);
+    readSync(fd, buf, 0, st.size, 0);
+    return { text: buf.toString("utf8"), mode: st.mode & 0o777 };
+  } catch {
+    return { why: "unreadable" };
+  } finally {
+    closeSync(fd);
+  }
+}
 
 function paired(v: unknown): Paired | null | undefined {
   if (v === null) return null;
@@ -76,42 +113,34 @@ function paired(v: unknown): Paired | null | undefined {
     typeof b.node === "string" && NODE.test(b.node) &&
     typeof b.installId === "string" && INSTALL_ID.test(b.installId) &&
     typeof b.hostKey === "string" && isEd25519(b.hostKey) &&
+    typeof b.agent === "string" && agentProblem(b.agent) === undefined &&
     Number.isSafeInteger(b.pairedAt);
-  return ok ? { name: b.name as string, node: b.node as string, installId: b.installId as string, hostKey: b.hostKey as string, pairedAt: b.pairedAt as number } : undefined;
+  return ok ? { name: b.name as string, node: b.node as string, installId: b.installId as string, hostKey: b.hostKey as string, agent: b.agent as string, pairedAt: b.pairedAt as number } : undefined;
 }
 
 export type ConfigRead = { ok: true; config: Config; mode: number } | { ok: false; why: "missing" | "not-a-file" | "unreadable" | "not-controller" };
 
-// The config, read without following a link. A config that isn't a controller's reads as one.
+// The config, read without following a link, strictly: anything not in the controller's shape reads as unreadable.
 export function readConfig(h: Home): ConfigRead {
-  let fd: number;
+  const f = readSmall(h.config, 64_000);
+  if ("why" in f) return { ok: false, why: f.why };
   try {
-    fd = openSync(h.config, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    return { ok: false, why: code === "ENOENT" ? "missing" : code === "ELOOP" ? "not-a-file" : "unreadable" };
-  }
-  try {
-    const st = fstatSync(fd);
-    if (!st.isFile()) return { ok: false, why: "not-a-file" };
-    if (st.size > 64_000) return { ok: false, why: "unreadable" };
-    const buf = Buffer.alloc(st.size);
-    readSync(fd, buf, 0, st.size, 0);
-    const v = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
+    const v = JSON.parse(f.text) as Record<string, unknown>;
     if (v?.role !== "controller") return { ok: false, why: "not-controller" };
-    // A one-box controller's config has box; it reads as a list of one.
-    const list = Object.hasOwn(v, "boxes") ? v.boxes : v.box ? [v.box] : [];
+    const list = v.boxes ?? [];
     if (!Array.isArray(list) || list.length > MAX_BOXES) return { ok: false, why: "unreadable" };
     const boxes = list.map(paired);
     const src = source(v.source);
     if (boxes.some((b) => !b) || src === undefined) return { ok: false, why: "unreadable" };
     const ok = boxes as Paired[];
     if (configProblem(ok)) return { ok: false, why: "unreadable" };
-    return { ok: true, config: { role: "controller", boxes: ok, source: src }, mode: st.mode & 0o777 };
+    const def = v.default ?? null;
+    if (def !== null && (typeof def !== "string" || !ok.some((b) => b.node === def))) return { ok: false, why: "unreadable" };
+    const channel = v.channel ?? "stable";
+    if (channel !== "stable" && channel !== "beta") return { ok: false, why: "unreadable" };
+    return { ok: true, config: { role: "controller", boxes: ok, source: src, default: def as string | null, channel }, mode: f.mode };
   } catch {
     return { ok: false, why: "unreadable" };
-  } finally {
-    closeSync(fd);
   }
 }
 
@@ -124,10 +153,11 @@ function writePrivate(path: string, body: string): void {
   renameSync(tmp, path);
 }
 
-function ensureDir(h: Home): void {
+export function ensureDir(h: Home): void {
   mkdirSync(h.dir, { recursive: true, mode: 0o700 });
   const st = lstatSync(h.dir);
   if (!st.isDirectory()) throw new Error(`${h.dir} isn't a folder`);
+  if ((st.mode & 0o777) !== 0o700) chmodSync(h.dir, 0o700);
 }
 
 // Why a list of boxes can't be kept, or undefined. Names and Tailscale IDs are compared ignoring
@@ -146,20 +176,22 @@ export function writeConfig(h: Home, c: Config): void {
   const why = configProblem(c.boxes);
   if (why) throw new Error(why);
   ensureDir(h);
-  writePrivate(h.config, `${JSON.stringify({ role: c.role, boxes: c.boxes, source: c.source }, null, 2)}\n`);
+  // A default that names a box no longer paired goes with it.
+  const def = c.default !== null && c.boxes.some((b) => b.node === c.default) ? c.default : null;
+  writePrivate(h.config, `${JSON.stringify({ role: c.role, boxes: c.boxes, source: c.source, default: def, channel: c.channel }, null, 2)}\n`);
 }
 
 // The install sets the role once. It never changes a config that is already there, apart from
 // filling in the public repo when it has none.
-export function setUpController(h: Home, from: Source | null = null): void {
+export function setUpController(h: Home, from: Source | null = null, channel: Channel = "stable"): void {
   ensureDir(h);
   const r = readConfig(h);
   if (r.ok) {
     if (!r.config.source && from) writeConfig(h, { ...r.config, source: from });
     return;
   }
-  if (r.why !== "missing") throw new Error(`${h.config} is there but isn't a controller's config`);
-  writeConfig(h, { role: "controller", boxes: [], source: from });
+  if (r.why !== "missing") throw new Error(`${h.config} is there but isn't the controller's config`);
+  writeConfig(h, { role: "controller", boxes: [], source: from, default: null, channel });
 }
 
 // The one line ssh reads the box's key from: the StableNodeID, standing in for the host by
@@ -189,7 +221,7 @@ export function writeKnownHosts(path: string, node: string, hostKey: string): vo
 export function ownVersion(h: Home): string {
   try {
     const name = basename(readlinkSync(h.current));
-    return /^v\d+\.\d+\.\d+$/.test(name) ? name : "dev";
+    return RELEASE_FOLDER.test(name) ? name : "dev";
   } catch {
     return "dev";
   }

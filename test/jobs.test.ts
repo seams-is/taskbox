@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { paths } from "../src/config.ts";
 import { placeShared } from "../src/install.ts";
 import { removeRequests } from "../src/requests.ts";
-import { appendJob, type JobRecord, jobLines, jobsScreen, readJobs, runnerResult } from "../src/jobs.ts";
+import { appendJob, type JobRecord, jobLines, jobListScreen, readJobs, runnerResult, viewOfRecord } from "../src/jobs.ts";
 const jobsOnly = (all: JobRecord[] | undefined) => all ?? [];
 import { jobRecordResult, oneJob } from "../src/loop.ts";
 import { FakeSys } from "./fake.ts";
@@ -125,10 +125,11 @@ describe("the screen", () => {
     for (const line of l) expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
   test("shows 20, says how many there are, and --all shows every one", () => {
-    const all = Array.from({ length: 25 }, (_, i) => rec({ startedAt: T0 + i }));
-    expect(jobsScreen(all, 20)[0]).toBe("taskbox job list: 20 of 25, newest first. Type taskbox job list --all for every one.");
-    expect(jobsScreen(all, "all")[0]).toBe("taskbox job list: 25 of 25, newest first.");
-    expect(jobsScreen([], 20)).toEqual(["taskbox job list: no jobs yet."]);
+    const all = Array.from({ length: 25 }, (_, i) => viewOfRecord(rec({ startedAt: T0 + i })));
+    expect(jobListScreen(all.slice(0, 20), 25, T0)[0]).toBe("taskbox job list: 20 of 25, newest first. Type taskbox job list --all for every one.");
+    expect(jobListScreen(all, 25, T0)[0]).toBe("taskbox job list: 25 of 25, newest first.");
+    expect(jobListScreen(all, 25, T0).length).toBe(28);
+    expect(jobListScreen([], 0, T0)).toEqual(["taskbox job list: no jobs yet."]);
   });
 });
 
@@ -172,7 +173,7 @@ describe("the extra facts, and hold lines from before v2.2.0", () => {
     writeFileSync(p.jobsFile, JSON.stringify({ v: 1, kind: "hold", at: T0, until: T0 + 3 * 3600_000, by: "pat", reason: "render" }) + "\n", { flag: "a" });
     const all = readJobs(p, me)!;
     expect(all.length).toBe(1);
-    const screen = jobsScreen(all, 20).join("\n");
+    const screen = jobLines(all[0]!).join("\n");
     expect(screen).not.toContain("hold until");
     expect(screen).toContain("4 CPUs, 8 GB, beside pat. Memory pressure: high. Waited 12 min for a hold.");
   });

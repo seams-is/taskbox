@@ -4,13 +4,13 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
-import { appendJob, type JobRecord, type Phases, runnerResult, type Wait } from "./jobs.ts";
+import { appendJob, type JobRecord, jobOfVm, newJobId, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
 import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
 import { rows } from "./rows/index.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import { eventLog } from "./core/events.ts";
 import { loopState } from "./core/paths.ts";
-import { afterEnd, beforeStart, type JobHook, withHookFields } from "./core/hooks.ts";
+import { afterEnd, beforeStart, type JobHook, jobStarted, type TokenSource, withHookFields } from "./core/hooks.ts";
 import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
 import { AGENT_LABEL, awayOf, budgetOf, DEFAULT_SIZE, keepsOf, forKind, forSize, sizeOf, sizesOf, sizeWord, smallestSize, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf, vmsAtMostOf } from "./config.ts";
@@ -81,6 +81,8 @@ export interface LoopDeps {
   workspaces?: () => WorkspacesNow;
   // The job hooks (core/hooks.ts). Absent: every package's (hooks/index.ts).
   hooks?: JobHook[];
+  // Short-lived GitHub tokens for the hooks (core/hooks.ts). Absent: no hook reads GitHub.
+  tokens?: TokenSource;
 }
 
 // A start or stop of a VM: from when its engine was asked, to when it was done. Open until then.
@@ -168,6 +170,7 @@ export class Slots {
   // v2.5.0: the idle cleanup of leaked job VMs, at most every LEAK_CHECK_MS, one slot at a time.
   leakCheckAt = 0;
   leakChecking = false;
+  leakSeen = new Set<string>(); // job VMs no slot held at the last look
   // v2.5.0: the hourly check of the watchdog's and canary's copies.
   workflowsAt = 0;
   workflowsChecking = false;
@@ -296,14 +299,9 @@ export function servedKinds(d: { cfg: Config; paths: Paths }): Kind[] {
 
 // v2.5.0: job VMs left behind while the loop runs (a delete that failed, a crash between clone and
 // delete). A free slot lists the VMs at most every LEAK_CHECK_MS and deletes each job VM that no slot
-// or proof records and whose name says it is at least LEAK_MIN_AGE_MS old. Images are never touched.
+// or proof records, on two looks in a row, so a VM a slot is naming as the list is read is never
+// taken. Images are never touched.
 export const LEAK_CHECK_MS = 10 * 60_000;
-export const LEAK_MIN_AGE_MS = 2 * 60_000;
-export const vmNameTime = (name: string): number | undefined => {
-  const m = /^job-([0-9a-z]{1,12})-[0-9a-f]{6}$/.exec(name);
-  const t = m ? Number.parseInt(m[1]!, 36) : NaN;
-  return Number.isSafeInteger(t) ? t : undefined;
-};
 export async function cleanLeakedVms(d: LoopDeps & { box: Slots }): Promise<string[]> {
   const box = d.box;
   if (box.leakChecking) return [];
@@ -313,10 +311,14 @@ export async function cleanLeakedVms(d: LoopDeps & { box: Slots }): Promise<stri
   try {
     const t = engineOf(d);
     const owned = new Set([...box.held.values()].map((o) => o.name).filter((n): n is string => !!n));
+    const seen = box.leakSeen;
+    box.leakSeen = new Set();
     for (const vm of await t.list()) {
       if (!isJobVm(vm) || owned.has(vm.name)) continue;
-      const born = vmNameTime(vm.name);
-      if (born === undefined || d.sys.now() - born < LEAK_MIN_AGE_MS) continue;
+      if (!seen.has(vm.name)) {
+        box.leakSeen.add(vm.name);
+        continue;
+      }
       // Asked again: a slot may have taken this name while the list was read.
       if ([...box.held.values()].some((o) => o.name === vm.name)) continue;
       await t.stop(vm.name, 10);
@@ -339,8 +341,9 @@ export async function cleanLeakedVms(d: LoopDeps & { box: Slots }): Promise<stri
 // A job VM, never an image: what a loop leaves behind when it ends without deleting its VMs.
 export const isJobVm = (vm: { name: string; image?: unknown }) => !vm.image && vm.name.startsWith("job-");
 
-export function vmName(sys: Sys): string {
-  return `job-${sys.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+// The VM's name is its job's id (jobs.ts), made as a slot starts a VM. The argument is v2's.
+export function vmName(_sys?: Sys): string {
+  return vmOfJob(newJobId());
 }
 
 // The VM engine taskbox.json names (vm.ts). Tests pass their own.
@@ -941,7 +944,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
             throw e;
           }
         } else group = await d.gh.runnerGroupId(runners);
-        return d.gh.jitConfig(runners, group, `${d.cfg.runnerNamePrefix}-${d.slot}-${vm.slice(4)}`, labels);
+        return d.gh.jitConfig(runners, group, runnerNameFor(d.cfg, d.slot, vm), labels);
       },
     );
   } finally {
@@ -1134,6 +1137,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
         }
         d.box?.jobStarted(kind, started, labels);
         jobName = clean(m[1]!).slice(0, 120);
+        jobStarted(hooks, d, { ...hookJob, at: started, name: jobName });
         const me = d.box?.held.get(d.slot);
         if (me) me.job = true;
         writeState(d, { why: undefined, slot: "running a job", job: clean(m[1]!).slice(0, 120), slotAt: started, vmSize: `${sizeWord(kind, turn.size)}, ${d.cfg.vmCpus} CPUs, ${d.cfg.vmMemoryMB / 1024} GB`, beside });
@@ -1332,6 +1336,8 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
       vmStartedAt !== undefined && outcome !== "gave-way"
         ? {
             v: 1,
+            id: jobOfVm(vm),
+            vm,
             startedAt: vmStartedAt,
             jobAt,
             endedAt: d.sys.now(),

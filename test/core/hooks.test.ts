@@ -14,8 +14,8 @@ const deps = () => {
 };
 
 describe("the job hooks", () => {
-  test("no package adds a hook yet", () => {
-    expect(jobHooks()).toEqual([]);
+  test("the job's identity is the first hook", () => {
+    expect(jobHooks().map((h) => h.name)).toEqual(["the job's identity"]);
   });
   test("the first hold wins; a hook that throws holds too", async () => {
     const { d } = deps();
@@ -79,7 +79,7 @@ describe("in the loop", () => {
         afterEnd: async (_, j) => {
           record = j.record;
           at.push(`after ${j.outcome} ${j.vmDeleted} ${sys.tartCalls().at(-1)?.split(" ")[0]}`);
-          return { id: "j_abcdefgh", result: "forged" };
+          return { githubRun: 42, result: "forged" };
         },
       },
     ];
@@ -87,7 +87,7 @@ describe("in the loop", () => {
     expect(at).toEqual(["before job- 0", "after done true delete"]);
     expect(record).toMatchObject({ job: "integration", result: "finished" });
     const line = JSON.parse(readFileSync(d.paths.jobsFile, "utf8"));
-    expect(line).toMatchObject({ id: "j_abcdefgh", result: "finished", job: "integration" });
+    expect(line).toMatchObject({ githubRun: 42, result: "finished", job: "integration" });
   });
 });
 
