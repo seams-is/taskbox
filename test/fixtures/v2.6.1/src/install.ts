@@ -1,6 +1,5 @@
-// v2.6.1's install.ts, cut to hop() and the functions of this file it calls. Each is v2.6.1's text
-// unchanged; only these imports and the export at the end are new. The other files in this folder
-// are v2.6.1's whole.
+// v2.6.1's src/install.ts at c7d2414, cut to what hop() runs. Each part below is that file's own text,
+// unchanged. New: these imports, and the export at the end.
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { hashTree } from "./checks.ts";

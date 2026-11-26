@@ -6,6 +6,6 @@ Output of real commands on a box, with anything random or private replaced, kept
 - `tailscaled-ssh.log`, `last-libxo.json`: made up, in the shape the real tools print (for `src/logins.ts`).
 - `ws-fence-rules.txt`, `ws-fence-loaded.txt`: golden files for the workspaces' pf rules, written by taskbox.
 - `old/`, `v2.6.1-shell.ts`: copies of earlier releases' code, for tests of the update from them.
-- `v2.6.1/`: v2.6.1's hop() and the code it calls, unchanged, for the hop contract test.
+- `v2.6.1/`: v2.6.1's hop() and the code it runs, from c7d2414, for the hop contract test. log.ts, the plists and the signers file are whole. Each other file is cut to what hop() runs, its parts unchanged; its imports and any part marked New are not v2.6.1's.
 - `policy/`: the policy files `taskbox policy show --whole` must give for each set of settings.
 - `release-key-trial.txt` and its `.sig`: a statement signed with a trial key, for the release check.

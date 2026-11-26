@@ -64,7 +64,7 @@ describe("layering", () => {
     expect(sourceOf(c)).toEqual(SOURCE);
     expect(c.image).toBe(CFG.image);
     expect(c.boxKeys).toEqual(["sources"]);
-    expect(c.boxIgnored).toEqual(["box.json: image", "box.json: accounts"]);
+    expect(c.boxIgnored).toEqual(["image", "accounts"]);
     expect(c.boxProblem).toBeUndefined();
   });
 

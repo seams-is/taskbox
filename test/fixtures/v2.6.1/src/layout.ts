@@ -1,9 +1,5 @@
-// Where installs live. /opt/taskbox is a root-owned link to one install folder, /opt/taskbox-<commit>-<6
-// characters>, and /opt/taskbox.prev links to the install before it, kept for taskbox undo. Moving
-// either link is one rename, which macOS makes atomic, so an update or undo never leaves the box
-// without /opt/taskbox. /usr/local/bin/taskbox links to /opt/taskbox/bin/taskbox, so every user
-// types plain taskbox.
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeSync } from "node:fs";
+// v2.6.1's src/layout.ts at c7d2414, cut to what hop() runs. Each part below is that file's own text, unchanged, unless marked New.
+import { existsSync, lstatSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { type Installed, type Paths, readJson } from "./config.ts";
 
@@ -33,16 +29,6 @@ export function relink(link: string, to: string): void {
     if (lstatSync(link).isDirectory()) rmSync(link, { recursive: true, force: true });
   } catch {}
   renameSync(tmp, link);
-}
-
-// Whether /opt/taskbox is still the folder from before the links. The first update to the links is
-// run by the code before them, which keeps the folder, so the owner runs the update once more.
-export function updateUnfinished(p: Paths): boolean {
-  try {
-    return lstatSync(p.opt).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 // Puts an install folder in place as /opt/taskbox. Returns the folder it replaced, or undefined when
@@ -99,121 +85,4 @@ export function prune(p: Paths): string[] {
     }
   }
   return gone;
-}
-
-// Why /usr/local/bin/taskbox can't be trusted, or undefined. /usr/local and /usr/local/bin must be
-// real folders that only root can write, so nobody else can swap the link. With need, the link must
-// also be there, root's, and point at /opt/taskbox/bin/taskbox; without it, a missing folder or
-// link is fine, since the install makes them.
-export function commandLinkProblem(p: Paths, rootUid = 0, need = true): string | undefined {
-  const bin = dirname(p.commandLink);
-  for (const dir of [dirname(bin), bin]) {
-    let st;
-    try {
-      st = lstatSync(dir);
-    } catch {
-      if (need) return `${dir} is missing`;
-      continue;
-    }
-    if (st.isSymbolicLink() || !st.isDirectory()) return `${dir} isn't a folder`;
-    if (st.uid !== rootUid || (st.mode & 0o022) !== 0) return `${dir} can be changed by someone other than root`;
-  }
-  let l;
-  try {
-    l = lstatSync(p.commandLink);
-  } catch {
-    return need ? `${p.commandLink} is missing` : undefined;
-  }
-  if (!l.isSymbolicLink()) return `${p.commandLink} is there, and it isn't taskbox's link`;
-  if (!need) return undefined;
-  if (l.uid !== rootUid) return `${p.commandLink} isn't root's`;
-  if (readlinkSync(p.commandLink) !== join(p.bin, "taskbox")) return `${p.commandLink} doesn't point at ${join(p.bin, "taskbox")}`;
-  return undefined;
-}
-
-// Makes /usr/local/bin/taskbox. Call commandLinkProblem(p, rootUid, false) first.
-export function placeCommandLink(p: Paths, chown: (path: string, uid: number, gid: number) => void): void {
-  const bin = dirname(p.commandLink);
-  for (const dir of [dirname(bin), bin]) {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { mode: 0o755 });
-      chown(dir, 0, 0);
-    }
-  }
-  relink(p.commandLink, join(p.bin, "taskbox"));
-  chown(p.commandLink, 0, 0);
-}
-
-// One update, undo or rollback at a time (v2.6.1): a lock file of root's, holding its process's pid and
-// when it was taken. A lock whose process is gone is taken over by one process only: it must first make
-// a takeover file with O_EXCL, then find the lock as it read it. busy hears who holds it, and since when.
-export function updateLockPath(p: Pick<Paths, "guardState">): string {
-  return join(dirname(p.guardState), "taskbox-update.lock");
-}
-
-export interface LockHolder {
-  pid: number;
-  since?: number; // ms since 1970, by the clock of whoever took it
-}
-
-function readLock(path: string): { text: string; holder: LockHolder } | undefined {
-  try {
-    const text = readFileSync(path, "utf8");
-    const [pid, since] = text.trim().split(/\s+/).map(Number);
-    return { text, holder: { pid: Number.isInteger(pid) ? pid! : 0, ...(Number.isFinite(since) ? { since } : {}) } };
-  } catch {
-    return undefined;
-  }
-}
-
-function alive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 1) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (k) {
-    return (k as { code?: string }).code === "EPERM";
-  }
-}
-
-export async function withUpdateLock<T>(p: Pick<Paths, "guardState">, now: () => number, busy: (h: LockHolder) => T, f: () => Promise<T>): Promise<T> {
-  const path = updateLockPath(p);
-  mkdirSync(dirname(path), { recursive: true });
-  for (let tries = 0; ; tries++) {
-    try {
-      const fd = openSync(path, "wx", 0o600);
-      writeSync(fd, `${process.pid} ${now()}`);
-      closeSync(fd);
-      break;
-    } catch (e) {
-      if ((e as { code?: string }).code !== "EEXIST") throw e;
-      const seen = readLock(path);
-      if (!seen) continue; // gone meanwhile: try again
-      if (tries > 0 || alive(seen.holder.pid)) return busy(seen.holder);
-      // Stale. One process takes it over: whoever makes the takeover file, and still finds the lock it read.
-      const takeover = `${path}.takeover`;
-      let fd: number;
-      try {
-        fd = openSync(takeover, "wx", 0o600);
-      } catch {
-        try {
-          // A takeover left by a process that died in the middle of one.
-          if (Date.now() - statSync(takeover).mtimeMs > 60_000) rmSync(takeover, { force: true });
-        } catch {}
-        return busy(seen.holder);
-      }
-      closeSync(fd);
-      try {
-        if (readLock(path)?.text !== seen.text) return busy(readLock(path)?.holder ?? seen.holder);
-        rmSync(path, { force: true });
-      } finally {
-        rmSync(takeover, { force: true });
-      }
-    }
-  }
-  try {
-    return await f();
-  } finally {
-    rmSync(path, { force: true });
-  }
 }

@@ -83,12 +83,10 @@ export interface Config {
   // v2.4.0: where the box reads what is waiting, how it ranks it, and the
   // timings its rules use. Every value is the owner's: the code names no org, repo, App or label.
   sources?: SourceSettings[];
-  // Set by the layering (layers.ts), never in a file: the keys box.json and the overlay set, why
-  // either was set aside, and each key a layer held outside its class.
+  // Set by the layering (layers.ts), never in a file: the keys box.json sets, why it was set aside,
+  // and each key it held that it may not.
   boxKeys?: string[];
   boxProblem?: string;
-  overlayKeys?: string[];
-  overlayProblem?: string;
   boxIgnored?: string[];
   classes?: ClassRule[];
   timings?: Partial<Timings>;
@@ -109,7 +107,7 @@ export const LABEL_PREFIX_SHAPE = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
 const GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 export const PROJECT_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 // What the layering sets, never a file.
-const SET_BY_TASKBOX = ["kind", "base", "boxKeys", "boxProblem", "overlayKeys", "overlayProblem", "boxIgnored"];
+const SET_BY_TASKBOX = ["kind", "base", "boxKeys", "boxProblem", "boxIgnored"];
 
 export function checkConfig(c: Config, warn: (line: string) => void = () => {}): Config {
   if (!Number.isInteger(c.appId) || c.appId <= 0) throw new Error("taskbox.json has no App ID yet");

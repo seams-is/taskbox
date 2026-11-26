@@ -1,4 +1,5 @@
-// v2.6.1's checks.ts, cut to hashTree and the functions it calls, each unchanged.
+// v2.6.1's src/checks.ts at c7d2414, cut to what hop() runs. Each part below is that file's own text,
+// unchanged. New: these imports.
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";

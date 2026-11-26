@@ -1,48 +1,26 @@
-// The hop to v3 (v2.6.1, docs/v3-design.md §5.7). v3's releases are public and signed: each carries a
-// tarball, a statement (one line of JSON naming the version, the tarball's SHA-256, the tree and the
-// commit) and the statement's signature, made with the owner's release key. v2.6.1 pins that key in
-// its own tree (signers/allowed_signers), merged by the owner, so nothing it
-// verifies comes from the release being verified. In order: the statement and its signature are
-// read with no token, the signature is verified against the pin, the tarball is downloaded to a
-// size-capped file and checked against the statement, its listing is checked, and only then is it
-// unpacked, with every flag that keeps root's tar from restoring owners, modes, flags or metadata.
-// Then the unpacked tree must be the statement's, and the signers file in it the pin itself. The
-// signer's fingerprint is shown before the yes, as a second check.
-//
-// v2.6.1 never reads the v3 tree's settings: v3's own migration does. The new install is the v3 tree
-// beside the tools of the install in place, and its guard and loop plists.
-//
-// Before the swap, v2.6.1 places a rollback watcher, run from its own folder (§5.5). Once proving
-// passes, v3's guard removes the watcher (its plist, its launchd job and its file) or writes proved in
-// its file. If neither happens by the deadline, the watcher takes the box back to v2.6.1 with
-// v2.6.1's own undo, so a v3 whose guard never starts is still undone. A failed undo leaves it in
-// place: it says so in taskbox check and tries again later.
+// v2.6.1's src/hop.ts at c7d2414, cut to what hop() runs. Each part below is that file's own text, unchanged, unless marked New.
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, existsSync, renameSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { SUDO } from "./elevate.ts";
 import { CALL_LIMIT_MS, DOWNLOAD_LIMIT_MS } from "./ghfail.ts";
 import { compareTags, isTrial, RELEASE_TAG } from "./github.ts";
-import { AGENT_LABEL, GUARD_LABEL, LABEL_PREFIX, LAUNCHCTL_MS, type Paths, readStateJson, TAILSCALED_LABEL } from "./config.ts";
+import { LABEL_PREFIX, LAUNCHCTL_MS, type Paths } from "./config.ts";
 import type { Sys } from "./sys.ts";
-
-// The first major version installed this way. Anything older is a v2 release, read from the private
-// repo with the App's token as before.
-export const HOP_MAJOR = 3;
-export function hopTag(tag: string): boolean {
-  const m = RELEASE_TAG.exec(tag);
-  return m !== null && Number(m[1]) >= HOP_MAJOR;
-}
 
 // The signature's namespace and the signer's name in the signers file, as `taskbox sign` makes them.
 export const NAMESPACE = "taskbox-release";
+
 export const PRINCIPAL = "taskbox-release";
+
 export const SSH_KEYGEN = "/usr/bin/ssh-keygen";
+
 export const SIGNERS_IN_TREE = "signers/allowed_signers";
 
 // What a release may weigh. A larger asset is refused before it is downloaded, and its download
 // stops once it passes its limit. unpacked caps the tarball's files, from its listing.
 const LIMITS = { statement: 16_384, signature: 16_384, tarball: 256 * 1024 * 1024, asset: 128 * 1024 * 1024, unpacked: 1024 * 1024 * 1024 };
+
 export const UNPACKED_LIMIT = LIMITS.unpacked;
 
 export interface Statement {
@@ -65,8 +43,11 @@ export interface Statement {
 }
 
 const KEYS = "answers,assets,channel,commit,mergedAt,minFrom,name,notes,pr,settingsSchema,sha256,tag,tarball,tree,v,version";
+
 const VERSION = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-rc\.([1-9]\d{0,3}))?$/;
+
 const HEX64 = /^[0-9a-f]{64}$/;
+
 const range = (r: unknown) => Array.isArray(r) && r.length === 2 && r.every((n) => Number.isInteger(n) && n >= 1 && n <= 999) && r[0] <= r[1];
 
 // The statement read strictly (§5.2, 2): these fields, these shapes, nothing else, one line.
@@ -366,6 +347,7 @@ export async function sshVerify(sys: Sys, o: { statement: Uint8Array; signature:
 
 // The rollback watcher (§5.5): a LaunchDaemon run every minute from the install before, and its file.
 export const ROLLBACK_LABEL = `${LABEL_PREFIX}.rollback-watch`;
+
 // v3's guard proves a release within 60 minutes (proveMinutes), so the watcher waits 10 more.
 export const ROLLBACK_AFTER_MS = 70 * 60_000;
 
@@ -388,51 +370,8 @@ export interface RollbackWatch {
   blockedLogAt?: number;
 }
 
-// The latest a deadline may be moved to: 3 hours after the watcher was placed.
-export const MAX_HOLD_MS = 3 * 60 * 60_000;
-// After a failed go-back: 1, 2, 4, 8, 16, 32, then every 60 minutes.
-export function retryAfterMs(failures: number): number {
-  return Math.min(60, 2 ** Math.max(0, failures - 1)) * 60_000;
-}
-
-export function writeRollbackWatch(p: Pick<Paths, "guardPlist" | "tailscaleState">, w: RollbackWatch): void {
-  const { file } = rollbackWatchPaths(p);
-  writeFileSync(`${file}.new`, JSON.stringify(w), { mode: 0o644 });
-  chmodSync(`${file}.new`, 0o644);
-  renameSyncSafe(`${file}.new`, file);
-}
-
 export function rollbackWatchPaths(p: Pick<Paths, "guardPlist" | "tailscaleState">): { file: string; plist: string } {
   return { file: join(dirname(p.tailscaleState), "taskbox-rollback-watch.json"), plist: join(dirname(p.guardPlist), `${ROLLBACK_LABEL}.plist`) };
-}
-
-// The watch file as the watcher finds it: gone (v3's guard removed it: the watch is over), there but
-// unreadable or in a shape v2.6.1 doesn't know (the watcher keeps watching and says so), or read.
-export type WatchState = { kind: "gone" } | { kind: "unreadable" } | { kind: "read"; w: RollbackWatch };
-export function rollbackWatchState(p: Pick<Paths, "guardPlist" | "tailscaleState">): WatchState {
-  try {
-    lstatSync(rollbackWatchPaths(p).file);
-  } catch (e) {
-    if ((e as { code?: string }).code === "ENOENT") return { kind: "gone" };
-    return { kind: "unreadable" };
-  }
-  const w = readRollbackWatch(p);
-  return w ? { kind: "read", w } : { kind: "unreadable" };
-}
-
-export function readRollbackWatch(p: Pick<Paths, "guardPlist" | "tailscaleState">): RollbackWatch | undefined {
-  const w = readStateJson<RollbackWatch>(rollbackWatchPaths(p).file);
-  if (!w || w.v !== 1 || typeof w.tag !== "string" || typeof w.to !== "string" || typeof w.back !== "string" || !Number.isFinite(w.deadline) || !Number.isFinite(w.placedAt)) return undefined;
-  return w;
-}
-
-function renameSyncSafe(from: string, to: string): void {
-  try {
-    renameSync(from, to);
-  } catch (e) {
-    rmSync(from, { force: true });
-    throw e;
-  }
 }
 
 const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -488,33 +427,4 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
   rmSync(`${file}.unreadable`, { force: true });
   rmSync(plist, { force: true });
   await sys.run("/bin/launchctl", ["bootout", `system/${ROLLBACK_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
-}
-
-// launchd labels v2.6.1 knows. Undo boots out every other local.taskbox.* daemon and agent (§5.7, 6):
-// a later release's own, which the install gone back to doesn't know.
-export const KNOWN_DAEMONS = [GUARD_LABEL, TAILSCALED_LABEL, `${LABEL_PREFIX}.tailscaled-reload`, ROLLBACK_LABEL];
-export const KNOWN_AGENTS = [AGENT_LABEL];
-
-// agentsUid: whose gui domain the agents run in (ci's); with none, their plists still go.
-export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist">, keep: string[] = KNOWN_DAEMONS, agentsUid?: number): Promise<string[]> {
-  const gone: string[] = [];
-  for (const [dir, known, domain] of [
-    [dirname(p.guardPlist), keep, "system"],
-    [dirname(p.agentPlist), KNOWN_AGENTS, agentsUid === undefined ? undefined : `gui/${agentsUid}`],
-  ] as const) {
-    let names: string[] = [];
-    try {
-      names = readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      const m = /^(local\.taskbox\.[A-Za-z0-9.-]{1,60})\.plist$/.exec(name);
-      if (!m || known.includes(m[1]!)) continue;
-      if (domain) await sys.run("/bin/launchctl", ["bootout", `${domain}/${m[1]}`], { timeoutMs: LAUNCHCTL_MS });
-      if (existsSync(join(dir, name))) rmSync(join(dir, name), { force: true });
-      gone.push(m[1]!);
-    }
-  }
-  return gone;
 }

@@ -2,7 +2,8 @@
 // hop() (test/fixtures/v2.6.1, its code unchanged) installs a tarball built from this tree, with the
 // system faked but the real tar and ssh-keygen, and a test key as both sides' pin. Then the tree is
 // checked as v2.6.1 leaves it: the entry points, the links to them, the bun config, both plists, and
-// the loop verb's first lines.
+// the loop verb's first lines. It builds its tarball from this checkout; running it over each rc's
+// real tarball is a later step.
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -219,25 +220,34 @@ describe("the hop from v2.6.1, run by v2.6.1's own code over this tree", () => {
     const ours = plistKeys(readFileSync(h.p.agentPlist, "utf8"));
     const theirs = plistKeys(readFileSync(join(v261, "launchd/local.taskbox.loop.plist"), "utf8"));
     for (const k of ["Label", "ProgramArguments", "EnvironmentVariables", "LimitLoadToSessionType", "RunAtLoad", "KeepAlive", "ThrottleInterval"]) {
+      expect({ k, there: theirs.has(k) }).toEqual({ k, there: true });
       expect({ k, v: ours.get(k) }).toEqual({ k, v: theirs.get(k) });
     }
     expect(ours.get("LimitLoadToSessionType")).toBe("<string>Aqua</string>");
   }, SLOW);
 
-  test.serial("taskbox loop exits 0 as another user, and 75 once /opt/taskbox names another install", async () => {
+  test.serial("taskbox loop exits 0 as another user, carries on from the install /opt/taskbox names, and exits 75 from another", async () => {
     const h = await once;
     const { main } = (await import(join(h.now!, "app/src/cli.ts"))) as { main: (argv: string[], deps: unknown) => Promise<number> };
+    const { installMoved } = (await import(join(h.now!, "app/src/cmd/daemons.ts"))) as { installMoved: (root: string) => boolean };
+    expect(installMoved(h.root)).toBe(false);
     const said: string[] = [];
     const deps = (uid: number) => ({ sys: () => new FakeSys(), uid, serviceUid: async (s: string) => (s === "ci" ? 502 : undefined), env: { USER: uid === 502 ? "ci" : "admin" }, tty: () => 0, user: () => "admin", ask: async () => "", say: (l: string) => said.push(l), err: (l: string) => said.push(l), root: h.root });
     expect(await main(["loop"], deps(501))).toBe(0);
     relink(h.p.opt, h.before.split("/").pop()!);
+    expect(installMoved(h.root)).toBe(true);
     expect(await main(["loop"], deps(502))).toBe(75);
     expect(said).toEqual([]);
   }, SLOW);
 });
 
+// The SHA-256 of signers/allowed_signers at v2.6.1, the pin every v2.6.1 box holds. v2.6.1's hop
+// refuses a release whose own file differs from it by a byte.
+const V261_PIN = "24fb1dfcbe50dc194cf2bf88cbb4826f373c24cb3ba42d6d620bf055a7edbc0c";
+
 describe("the signers", () => {
   test("this tree's signers file is byte-equal to the pin v2.6.1 holds", () => {
-    expect(readFileSync(join(repo, "signers/allowed_signers"))).toEqual(readFileSync(join(v261, "signers/allowed_signers")));
+    expect(sha256(readFileSync(join(v261, "signers/allowed_signers")))).toBe(V261_PIN);
+    expect(sha256(readFileSync(join(repo, "signers/allowed_signers")))).toBe(V261_PIN);
   });
 });

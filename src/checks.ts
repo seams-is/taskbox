@@ -536,13 +536,12 @@ export async function guardRow(c: CheckContext): Promise<Omit<Check, "name">> {
   return ok(`${g.detail}. The rules went missing at ${new Date(g.missingAt!).toISOString().slice(11, 16)} UTC${start?.rulesWentMissing ? ", while a VM started," : ""} and were put back`);
 }
 
-// The box's own layers (settings/layers.ts): which keys box.json sets, a layer taskbox set aside and
-// why, and each key passed over for being outside its layer's class. Only taskbox connect github and
-// taskbox disconnect github write box.json.
+// box.json, the box's own layer (settings/layers.ts): which keys it sets, why taskbox set it aside,
+// and each key it held that it may not. Only taskbox connect github and disconnect github write it.
 export async function boxSettingsRow(c: CheckContext): Promise<Omit<Check, "name">> {
-  if (c.cfg.boxProblem) return fail(`${c.paths.boxSettings} is set aside, and the release's settings are used: ${c.cfg.boxProblem}. ${BOX_FIX}`);
-  if (c.cfg.overlayProblem) return fail(`this box's overlay is set aside, and the other layers are used: ${c.cfg.overlayProblem}`);
-  if (c.cfg.boxIgnored?.length) return { status: "WARN", detail: `passed over, since each is outside its layer's keys: ${c.cfg.boxIgnored.join(", ")}` };
+  const passed = c.cfg.boxIgnored?.length ? `passed over, since box.json may hold only its own keys: ${c.cfg.boxIgnored.join(", ")}` : undefined;
+  if (c.cfg.boxProblem) return fail(`${c.paths.boxSettings} is set aside, and the release's settings are used: ${c.cfg.boxProblem}. ${BOX_FIX}${passed ? ` P${passed.slice(1)}.` : ""}`);
+  if (passed) return { status: "WARN", detail: passed };
   const keys = c.cfg.boxKeys ?? [];
   return ok(keys.length ? `${c.paths.boxSettings} sets ${keys.join(", ")}` : "none: every setting is the release's");
 }

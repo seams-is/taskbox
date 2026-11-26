@@ -8,22 +8,27 @@ import { boxNames, type Paths } from "../config.ts";
 import { INSTALL_NAME } from "../layout.ts";
 import type { OpsDeps } from "../ops.ts";
 
-// The install this code runs from, read once as it starts, or undefined in a checkout of the repo.
-const OWN_INSTALL = (() => {
-  try {
-    const dir = realpathSync(join(import.meta.dir, "../../.."));
-    return INSTALL_NAME.test(basename(dir)) ? dir : undefined;
-  } catch {
-    return undefined;
+// The install this code runs from, read once, at the loop's start, or undefined in a checkout.
+let ownInstall: string | null | undefined;
+function own(): string | undefined {
+  if (ownInstall === undefined) {
+    try {
+      const dir = realpathSync(join(import.meta.dir, "../../.."));
+      ownInstall = INSTALL_NAME.test(basename(dir)) ? dir : null;
+    } catch {
+      ownInstall = null;
+    }
   }
-})();
+  return ownInstall ?? undefined;
+}
 
 // Whether /opt/taskbox names another install than the one this code runs from: after a rollback,
 // launchd's next start of the loop then runs the install it names.
 export function installMoved(root: string): boolean {
-  if (!OWN_INSTALL) return false;
+  const mine = own();
+  if (!mine) return false;
   try {
-    return realpathSync(join(root, "opt/taskbox")) !== OWN_INSTALL;
+    return realpathSync(join(root, "opt/taskbox")) !== mine;
   } catch {
     return true;
   }
@@ -237,10 +242,10 @@ export const commands: CommandSpec[] = [
     summary: "The loop: takes jobs and runs their VMs, in the service account's session.",
     who: ["launchd"],
     internal: true,
-    // The LaunchAgent loads in every login session. Only the service account's runs the loop. With
-    // no such account, the service's own session can't be there; taskbox check fails "Service account".
-    // Under another install than /opt/taskbox names, it exits for launchd to start that one.
+    // The LaunchAgent loads in every login session. Only the service account's runs the loop, and
+    // only from the install /opt/taskbox names: from any other it exits for launchd to start that one.
     async first(c) {
+      own();
       const service = loopService(c);
       const cu = await c.deps.serviceUid(service);
       if (cu === undefined) return c.env.USER === service ? 1 : 0;
@@ -258,8 +263,10 @@ export const commands: CommandSpec[] = [
       const { mirrorLogLine } = await import("../shared.ts");
       const { sourceFor } = await import("../source.ts");
       const { stateHold } = await import("../workspace/hold.ts");
-      const { uid, cu, p } = c;
-      if (cu === undefined) return 1;
+      const { uid, cu, S, p } = c;
+      // first() checked the same, from settings read before these; checked again on the ones run uses.
+      if (cu === undefined) return c.env.USER === S ? 1 : 0;
+      if (uid !== cu) return 0;
       // Everything from here is inside the try: launchd sends the loop's output nowhere, so an error
       // that escaped it would restart the loop every 30 s with no trace.
       const log = new Log(p.log, (line) => mirrorLogLine(p, line));
