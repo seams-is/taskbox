@@ -28,20 +28,15 @@ import { isObj, type WriteRules } from "./rootfile.ts";
 import { consumeSigned } from "./signed.ts";
 import { type Outcome, readOutcome, readRequest, recordOutcome, REQUEST_NAME, type SpoolFile } from "./spool.ts";
 import { ACTION, type Args, canonical, type Statement, Verified } from "./statement.ts";
-import { isSignedWord, NONCE, SIGNED } from "./word.ts";
-import { ANSWER_KEY, type Sealed, seal } from "./sealed.ts";
+import { HANDLER_MS, isSignedWord, NONCE, SIGNED } from "./word.ts";
 
-export { NONCE, SIGNED };
+export { HANDLER_MS, NONCE, SIGNED };
 
 const KIND = /^[a-z][a-z-]{0,23}$/;
-export const HANDLER_MS = 30_000;
 // Who sent a request when no key says: the spool's owner, known by its uid.
 export const AGENT = () => Verified.principal("agent account");
 
-// private: what only the signer's command may read, such as the states a connect hands out. It is
-// sealed to the answer key the owner signed (sealed.ts), and dropped when there is none: the
-// outcome's other fields are readable by the agent account.
-export type Answer = ({ ok: true; said: string; op?: string } | { ok: false; said: string; code: ErrorCode; op?: string }) & { private?: Record<string, unknown>; sealed?: Sealed };
+export type Answer = { ok: true; said: string; op?: string } | { ok: false; said: string; code: ErrorCode; op?: string };
 
 export interface HandlerCtx {
   sys: Sys;
@@ -190,7 +185,7 @@ export async function takeRequest(d: DispatchDeps, name: string, f: SpoolFile | 
     }
   }
   const mono = await d.mono?.().catch(() => undefined);
-  const o: Outcome = { id, at: now, ok: done.ok, said: done.said, ...(done.ok ? {} : { code: done.code }), ...(done.op ? { op: done.op } : {}), ...(done.sealed ? { sealed: done.sealed } : {}), ...(mono !== undefined ? { mono } : {}), ...(d.boot ? { boot: d.boot } : {}) };
+  const o: Outcome = { id, at: now, ok: done.ok, said: done.said, ...(done.ok ? {} : { code: done.code }), ...(done.op ? { op: done.op } : {}), ...(mono !== undefined ? { mono } : {}), ...(d.boot ? { boot: d.boot } : {}) };
   // A failure to write the outcome never stops the pass after an apply.
   try {
     recordOutcome(d.outcomes, o, { owner: root, ...(d.ctx.chown ? { chown: d.ctx.chown } : {}) });
@@ -215,10 +210,7 @@ async function dispatch(d: DispatchDeps, c: HandlerCtx, id: string, kind: string
   if (kind === SIGNED) return signed(d, c, id, body as { word: string; action: string; args: Args }, refused);
   if (kind === NONCE) return nonce(d, c, body.subject as string, refused);
   if (!own) return refused("not-found", `Nothing on this box takes a ${kind} request.`, agent);
-  const a = await timed(c, kind, own.apply(c, { id, body, by: agent }));
-  // No signature binds a key to an unsigned request, so nothing private is ever answered to one.
-  if (a.private) c.log(`the ${kind} handler gave a private answer to an unsigned request, and it was dropped`);
-  return { ...a, private: undefined, sealed: undefined };
+  return timed(c, kind, own.apply(c, { id, body, by: agent }));
 }
 
 async function signed(d: DispatchDeps, c: HandlerCtx, id: string, b: { word: string; action: string; args: Args }, refused: Refuse): Promise<Answer> {
@@ -238,8 +230,7 @@ async function signed(d: DispatchDeps, c: HandlerCtx, id: string, b: { word: str
   const r = await consumeSigned(d.verify, { word: b.word, keys, installId, now: c.now, want: { action: b.action, args, subject }, nonces: c.state.nonces, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) });
   if (!r.ok) return refused(r.code, r.why, r.signer ?? agent, { action: b.action, subject });
   // The nonce has moved on before this runs, whatever the handler does next.
-  const ans = await timed(c, b.action, h.apply(c, { id, statement: r.statement, by: Verified.signer(r.signer) }));
-  return sealedFor(c, id, r.statement, ans);
+  return timed(c, b.action, h.apply(c, { id, statement: r.statement, by: Verified.signer(r.signer) }));
 }
 
 async function nonce(d: DispatchDeps, c: HandlerCtx, subject: string, refused: Refuse): Promise<Answer> {
@@ -270,28 +261,10 @@ async function timed(c: HandlerCtx, what: string, p: Promise<Answer>): Promise<A
   return answered(a);
 }
 
-// A signed answer's private part, sealed to the key in the signed args, or dropped.
-function sealedFor(c: HandlerCtx, id: string, st: Statement, a: Answer): Answer {
-  const { private: secret, ...rest } = a;
-  if (!secret) return rest;
-  const key = st.args.answerKey;
-  if (typeof key !== "string" || !ANSWER_KEY.test(key)) {
-    c.log(`the signed ${st.action} had a private answer and no answer key, so it was dropped`);
-    return { ...rest, said: `${rest.said} Its private part wasn't sent: the request carried no answer key.`.slice(0, 240) };
-  }
-  try {
-    return { ...rest, sealed: seal(key, id, secret) };
-  } catch (e) {
-    c.log(`the signed ${st.action}'s private answer couldn't be sealed: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
-    return { ...rest, said: `${rest.said} Its private part couldn't be sent.`.slice(0, 240) };
-  }
-}
-
 function answered(a: Answer): Answer {
   const said = String(a?.said ?? "").replace(/[^\x20-\x7e]/g, " ").slice(0, 240) || (a?.ok ? "Done." : "Refused.");
   const op = typeof a?.op === "string" && /^op_[0-9A-HJKMNP-TV-Z]{26}$/.test(a.op) ? a.op : undefined;
-  const priv = isObj(a?.private) ? { private: a.private } : {};
-  if (a?.ok === true) return { ok: true, said, ...(op ? { op } : {}), ...priv };
+  if (a?.ok === true) return { ok: true, said, ...(op ? { op } : {}) };
   const code: ErrorCode = (ERROR_CODES as readonly unknown[]).includes((a as { code?: unknown })?.code) ? (a as { code: ErrorCode }).code : "failed";
-  return { ok: false, said, code, ...(op ? { op } : {}), ...priv };
+  return { ok: false, said, code, ...(op ? { op } : {}) };
 }

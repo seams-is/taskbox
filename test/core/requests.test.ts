@@ -12,12 +12,11 @@ import type { CommandSpec } from "../../src/command.ts";
 import { parse } from "../../src/command.ts";
 import { paths } from "../../src/config.ts";
 import { trustFirst, updateApprovers } from "../../src/core/approvers.ts";
-import { type AskDeps, nonceOf, sendSigned } from "../../src/core/asker.ts";
+import { type AskDeps, nonceOf, POLL_MS, POLLS, sendSigned } from "../../src/core/asker.ts";
 import { type Answer, contractProblem, type DispatchDeps, type Handlers, handlersProblem, loadHandlers, requestHandlers, type SignedHandler, takeRequest } from "../../src/core/dispatch.ts";
 import { eventLog, readEvents } from "../../src/core/events.ts";
 import { currentNonce, nonceFor, readNonces, SUBJECT } from "../../src/core/nonces.ts";
 import { NAME } from "../../src/workspace/model.ts";
-import { answerKeyPair, openSealed, type Sealed } from "../../src/core/sealed.ts";
 import { rootStateOf } from "../../src/core/paths.ts";
 import { readOutcome, readSpoolFile, writeSpoolFile } from "../../src/core/spool.ts";
 import { type Args, argsOf, CONTROL_NS, signedWord, statementFor, statementText } from "../../src/core/statement.ts";
@@ -35,7 +34,6 @@ const T = Date.UTC(2026, 10, 26, 12, 0, 0);
 const SLOW = 30_000;
 const owner = keyPair();
 const stranger = keyPair();
-const SECRET_STATE = "f00dfeedf00dfeedf00dfeedf00dfeed";
 
 // Test handlers only: the real ones land with their packages.
 function testHandlers() {
@@ -68,14 +66,12 @@ function testHandlers() {
   };
   const bogus: SignedHandler = { action: "bogus", subject: () => "box", apply: async () => ({ ok: false, said: "Odd.", code: "made-up" }) as unknown as Answer };
   const hang: SignedHandler = { action: "hang", subject: () => "box", apply: () => new Promise<Answer>(() => {}) };
-  // A connect hands out per-App states: private, for the signer's command only.
-  const connect: SignedHandler = { action: "connect.github", subject: () => "box", apply: async () => ({ ok: true, said: "Connecting.", private: { states: { runner: SECRET_STATE } } }) };
   const handlers: Handlers = {
-    signed: [drain, end, boom, bogus, hang, connect],
+    signed: [drain, end, boom, bogus, hang],
     unsigned: [{ kind: "poll", check: (b) => (Object.keys(b).join(",") === "pairing" && typeof b.pairing === "string" ? undefined : "a poll names its pairing"), async apply(_c, r) {
       unsigned.push({ kind: "poll", body: r.body, actor: r.by.actor });
       return { ok: true, said: "Seen." };
-    } }, { kind: "leaky", check: () => undefined, apply: async () => ({ ok: true, said: "Leaky.", private: { states: { runner: SECRET_STATE } } }) }],
+    } }],
   };
   return { handlers, applied, unsigned };
 }
@@ -443,8 +439,47 @@ describe("the spool itself", () => {
     const b = await box();
     const n = (await nonceOf(b.d, "box")) as { nonce: string };
     const out = await sendSigned(line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce })).c, { ...b.d, sleep: async () => {} });
-    expect(out).toMatchObject({ exit: 1, error: { who: "at-the-box", message: expect.stringContaining("hasn't answered") } });
+    expect(out).toMatchObject({ exit: 1, error: { who: "at-the-box", message: expect.stringContaining("didn't take the signed drain") } });
   });
+
+  test("a request the guard took and hasn't answered yet is never called a guard that is down", async () => {
+    const b = await box();
+    const n = (await nonceOf(b.d, "box")) as { nonce: string };
+    // The guard takes it from the spool, and its handler is still at work.
+    const take = async () => {
+      for (const f of readdirSync(b.s.agentSpool)) rmSync(join(b.s.agentSpool, f));
+    };
+    const said: string[] = [];
+    const l = line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce }));
+    const out = await sendSigned({ ...l.c, say: (x: string) => void said.push(x) }, { ...b.d, sleep: take, polls: 60 });
+    expect(out).toMatchObject({ exit: 1, error: { message: expect.stringContaining("may still be applying it") } });
+    expect(JSON.stringify(out)).not.toContain("may be down");
+    expect(said).toContain("Waiting for the box's guard, which takes requests in turn.");
+  });
+
+  test("the asker waits a request's whole life: its 2 minutes in the spool and a handler's 30 s", () => {
+    expect(POLLS * POLL_MS).toBeGreaterThanOrEqual(2 * 60_000 + 30_000);
+  });
+
+  test(
+    "a window spent by other requests never holds up the owner's signed step",
+    async () => {
+      const b = await box();
+      const n = (await nonceOf(b.d, "box")) as { nonce: string };
+      for (let i = 0; i < 40; i++) writeSpoolFile(b.s.agentSpool, "mystery", {}, b.sys);
+      await b.job();
+      await b.job();
+      for (let i = 0; i < 25; i++) writeSpoolFile(b.s.agentSpool, "mystery", {}, b.sys);
+      await b.job();
+      await b.job();
+      // The window is spent: junk waits, and the signed step goes in the next pass.
+      expect(readdirSync(b.s.agentSpool).length).toBeGreaterThan(0);
+      const out = await sendSigned(line({ path: ["drain"] }, ["--timeout", "1h"], signFor({ action: "drain", args: drainArgs(), nonce: n.nonce })).c, { ...b.d, polls: 2 });
+      expect(out).toMatchObject({ exit: 0 });
+      expect(readdirSync(b.s.agentSpool).length).toBeGreaterThan(0);
+    },
+    SLOW,
+  );
 
   test("a word that isn't one the box reads is a usage error, sent nowhere", async () => {
     const b = await box();
@@ -748,81 +783,5 @@ describe("--signed through the box's command line", () => {
     expect(registryProblem([base])).toBeUndefined();
     expect(registryProblem([{ ...base, path: ["workspace", "pause", "now"] }])).toContain("a statement can't name workspace.pause.now");
     expect(registryProblem([{ ...base, options: [{ name: "--words", value: "W" }] }])).toContain("--words");
-  });
-});
-
-describe("a private answer to the signer's command only", () => {
-  // Everything the agent account can read of one request: its outcome file, and the spool.
-  const readable = (b: Awaited<ReturnType<typeof box>>) => readdirSync(b.d.outcomes).map((f) => readFileSync(join(b.d.outcomes, f), "utf8")).join("\n");
-  const connectLine = (word: string, key?: string) => line({ path: ["connect", "github"], flags: ["json", "signed"] }, key ? ["--answer-key", key] : [], word);
-
-  test(
-    "sealed to the answer key the owner signed: the outcome the agent account reads holds no state, and only the controller's secret opens it",
-    async () => {
-      const b = await box();
-      const n = (await nonceOf(b.d, "box")) as { nonce: string };
-      const k = answerKeyPair();
-      const word = signFor({ action: "connect.github", args: argsOf({ args: [], opts: {}, flags: { answerKey: k.answerKey } }), nonce: n.nonce });
-      const out = await sendSigned(connectLine(word, k.answerKey).c, b.d);
-      // A copy first: bun's toMatchObject puts its matchers into the object it checks.
-      const r = structuredClone((out as unknown as { result: { request: string; sealed: Sealed } }).result);
-      expect(out).toMatchObject({ exit: 0, result: { sealed: expect.any(Object) } });
-      expect(readable(b)).not.toContain(SECRET_STATE);
-      expect(readable(b)).not.toContain("states");
-      expect(JSON.stringify(out)).not.toContain(SECRET_STATE);
-      expect(openSealed(k.secret, k.answerKey, r.request, r.sealed)).toEqual({ states: { runner: SECRET_STATE } });
-      // Another key pair, or the same seal moved to another request's id, opens nothing.
-      const other = answerKeyPair();
-      expect(openSealed(other.secret, other.answerKey, r.request, r.sealed)).toBeUndefined();
-      expect(openSealed(k.secret, k.answerKey, "rq_01JD8Q4AAAAAAAAAAAAAAAAAAA", r.sealed)).toBeUndefined();
-    },
-    SLOW,
-  );
-
-  test(
-    "an answer key other than the one signed is refused before anything applies",
-    async () => {
-      const b = await box();
-      const n = (await nonceOf(b.d, "box")) as { nonce: string };
-      const signedKey = answerKeyPair();
-      const swapped = answerKeyPair();
-      const word = signFor({ action: "connect.github", args: argsOf({ args: [], opts: {}, flags: { answerKey: signedKey.answerKey } }), nonce: n.nonce });
-      expect(await sendSigned(connectLine(word, swapped.answerKey).c, b.d)).toMatchObject({ exit: 1, error: { code: "denied" } });
-      expect(readable(b)).not.toContain(SECRET_STATE);
-    },
-    SLOW,
-  );
-
-  test(
-    "with no answer key signed, the private part is dropped, never written where the agent account reads",
-    async () => {
-      const b = await box();
-      const n = (await nonceOf(b.d, "box")) as { nonce: string };
-      const out = await sendSigned(connectLine(signFor({ action: "connect.github", args: {}, nonce: n.nonce })).c, b.d);
-      expect(out).toMatchObject({ exit: 0 });
-      expect((out as { result: Record<string, unknown> }).result.sealed).toBeUndefined();
-      expect(readable(b)).not.toContain(SECRET_STATE);
-      expect(readable(b)).toContain("carried no answer key");
-    },
-    SLOW,
-  );
-
-  test("an unsigned request never gets a private answer", async () => {
-    const b = await box();
-    const r = writeSpoolFile(b.s.agentSpool, "leaky", {}, b.sys);
-    await b.job();
-    expect(readOutcome(b.d.outcomes, r.id, me)).toMatchObject({ kind: "ok", value: { ok: true, said: "Leaky." } });
-    expect(readable(b)).not.toContain(SECRET_STATE);
-    expect(b.logs.some((l) => l.includes("private answer to an unsigned request"))).toBe(true);
-  });
-
-  test("--answer-key goes with commands that take --signed, and is signed with them", () => {
-    const k = answerKeyPair().answerKey;
-    const signedCmd: CommandSpec = { path: ["connect", "github"], summary: "x", who: ["owner"], flags: ["signed"], shell: true, run: async () => 0 };
-    const plain: CommandSpec = { path: ["status"], summary: "x", who: ["anyone"], shell: true, run: async () => 0 };
-    const p = parse([signedCmd, plain], ["connect", "github", "--answer-key", k, "--signed", "a.b"]);
-    expect(p.ok && argsOf(p)).toEqual({ answerKey: k });
-    expect(parse([signedCmd, plain], ["status", "--answer-key", k]).ok).toBe(false);
-    expect(parse([signedCmd, plain], ["connect", "github", "--answer-key", "short"]).ok).toBe(false);
   });
 });

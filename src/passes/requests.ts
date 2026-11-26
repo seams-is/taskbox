@@ -4,10 +4,11 @@
 // missing one is made in root's state folder, the agent account's at 700; one that is wrong is only
 // refused.
 //
-// Limits, counted in passes so no clock step moves them: at most PER_WINDOW requests of any kind in
-// WINDOW passes (about a minute), and at most SIGNED_PER_PASS signed requests a pass, so a flood of
-// forged words runs at most that many ssh-keygen checks a pass. Requests past a limit wait in the
-// spool. Requests are taken in the order root first saw them, never by the times their asker set.
+// Limits, counted in passes so no clock step moves them: at most SIGNED_PER_PASS signed requests a
+// pass, so a flood of forged words runs at most that many ssh-keygen checks a pass; and at most
+// PER_WINDOW other requests in WINDOW passes (about a minute). Signed requests don't count in the
+// window, so no unsigned flood can hold up the owner's step. Requests past a limit wait in the spool,
+// taken in the order root first saw them, never by the times their asker set.
 import { chmodSync, lchownSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readInstallId } from "../answers.ts";
@@ -81,14 +82,18 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
         .map((e) => ({ e, m: REQUEST_NAME.exec(e.name) }))
         .filter((x) => x.m !== null)
         .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
-      let left = Math.max(0, Math.min(perPass, PER_WINDOW - window.taken));
-      let signedLeft = Math.min(SIGNED_PER_PASS, left);
+      let left = Math.max(0, perPass);
+      let signedLeft = SIGNED_PER_PASS;
+      let otherLeft = Math.max(0, PER_WINDOW - window.taken);
       const out: string[] = [];
       for (const x of sorted) {
         if (left === 0) break;
         if (x.m![2] === SIGNED) {
           if (signedLeft === 0) continue;
           signedLeft--;
+        } else {
+          if (otherLeft === 0) continue;
+          otherLeft--;
         }
         left--;
         out.push(x.e.name);
@@ -98,7 +103,7 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     const late: string[] = [];
     const report: SpoolReport = { did: [], problems: [] };
     await drainSpool({ dir: s.agentSpool, owner: agent, rootUid: root, isRequest: (n) => REQUEST_NAME.test(n), order, age: firstSeen, whose: "the agent account", ...(d.perPass ? { perPass: d.perPass } : {}) }, mem, c.sys, report, async (name, f) => {
-      window.taken++;
+      if (REQUEST_NAME.exec(name)?.[2] !== SIGNED) window.taken++;
       const o = await takeRequest(dd, name, f);
       if (!o) return;
       if (o.code === "timeout") late.push(o.said);
