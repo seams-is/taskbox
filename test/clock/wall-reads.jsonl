@@ -67,7 +67,7 @@
 {"file": "rows/net.ts", "reads": 1, "why": "whether netwatch's record is fresh, for the Network diagnostics row only"}
 {"file": "rows/settings.ts", "reads": 3, "why": "how long since the settings repo was read, and whether the temporary admin SSH window is open: display"}
 {"file": "settings/check.ts", "reads": 1, "why": "when update --check asked for the read, so only a problem from that read is said: display"}
-{"file": "settings/op.ts", "reads": 6, "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot"}
+{"file": "settings/op.ts", "reads": 7, "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot, and a commit's 24 hours waiting for it are judged on the wall clock, stepped back counting as lapsed"}
 {"file": "settings/repo.ts", "reads": 2, "why": "the settings op's now, and the wall part of a confirm's moment, judged with the monotonic clock and the boot (pending.ts)"}
 {"file": "shell.ts", "reads": 1, "why": "the agent shell's refusal envelope's at: a label"}
 {"file": "tools/bake.ts", "reads": 3, "why": "the bake's wait for its guest to shut down, and the base record's time: a step only ends a wait sooner or later, and the time is a label"}
