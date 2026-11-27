@@ -11,13 +11,14 @@ import { eventLog, flushEvents, keepEvents } from "../core/events.ts";
 import { sweepTemps } from "../core/rootfile.ts";
 import { keepOutcomes } from "../core/spool.ts";
 import { keepOps } from "../core/ops.ts";
-import { everyPass, type PassMaker } from "../core/passes.ts";
+import { everyPass, type PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { lapse, updatePending } from "../core/pending.ts";
 import { GUARD_FULL_MS } from "../guard.ts";
 
-export const keepingPass: PassMaker = {
+export const keepingPass: PlacedMaker = {
   name: "keeping",
+  order: 500,
   make(c) {
     if (!c.writer) return undefined;
     const s = rootStateOf(c.p);

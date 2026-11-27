@@ -3,12 +3,13 @@
 // ended op's job is booted out. By the one writer only.
 import { eventLog } from "../core/events.ts";
 import { follow } from "../core/child.ts";
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { bootId } from "../core/boot.ts";
 
-export const opsPass: PassMaker = {
+export const opsPass: PlacedMaker = {
   name: "ops",
+  order: 600,
   make(c) {
     if (!c.writer) return undefined;
     const s = rootStateOf(c.p);

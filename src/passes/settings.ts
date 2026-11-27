@@ -2,14 +2,15 @@
 // file, which is small: an admin's answer from confirm applies at once, and a read asked for (settings
 // repo) runs now. Otherwise the settings repo's head commit is read hourly, and once at the start.
 import { eventLog } from "../core/events.ts";
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { readState, settingsFiles } from "../settings/inforce.ts";
 import { READ_EVERY_MS, readHead, takeConfirmed } from "../settings/op.ts";
 import { settingsDepsOf } from "../settings/repo.ts";
 
-export const settingsPass: PassMaker = {
+export const settingsPass: PlacedMaker = {
   name: "settings",
+  order: 1300,
   make(c) {
     if (!c.writer) return undefined;
     const state = rootStateOf(c.p);
