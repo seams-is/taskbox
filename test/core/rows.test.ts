@@ -21,7 +21,7 @@ describe("the check-row registry", () => {
     extra.splice(extra.indexOf("Tailscale") + 1, 0, "Tailnet policy");
     // These keep this order; a new row takes its place by its own number, with no edit here.
     const inOrder = (got: string[], want: string[]) => expect(got.filter((n) => want.includes(n))).toEqual(want);
-    inOrder(names(rows("check", ctx())), [...names(PRESTART), ...extra, SECOND_KEY_ROW, "Sizes", "Tool cache"]);
+    inOrder(names(rows("check", ctx())), [...names(PRESTART), ...extra, SECOND_KEY_ROW, "Sizes", "Tool cache", "Screen Sharing and VM starts"]);
     inOrder(names(rows("away", ctx())), [...names(AWAY_ONLY), ...names(PRESTART), ...extra]);
     inOrder(names(rows("preflight")), names(INSTALL_PREFLIGHT));
   });

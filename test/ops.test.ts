@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hashTree } from "../src/checks.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { paths } from "../src/config.ts";
 import { cleanBox, commandsFor, log, type OpsDeps, plainLog, remove, status, undo } from "../src/ops.ts";
 import { linkTarget } from "../src/layout.ts";
@@ -178,6 +178,7 @@ describe("taskbox status", () => {
       "signed",
       "workspaces",
     ], "as your admin user: ", [
+      "confirm",
       "connect",
       "disconnect",
       "key",
@@ -230,6 +231,7 @@ describe("taskbox status", () => {
       "tool",
       "workspaces",
     ], "", [
+      "confirm",
       "connect",
       "disconnect",
       "key",
@@ -442,6 +444,20 @@ describe("taskbox remove", () => {
     expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeGreaterThanOrEqual(0);
     expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeLessThan(outs.indexOf("system/local.taskbox.guard"));
     expect(existsSync(plist)).toBe(false);
+  });
+
+  test("the guard's record of VM starts goes, its witness in /var/db too, so a box installed again starts afresh", async () => {
+    const { pfFiles, pfState } = await import("../src/pfstarts.ts");
+    const { pfOpen } = await import("./helpers.ts");
+    const { d, p } = ops({ answers: ["yes"] });
+    pfOpen(p);
+    for (const f of pfFiles(p).slice(3, 5)) writeFileSync(f, "1 x");
+    await remove(d, { serviceUid: 502, people: [] });
+    for (const f of pfFiles(p)) expect(existsSync(f)).toBe(false);
+    // Installed again: root's install record is the box's first v3 install, so the record starts on trial.
+    mkdirSync(dirname(p.installed), { recursive: true });
+    writeFileSync(p.installed, JSON.stringify({ installedAt: "2027-03-01T00:00:00.000Z", v3Since: "2027-03-01T00:00:00.000Z" }), { mode: 0o644 });
+    expect(pfState(p, process.getuid!()).kind).toBe("fresh");
   });
 
   test("no: nothing removed", async () => {

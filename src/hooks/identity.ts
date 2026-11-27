@@ -28,6 +28,7 @@ export interface Tie {
   githubRun: number;
   workflow?: string;
   event?: string;
+  commit?: string; // the run's head commit
 }
 
 class Answer extends Error {
@@ -56,7 +57,7 @@ async function getJson<T>(d: HookDeps, path: string, token: string, signal?: Abo
 export async function findByRunner(d: HookDeps, repo: string, runner: string, signal?: AbortSignal, any = false): Promise<Tie | undefined> {
   if (!d.tokens || !REPO_SHAPE.test(repo)) return undefined;
   const token = await d.tokens.actionsRead(repo);
-  const r = await getJson<{ workflow_runs?: { id?: unknown; name?: unknown; event?: unknown }[] }>(d, `/repos/${repo}/actions/runs?${any ? "" : "status=in_progress&"}per_page=${TIE_RUNS}`, token, signal);
+  const r = await getJson<{ workflow_runs?: { id?: unknown; name?: unknown; event?: unknown; head_sha?: unknown }[] }>(d, `/repos/${repo}/actions/runs?${any ? "" : "status=in_progress&"}per_page=${TIE_RUNS}`, token, signal);
   for (const run of (r.workflow_runs ?? []).slice(0, TIE_RUNS)) {
     if (!ghId(run.id)) continue;
     const jobs = await getJson<{ jobs?: { id?: unknown; run_id?: unknown; runner_name?: unknown }[] }>(d, `/repos/${repo}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`, token, signal);
@@ -64,7 +65,8 @@ export async function findByRunner(d: HookDeps, repo: string, runner: string, si
     if (!hit) continue;
     const event = typeof run.event === "string" && /^[a-z][a-z_]{0,40}$/.test(run.event) ? run.event : undefined;
     const workflow = typeof run.name === "string" ? clean(run.name).slice(0, 120) : undefined;
-    return { githubJob: hit.id as number, githubRun: run.id, ...(workflow ? { workflow } : {}), ...(event ? { event } : {}) };
+    const commit = typeof run.head_sha === "string" && /^[0-9a-f]{40}$/.test(run.head_sha) ? run.head_sha : undefined;
+    return { githubJob: hit.id as number, githubRun: run.id, ...(workflow ? { workflow } : {}), ...(event ? { event } : {}), ...(commit ? { commit } : {}) };
   }
   return undefined;
 }
@@ -203,7 +205,7 @@ export const identityHook: PlacedHook = {
     looking.get(id)?.abort();
     looking.delete(id);
     const live = readLiveOne(d.paths, id, uid());
-    let tie: Tie | undefined = live?.githubJob && live.githubRun ? { githubJob: live.githubJob, githubRun: live.githubRun, ...(live.workflow ? { workflow: live.workflow } : {}), ...(live.event ? { event: live.event } : {}) } : undefined;
+    let tie: Tie | undefined = live?.githubJob && live.githubRun ? { githubJob: live.githubJob, githubRun: live.githubRun, ...(live.workflow ? { workflow: live.workflow } : {}), ...(live.event ? { event: live.event } : {}), ...(live.commit ? { commit: live.commit } : {}) } : undefined;
     const stop = readStop(d.paths, id, uid());
     const rec = (j.record ?? {}) as Parameters<typeof stateOf>[0];
     const ran = live !== undefined || rec.jobAt !== undefined;

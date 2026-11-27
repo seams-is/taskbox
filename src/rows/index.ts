@@ -9,6 +9,7 @@ import { CHECK_EXTRA, INSTALL_PREFLIGHT, PRESTART } from "../checks.ts";
 import { loadRepoOf } from "../config.ts";
 import { type Place, type Row, type RowFn, numbered, rowsFor, rowsProblem } from "../core/rows.ts";
 import { TEST_REPO_ROW, testRepoRow } from "../loadcmd.ts";
+import { PF_ROWS } from "../pfstarts.ts";
 import { SECOND_KEY_ROW, secondKeyRow } from "../queue.ts";
 import { ACCOUNT_ROWS } from "./accounts.ts";
 import { BEAT_ROWS } from "./away.ts";
@@ -36,6 +37,7 @@ export function allRows(): Row[] {
   // One line each, sorted by file: a row's place is its own order, not its place here.
   const rows = [
     ...v2Rows(),
+    ...PF_ROWS,
     ...ACCOUNT_ROWS,
     ...BEAT_ROWS,
     ...CLOCK_ROWS,

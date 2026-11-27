@@ -29,6 +29,8 @@ describe("the pass registry", () => {
       "requests",
       "control",
       "key-keeper",
+      "gpu",
+      "pf-starts",
     ];
     const names = passMakers().map((m) => m.name);
     expect(names[0]).toBe("beat");

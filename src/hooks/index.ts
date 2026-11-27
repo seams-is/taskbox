@@ -3,9 +3,11 @@
 // them in the order each file gives (its `order`), not their place in this list.
 import type { JobHook, PlacedHook } from "../core/hooks.ts";
 import { identityHook } from "./identity.ts";
+import { measureHook } from "./measure.ts";
 
 const placed: readonly PlacedHook[] = [
   identityHook,
+  measureHook(),
 ];
 
 export const jobHooks = (): JobHook[] => {
