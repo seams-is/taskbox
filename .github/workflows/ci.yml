@@ -1,5 +1,5 @@
-# taskbox's own CI: the test suite on macOS, the same suite under stress, and the typecheck on Linux,
-# on GitHub-hosted runners.
+# taskbox's own CI: the test suite on macOS, the same suite under stress, the engine compiled to one
+# binary and run, and the typecheck on Linux, on GitHub-hosted runners.
 # A box never runs this repo's jobs. No secrets, read-only token, every action pinned by commit SHA.
 # Bun is fetched from its release by version and checked against its SHA-256. The macOS pin is the
 # one versions.json pins for the box (test/install.test.ts checks they match).
@@ -76,6 +76,101 @@ jobs:
             bun test --concurrent
             echo "::endgroup::"
           done
+
+  # The engine compiled to one binary, as v4.0.0's app carries it, and each entry bun still runs on its
+  # own, then each run with the source tree moved away: it starts, finds its commands and its own data
+  # files, and says what it says from source. test/compiled.test.ts keeps src from reading its tree.
+  compiled:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      BUN_ZIP: bun-darwin-aarch64
+      BUN_SHA256: c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - name: Fetch and check bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_ZIP}.zip"
+          echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
+      - run: bun --version
+      - run: bun install --frozen-lockfile
+      - name: Build the engine and each separate entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/engine"
+          # Each entry's binary is named for its path: src/workspace/probe.ts is workspace-probe.
+          for e in cli shell gate workspace/probe controller/main; do
+            bun build --compile "src/$e.ts" --outfile "$RUNNER_TEMP/engine/${e//\//-}"
+          done
+          ls -l "$RUNNER_TEMP/engine"
+      - name: The engine carries the reviewed signers file, byte for byte
+        shell: bash
+        run: bun -e 'const [b, s] = await Promise.all([Bun.file(process.argv[1]).bytes(), Bun.file("signers/allowed_signers").bytes()]); if (Buffer.from(b).indexOf(Buffer.from(s)) < 0) { console.error("The engine does not carry signers/allowed_signers."); process.exit(1); }' "$RUNNER_TEMP/engine/cli"
+      - name: Smoke through each binary, with the source tree moved away
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The settings the template verbs read: the example, with a made-up load repo. The runner is
+          # thrown away after.
+          sudo mkdir -p /opt/taskbox/app
+          bun -e 'const c = JSON.parse(await Bun.file("taskbox.example.json").text()); c.sources = [{ type: "github-actions", appId: c.appId + 1, repos: [c.jobsFrom, { name: `${c.jobsFrom.split("/")[0]}/load`, role: "load", runnerGroup: "taskbox-load" }] }]; console.log(JSON.stringify(c, null, 2));' > "$RUNNER_TEMP/taskbox.json"
+          sudo cp "$RUNNER_TEMP/taskbox.json" /opt/taskbox/app/taskbox.json
+          # An empty home, so the controller has no settings and reads no network.
+          mkdir "$RUNNER_TEMP/home"
+          # Each line: the entry, then its words. Every one is read only, with stdin empty.
+          lines=(
+            "cli --help" "cli help" "cli --version" "cli status --version" "cli policy show --help"
+            "cli template show --help" "cli template show box-check" "cli template show test-job" "cli template show load" "cli no-such-command"
+            "shell -c no-such-command" "shell -c remove"
+            "gate one two three"
+            "workspace/probe" "workspace/probe tcp not-a-host 1 x"
+            "controller/main --version" "controller/main help" "controller/main self --help"
+          )
+          # Each line's output and exit, in a file named for the line.
+          named() { local f=${1// /_}; echo "${f//\//-}"; }
+          say() { local out=$1; shift; (cd / && HOME="$RUNNER_TEMP/home" "$@" < /dev/null) > "$out" 2>&1 && echo "exit 0" >> "$out" || echo "exit $?" >> "$out"; }
+          mkdir "$RUNNER_TEMP/want" "$RUNNER_TEMP/got"
+          for l in "${lines[@]}"; do
+            read -r e words <<< "$l"
+            # shellcheck disable=SC2086
+            say "$RUNNER_TEMP/want/$(named "$l")" bun --no-install --no-env-file --cwd=/ "--config=$PWD/bunfig.run.toml" "$PWD/src/$e.ts" $words
+          done
+          mv src src.away && mv templates templates.away && mv signers signers.away && mv launchd launchd.away && mv versions.json versions.json.away
+          for l in "${lines[@]}"; do
+            read -r e words <<< "$l"
+            # shellcheck disable=SC2086
+            say "$RUNNER_TEMP/got/$(named "$l")" "$RUNNER_TEMP/engine/${e//\//-}" $words
+            echo "::group::$l"
+            cat "$RUNNER_TEMP/got/$(named "$l")"
+            echo "::endgroup::"
+            diff -u "$RUNNER_TEMP/want/$(named "$l")" "$RUNNER_TEMP/got/$(named "$l")"
+          done
+          # Each workflow came from the template the engine carries, filled in.
+          for t in box-check test-job load; do
+            f="$RUNNER_TEMP/got/$(named "cli template show $t")"
+            if ! grep -q "^exit 0$" "$f" || ! grep -q "^name: " "$f" || grep -q "__[A-Z]*__" "$f"; then
+              echo "::error::taskbox template show $t isn't filled in from the template the engine carries."
+              exit 1
+            fi
+          done
+      - name: Compiled, rollback-watch has no install folder and refuses
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=0
+          out=$(cd / && sudo "$RUNNER_TEMP/engine/cli" rollback-watch < /dev/null 2>&1) || code=$?
+          echo "$out"
+          if [ "$code" != 1 ] || ! grep -q "^The compiled engine has no install folder of its own, so the rollback watcher can't run." <<< "$out"; then
+            echo "::error::taskbox rollback-watch, compiled and as root, didn't refuse as it should (exit $code)."
+            exit 1
+          fi
 
   typecheck:
     runs-on: ubuntu-24.04

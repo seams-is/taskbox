@@ -9,7 +9,7 @@ import type { Config } from "../src/config.ts";
 import { appName, conversionProblem, hookProblem, installationProblem, installationsOf, manifestFor, publicProblem, reposProblem, startPage } from "../src/connect.ts";
 import { adoptV2, applyCodeRequest, askText, cancelConnect, cleanEndedConnects, CONNECT_CODE_HANDLER, codeRequestProblem, codeWaiter, confirmPhase, connectCodeScreen, openControllerConnect, stateHash, v2AdoptFrom, connectGithub, connectStatus, disconnectGithub, type FlowDeps, oldKeyFiles, openConnectOp, parseAsk, readCodeInbox, takeConnectCode } from "../src/connectflow.ts";
 import { keyFileName, keysDirProblem, listKeys, placePending, promoteKey, readAdoptedKey, readHeldKey } from "../src/keys.ts";
-import { type ListenEvent, parentWatch, serveOnce, setupProblem } from "../src/listen.ts";
+import { type ListenEvent, serveOnce, setupProblem } from "../src/listen.ts";
 import { Log } from "../src/log.ts";
 import { parseLine } from "../src/registry.ts";
 import { writeSpoolFile } from "../src/core/spool.ts";
@@ -153,12 +153,12 @@ describe("GitHub's answers, checked", () => {
 });
 
 describe("the listener, a real Bun.serve", () => {
-  const setup = (x: Record<string, unknown> = {}) => ({ role: "source" as const, org: "example-org", appName: "example-org-box-jobs-1f2e", state: T64, pageToken: "b".repeat(64), minutes: 60, ...x });
+  const setup = (x: Record<string, unknown> = {}) => ({ role: "source" as const, org: "example-org", appName: "example-org-box-jobs-1f2e", state: T64, pageToken: "b".repeat(64), minutes: 60, watch: 4242, ...x });
   const get = (port: number, path: string, host = `127.0.0.1:${port}`) => fetch(`http://127.0.0.1:${port}${path}`, { headers: { host } });
 
   test("a setup out of shape is refused before it listens", () => {
     expect(setupProblem(setup())).toBeUndefined();
-    for (const x of [{ role: "admin" }, { state: "x" }, { minutes: 0 }, { minutes: 61 }, { org: "a/b" }, { appName: "A b" }]) expect(setupProblem(setup(x))).toBeDefined();
+    for (const x of [{ role: "admin" }, { state: "x" }, { minutes: 0 }, { minutes: 61 }, { org: "a/b" }, { appName: "A b" }, { watch: undefined }, { watch: 1 }]) expect(setupProblem(setup(x))).toBeDefined();
     expect(() => serveOnce(setup({ state: "short" }), () => {})).toThrow();
   });
 
@@ -207,11 +207,6 @@ describe("the listener, a real Bun.serve", () => {
     await sys.sleep(1000);
     expect(events.at(-1)).toEqual({ parent: true });
     s.stop();
-    let ppid = 4242;
-    const w = parentWatch(4242, () => ppid);
-    expect(w()).toBe(true);
-    ppid = 1;
-    expect(w()).toBe(false);
   });
 });
 

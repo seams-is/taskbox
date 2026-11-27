@@ -1,15 +1,18 @@
 // The command registry: every file in src/cmd/ exports `commands`, a list of CommandSpec. cli.ts runs
 // them, shell.ts lets the agent account run those marked shell, and elevate.ts re-runs those marked
-// root through sudo. A later package adds its noun as one more file here, and edits no shared one.
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
+// root through sudo. A later package adds its noun as one more file there, and one line in each list
+// of src/cmd/index.ts, which imports them all so the compiled engine reads nothing from disk.
+import { commandFiles } from "./cmd/index.ts";
 import { type CommandSpec, GLOBAL_FLAGS, type GlobalFlag, parse, type Parsed } from "./command.ts";
 
 // A statement's action (core/statement.ts ACTION): a word, or two with a dot.
 const ACTION = /^[a-z][a-z0-9-]{0,31}(\.[a-z][a-z0-9-]{0,31})?$/;
 
-export const CMD_DIR = join(import.meta.dir, "cmd");
-const FILE = /^[a-z][a-z0-9-]*\.ts$/;
+// One file of src/cmd/, as src/cmd/index.ts names it: its name and what it exports.
+export interface CommandFile {
+  file: string;
+  module: { commands?: unknown };
+}
 const WORD = /^[a-z][a-z0-9-]{0,30}$/;
 const ALL_NAMES = new Set<string>([...Object.values(GLOBAL_FLAGS).flatMap((g) => [...g.names]), "--help", "--version", "--answers"]);
 
@@ -51,12 +54,11 @@ export function registryProblem(specs: readonly CommandSpec[]): string | undefin
   return undefined;
 }
 
-// Every command, from the files in dir, in file order. Throws when one doesn't fit.
-export function loadRegistry(dir = CMD_DIR): CommandSpec[] {
+// Every command, from the files given, in file order. Throws when one doesn't fit.
+export function loadRegistry(files: readonly CommandFile[] = commandFiles): CommandSpec[] {
   const specs: CommandSpec[] = [];
-  for (const f of readdirSync(dir).filter((f) => FILE.test(f)).sort()) {
-    const m = require(join(dir, f)) as { commands?: unknown };
-    if (!Array.isArray(m.commands)) throw new Error(`src/cmd/${f} exports no commands`);
+  for (const { file, module: m } of [...files].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))) {
+    if (!Array.isArray(m.commands)) throw new Error(`src/cmd/${file} exports no commands`);
     specs.push(...(m.commands as CommandSpec[]));
   }
   const why = registryProblem(specs);

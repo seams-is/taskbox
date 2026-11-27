@@ -4,8 +4,6 @@
 // key carries the box's name, so boxes sharing a jobs repo never collide. Each run's name carries a
 // fingerprint of the values, which `taskbox check --away` reads through the job source's App.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Check, CheckContext } from "./checks.ts";
 import { awayOf, type Config, CRON_INTERVALS, kindsOf, labelsFor, readStateJson, sourceAppId } from "./config.ts";
 import { allLabelsFor, boxLabelFor } from "./settings/kinds.ts";
@@ -13,8 +11,8 @@ import { BOX_NAME, holdVariable } from "./hold.ts";
 import { MAX_LEASE_HOURS, waitingFor } from "./settings/away.ts";
 import { appJwt } from "./github.ts";
 import { readActionsKey } from "./queue.ts";
+import { EMBEDDED } from "./embedded.ts";
 
-export const TEMPLATES = join(import.meta.dir, "..", "templates");
 // Each box's two files in the jobs repo, and the one pair v2 named before boxes shared a repo.
 export const boxCheckFile = (box: string) => `.github/workflows/taskbox-watchdog-${box}.yml`;
 export const testJobFile = (box: string) => `.github/workflows/taskbox-canary-${box}.yml`;
@@ -93,7 +91,7 @@ const fill = (template: string, values: Record<string, string>) => template.repl
 const boxCheckPart = ({ box, labels, wait, every, lease, holdAlarm, request }: TemplateValues) => ({ v: 3, box, labels, wait, every, lease, holdAlarm, request });
 const testJobPart = ({ box, testLabels, testEvery }: TemplateValues) => ({ v: 2, box, labels: testLabels, every: testEvery });
 
-export function boxCheckYaml(v: TemplateValues, template = readFileSync(join(TEMPLATES, "taskbox-watchdog.yml"), "utf8")): string {
+export function boxCheckYaml(v: TemplateValues, template = EMBEDDED["templates/taskbox-watchdog.yml"]): string {
   return fill(template, {
     FINGERPRINT: fingerprint(boxCheckPart(v)),
     SCHEDULE: schedule(v.every, 7),
@@ -107,7 +105,7 @@ export function boxCheckYaml(v: TemplateValues, template = readFileSync(join(TEM
     HOLDVAR: holdVariable(v.box),
   });
 }
-export function testJobYaml(v: TemplateValues, template = readFileSync(join(TEMPLATES, "taskbox-canary.yml"), "utf8")): string {
+export function testJobYaml(v: TemplateValues, template = EMBEDDED["templates/taskbox-canary.yml"]): string {
   return fill(template, { FINGERPRINT: fingerprint(testJobPart(v)), SCHEDULE: schedule(v.testEvery, 41), BOX: v.box, LABELS: `[${v.testLabels.map((l) => JSON.stringify(l)).join(", ")}]` });
 }
 // The files a box's values make, at their fixed paths.

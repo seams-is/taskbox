@@ -2,6 +2,7 @@
 // answers a closed set of asks over run/broker.sock (the service account and root) and
 // guard/broker.sock (root), and never returns a key, a JWT, or a token wider than the ask.
 import { appendFileSync, chmodSync, lstatSync, unlinkSync } from "node:fs";
+import { connect, createServer } from "node:net";
 import { type Clock, realClock } from "./clock.ts";
 import { type AppRole, installationsOf } from "./connect.ts";
 import type { Config } from "./config.ts";
@@ -334,38 +335,37 @@ export interface Served {
 // asker is cut off.
 export function serve(d: BrokerDeps, path: string, guard: boolean, used: Used, mode: number): Served {
   clearSocket(path);
-  const bufs = new WeakMap<object, string>();
-  const asked = new WeakSet<object>();
-  const server = Bun.listen<{ t?: () => void }>({
-    unix: path,
-    socket: {
-      open(s) {
-        bufs.set(s, "");
-        s.data = { t: d.sys.after(ASK_MS, () => s.end(), { unref: true }) };
-      },
-      data(s, chunk) {
-        if (asked.has(s)) return; // one ask a connection
-        const text = (bufs.get(s) ?? "") + Buffer.from(chunk).toString("utf8");
-        if (text.length > ASK_MAX + 1) {
-          s.end(`${JSON.stringify(no("not an ask"))}\n`);
-          return;
-        }
-        const nl = text.indexOf("\n");
-        if (nl < 0) {
-          bufs.set(s, text);
-          return;
-        }
-        asked.add(s);
-        void handle(d, text.slice(0, nl), guard, used).then((line) => s.end(`${line}\n`));
-      },
-      close(s) {
-        s.data?.t?.();
-      },
-      error() {},
-    },
+  const server = createServer((s) => {
+    let buf = "";
+    let asked = false;
+    const cut = d.sys.after(ASK_MS, () => s.destroy(), { unref: true });
+    s.on("data", (chunk) => {
+      if (asked) return; // one ask a connection
+      buf += Buffer.from(chunk).toString("utf8");
+      if (buf.length > ASK_MAX + 1) {
+        asked = true;
+        s.end(`${JSON.stringify(no("not an ask"))}\n`);
+        return;
+      }
+      const nl = buf.indexOf("\n");
+      if (nl < 0) return;
+      asked = true;
+      void handle(d, buf.slice(0, nl), guard, used).then((line) => s.end(`${line}\n`));
+    });
+    s.on("close", () => cut());
+    s.on("error", () => {});
   });
-  chmodSync(path, mode);
-  return { stop: () => server.stop(true) };
+  server.listen(path);
+  // The socket's mode once it is there: listen is synchronous for a unix path on macOS, but the
+  // chmod waits for it to be sure.
+  const setMode = () => {
+    try {
+      chmodSync(path, mode);
+    } catch {}
+  };
+  setMode();
+  server.on("listening", setMode);
+  return { stop: () => void server.close() };
 }
 
 // The keeper's whole run: both sockets, and the counts written each hour.
@@ -402,32 +402,23 @@ export async function askBroker(socket: string, ask: Ask, timeoutMs = ASK_MS, cl
       resolve(a);
     };
     const cancel = clock.after(timeoutMs, () => finish(no("the GitHub key keeper didn't answer in time", "timeout")));
-    Bun.connect({
-      unix: socket,
-      socket: {
-        open(s) {
-          s.write(`${JSON.stringify(ask)}\n`);
-        },
-        data(s, chunk) {
-          buf += Buffer.from(chunk).toString("utf8");
-          if (buf.length > ANSWER_MAX) {
-            s.end();
-            finish(no("the GitHub key keeper's answer is too long", "server"));
-          }
-        },
-        close() {
-          try {
-            const v = JSON.parse(buf.split("\n")[0] ?? "") as Answer;
-            finish(v && typeof v === "object" && typeof v.ok === "boolean" ? v : no("the GitHub key keeper's answer isn't one", "server"));
-          } catch {
-            finish(no("the GitHub key keeper's answer isn't one", "server"));
-          }
-        },
-        error() {
-          finish(no("the GitHub key keeper isn't running", "network"));
-        },
-      },
-    }).catch(() => finish(no("the GitHub key keeper isn't running", "network")));
+    const s = connect({ path: socket }, () => s.write(`${JSON.stringify(ask)}\n`));
+    s.on("data", (chunk) => {
+      buf += Buffer.from(chunk).toString("utf8");
+      if (buf.length > ANSWER_MAX) {
+        s.destroy();
+        finish(no("the GitHub key keeper's answer is too long", "server"));
+      }
+    });
+    s.on("close", () => {
+      try {
+        const v = JSON.parse(buf.split("\n")[0] ?? "") as Answer;
+        finish(v && typeof v === "object" && typeof v.ok === "boolean" ? v : no("the GitHub key keeper's answer isn't one", "server"));
+      } catch {
+        finish(no("the GitHub key keeper's answer isn't one", "server"));
+      }
+    });
+    s.on("error", () => finish(no("the GitHub key keeper isn't running", "network")));
   });
 }
 

@@ -14,9 +14,9 @@ import { type AppRole, CODE, manifestFor, pageHeaders, ROLES, startPage } from "
 
 // open: the listener opens its own start page in the browser, through a private file, so the page
 // token is never on a command line any local user can read.
-// watch: the pid of the command that started it, whose exit ends the listener (at the box its parent
-// is sudo, which outlives a SIGKILL of the command).
-export type ListenSetup = { role: AppRole; org: string; appName: string; state: string; pageToken: string; minutes: number; open?: boolean; watch?: number };
+// watch: the pid of the command that started it, whose exit ends the listener within a second, a
+// SIGKILL too (at the box its parent is sudo, which outlives the command).
+export type ListenSetup = { role: AppRole; org: string; appName: string; state: string; pageToken: string; minutes: number; open?: boolean; watch: number };
 export type ListenEvent = { port: number } | { code: string; state: string } | { timeout: true } | { parent: true };
 
 export const LISTEN_MINUTES_MAX = 60;
@@ -38,7 +38,7 @@ export function setupProblem(v: unknown): string | undefined {
   if (typeof s.state !== "string" || !TOKEN.test(s.state) || typeof s.pageToken !== "string" || !TOKEN.test(s.pageToken)) return "no tokens";
   if (!Number.isInteger(s.minutes) || (s.minutes as number) < 1 || (s.minutes as number) > LISTEN_MINUTES_MAX) return "no time";
   if (s.open !== undefined && typeof s.open !== "boolean") return "bad open";
-  if (s.watch !== undefined && (!Number.isSafeInteger(s.watch) || (s.watch as number) <= 1)) return "bad watch";
+  if (!Number.isSafeInteger(s.watch) || (s.watch as number) <= 1) return "no command to watch";
   return undefined;
 }
 
@@ -138,11 +138,6 @@ export function serveOnce(s: ListenSetup, emit: (e: ListenEvent) => void, o: Ser
   return { stop, port: server.port as number };
 }
 
-// The parent at the start: once it is gone, launchd (pid 1) or another adopts the listener.
-export function parentWatch(ppid = process.ppid, now: () => number = () => process.ppid): () => boolean {
-  return () => now() === ppid && ppid !== 1;
-}
-
 // A process of another user's: kill(pid, 0) says EPERM while it runs and ESRCH once it is gone.
 export function pidWatch(pid: number, kill: (pid: number, sig: 0) => void = (p, s) => void process.kill(p, s)): () => boolean {
   return () => {
@@ -174,7 +169,7 @@ export async function listenMain(): Promise<number> {
         out(e);
         if (!("port" in e)) realClock.after(100, () => resolve(0));
       },
-      { parentAlive: setup.watch ? (() => { const a = parentWatch(); const b = pidWatch(setup.watch!); return () => a() && b(); })() : parentWatch() },
+      { parentAlive: pidWatch(setup.watch) },
     );
   });
 }
