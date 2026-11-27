@@ -189,9 +189,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
       if (!g.ok) return screen(releaseProblem(g.why, source, tag), "Try again later.");
       files[name] = g.value;
     }
-    const sigPath = join(work, SIGNATURE);
-    writeFileSync(sigPath, files[SIGNATURE]!, { mode: 0o600 });
-    const v = await d.verify({ statement: files[STATEMENT]!, signature: files[SIGNATURE]!, tarball: files[tarballName(tag)]!, sigPath, installed: a.first ? null : inUse!, signers, tag });
+    const v = await d.verify({ statement: files[STATEMENT]!, signature: files[SIGNATURE]!, tarball: files[tarballName(tag)]!, workRoot: work, installed: a.first ? null : inUse!, signers, tag });
     if (!v.ok) return screen(`Not installed: ${v.why.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}.`, "Nothing to do: agents look. Don't install a release by hand.");
 
     d.out(top);

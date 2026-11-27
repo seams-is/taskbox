@@ -500,7 +500,12 @@ describe("the review's fixes", () => {
     expect(m).toContain("which the bake can't put back");
     const man = { v: 1 as const, os: "macos" as const, entries: [] };
     const end = bakeScript("macos", "a".repeat(64), man, DEFAULT_TOOL_CACHE, "admin");
-    expect(end).toContain('Automatic) /usr/sbin/networksetup -setv6automatic "$s"');
+    // An empty reading is recorded as default and goes back to macOS's default, Automatic; the
+    // record splits on "|", so an empty field can't be lost to IFS white space.
+    expect(m).toContain('"") v=default ;;');
+    expect(m).toContain(`printf '%s|%s\\n' "$v" "$s"`);
+    expect(end).toContain("while IFS='|' read -r v s");
+    expect(end).toContain('Automatic|default) /usr/sbin/networksetup -setv6automatic "$s"');
     expect(end).toContain('"Link-local only") /usr/sbin/networksetup -setv6LinkLocal "$s"');
     expect(end).toContain("done < /private/var/taskbox-ipv6-saved");
     expect(bakeScript("linux", "a".repeat(64), { ...man, os: "linux" }, DEFAULT_TOOL_CACHE, "admin")).not.toContain("setv6");

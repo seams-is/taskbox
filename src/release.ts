@@ -6,7 +6,8 @@
 import { skFlags as readFlags } from "./core/sshsig.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { inVerifyFolder } from "./core/verifyfolder.ts";
+import { EMBEDDED } from "./embedded.ts";
 import { RELEASE_TAG } from "./github.ts";
 import type { RunResult } from "./sys.ts";
 
@@ -14,7 +15,6 @@ import type { RunResult } from "./sys.ts";
 // other use of the key can't pass as a release's.
 export const NAMESPACE = "taskbox-release";
 export const PRINCIPAL = "taskbox-release";
-export const SIGNERS = join(import.meta.dir, "..", "signers", "allowed_signers");
 export const SSH_KEYGEN = "/usr/bin/ssh-keygen";
 
 export interface Statement {
@@ -89,22 +89,37 @@ export interface VerifyDeps {
 // Checks a release before anything is unpacked: the statement's signature against the pinned key,
 // then the statement itself, then the tarball's SHA-256. tag, when given, is the release asked for.
 // installed is the release in place, or null for a first install: a release must be newer, so an
-// old signed release can't be put back, nor the same one replayed.
-export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; signature: Uint8Array; tarball: Uint8Array; sigPath: string; installed: string | null; signers?: string; tag?: string }): Promise<Verdict> {
+// old signed release can't be put back, nor the same one replayed. ssh-keygen reads the pin and the
+// signature from a folder of verifyRelease's own inside workRoot (core/verifyfolder.ts), written
+// from the bytes checked here, so no caller's folder is trusted. workRoot is the caller's own folder,
+// never one an environment names: no $TMPDIR, which a root caller may inherit from anyone.
+export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; signature: Uint8Array; tarball: Uint8Array; installed: string | null; signers?: string; workRoot: string; tag?: string }): Promise<Verdict> {
   if (o.installed !== null && !RELEASE_TAG.test(o.installed)) return { ok: false, why: "the installed release has no version taskbox reads" };
-  const signers = o.signers ?? SIGNERS;
+  // The pin: the signers file the caller names, read once, else this engine's own
+  // (signers/allowed_signers, read in when it was built, src/embedded.ts).
   let pinned: string;
-  try {
-    pinned = readFileSync(signers, "utf8");
-  } catch {
-    return { ok: false, why: "the signers file can't be read" };
+  if (o.signers === undefined) pinned = EMBEDDED["signers/allowed_signers"];
+  else {
+    try {
+      pinned = readFileSync(o.signers, "utf8");
+    } catch {
+      return { ok: false, why: "the signers file can't be read" };
+    }
   }
   const why = signersProblem(pinned);
   if (why) return { ok: false, why };
-  // ssh-keygen reads the signature from a file and the statement from stdin. The caller writes the
-  // signature to sigPath, in a folder of its own.
-  if (!Buffer.from(o.signature).equals(readFileSync(o.sigPath))) return { ok: false, why: "the signature file isn't the one downloaded" };
-  const r = await d.run(SSH_KEYGEN, ["-Y", "verify", "-f", signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", o.sigPath], { stdin: o.statement, timeoutMs: 20_000 });
+  // A folder that can't be made or written refuses the release; ssh-keygen's own failure throws as before.
+  let ran = false;
+  let r: RunResult;
+  try {
+    r = await inVerifyFolder(o.workRoot, { signers: pinned, signature: o.signature }, (f) => {
+      ran = true;
+      return d.run(SSH_KEYGEN, ["-Y", "verify", "-f", f.signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", f.signature], { stdin: o.statement, timeoutMs: 20_000 });
+    });
+  } catch (e) {
+    if (ran) throw e;
+    return { ok: false, why: "taskbox couldn't write the files ssh-keygen checks" };
+  }
   if (r.code !== 0) return { ok: false, why: "the release isn't signed by the pinned key" };
   const flags = skFlags(o.signature);
   if (flags === undefined || (flags & 0x01) === 0) return { ok: false, why: "the signature doesn't show the owner was present" };

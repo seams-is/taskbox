@@ -7,7 +7,8 @@ import { dirname, join } from "node:path";
 import { type CliDeps, main } from "../src/cli.ts";
 import { type CommandSpec, duration, EXIT, memory, parse } from "../src/command.ts";
 import { paths } from "../src/config.ts";
-import { CMD_DIR, loadRegistry, parseLine, registry, registryProblem } from "../src/registry.ts";
+import { commandFiles } from "../src/cmd/index.ts";
+import { loadRegistry, parseLine, registry, registryProblem } from "../src/registry.ts";
 import { renamed } from "../src/renames.ts";
 import { readEnvelopes } from "../src/schema.ts";
 import { readAnswer } from "../src/controller/schema.ts";
@@ -77,25 +78,28 @@ describe("the registry", () => {
   test("every file in src/cmd/ gives its commands, and together they fit", () => {
     const specs = registry();
     expect(registryProblem(specs)).toBeUndefined();
-    for (const f of readdirSync(CMD_DIR).filter((f) => f.endsWith(".ts"))) {
-      const m = require(join(CMD_DIR, f)) as { commands?: unknown };
-      expect({ f, commands: Array.isArray(m.commands) && m.commands.length > 0 }).toEqual({ f, commands: true });
+    for (const { file, module: m } of commandFiles) {
+      expect({ file, commands: Array.isArray(m.commands) && m.commands.length > 0 }).toEqual({ file, commands: true });
     }
   });
 
-  test("a new noun is one more file: nothing shared changes", () => {
-    // The new file alone, in a folder of its own: loading it reads nothing of the rest, so the test
-    // stays fast under --concurrent. Beside the registry it fits, and its line parses.
-    const dir = tempRoot();
-    writeFileSync(join(dir, "gadget.ts"), `export const commands = [{ path: ["gadget", "list"], summary: "Every gadget.", who: ["anyone"], flags: ["json"], shell: true, run: async () => 0 }];\n`);
-    writeFileSync(join(dir, "Not-a-command.ts"), "throw new Error('loaded');\n");
-    const added = loadRegistry(dir);
+  test("the static index names every file in src/cmd/, and only those, sorted", () => {
+    const folder = readdirSync(join(import.meta.dir, "..", "src", "cmd")).filter((f) => f.endsWith(".ts") && f !== "index.ts").sort();
+    const named = commandFiles.map((f) => f.file);
+    expect(named).toEqual(folder);
+    // Each line imports the file it names: the module is that file's own.
+    for (const { file, module: m } of commandFiles) expect(m).toBe(require(join(import.meta.dir, "..", "src", "cmd", file)));
+  });
+
+  test("a new noun is one more file and its line in the index: nothing else shared changes", () => {
+    const gadget = { commands: [{ path: ["gadget", "list"], summary: "Every gadget.", who: ["anyone"], flags: ["json"], shell: true, run: async () => 0 }] };
+    const added = loadRegistry([{ file: "gadget.ts", module: gadget }]);
     expect(added.map((s) => s.path.join(" "))).toEqual(["gadget list"]);
     const specs = [...registry(), ...added];
     expect(registryProblem(specs)).toBeUndefined();
     expect(parse(specs, ["gadget", "list", "--json"]).ok).toBe(true);
-    // Loading a new file runs bun's transpiler, which a full suite under load has made take seconds.
-  }, 30_000);
+    expect(() => loadRegistry([{ file: "empty.ts", module: {} }])).toThrow("src/cmd/empty.ts exports no commands");
+  });
 
   test("refuses two commands with one path, a verb with words beside a longer path, and flags that clash", () => {
     const base: CommandSpec = { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 };
