@@ -465,12 +465,13 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
 export const KNOWN_DAEMONS = [GUARD_LABEL, TAILSCALED_LABEL, `${LABEL_PREFIX}.tailscaled-reload`, ROLLBACK_LABEL];
 export const KNOWN_AGENTS = [AGENT_LABEL];
 
-// The daemons of v3 and later that an install keeps, from its install record's tag: guardwatch.
+// The daemons of v3 and later that an install keeps, from its install record's tag: guardwatch, and
+// netwatch when the tag says v3 or later.
 // Only a tag that says v2 or older drops it; a missing or unreadable tag keeps it, so the guard is
 // never left unwatched (on a v2 install it fails each minute, which check shows).
 export function laterDaemons(tag: unknown): string[] {
   const major = typeof tag === "string" ? Number(/^v(\d{1,3})\./.exec(tag)?.[1]) : NaN;
-  return major < 3 ? [] : [`${LABEL_PREFIX}.guardwatch`];
+  return major < 3 ? [] : [`${LABEL_PREFIX}.guardwatch`, ...(major >= 3 ? [`${LABEL_PREFIX}.netwatch`] : [])];
 }
 
 // agentsUid: whose gui domain the agents run in (ci's); with none, their plists still go.

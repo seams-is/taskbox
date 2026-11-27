@@ -30,6 +30,7 @@ export interface LoopView {
   waitingFor?: string; // why the box starts no new VM: the guard, memory or disk
   vmSize?: string; // "4 CPUs, 8 GB" while a job runs
   beside?: string[]; // the box's other users logged in when the VM started
+  net?: string; // v3: the running job's network so far (hooks/net.ts)
   vmKind?: string; // "macos" or "linux": the kind of the VM in the slot now
   size?: string; // its size, such as small; default for the kind's own
   budget?: string; // what the VMs hold of the box's memory and CPUs (sizes.ts holdsLine)
@@ -68,6 +69,7 @@ export interface SlotView {
   waitingFor?: string;
   why?: string; // v2.4.0: the scheduler's reason for what this slot does now
   beat?: Beat; // v2.5.0: the slot's heartbeat (beat.ts)
+  net?: string; // v3: the running job's network so far (hooks/net.ts)
 }
 
 // The slots in order, read from the state file's slots: at most 9, each a number from 1.
@@ -80,7 +82,7 @@ function readSlots(v: unknown): Record<string, SlotView> | undefined {
     const beat = readBeat((x as Record<string, unknown>).beat);
     if (beat) s.beat = beat;
     for (const [f, y] of Object.entries(x)) {
-      if (!["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "waitingFor", "why"].includes(f)) continue;
+      if (!["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "waitingFor", "why", "net"].includes(f)) continue;
       if (typeof y === "string") s[f] = clean(y).slice(0, 200);
       else if (typeof y === "number" && Number.isFinite(y)) s[f] = y;
       else if (Array.isArray(y)) s[f] = y.filter((z) => typeof z === "string").map((z) => clean(z).slice(0, 80)).slice(0, 20);
@@ -192,7 +194,7 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   }
   const shown = slotsShown(loop);
   // v2.4.0: under each VM line, the scheduler's reason for it.
-  const why = (s: SlotView) => (s.why ? [`${" ".repeat(11)}Why: ${clean(s.why)}.`] : []);
+  const why = (s: SlotView) => [...(s.why ? [`${" ".repeat(11)}Why: ${clean(s.why)}.`] : []), ...(s.net && s.slot === "running a job" ? [`${" ".repeat(11)}Net: ${clean(s.net)}.`] : [])];
   if (shown.length) for (const [k, s] of shown) lines.push(`${`VM ${k}:`.padEnd(11)}${vmWords(s, o.now)}`, ...why(s));
   else if (pull?.state === "ready" || loop.slot) lines.push(`VM:        ${vmWords(loop, o.now)}`, ...why(loop));
   if (loop.budget) lines.push(`Budget:    ${clean(loop.budget)}`);

@@ -7,7 +7,7 @@ export type KeyClass = "product" | "box" | "local";
 const PRODUCT = [
   "org", "repo", "releaseRepo", "publicRepo", "project", "previousLabelPrefix", "appId", "runnerGroup", "jobsFrom", "label", "mergeLabel", "labels",
   "image", "imageName", "imageGB", "slots", "jobTimeoutMinutes", "vmnetPfProven", "approverKey", "approverKeyChange", "screenSharingUsers", "linux",
-  "turnIdleMinutes", "quietTurnMinutes", "actionsAppId", "classes", "timings", "away", "engine", "maxAtOnce", "sizes", "warmSize", "tools", "workspaces", "keys",
+  "turnIdleMinutes", "quietTurnMinutes", "actionsAppId", "classes", "timings", "away", "engine", "maxAtOnce", "sizes", "warmSize", "tools", "workspaces", "keys", "network",
 ];
 const BOX = ["runnerNamePrefix", "vmsAtOnce", "vmsAtMost", "cpuBudget", "boxKeepsGB", "vmCpus", "vmMemoryMB", "minFreeDiskGB", "vmMaxHours", "tailscaleTun", "accounts", "tailnetTag", "adminSsh"];
 const LOCAL = ["sources", "runnerApp", "settingsRepo"];

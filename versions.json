@@ -12,6 +12,7 @@
     "sha256": "e680a734febccfce7d4e910c1f7f13fc3b00f19a181c945e2d746de3214c32c2"
   },
   "softnet": {
+    "$comment": "Upstream Softnet as its authors ship it, never patched or built on the box. It logs no packet it drops, so a job's record says refusals by Softnet itself are not reported; taskbox's own rules evaluator (src/net/rules.ts) says what they block, and the selftest checks that the two agree.",
     "version": "0.25.0",
     "url": "https://github.com/openai/softnet/releases/download/0.25.0/softnet.tar.gz",
     "sha256": "5a2e8ef779f0a2169b88d273ee806c0d64321ec7714c0dc99bf217523ae9b008"
