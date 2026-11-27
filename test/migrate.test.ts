@@ -27,7 +27,7 @@ const T0 = Date.UTC(2031, 0, 6, 13, 0);
 const V2_DOC = {
   org: "example-org",
   repo: "taskbox",
-  releaseRepo: "taskbox-archive",
+  releaseRepo: "taskbox-releases",
   publicRepo: "example-org/taskbox",
   project: "app",
   previousLabelPrefix: "local.example",
