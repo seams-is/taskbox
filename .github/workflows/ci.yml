@@ -77,9 +77,9 @@ jobs:
             echo "::endgroup::"
           done
 
-  # The engine compiled to one binary, as v4.0.0's app carries it, then run with the source tree moved
-  # away: it starts, finds its commands and its own data files, and says what src/cli.ts says from
-  # source. test/compiled.test.ts keeps src from reading its own tree at run time.
+  # The engine compiled to one binary, as v4.0.0's app carries it, and each entry bun still runs on its
+  # own, then each run with the source tree moved away: it starts, finds its commands and its own data
+  # files, and says what it says from source. test/compiled.test.ts keeps src from reading its tree.
   compiled:
     runs-on: macos-latest
     timeout-minutes: 15
@@ -100,35 +100,51 @@ jobs:
           echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
       - run: bun --version
       - run: bun install --frozen-lockfile
-      - name: Build the engine
+      - name: Build the engine and each separate entry
         shell: bash
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/engine"
-          bun build --compile src/cli.ts --outfile "$RUNNER_TEMP/engine/taskbox"
-          ls -l "$RUNNER_TEMP/engine/taskbox"
+          # Each entry's binary is named for its path: src/workspace/probe.ts is workspace-probe.
+          for e in cli shell gate listen workspace/probe controller/main; do
+            bun build --compile "src/$e.ts" --outfile "$RUNNER_TEMP/engine/${e//\//-}"
+          done
+          ls -l "$RUNNER_TEMP/engine"
       - name: The engine carries the reviewed signers file, byte for byte
         shell: bash
-        run: bun -e 'const [b, s] = await Promise.all([Bun.file(process.argv[1]).bytes(), Bun.file("signers/allowed_signers").bytes()]); if (Buffer.from(b).indexOf(Buffer.from(s)) < 0) { console.error("The engine does not carry signers/allowed_signers."); process.exit(1); }' "$RUNNER_TEMP/engine/taskbox"
-      - name: Smoke through the engine, with the source tree moved away
+        run: bun -e 'const [b, s] = await Promise.all([Bun.file(process.argv[1]).bytes(), Bun.file("signers/allowed_signers").bytes()]); if (Buffer.from(b).indexOf(Buffer.from(s)) < 0) { console.error("The engine does not carry signers/allowed_signers."); process.exit(1); }' "$RUNNER_TEMP/engine/cli"
+      - name: Smoke through each binary, with the source tree moved away
         shell: bash
         run: |
           set -euo pipefail
           # The settings the template verbs read, from the example. The runner is thrown away after.
           sudo mkdir -p /opt/taskbox/app
           sudo cp taskbox.example.json /opt/taskbox/app/taskbox.json
-          lines=("--help" "help" "--version" "status --version" "policy show --help" "template show --help" "template show box-check" "template show test-job" "no-such-command")
-          say() { local out=$1; shift; (cd / && "$@") > "$out" 2>&1 && echo "exit 0" >> "$out" || echo "exit $?" >> "$out"; }
+          # An empty home, so the controller has no settings and reads no network.
+          mkdir "$RUNNER_TEMP/home"
+          # Each line: the entry, then its words. Every one is read only, with stdin empty.
+          lines=(
+            "cli --help" "cli help" "cli --version" "cli status --version" "cli policy show --help"
+            "cli template show --help" "cli template show box-check" "cli template show test-job" "cli no-such-command"
+            "shell -c no-such-command" "shell -c remove"
+            "gate one two three"
+            "listen"
+            "workspace/probe" "workspace/probe tcp not-a-host 1 x"
+            "controller/main --version" "controller/main help" "controller/main self --help"
+          )
+          say() { local out=$1; shift; (cd / && HOME="$RUNNER_TEMP/home" "$@" < /dev/null) > "$out" 2>&1 && echo "exit 0" >> "$out" || echo "exit $?" >> "$out"; }
           mkdir "$RUNNER_TEMP/want" "$RUNNER_TEMP/got"
           for i in "${!lines[@]}"; do
+            read -r e words <<< "${lines[$i]}"
             # shellcheck disable=SC2086
-            say "$RUNNER_TEMP/want/$i" bun --no-install --no-env-file --cwd=/ "--config=$PWD/bunfig.run.toml" "$PWD/src/cli.ts" ${lines[$i]}
+            say "$RUNNER_TEMP/want/$i" bun --no-install --no-env-file --cwd=/ "--config=$PWD/bunfig.run.toml" "$PWD/src/$e.ts" $words
           done
           mv src src.away && mv templates templates.away && mv signers signers.away && mv launchd launchd.away && mv versions.json versions.json.away
           for i in "${!lines[@]}"; do
+            read -r e words <<< "${lines[$i]}"
             # shellcheck disable=SC2086
-            say "$RUNNER_TEMP/got/$i" "$RUNNER_TEMP/engine/taskbox" ${lines[$i]}
-            echo "::group::taskbox ${lines[$i]}"
+            say "$RUNNER_TEMP/got/$i" "$RUNNER_TEMP/engine/${e//\//-}" $words
+            echo "::group::${lines[$i]}"
             cat "$RUNNER_TEMP/got/$i"
             echo "::endgroup::"
             diff -u "$RUNNER_TEMP/want/$i" "$RUNNER_TEMP/got/$i"
