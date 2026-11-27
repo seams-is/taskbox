@@ -20,7 +20,7 @@ import { type DispatchDeps, type Handlers, handlersProblem, rankOf, requestHandl
 import { eventLog } from "../core/events.ts";
 import type { PassCtx, PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
-import { drainSpool, type Entry, newSpoolMemory, type Outcome, readRequest, readSpoolFile, recordOutcome, REQUEST_FOR_MS, REQUEST_NAME, type SpoolReport } from "../core/spool.ts";
+import { drainSpool, dropsLine, type Entry, newSpoolMemory, readRequest, readSpoolFile, REQUEST_NAME, type SpoolReport } from "../core/spool.ts";
 import { pinnedKeys, readApprovers } from "../core/approvers.ts";
 import { currentNonce, readNonces } from "../core/nonces.ts";
 import { parseStatement, SIGNED_FOR_MS, signsInProcess, splitSigned } from "../core/statement.ts";
@@ -59,7 +59,6 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
   const rank = rankOf(d.handlers);
   const said = new Set<string>();
   const seen = new Map<string, number>(); // name: the pass root first saw it in
-  const written: string[] = []; // outcome ids, oldest first
   let boot: string | undefined;
   let agent: number | undefined;
   let passes = 0;
@@ -123,20 +122,6 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     };
     const BIG = 1e12;
     const age = (e: Entry): number => (REQUEST_NAME.exec(e.name)?.[2] !== SIGNED ? firstSeen(e) : firstSeen(e) + (ranked().has(e.name) ? BIG : -BIG));
-    const note = (name: string, code: "busy" | "expired", said: string) => {
-      const id = REQUEST_NAME.exec(name)?.[1];
-      if (!id) return;
-      const o: Outcome = { id, at: now, ok: false, code, said, ...(boot ? { boot } : {}) };
-      try {
-        if (recordOutcome(outcomes, o, { owner: root, ...(d.chown ? { chown: d.chown } : {}) })) written.push(id);
-      } catch (e) {
-        c.log.write(`agent spool: the outcome of ${id} couldn't be written: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
-      }
-    };
-    const dropped = (name: string, why: "flood" | "expired") =>
-      why === "flood"
-        ? note(name, "busy", "The box dropped it unread: its spool held more than 50 requests. Send it again in a minute.")
-        : note(name, "expired", `It waited past its ${REQUEST_FOR_MS / 60_000} minutes in the spool unread. Send it again.`);
     const order = (entries: readonly Entry[], perPass: number): string[] => {
       const here = new Set(entries.map((e) => e.name));
       for (const n of [...seen.keys()]) if (!here.has(n)) seen.delete(n);
@@ -154,6 +139,8 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
         if (x.m![2] === SIGNED) {
           if (signedLeft === 0) continue;
           signedLeft--;
+        } else if (Object.hasOwn(KIND_CAPS, x.m![2]!)) {
+          // A capped kind's files passed its screen and are at most its cap: outside the window.
         } else {
           if (otherLeft === 0) continue;
           otherLeft--;
@@ -169,23 +156,20 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     const refusedCodes = { screened: 0, refused: 0 };
     let screen: ((name: string) => boolean) | undefined;
     const screenOf = () => (screen ??= connectCodeScreen({ ops: { dir: s.ops, owner: root }, spool: s.agentSpool, agent: agent!, now }));
-    await drainSpool({ dir: s.agentSpool, owner: agent, rootUid: root, isRequest: (n) => REQUEST_NAME.test(n), order, age, dropped, whose: "the agent account", kindOf: (n) => REQUEST_NAME.exec(n)?.[2], caps: KIND_CAPS, screen: (_kind, name) => screenOf()(name), screened: (_kind, n) => void (refusedCodes.screened += n), ...(d.perPass ? { perPass: d.perPass } : {}) }, mem, c.sys, report, async (name, f) => {
-      if (REQUEST_NAME.exec(name)?.[2] !== SIGNED) window.taken++;
+    await drainSpool({ dir: s.agentSpool, owner: agent, rootUid: root, isRequest: (n) => REQUEST_NAME.test(n), order, age, whose: "the agent account", caps: KIND_CAPS, screen: (_kind, name) => screenOf()(name), outcomes: { dir: outcomes, max: d.outcomesKeep ?? OUTCOMES_KEEP }, ...(d.perPass ? { perPass: d.perPass } : {}) }, mem, c.sys, report, async (name, f) => {
+      const k = REQUEST_NAME.exec(name)?.[2] ?? "";
+      if (k !== SIGNED && !Object.hasOwn(KIND_CAPS, k)) window.taken++;
       const o = await takeRequest(dd, name, f);
       if (!o) return;
       if (REQUEST_NAME.exec(name)?.[2] === CODE_KIND && !o.ok) refusedCodes.refused++;
       if (o.code === "timeout") late.push(o.said);
-      written.push(o.id);
-      while (written.length > (d.outcomesKeep ?? OUTCOMES_KEEP)) {
-        try {
-          unlinkSync(join(outcomes, `${written.shift()}.json`));
-        } catch {}
-      }
     });
     for (const l of report.did) c.log.write(`agent spool: ${l}`);
-    if (refusedCodes.screened || refusedCodes.refused) {
+    // One summary a pass of what was removed unread or refused, never one outcome or event a file.
+    refusedCodes.screened = report.drops?.[CODE_KIND]?.screened ?? 0;
+    if (report.drops || refusedCodes.refused) {
       try {
-        events.write({ type: "guard.refused", actor: "agent account", subject: "box", text: `Connect codes refused this pass: ${refusedCodes.screened} without the open connect's state, ${refusedCodes.refused} more by the box.`, data: { kind: CODE_KIND, ...refusedCodes } });
+        events.write({ type: "guard.spool-drops", actor: "agent account", subject: "box", text: `The agent spool this pass: ${[report.drops && `removed unread, ${dropsLine(report.drops)}`, refusedCodes.refused && `${refusedCodes.refused} connect codes refused by the box`].filter(Boolean).join("; ")}.`.slice(0, 240), data: { ...(report.drops ? { drops: report.drops } : {}), refusedCodes: refusedCodes.refused } });
       } catch {}
     }
     // A problem is said once while it lasts. A closed spool, or a handler that didn't answer, fails the pass.

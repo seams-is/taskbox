@@ -747,7 +747,12 @@ describe("the controller's code, bound to the op's state", () => {
     expect(fetched).toBe(0);
     // Through the dispatcher's handler: refused with why, and no event a file (the pass writes one summary).
     const refused: unknown[] = [];
-    const ctx = { state: { dir, ops }, rootUid: me, events: { refused: (e: unknown) => (refused.push(e), e), write: (e: unknown) => (refused.push(e), e) } } as never;
+    // Any event from the handler is a failure: the pass writes the one summary.
+    const stub = (e: unknown) => {
+      refused.push(e);
+      throw new Error("the handler wrote an event");
+    };
+    const ctx = { state: { dir, ops }, rootUid: me, events: { refused: stub, write: stub } } as never;
     const h = await CONNECT_CODE_HANDLER.apply(ctx, { id: "rq_1", body: { op: opened.op.id, state: "c".repeat(64), code: "secretcode" }, by: {} as never });
     expect(h).toMatchObject({ ok: false, code: "denied", said: "that code doesn't carry this connect's state" });
     expect(refused).toEqual([]);

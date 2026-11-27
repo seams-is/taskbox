@@ -387,37 +387,62 @@ describe("what the agent account can plant in the spool", () => {
 });
 
 describe("the connect code's own cap", () => {
-  test(
-    "a 1000-file junk flood: each pass stays fast, junk is dropped unread and summed in one event, and the real code is taken",
-    async () => {
-      const t = testHandlers();
-      const b = await box({ handlers: { signed: t.handlers.signed, unsigned: [...t.handlers.unsigned, CONNECT_CODE_HANDLER] } });
-      const real = "7".repeat(64);
-      mkdirSync(b.s.ops, { recursive: true });
-      const opened = openControllerConnect({ ops: { dir: b.s.ops, owner: me }, now: T, actor: "owner", params: {}, stateHashes: { runner: stateHash(real), source: stateHash("8".repeat(64)) } });
-      if (!("op" in opened)) throw new Error(opened.why);
-      writeOp({ dir: b.s.ops, owner: me }, { ...opened.op, phase: "making-runner" });
-      for (let i = 0; i < 950; i++) writeSpoolFile(b.s.agentSpool, "connect-code", { op: opened.op.id, state: "abcdef"[i % 6]!.repeat(64), code: `junk${i}` }, b.sys);
-      for (let i = 0; i < 49; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${i}` }, b.sys);
-      writeSpoolFile(b.s.agentSpool, "connect-code", { op: opened.op.id, state: real, code: "the-real-code" }, b.sys);
-      const inbox = join(b.s.dir, "connect-code.json");
-      let passes = 0;
-      let slowest = 0;
-      while (!existsSync(inbox) && passes < 10) {
-        const t0 = performance.now();
-        await b.job();
-        slowest = Math.max(slowest, performance.now() - t0);
-        passes++;
-      }
-      expect(JSON.parse(readFileSync(inbox, "utf8"))).toMatchObject({ role: "runner", code: "the-real-code" });
-      expect(slowest).toBeLessThan(2000);
-      const summaries = b.events().filter((e) => e.type === "guard.refused" && (e.data as { kind?: string })?.kind === "connect-code");
-      expect(summaries.length).toBeLessThanOrEqual(passes);
-      expect(summaries.reduce((n, e) => n + Number((e.data as { screened: number }).screened), 0)).toBeGreaterThan(0);
-      expect(JSON.stringify(summaries)).not.toMatch(/junk|the-real-code|7777/);
-    },
-    SLOW,
-  );
+  for (const where of ["first", "middle", "last"] as const)
+    test(
+      `a 1000-file junk flood with the real code ${where}: it is never cut, and is taken within a bounded number of passes`,
+      async () => {
+        const t = testHandlers();
+        const b = await box({ handlers: { signed: t.handlers.signed, unsigned: [...t.handlers.unsigned, CONNECT_CODE_HANDLER] } });
+        const real = "7".repeat(64);
+        mkdirSync(b.s.ops, { recursive: true });
+        const opened = openControllerConnect({ ops: { dir: b.s.ops, owner: me }, now: T, actor: "owner", params: {}, stateHashes: { runner: stateHash(real), source: stateHash("8".repeat(64)) } });
+        if (!("op" in opened)) throw new Error(opened.why);
+        writeOp({ dir: b.s.ops, owner: me }, { ...opened.op, phase: "making-runner" });
+        const at = where === "first" ? 0 : where === "middle" ? 500 : 999;
+        for (let i = 0; i < 1000; i++) {
+          if (i === at) writeSpoolFile(b.s.agentSpool, "connect-code", { op: opened.op.id, state: real, code: "the-real-code" }, b.sys);
+          else writeSpoolFile(b.s.agentSpool, "connect-code", { op: opened.op.id, state: "abcdef"[i % 6]!.repeat(64), code: `junk${i}` }, b.sys);
+        }
+        const inbox = join(b.s.dir, "connect-code.json");
+        const start = b.sys.now();
+        let passes = 0;
+        while (!existsSync(inbox) && passes < 10) {
+          await b.job();
+          b.sys.clock += 2000; // a guard tick
+          passes++;
+        }
+        expect(JSON.parse(readFileSync(inbox, "utf8"))).toMatchObject({ role: "runner", code: "the-real-code" });
+        // The screen takes 200 a pass, so 1000 files take at most 6 passes, 12 s of the fake clock.
+        expect(passes).toBeLessThanOrEqual(6);
+        expect(b.sys.now() - start).toBeLessThanOrEqual(12_000);
+        // No outcome a dropped file; one summary a pass, with counts and no code or state.
+        expect(existsSync(b.d.outcomes) ? readdirSync(b.d.outcomes).length : 0).toBeLessThanOrEqual(passes);
+        const sums = b.events().filter((e) => e.type === "guard.spool-drops");
+        expect(sums.length).toBeGreaterThan(0);
+        expect(sums.length).toBeLessThanOrEqual(passes);
+        expect(JSON.stringify(sums)).not.toMatch(/junk|the-real-code|7777/);
+      },
+      SLOW,
+    );
+
+  test("a code that passed its screen isn't held by the unsigned window", async () => {
+    const t = testHandlers();
+    const b = await box({ handlers: { signed: t.handlers.signed, unsigned: [...t.handlers.unsigned, CONNECT_CODE_HANDLER] } });
+    const real = "7".repeat(64);
+    mkdirSync(b.s.ops, { recursive: true });
+    const opened = openControllerConnect({ ops: { dir: b.s.ops, owner: me }, now: T, actor: "owner", params: {}, stateHashes: { runner: stateHash(real), source: stateHash("8".repeat(64)) } });
+    if (!("op" in opened)) throw new Error(opened.why);
+    writeOp({ dir: b.s.ops, owner: me }, { ...opened.op, phase: "making-runner" });
+    // The window spent on polls first.
+    for (let p = 0; p < 4; p++) {
+      for (let i = 0; i < 20; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${p}-${i}` }, b.sys);
+      await b.job();
+    }
+    writeSpoolFile(b.s.agentSpool, "connect-code", { op: opened.op.id, state: real, code: "the-real-code" }, b.sys);
+    for (let i = 0; i < 20; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `q${i}` }, b.sys);
+    await b.job();
+    expect(existsSync(join(b.s.dir, "connect-code.json"))).toBe(true);
+  });
 
   test("junk of one kind never pushes out another: the connect code keeps its own slots past the spool's cap", async () => {
     const t = testHandlers();
@@ -628,7 +653,7 @@ describe("the review's cases", () => {
   );
 
   test(
-    "a flood past the spool's cap with the owner's real request in it: forged ones are dropped first, each with an outcome, and the owner's applies",
+    "a flood past the spool's cap with the owner's real request in it: forged ones are dropped first, summed once a pass, and the owner's applies",
     async () => {
       const b = await box();
       const n = (await nonceOf(b.d, "box")) as { nonce: string };
@@ -639,17 +664,19 @@ describe("the review's cases", () => {
       for (let i = 0; i < 12 && readOutcome(b.d.outcomes, owner, me).kind === "missing"; i++) await b.job();
       expect(readOutcome(b.d.outcomes, owner, me)).toMatchObject({ kind: "ok", value: { ok: true, said: "Draining." } });
       expect(b.applied).toHaveLength(1);
-      // Every forged one is dropped unread past the cap, refused for its signature, or still waiting
-      // in the spool: none is ever gone with no outcome.
+      // Every forged one is dropped unread past the cap (in the pass's one summary, with no outcome of
+      // its own), refused for its signature, or still waiting in the spool.
       const here = readdirSync(b.s.agentSpool).join(" ");
       const said = junk.map((id) => {
         const o = readOutcome(b.d.outcomes, id, me);
-        return o.kind === "ok" ? o.value.code : here.includes(id) ? "waiting" : "gone";
+        return o.kind === "ok" ? o.value.code : here.includes(id) ? "waiting" : "dropped";
       });
-      expect(said.filter((c) => c === "busy").length).toBe(61 - 50);
+      expect(said.filter((c) => c === "dropped").length).toBe(61 - 50);
+      const sum = b.events().filter((e) => e.type === "guard.spool-drops").map((e) => (e.data as { drops?: Record<string, { flood: number }> })?.drops?.signed?.flood ?? 0);
+      expect(sum.reduce((x, y) => x + y, 0)).toBe(61 - 50);
       // stale-state: once the owner's applied, a forged word's nonce is old, and past the minute's
       // budget of checks (statement.ts) it is refused for that alone.
-      expect(said.filter((c) => !["busy", "signature", "stale-state", "waiting"].includes(c ?? ""))).toEqual([]);
+      expect(said.filter((c) => !["dropped", "signature", "stale-state", "waiting"].includes(c ?? ""))).toEqual([]);
     },
     SLOW,
   );
@@ -687,7 +714,7 @@ describe("the review's cases", () => {
   );
 
   test(
-    "a request root removes unread tells its asker why",
+    "a request root removes unread writes no outcome of its own: the pass's one summary counts it, and its asker hears it left unanswered",
     async () => {
       const b = await box();
       for (let i = 0; i < 40; i++) writeSpoolFile(b.s.agentSpool, "mystery", {}, b.sys);
@@ -702,7 +729,9 @@ describe("the review's cases", () => {
         for (const f of readdirSync(b.s.agentSpool).filter((x) => x.endsWith(".poll.json"))) utimesSync(join(b.s.agentSpool, f), old, old);
         await b.job();
       } }, "poll", { pairing: "p1" });
-      expect(r).toMatchObject({ outcome: { ok: false, code: "expired", said: expect.stringContaining("waited past its 2 minutes in the spool unread") } });
+      expect(r).toMatchObject({ left: "gone" });
+      const sums = b.events().filter((e) => e.type === "guard.spool-drops" && (e.data as { drops?: Record<string, { expired: number }> })?.drops?.poll?.expired);
+      expect(sums.length).toBeGreaterThan(0);
     },
     SLOW,
   );

@@ -1,8 +1,7 @@
 // The GitHub key keeper (local.taskbox.broker, as _taskboxgh): the only reader of both Apps' keys. It
 // answers a closed set of asks over run/broker.sock (the service account and root) and
 // guard/broker.sock (root), and never returns a key, a JWT, or a token wider than the ask.
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, chmodSync, lstatSync, unlinkSync } from "node:fs";
 import { type Clock, realClock } from "./clock.ts";
 import { type AppRole, installationsOf } from "./connect.ts";
 import type { Config } from "./config.ts";
@@ -524,10 +523,9 @@ export async function keeperBeat(sys: Pick<Sys, "run" | "now">, file: string, ui
   const { bootId } = await import("./core/boot.ts");
   const boot = await bootId(sys);
   // Never throws: a beat that can't be written leaves the last one to age, and guardwatch and the beat
-  // row alarm on it. The folder is made when its parent lets the keeper.
+  // row alarm on it. Install makes the folder (keys.ts brokerFoldersProblem); the keeper can't.
   return async () => {
     try {
-      mkdirSync(dirname(file), { recursive: true, mode: 0o755 });
       const b = await beatNow(sys, pid, boot);
       if (b) writeBeat(file, b, uid);
     } catch {}

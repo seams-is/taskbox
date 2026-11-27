@@ -133,17 +133,11 @@ describe("the keeper's beat, as guardwatch reads it", () => {
     expect(readBeat(w.brokerBeat, me + 1)).toBeUndefined();
   });
 
-  test("a missing beat folder is made; one the keeper can't make never stops it, and the beat ages for the alarm", async () => {
+  test("a missing beat folder never stops the keeper: no beat is written, so the alarm comes", async () => {
     const { keeperBeat } = await import("../src/broker.ts");
     const root = mkdtempSync(join(tmpdir(), "taskbox-beat-"));
-    const file = join(root, "beat/broker.beat");
     const sys = new FakeSys();
-    await (await keeperBeat(sys, file, me, 4242))();
-    expect(statSync(join(root, "beat")).mode & 0o777).toBe(0o755);
-    expect(existsSync(file)).toBe(true);
-    const shut = join(root, "shut");
-    mkdirSync(shut, { mode: 0o500 });
-    await expect((await keeperBeat(sys, join(shut, "beat/broker.beat"), me, 4242))()).resolves.toBeUndefined();
-    expect(existsSync(join(shut, "beat"))).toBe(false);
+    await expect((await keeperBeat(sys, join(root, "beat/broker.beat"), me, 4242))()).resolves.toBeUndefined();
+    expect(existsSync(join(root, "beat"))).toBe(false);
   });
 });
