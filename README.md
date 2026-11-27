@@ -6,14 +6,19 @@ Every job on a box is untrusted code. A box never runs a job that holds secrets:
 
 ## Install
 
-Every org installs this repo's signed releases. Its own settings live in its private settings repo: `taskbox.json`, from `taskbox.example.json`, and `boxes/<box>.json` for each box.
+1. Make a private settings repo in your organisation. Copy `taskbox.example.json` to `taskbox.json` there and fill in your values: `org`, `jobsFrom` (the one repo whose jobs the box runs) and `runnerGroup` are yours. The rest have defaults. Everything that makes a setup your own lives in that repo; the code comes from this repo's signed releases.
+2. Make a runner group, limited to selected private repos, that lists the one repo.
+3. Install taskbox for the controller on your own Mac, from the [release page](https://github.com/seams-is/taskbox/releases).
 
-- The controller: unpack this repo's newest release in Downloads, then type `sh ~/Downloads/taskbox/install-controller.sh <org>/<repo>`, naming this repo.
-- A box: at the box, on Ethernet, as your admin user, unpack the same release in Downloads and type `sh ~/Downloads/taskbox-main/install.sh`. Type `yes` once the release it shows matches the release page. Its prompts cover the service account, the Tailscale policy entry ([docs](docs/tailnet-policy.md)) and the service account's login.
+## Set up a box
 
-Then `taskbox check`: every line should say OK.
+From the controller, with Remote Login on at the new Mac (System Settings, General, Sharing):
 
-## Update
+`taskbox box install ADMIN@MAC --settings ORG/REPO`
+
+It fetches the signed release and checks it, reads `taskbox.json` through your own GitHub session, copies both to the Mac, and runs the install there over ssh: each password is asked in your terminal. The install verifies the release again against the keys it pins, shows the release, the key that signed it and the settings commit, and takes your `yes`. Then it turns Remote Login off, and runs `taskbox box add` and `taskbox connect github` from the controller.
+
+At the Mac's screen instead, as your admin user: download `statement.json`, `statement.json.sig` and `taskbox-vX.Y.Z.tar.gz` from the release page into one folder, unpack the tarball there, and type `sh taskbox/install.sh --settings ORG/REPO`. It reads a public settings repo itself; a private one goes through `taskbox box install`. Then, from the controller, `taskbox box add` and `taskbox connect github`.
 
 - A box updates itself, inside its update window, to the newest signed release on its channel (`update.channel`: `stable` or `beta`).
 - `taskbox update [VERSION]`, as the admin at the box, installs one now. `taskbox rollback` goes back to a kept install.

@@ -94,6 +94,24 @@ describe("the loop runs what was asked", () => {
     expect(op.kind === "ok" && op.value).toMatchObject({ state: "failed", why: "a Linux VM reached the router port 22 answered" });
   });
 
+  test("an asked release trial runs in a free slot, ends its op and writes its event, which selftest list reads", async () => {
+    const sys = new FakeSys();
+    const d = linuxDeps(sys);
+    writeProof(d.paths.projectState, { v: 1, at: 1, ok: true, image: LINUX_IMAGE, commit: "c0ffee0", detail: "held" });
+    d.proveLinux = async () => ({ ok: true, detail: "x" });
+    const f = loopAsks(d);
+    const a = askLoop(f, "selftest-run", "release", { release: "3.0.1-rc.2" }, sys.now()) as { op: { id: string } };
+    const tried: string[] = [];
+    d.tryRelease = async (v) => (tried.push(v), { ok: false, detail: "v3.0.1-rc.2's install in taskbox's own VM ended with exit 1: The install isn't finished" });
+    await runLoop(d);
+    expect(tried).toEqual(["3.0.1-rc.2"]);
+    const op = readOp(f, a.op.id);
+    expect(op.kind === "ok" && op.value).toMatchObject({ state: "failed", result: { version: "3.0.1-rc.2" } });
+    expect(readAsk(f, "release")).toBeUndefined();
+    const ev = readEvents([{ dir: loopState(d.paths.state).events, owner: ME, writer: "loop" }], { type: "selftest" }).events;
+    expect(ev.map((e) => [e.type, (e.data as { why: string; version?: string }).why, (e.data as { version?: string }).version, e.op])).toContainEqual(["selftest.failed", "release", "3.0.1-rc.2", a.op.id]);
+  });
+
   test("an asked pull of an image already held ends at once", async () => {
     const sys = new FakeSys();
     const d = linuxDeps(sys);
@@ -139,10 +157,14 @@ describe("the commands", () => {
     expect(kinds(other)).toContain("the service account's, at the box");
   });
 
-  test("selftest run --release says it isn't in this build", async () => {
-    const r = await run(["selftest", "run", "--release", "3.0.1-rc.2"]);
-    expect(r.code).toBe(1);
-    expect(kinds(r)).toContain("not in this build");
+  test("selftest run --release asks the loop to try that release, as its own op", async () => {
+    const r = await run(["selftest", "run", "--release", "v3.0.1-rc.2", "--detach"]);
+    expect(r.code).toBe(0);
+    expect(readAsk(r.f, "release")).toBeDefined();
+    expect(readAsk(r.f, "selftest")).toBeUndefined();
+    expect(listOps(r.f).ops[0]).toMatchObject({ type: "selftest-run", subject: "release", params: { release: "3.0.1-rc.2" }, state: "running" });
+    expect(kinds(r)).toContain("install.sh --guest-test");
+    expect((await run(["selftest", "run", "--release", "3.0"])).code).toBe(2);
   });
 
   test("image pull takes only a kind the box runs, and --detach leaves an ask", async () => {

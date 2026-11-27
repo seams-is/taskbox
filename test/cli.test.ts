@@ -99,7 +99,7 @@ describe("the root commands", () => {
   test("install by anyone but root names install.sh", async () => {
     for (const who of [CALLERS.admin, CALLERS["a standard user"], CALLERS.ci]) {
       const r = await run(["install"], who);
-      expect([r.code, r.said, r.ttys]).toEqual([1, ["Type sh ~/Downloads/taskbox-main/install.sh."], []]);
+      expect([r.code, r.said, r.ttys]).toEqual([1, ["Type sh taskbox/install.sh --settings ORG/REPO, in the folder the release is in."], []]);
     }
   });
 });

@@ -15,7 +15,7 @@
 {"file": "cmd/logins.ts", "reads": 1, "why": "moved from cli.ts: the now the logins screen counts back from: display"}
 {"file": "cmd/logs.ts", "reads": 1, "why": "the now --since and --until count back from: which lines to show"}
 {"file": "cmd/policy.ts", "reads": 1, "why": "whether the temporary admin SSH window is open, for the policy printed: a step moves its end by the step, and the check row warns while it is open"}
-{"file": "cmd/selftest.ts", "reads": 1, "why": "the start time on a selftest run's op record: a label"}
+{"file": "cmd/selftest.ts", "reads": 2, "why": "the start time on a selftest run's or a release trial's op record: a label"}
 {"file": "cmd/status.ts", "reads": 4, "why": "moved from cli.ts: the now for status's recent-logins line: display; whether the temporary admin SSH window is open: display. The move to v3 is shown for a day once proved: a label"}
 {"file": "cmd/tool.ts", "reads": 3, "why": "when a tool refresh was asked, and how long the command watches it: a step only stops watching sooner or later, and the refresh carries on"}
 {"file": "confirmapply.ts", "reads": 2, "why": "the guard's answer to a confirm: pending.ts judges each item by wall, boot and monotonic clock together, so a step either way lapses it; and the id of the event that names the admin in root's record: a label"}
@@ -42,17 +42,17 @@
 {"file": "guard.ts", "reads": 8, "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too; a Tailscale rotation's lock past its time, which only makes the guard settle it and open the socket again"}
 {"file": "guardwatch.ts", "reads": 2, "why": "a beat's wall time and a log line's time, for people to read only: every age is judged on mono"}
 {"file": "hooks/net.ts", "reads": 4, "why": "network diagnostics: the netwatch record's age, a job's window end and the detail files' age; nothing but a diagnostics file past keepDays is removed on it"}
-{"file": "install.ts", "reads": 6, "why": "installedAt labels, the lock's time, and the wait for Tailscale to start: a step only waits less or more"}
+{"file": "install.ts", "reads": 5, "why": "installedAt labels, the lock's time, the settings' read time, and the wait for Tailscale to start: a step only waits less or more"}
 {"file": "jobs.ts", "reads": 1, "why": "when a stop was asked: a label in the stop's file"}
 {"file": "keychild.ts", "reads": 1, "why": "a rotation's deadline when its record has none: the guard ends the child on mono time"}
 {"file": "keycmd.ts", "reads": 3, "why": "when an op began, a listener's minutes and a key's age: labels, and a wait the op's mono deadline bounds"}
 {"file": "keyops.ts", "reads": 2, "why": "an op's start, its deadline and a refused op's end: the child's limit runs on mono time (child.ts)"}
 {"file": "keyrotate.ts", "reads": 2, "why": "when an App was retired, a label, and the code wait: a step only ends a wait"}
-{"file": "keys.ts", "reads": 3, "why": "a GitHub App JWT's iat and the clock offset GitHub reports: GitHub judges the JWT"}
+{"file": "keys.ts", "reads": 1, "why": "a GitHub App JWT's iat: GitHub judges the JWT"}
 {"file": "kinds.ts", "reads": 8, "why": "the scheduler's now: when slots became ready or busy, an idle VM's turn, and when a VM was told to give way: a step only reorders a choice, gives an idle VM's turn away or ends a wait for a VM to go; no running job is ended"}
 {"file": "loadcmd.ts", "reads": 3, "why": "load status, load stop and load report: now for a session's labels, the source's freshness and the report's end: display only"}
 {"file": "log.ts", "reads": 1, "why": "a log line's time label"}
-{"file": "loop.ts", "reads": 108, "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label. Whether a test job's load session is still on: a step at worst ends a test job early, never a real one. An asked selftest's or pull's op times and a run's length: labels."}
+{"file": "loop.ts", "reads": 114, "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label. Whether a test job's load session is still on: a step at worst ends a test job early, never a real one. An asked selftest's, release trial's or pull's op times and a run's length: labels."}
 {"file": "loopask.ts", "reads": 2, "why": "how long a selftest run or image pull's command watches before its --timeout: the op carries on whatever a step does"}
 {"file": "loopwatch.ts", "reads": 2, "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"}
 {"file": "migrate/box.ts", "reads": 8, "why": "the rollback watch's deadline and the proof's start: the watch file holds wall times, as v2.6.1's watcher reads them; the proof's own waits are on mono; the update lock's time, as v2.6.1 writes it"}

@@ -154,9 +154,11 @@ export async function planService(d: Pick<AccountDeps, "sys">, name: string, rec
 
 // After the yes: makes the service account. sysadminctl asks for its password itself, at the
 // terminal, so it is never on a command line (not checked: that "-password -" asks, without echo).
-export async function makeService(d: AccountDeps, name: string, recordPath: string): Promise<number | string> {
-  d.say(`Making the account ${name}, which runs jobs. Type its password when asked, and keep it: you type it once after each restart. The next step asks for it again, which catches a typo.`);
-  const code = d.tty(["/usr/sbin/sysadminctl", "-addUser", name, "-fullName", "taskbox", "-password", "-"]);
+// guestPassword: install.sh --guest-test in a throwaway VM, where nobody types: a random password on
+// sysadminctl's command line, seen only inside that VM, which is deleted after.
+export async function makeService(d: AccountDeps, name: string, recordPath: string, guestPassword?: string): Promise<number | string> {
+  d.say(guestPassword ? `Making the account ${name}, which runs jobs, with a random password: this is a guest test.` : `Making the account ${name}, which runs jobs. Type its password when asked, and keep it: you type it once after each restart. The next step asks for it again, which catches a typo.`);
+  const code = guestPassword ? (await d.sys.run("/usr/sbin/sysadminctl", ["-addUser", name, "-fullName", "taskbox", "-password", guestPassword], { timeoutMs: 120_000 })).code : d.tty(["/usr/sbin/sysadminctl", "-addUser", name, "-fullName", "taskbox", "-password", "-"]);
   const uid = await uidOf(d.sys, name);
   if (code !== 0 || uid === undefined) return `sysadminctl didn't make ${name} (exit ${code}). Nothing else was changed. ${againOf(d)}, or make ${name} in System Settings, Users & Groups, as a Standard user, then run it again.`;
   // Recorded at once, so a failed step after this still leaves the account taskbox's to remove.

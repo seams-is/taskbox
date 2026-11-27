@@ -16,9 +16,8 @@ import { readRequest, readSpoolFile } from "./core/spool.ts";
 import type { Json } from "./core/statement.ts";
 import { CLOCK_LIMIT_S, clockOffsetS } from "./ghfail.ts";
 import { AppClient, apiCall, bodyOf, revokeToken, runnerGroupsOf, tokenCall, tokenRepos } from "./github.ts";
-import { dropKey, keyFileName, listKeys, placePending, placeSourceKey, promoteKey, proveActionsKey, readAdoptedKey, readHeldKey } from "./keys.ts";
+import { dropKey, keyFileName, listKeys, placePending, promoteKey, readAdoptedKey, readHeldKey } from "./keys.ts";
 import type { Log } from "./log.ts";
-import { readActionsKey } from "./queue.ts";
 import { runnerAppId, settingsRepoOf } from "./settings/connect.ts";
 import { servedRepos, sourceKeyPath, sourceOf } from "./settings/scheduling.ts";
 import type { Sys } from "./sys.ts";
@@ -683,40 +682,6 @@ export function connectStatus(d: Pick<FlowDeps, "cfg" | "keys" | "pendingFile" |
     return { role, ...(k ? { appId: k.appId } : {}), ...(k?.slug ? { slug: k.slug } : {}), key: file ? "held" : !seen ? "unseen" : p ? "pending" : "missing", ...(age !== undefined ? { keyAgeDays: age } : {}), ...(p ? { pending: { appId: p.appId, slug: p.slug } } : {}) };
   });
   return { apps, unfinished: !!(f.apps.runner || f.apps.source) };
-}
-
-// ---- v2's update path ----
-// v2's install code keeps a release's source in box.json before the new release, which may drop it, is
-// used. It reads the key where v2 placed it.
-export interface ReleaseSourceDeps {
-  sys: Sys;
-  log: Log;
-  paths: Paths;
-  cfg: Config;
-  chown(path: string, uid: number, gid: number): void;
-  rootUid?: number;
-  serviceUid: number;
-}
-
-export async function adoptSource(d: ReleaseSourceDeps, cfg: Config = d.cfg): Promise<{ slug: string } | { why: string }> {
-  const box = readBoxFile(d.paths.boxSettings, d.rootUid ?? 0);
-  if (box.settings && "sources" in box.settings) return { why: "this box keeps its own source already" };
-  const src = sourceOf(d.cfg);
-  if (src.type !== "github-actions") return { why: "the release names no job source App" };
-  const pem = readActionsKey(d.paths.actionsKeyDir, sourceKeyPath(d.paths, src.appId), d.serviceUid, d.rootUid ?? 0);
-  if (!pem) return { why: "the job source App's key isn't on this box" };
-  const proof = await proveActionsKey(d, cfg, pem, src.appId);
-  if (proof) return { why: proof.why };
-  const slug = (await slugOf(clientFor(d, src.appId, pem))) ?? `app-${src.appId}`;
-  // Also under its App's ID; the old file stays for an undo to a release that reads only it.
-  if (sourceKeyPath(d.paths, src.appId) !== join(d.paths.actionsKeyDir, `actions-${src.appId}.pem`)) {
-    const why = await placeSourceKey(d, pem, src.appId, d.serviceUid);
-    if (why) return { why };
-  }
-  const s = sourceOf(cfg);
-  const load = s.type === "github-actions" ? s.repos.filter((r): r is LoadRepo => typeof r === "object") : [];
-  writeOwnedText(d.paths.boxSettings, `${JSON.stringify({ sources: [{ type: "github-actions", appId: src.appId, app: slug, repos: [cfg.jobsFrom, ...load] }] }, null, 2)}\n`, { mode: 0o644, owner: d.rootUid ?? 0, chown: d.chown });
-  return { slug };
 }
 
 // ---- The op ----

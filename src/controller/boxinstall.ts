@@ -33,13 +33,20 @@ export function lanOptions(knownHosts: string): string[] {
 export interface InstallDeps extends UpdateDeps {
   term?(argv: string[]): Promise<number>; // a program with this terminal
   gh?: Gh; // the owner's own gh; ownerGh's when absent
+  // What follows the install, from this controller: box add, then connect github, for the box's name.
+  after?(name: string, out: (l: string) => void): Promise<number>;
 }
 
-// The settings repo's taskbox.json at its default branch's head, through the owner's own GitHub
-// session: the Mac can't read a private repo before it has an App. Checked as JSON of a sane size;
-// the install validates every key itself.
-export async function settingsFile(gh: Gh, repo: string): Promise<{ text: string } | { why: string }> {
-  const r = await gh(["api", `repos/${repo}/contents/taskbox.json`]);
+// The settings repo's taskbox.json at its default branch's head commit, through the owner's own
+// GitHub session: the Mac can't read a private repo before it has an App. The commit is read first,
+// then the file at it, so the two belong together. Checked as JSON of a sane size; the install
+// validates every key itself.
+export async function settingsFile(gh: Gh, repo: string): Promise<{ text: string; sha: string } | { why: string }> {
+  const head = await gh(["api", "-H", "Accept: application/vnd.github.sha", `repos/${repo}/commits/HEAD`]);
+  const sha = head.stdout.trim();
+  if (head.code !== 0) return { why: /HTTP 404/.test(head.stderr) ? `${repo} isn't a repo your GitHub session can read` : `GitHub answered: ${printable(head.stderr, 120)}` };
+  if (!/^[0-9a-f]{40}$/.test(sha)) return { why: "GitHub's answer for the settings repo's head wasn't a commit" };
+  const r = await gh(["api", `repos/${repo}/contents/taskbox.json?ref=${sha}`]);
   if (r.code !== 0) return { why: /HTTP 404/.test(r.stderr) ? `${repo} has no taskbox.json, or your GitHub session can't read it` : `GitHub answered: ${printable(r.stderr, 120)}` };
   try {
     const v = JSON.parse(r.stdout) as { content?: unknown; encoding?: unknown };
@@ -48,9 +55,19 @@ export async function settingsFile(gh: Gh, repo: string): Promise<{ text: string
     if (text.length > 512_000) return { why: "taskbox.json is larger than taskbox takes" };
     const o = JSON.parse(text) as unknown;
     if (!o || typeof o !== "object" || Array.isArray(o)) return { why: "taskbox.json isn't a JSON object" };
-    return { text };
+    return { text, sha };
   } catch {
     return { why: "taskbox.json isn't JSON" };
+  }
+}
+
+// The box's name on the tailnet, as the install signs it in: the settings' runnerNamePrefix.
+export function boxNameOf(text: string): string | undefined {
+  try {
+    const n = (JSON.parse(text) as { runnerNamePrefix?: unknown }).runnerNamePrefix;
+    return typeof n === "string" && /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(n) ? n.toLowerCase() : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -91,20 +108,21 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
     const sf = await settingsFile(gh, settings);
     if ("why" in sf) return stop(`The settings weren't read: ${sf.why}.`, "Type gh auth status: gh must be signed in as someone who can read the settings repo.");
     files["taskbox.json"] = new TextEncoder().encode(sf.text);
+    files["taskbox.json.commit"] = new TextEncoder().encode(`${sf.sha}\n`);
     for (const [name, data] of Object.entries(files)) writeFileSync(join(work, name), data, { mode: 0o600 });
 
     const lan = lanOptions(join(d.home.dir, "known_hosts.lan"));
     const term = d.term;
     // copying: ssh asks the Mac's admin password here, and its host key the first time.
     out(`copying: the release to ~/${FOLDER} on ${m[2]}. ssh asks ${m[1]}'s password here.`);
-    if ((await term([SSH, ...lan, host, `/bin/mkdir -p -m 700 ${FOLDER}`])) !== 0) return stop(`ssh couldn't reach ${host}.`, "Turn Remote Login on at the Mac (System Settings, General, Sharing), then run taskbox box install again.");
+    if ((await term([SSH, ...lan, host, `/bin/rm -rf ${FOLDER} && /bin/mkdir -m 700 ${FOLDER}`])) !== 0) return stop(`ssh couldn't reach ${host}.`, "Turn Remote Login on at the Mac (System Settings, General, Sharing), then run taskbox box install again.");
     const scp = ["/usr/bin/scp", ...lan, ...Object.keys(files).map((n) => join(work, n)), `${host}:${FOLDER}/`];
     if ((await term(scp)) !== 0) return stop("The release didn't copy.", "Run taskbox box install again.");
 
     // installing: the install's own steps, every prompt in this terminal.
     out("installing: install.sh at the Mac, as its admin. It verifies the release again with the signers inside it.");
     const t = tarballName(tag);
-    const run = `cd ${FOLDER} && /bin/rm -rf taskbox && /usr/bin/tar -xzf ${t} && /bin/mv taskbox.json taskbox/taskbox.json && /bin/sh taskbox/install.sh --settings ${settings}`;
+    const run = `cd ${FOLDER} && /bin/rm -rf taskbox && /usr/bin/tar -xzf ${t} && /bin/sh taskbox/install.sh --settings ${settings}`;
     const code = await term([SSH, "-t", ...lan, host, run]);
     if (code !== 0) {
       appendEvent(d.home, d.now(), "box.install-failed", `box install on ${m[2]} stopped at the install.`, { host: m[2]!, tag });
@@ -118,9 +136,15 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
     const off = back.code !== 0;
     appendEvent(d.home, d.now(), "box.installed", `box install put taskbox ${tag} on ${m[2]}.`, { host: m[2]!, tag, remoteLoginOff: off });
     out(off ? `Remote Login is off at ${m[2]}.` : `Remote Login still answers at ${m[2]}. Turn it off there: System Settings, General, Sharing.`);
-    out("At the Mac's screen: unlock FileVault, then compare the fingerprints it shows with taskbox self check here and taskbox sign --fingerprint on the signing Mac.");
-    for (const l of footer(`taskbox ${tag} on ${m[2]}.`, "Installed taskbox on the Mac.", "Type taskbox box add once the Mac shows it is ready.")) out(l);
-    return off ? EXIT.ok : EXIT.failed;
+    const name = boxNameOf(sf.text);
+    if (!off || !name || !d.after) {
+      out("At the Mac's screen: unlock FileVault, then compare the fingerprints it shows with taskbox self check here and taskbox sign --fingerprint on the signing Mac.");
+      for (const l of footer(`taskbox ${tag} on ${m[2]}.`, "Installed taskbox on the Mac.", "Type taskbox box add, then taskbox connect github.")) out(l);
+      return off ? EXIT.ok : EXIT.failed;
+    }
+    // pairing, then the GitHub Apps: box add, then connect github, from here.
+    out(`pairing: taskbox box add ${name}, then taskbox connect github --box ${name}.`);
+    return await d.after(name, out);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

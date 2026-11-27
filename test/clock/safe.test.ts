@@ -110,8 +110,8 @@ describe("the rollback watcher's deadline in v3's tree", () => {
     expect(decideWatch(old, { wall: 1000 + 70 * 60_000 }, used)).toBe(true);
     expect(decideWatch(old, { wall: 1000 }, used)).toBe(false);
   });
-  test("v3's install places the watch with mono time and the boot", () => {
-    const src = readFileSync(new URL("../../src/install.ts", import.meta.url), "utf8");
+  test("v3's update places the watch with mono time and the boot", () => {
+    const src = readFileSync(new URL("../../src/update/box.ts", import.meta.url), "utf8");
     expect(src).toMatch(/placeRollbackWatch\([^)]*placedMono/);
   });
 });

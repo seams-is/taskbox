@@ -15,8 +15,7 @@ async function runIt(c: BoxCtx): Promise<Outcome> {
     return { exit: 1, error: err(code, line, fix, who) };
   };
   if (c.cu === undefined || c.uid !== c.cu) return refuse("taskbox selftest run is the service account's, at the box. The loop runs the selftest by itself every 6 hours and after each install.", "denied", "taskbox selftest run as the service account", "at-the-box");
-  if (typeof c.opts.release === "string")
-    return refuse(`Trying ${c.opts.release} in taskbox's own VMs before the box installs it is not in this build. taskbox selftest run without --release runs the Linux selftest now.`, "failed", "taskbox selftest run");
+  if (typeof c.opts.release === "string") return trial(c, c.opts.release.replace(/^v/, ""), say, refuse);
   const { kindsOf, loadConfig } = await import("../config.ts");
   let kinds: string[] = [];
   try {
@@ -46,6 +45,30 @@ async function runIt(c: BoxCtx): Promise<Outcome> {
   return op.state === "succeeded" ? { exit: 0, result: { op: id, state: op.state, detail }, did: "Ran the selftest." } : { exit: 1, result: { op: id, state: op.state, detail }, error: err("failed", text.slice(0, 120), "taskbox check", "waits") };
 }
 
+// --release: the loop tries that signed release in a macOS VM of taskbox's own (trial.ts): the
+// whole install, install.sh --guest-test, from its tree.
+async function trial(c: BoxCtx, version: string, say: (l: string) => void, refuse: (line: string, code: ErrorBody["code"], fix: string | null) => Outcome): Promise<Outcome> {
+  const { loopState } = await import("../core/paths.ts");
+  const { askLoop, watchAsk } = await import("../loopask.ts");
+  const { duration } = await import("../command.ts");
+  const sys = c.ops.sys;
+  const f = { dir: loopState(c.own.state).ops, owner: c.cu! };
+  const got = askLoop(f, "selftest-run", "release", { release: version }, sys.now());
+  if ("busy" in got) return refuse(got.busy, "busy", null);
+  const id = got.op.id;
+  say(`${got.attached ? "Watching the trial in progress" : `Asked the loop to try v${version}`}: ${id}. In the next free slot it verifies the release as an update would, then installs it in a macOS VM of its own with install.sh --guest-test, and deletes the VM after. taskbox op cancel ${id} cancels it.`);
+  if (c.flags.detach) return { exit: 0, result: { op: id, release: version }, did: `Asked for the trial of v${version}: ${id}.` };
+  const limit = typeof c.flags.timeout === "string" ? (duration(c.flags.timeout) ?? 0) : 0;
+  const w = await watchAsk({ say, sys }, f, id, "trial", limit);
+  const op = w.op;
+  if (!op) return refuse("The trial's record can't be read.", "failed", null);
+  if (w.exit === 3) return { exit: 3, result: { op: id, state: "running", release: version } };
+  const detail = typeof op.result?.detail === "string" ? op.result.detail : op.why ?? "";
+  const text = op.state === "succeeded" ? `The trial passed: ${detail}` : `The trial ${op.state === "cancelled" ? "was cancelled" : "failed"}${detail ? `: ${detail}` : "."}`;
+  say(text);
+  return op.state === "succeeded" ? { exit: 0, result: { op: id, state: op.state, release: version, detail }, did: `Tried v${version}.` } : { exit: 1, result: { op: id, state: op.state, release: version, detail }, error: err("failed", text.slice(0, 120), "taskbox selftest list", "waits") };
+}
+
 async function list(c: BoxCtx): Promise<Outcome> {
   const { readEvents } = await import("../core/events.ts");
   const { loopState } = await import("../core/paths.ts");
@@ -72,7 +95,7 @@ async function list(c: BoxCtx): Promise<Outcome> {
 export const commands: CommandSpec[] = [
   {
     path: ["selftest", "run"],
-    summary: "Runs the Linux selftest now: a Linux VM under a job's network rules tries the box and its networks.",
+    summary: "Runs the Linux selftest now: a Linux VM under a job's network rules tries the box and its networks. --release tries a signed release in a macOS VM of taskbox's own first.",
     who: ["service"],
     flags: ["json", "timeout", "detach"],
     options: [{ name: "--release", value: "VERSION", check: VERSION }],

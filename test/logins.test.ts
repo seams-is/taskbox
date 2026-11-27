@@ -471,7 +471,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     const fn = src.slice(src.indexOf("export async function install("));
     const at = fn.indexOf("placeTailscaledLog(");
     expect(at).toBeGreaterThan(0);
-    expect(at).toBeLessThan(fn.indexOf("await retirePrevious("));
+    expect(at).toBeLessThan(fn.indexOf("writeFileSync(d.paths.agentPlist"));
     expect(at).toBeLessThan(fn.indexOf("await loadDaemon(d, TAILSCALED_LABEL"));
     expect(fn.slice(at - 20, at)).toMatch(/try \{\s*$/);
   });

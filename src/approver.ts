@@ -113,13 +113,13 @@ export async function approverPlan(pin: Pin, next: string | undefined, change: K
   if (pin.state === "cleared") {
     if (next === undefined) return { change: "none" };
     // A key cleared at the box stays out: whoever has the lost controller has it.
-    if (pin.cleared.includes(fingerprint(next))) return { refuse: `The release's taskbox.json names the approver key ${fingerprint(next)}, which was cleared at this box with taskbox key reset approver. Nothing was installed. Make a new key on the controller, and put it in taskbox.json in a PR.` };
+    if (pin.cleared.includes(fingerprint(next))) return { refuse: `taskbox.json names the approver key ${fingerprint(next)}, which was cleared at this box with taskbox key reset approver. Nothing was installed. Make a new key on the controller, and put it in taskbox.json in a PR.` };
     return { change: "first", key: next, fingerprint: fingerprint(next), gen: pin.gen + 1, cleared: pin.cleared };
   }
   const from = fingerprint(pin.key);
   if (next === undefined) return { change: "off", from };
   if (next === pin.key) return { change: "same", key: next };
-  const refuse = (why: string): ApproverPlan => ({ refuse: `The release's taskbox.json names a new approver key, ${fingerprint(next)}, ${why}. The box keeps ${from}. Nothing was installed. ${RESET}` });
+  const refuse = (why: string): ApproverPlan => ({ refuse: `taskbox.json names a new approver key, ${fingerprint(next)}, ${why}. The box keeps ${from}. Nothing was installed. ${RESET}` });
   if (change === undefined) return refuse("with no statement signed by the old key");
   if (box === undefined) return refuse("and the box's install ID can't be read, so the old key's statement can't be checked");
   const text = Buffer.from(change.statement, "base64url").toString("utf8");

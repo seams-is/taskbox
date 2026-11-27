@@ -150,7 +150,10 @@ describe("taskbox box install", () => {
     d.web.set(api, { status: 200, body: JSON.stringify({ tag_name: "v3.0.0", draft: false, prerelease: false, assets: ["statement.json", "statement.json.sig", "taskbox-v3.0.0.tar.gz"].map((name) => ({ name, browser_download_url: asset(name) })) }) });
     for (const n of ["statement.json", "statement.json.sig", "taskbox-v3.0.0.tar.gz"]) d.web.set(asset(n), { status: 200, body: "x" });
     const settings = JSON.stringify({ org: "example-org" });
-    Object.assign(d, { gh: async (args: string[]) => (args.includes("repos/example-org/settings/contents/taskbox.json") ? { code: 0, stdout: JSON.stringify({ encoding: "base64", content: Buffer.from(settings).toString("base64") }), stderr: "" } : { code: 1, stdout: "", stderr: "HTTP 404" }) });
+    const HEAD = "5e77135e77135e77135e77135e77135e77135e77";
+    const gh = async (args: string[]) =>
+      args.includes("repos/example-org/settings/commits/HEAD") ? { code: 0, stdout: `${HEAD}\n`, stderr: "" } : args.includes(`repos/example-org/settings/contents/taskbox.json?ref=${HEAD}`) ? { code: 0, stdout: JSON.stringify({ encoding: "base64", content: Buffer.from(settings).toString("base64") }), stderr: "" } : { code: 1, stdout: "", stderr: "HTTP 404" };
+    Object.assign(d, { gh });
     expect((await runLine(d, ["box", "install", "admin@mac-mini"])).code).toBe(2);
     const r = await runLine(d, ["box", "install", "admin@mac-mini", "--settings", "example-org/settings"]);
     expect(r.code).toBe(1);
@@ -162,8 +165,11 @@ describe("taskbox box install", () => {
     expect(ok.code).toBe(0);
     expect(terms.map((t) => t[0])).toEqual(["/usr/bin/ssh", "/usr/bin/scp", "/usr/bin/ssh", "/usr/bin/ssh"]);
     expect(terms[2]).toContain("-t");
-    expect(terms[2]!.at(-1)).toBe("cd taskbox-install && /bin/rm -rf taskbox && /usr/bin/tar -xzf taskbox-v3.0.0.tar.gz && /bin/mv taskbox.json taskbox/taskbox.json && /bin/sh taskbox/install.sh --settings example-org/settings");
+    expect(terms[0]!.at(-1)).toBe("/bin/rm -rf taskbox-install && /bin/mkdir -m 700 taskbox-install");
+    expect(terms[2]!.at(-1)).toBe("cd taskbox-install && /bin/rm -rf taskbox && /usr/bin/tar -xzf taskbox-v3.0.0.tar.gz && /bin/sh taskbox/install.sh --settings example-org/settings");
+    // The settings go beside the release, with the commit they were read at.
     expect(terms[1]!.some((a) => a.endsWith("/taskbox.json"))).toBe(true);
+    expect(terms[1]!.some((a) => a.endsWith("/taskbox.json.commit"))).toBe(true);
     expect(terms[3]!.at(-1)).toContain("launchctl disable system/com.openssh.sshd");
     expect(ok.lines.join("\n")).toContain("Remote Login is off at mac-mini.");
     terms.length = 0;
@@ -173,5 +179,31 @@ describe("taskbox box install", () => {
     expect(d.verified[0]).toMatchObject({ installed: null, want: "v3.0.0" });
     expect(terms).toEqual([]);
     expect(w.calls.some((c) => c[0] === "/usr/bin/scp")).toBe(false);
+  }, CEILING);
+
+  test("once Remote Login is off, box add then connect github follow from here, for the name the settings give the box", async () => {
+    const { boxInstall } = await import("../src/controller/boxinstall.ts");
+    const { d, w } = v3();
+    Object.assign(d, { term: async () => 0 });
+    writeConfig(d.home, { ...controllerConfig([pairing()]), source: { owner: "example-org", repo: "taskbox" } });
+    const { symlinkSync, mkdirSync } = await import("node:fs");
+    mkdirSync(join(d.home.releases, "v3.0.0"), { recursive: true });
+    symlinkSync(join("releases", "v3.0.0"), d.home.current);
+    writeFileSync(join(d.home.dir, "allowed_signers"), "x\n");
+    const api = "https://api.github.com/repos/example-org/taskbox/releases/tags/v3.0.0";
+    const asset = (n: string) => `https://github.com/example-org/taskbox/releases/download/v3.0.0/${n}`;
+    d.web.set(api, { status: 200, body: JSON.stringify({ tag_name: "v3.0.0", draft: false, prerelease: false, assets: ["statement.json", "statement.json.sig", "taskbox-v3.0.0.tar.gz"].map((name) => ({ name, browser_download_url: asset(name) })) }) });
+    for (const n of ["statement.json", "statement.json.sig", "taskbox-v3.0.0.tar.gz"]) d.web.set(asset(n), { status: 200, body: "x" });
+    const HEAD = "5e77135e77135e77135e77135e77135e77135e77";
+    const settings = JSON.stringify({ org: "example-org", runnerNamePrefix: "Studio-Mini" });
+    const gh = async (args: string[]) => (args.includes("repos/example-org/settings/commits/HEAD") ? { code: 0, stdout: HEAD, stderr: "" } : { code: 0, stdout: JSON.stringify({ encoding: "base64", content: Buffer.from(settings).toString("base64") }), stderr: "" });
+    d.verdict = { ok: true } as never;
+    const run = w.run;
+    d.run = async (argv, o) => (argv[0] === "/usr/bin/ssh" ? { code: 255, stdout: "", stderr: "Connection refused", timedOut: false, tooBig: false } : run(argv, o));
+    const after: string[] = [];
+    const lines: string[] = [];
+    const code = await boxInstall({ ...d, gh, tty: true, after: async (name: string) => (after.push(name), 0) } as never, "admin@mac-mini", "example-org/settings", (l) => lines.push(l));
+    expect([code, after]).toEqual([0, ["studio-mini"]]);
+    expect(lines).toContain("pairing: taskbox box add studio-mini, then taskbox connect github --box studio-mini.");
   }, CEILING);
 });

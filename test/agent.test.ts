@@ -150,7 +150,7 @@ describe("a missing agent is made", () => {
       const { d } = placeDeps(sys);
       const e = await placeAgent(d, AGENT).catch((x: unknown) => x);
       expect(e).toBeInstanceOf(Stop);
-      expect((e as Stop).message).toBe(`dscl didn't set ${AGENT}'s ${key}. Nothing else was installed. Type taskbox update again.`);
+      expect((e as Stop).message).toBe(`dscl didn't set ${AGENT}'s ${key}. Nothing else was installed. Run the install again.`);
       expect(steps(sys).at(-1)).toBe(`-create ${key}`);
     });
   }
@@ -268,7 +268,7 @@ describe("an existing agent is put back on every install", () => {
     const sys = dir.sys();
     const { d, p } = placeDeps(sys);
     const e = await placeAgent(d, "remote", join(dirname(p.agentHome!), "taskbox-remote"), true).catch((x: unknown) => x);
-    expect((e as Stop).message).toBe("dscl didn't delete remote's ShadowHashData. Nothing else was installed. Type taskbox update again.");
+    expect((e as Stop).message).toBe("dscl didn't delete remote's ShadowHashData. Nothing else was installed. Run the install again.");
   });
 });
 
@@ -352,40 +352,19 @@ describe("an agent step that stops the install", () => {
   let srcTree: string | undefined;
   const TARBALL = "the commit's tarball";
   async function run(dir: Dir, before?: (p: InstallDeps["paths"]) => void) {
-    const { healthyBox, installDeps } = await import("./helpers.ts");
+    const { healthyBox, installDeps, stageRelease } = await import("./helpers.ts");
     // The service, there already, a standard user who can unlock the disk.
     dir.add("taskbox", { uid: 502, guid: "0F0F0F0F-0000-0000-0000-000000000502", unlocks: true, attrs: {} });
     const sys = dir.sys();
     healthyBox(sys);
-    githubRoutes(sys);
-    // The commit's files, staged once for every test here, and unpacked by copying them, as
-    // stageRelease does (helpers.ts). Real tar and gzip were most of each test's work, and under load
-    // ran past its limit.
-    srcTree ??= (() => {
-      const top = join(lasting("taskbox-src-"), "example-org-taskbox-abc1234");
-      copyRepo(top, ["test", "docs"]);
-      writeFileSync(join(top, "taskbox.json"), JSON.stringify(CFG));
-      return top;
-    })();
-    const top = srcTree;
-    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(TARBALL) : undefined));
-    const real = sys.run.bind(sys);
-    sys.run = async (cmd, args, opts) => {
-      if (cmd === "/usr/bin/tar" && args[0] === "-xzf" && args[1]!.endsWith("src.tar.gz")) {
-        // What was downloaded is what is unpacked: the install's own file must hold the tarball.
-        if (readFileSync(args[1]!, "utf8") !== TARBALL) return { code: 1, stdout: "", stderr: "tar: Unrecognized archive format\n" };
-        cpSync(top, args[3]!, { recursive: true });
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      return real(cmd, args, opts);
-    };
+    stageRelease(sys);
     const { d } = installDeps(sys, "yes");
     // The release in place: /opt/taskbox points at its folder.
     const old = `${d.paths.opt}-old`;
     mkdirSync(old, { recursive: true });
     symlinkSync(old, d.paths.opt);
     before?.(d.paths);
-    const e = await install(d, { first: true }).catch((x: unknown) => x);
+    const e = await install(d).catch((x: unknown) => x);
     return { e, sys, d, old };
   }
   const untouched = ({ sys, d, old }: Awaited<ReturnType<typeof run>>) => {
@@ -416,7 +395,7 @@ describe("an agent step that stops the install", () => {
     const dir = new Dir();
     dir.failCreate = "IsHidden";
     const r = await run(dir);
-    expect((r.e as Stop).message).toBe("dscl didn't set taskbox-agent's IsHidden. Nothing else was installed. Run sh ~/Downloads/taskbox-main/install.sh again.");
+    expect((r.e as Stop).message).toBe("dscl didn't set taskbox-agent's IsHidden. Nothing else was installed. Run the install again.");
     untouched(r);
   });
 
