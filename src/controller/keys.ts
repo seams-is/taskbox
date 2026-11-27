@@ -67,6 +67,16 @@ export async function rotateApprover(d: Deps & { boxes: BoxLink[]; makeNew(): Pr
   d.say(`The new key is ${fp}. The old key signs it in on each box: Touch ID asks for each.`);
   const out: BoxState[] = [];
   for (const box of d.boxes) {
+    // A box that pins the new key already (confirmed since the last run) is signed nothing.
+    const p = await pins(box);
+    if (!p) {
+      out.push({ box: box.name, state: "offline", why: `${box.name} can't be reached` });
+      continue;
+    }
+    if (p.pinned.includes(fp)) {
+      out.push({ box: box.name, state: "pinned" });
+      continue;
+    }
     const a = await signedRun(d, box, ["key", "rotate"], ["approver"], { new: b64 });
     if ("why" in a) out.push({ box: box.name, state: /reached/.test(a.why) ? "offline" : "refused", why: a.why });
     else if (a.error?.code === "needs-confirm") out.push({ box: box.name, state: "waiting", ...(typeof a.result?.op === "string" ? { op: a.result.op } : {}) });

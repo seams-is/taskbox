@@ -290,6 +290,8 @@ export function keyLines(rows: KeyRow[]): string[] {
 export async function keyList(c: BoxCtx): Promise<Outcome> {
   const rows = await keyRows(c);
   for (const l of keyLines(rows)) c.say(l);
-  return { exit: EXIT.ok, result: { keys: rows } };
+  const { loadConfig } = await import("./config.ts");
+  // The org, so the controller's own listener can make a rotation's new App there.
+  return { exit: EXIT.ok, result: { keys: rows, org: loadConfig(c.p.app, c.p.boxSettings).org } };
 }
 

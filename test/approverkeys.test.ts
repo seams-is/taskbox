@@ -251,6 +251,12 @@ describe("the controller's rotation: one new key, the old key signing it in on e
     }
     expect(readPending(boxes[1]!.state.pending, me).kind).toBe("missing");
     expect(said.join("\n")).toContain(`At box-a, as your admin user: taskbox confirm, and check it shows ${fingerprint(nu.key)}`);
+    // box-a confirms; run again, box-a is signed nothing, and box-c, still waiting, attaches.
+    boxes[0]!.answers.push("yes");
+    expect(await confirm(boxes[0]!.at)).toBe(0);
+    const again = await rotateApprover({ boxes: [links[0]!, links[2]!], signer, say: (l) => said.push(l), now: () => sys.now(), sleep: (ms) => sys.sleep(ms), makeNew: async () => ({ key: nu.key }) });
+    expect(again.boxes.map((x) => [x.box, x.state])).toEqual([["box-a", "pinned"], ["box-c", "waiting"]]);
+    expect(touches).toBe(3);
   });
 
   test("the new controller offers its key and says what to do at the box; a paired one approves it", async () => {
@@ -265,5 +271,19 @@ describe("the controller's rotation: one new key, the old key signing it in on e
     // With no offer to read, the paired controller signs nothing.
     expect(await approveSecond({ ...d, box: link })).toBe(false);
     expect(said.at(-1)).toMatch(/No controller offered a key/);
+  });
+});
+
+describe("the controller's key commands", () => {
+  test("key rotate and key add run on the controller, and take no key material typed in", async () => {
+    const { isKeyFlow, keyMain } = await import("../src/controller/keyflows.ts");
+    expect(isKeyFlow(["key", "rotate", "runner"])).toBe(true);
+    expect(isKeyFlow(["key", "list"])).toBe(false);
+    const out: string[] = [];
+    const d = {} as never;
+    expect(await keyMain(d, ["key", "rotate", "tailscale", "--seal", "x"], { out: (l) => out.push(l) })).toBe(2);
+    expect(await keyMain(d, ["key", "rotate", "release"], { out: (l) => out.push(l) })).toBe(2);
+    expect(await keyMain(d, ["key", "add", "runner"], { out: (l) => out.push(l) })).toBe(2);
+    expect(out[0]).toMatch(/this controller makes what the box needs/);
   });
 });

@@ -10,6 +10,7 @@ import { commandList, registry, shellCommands, firstWords } from "../registry.ts
 import { verifyRelease } from "../release.ts";
 import { check } from "./check.ts";
 import { grouped, makeKey } from "./signer.ts";
+import { isKeyFlow, keyMain, trustingPhase } from "./keyflows.ts";
 import { ghAt, notifyOnce, postArgv } from "./notify.ts";
 import { ownerScreen } from "./screen.ts";
 import { agentShellArgv, fix, setup } from "./setup.ts";
@@ -121,7 +122,9 @@ async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknow
     // controller shows the whole fingerprint the same way, and waits while the two are compared.
     io.out(`Approver key: ${grouped(k.fingerprint)}`);
     io.out(`trusting: ${p.box.name} takes signed commands once an admin pins this key at the box's own screen, after checking it shows every group above.`);
-    if (d.tty) await d.ask("Press Return once you have compared the fingerprint at the box, or now to do it later: ");
+    // The key is offered to the box, which shows it at key trust approver, or, pinning another
+    // controller's key, waits for that controller's key add approver and confirm at its screen.
+    await trustingPhase(d, p.box.name, k.key, io.out);
   }
   let exit = 0;
   let ran = 0;
@@ -181,6 +184,8 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     const gh = (d as { gh?: import("../hold.ts").Gh }).gh ?? ownerGh(d);
     return (argv[1] === "start" ? loadStart : loadStop)({ ...d, ...(gh ? { gh } : {}) }, argv, io);
   }
+  // key rotate and key add: this controller makes and signs what the box needs (keyflows.ts).
+  if (isKeyFlow(argv)) return keyMain(d, argv, io);
   const mine = CONTROLLER.some((s) => s.path[0] === argv[0]);
   if (!mine) return forward(d, argv, io);
   const p = parse(CONTROLLER, argv);
