@@ -251,7 +251,8 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
   // The owner's signed step: the agent account's shell carries it to the guard through the agent
   // spool, and the guard's handler for this action applies it (core/asker.ts, core/dispatch.ts).
   // The command's own run never runs then, and the Touch ID was the confirmation. A command that
-  // takes --signed, run without it, runs only for the service account and root.
+  // takes --signed, run without it, runs only for the service account and root, unless its unsigned
+  // run is a request that gives nobody more (spec.unsigned).
   if ((spec.flags ?? []).includes("signed")) {
     if (typeof c.flags.signed === "string") {
       const { signedRun } = await import("./core/asker.ts");
@@ -259,7 +260,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
       const sc: BoxCtx = { ...c, spec: s };
       return sc.json ? answer(sc, name) : text(sc, say);
     }
-    if (uid !== cu && uid !== 0) {
+    if (uid !== cu && uid !== 0 && !spec.unsigned) {
       // One an admin may run at the box goes through sudo, as root's commands do.
       if (spec.who.includes("admin") && !deps.env.SSH_CONNECTION && !deps.env.SSH_CLIENT && (await isAdmin(sys, deps.user()))) {
         const e = elevation(pathOf(spec), words.slice(spec.path.length), true);

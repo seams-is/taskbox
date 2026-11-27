@@ -1,103 +1,52 @@
-// The owner's signed statements, checked with the real ssh-keygen -Y verify against an approver key
-// made in memory.
+// verifySignature, every owner-key check's one way to ssh-keygen (workspace/approval.ts), with the
+// real ssh-keygen -Y verify against an approver key made in memory; and base64url with one spelling.
+// v2's workspace statements are retired: their namespace verifies nowhere.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSigned, fromB64url, NAMESPACE, parseStatement, SIGNED_FOR_MS, skFlags, type Statement, statementText, tmpProblem, toB64url } from "../src/workspace/approval.ts";
-import { approver, INSTALL_ID, N, realKeygen, T, verifyDeps, withFlags } from "./ws-helpers.ts";
+import { fromB64url, skFlags, tmpProblem, toB64url, verifySignature } from "../src/workspace/approval.ts";
+import { approver, realKeygen, verifyDeps, withFlags } from "./ws-helpers.ts";
 
 const SLOW = 15_000;
-const base: Statement = { v: 1, box: INSTALL_ID, do: "approve", name: "nova-1", agent: "nova", size: "whole", nonce: N(1), at: T };
-const pass = () => undefined;
-
-async function check(s: Statement | string, sig: string, o: { key?: string; now?: number; expect?: (s: Statement) => string | undefined } = {}) {
-  const k = o.key ?? owner.key;
-  return checkSigned(verifyDeps(), { statement: typeof s === "string" ? s : statementText(s), signature: sig, trusted: k, installId: INSTALL_ID, now: o.now ?? T, expect: o.expect ?? pass });
-}
+const NS = "taskbox-control" as const;
 const owner = approver();
+const MSG = '{"v":1,"ns":"taskbox-control","action":"workspace.approve"}\n';
+const check = (sig: string, o: { key?: string; message?: string; namespace?: typeof NS | "taskbox-approver"; d?: Parameters<typeof verifySignature>[0] } = {}) => verifySignature(o.d ?? verifyDeps(), { key: o.key ?? owner.key, message: o.message ?? MSG, signature: sig, namespace: o.namespace ?? NS });
 
-describe("checkSigned, with the real ssh-keygen", () => {
-  test("the owner's signature on the exact statement passes", async () => {
-    const r = await check(base, owner.sign(base));
-    expect(r).toEqual({ ok: true, statement: base });
-    for (const act of ["pause", "pause-now", "end", "resume"] as const) {
-      const { size: _, ...rest } = base;
-      const s = { ...rest, do: act } as Statement;
-      expect((await check(s, owner.sign(s))).ok).toBe(true);
-    }
+describe("verifySignature, with the real ssh-keygen", () => {
+  test("the owner's signature on the exact text passes", async () => {
+    expect(await check(owner.sign(MSG))).toBeUndefined();
   }, SLOW);
 
-  test("another key, another statement's signature, or no user presence is refused", async () => {
+  test("another key, other text, another namespace, or no user presence is refused", async () => {
     const other = approver();
-    const rows: [string, Promise<Awaited<ReturnType<typeof check>>>, string][] = [
-      ["another key", check(base, other.sign(base)), "isn't signed by the owner's approver key"],
-      ["the wrong text", check(base, owner.sign({ ...base, name: "nova-2" })), "isn't signed by the owner's approver key"],
-      ["a release signature", check(base, owner.sign(base, { namespace: "taskbox-release" })), "owner was present"],
-      ["no user presence", check(base, owner.sign(base, { flags: 0 })), "owner was present"],
+    const rows: [string, Promise<string | undefined>, string][] = [
+      ["another key", check(other.sign(MSG)), "isn't signed by the owner's approver key"],
+      ["the wrong text", check(owner.sign(`${MSG} `)), "isn't signed by the owner's approver key"],
+      ["a release signature", check(owner.sign(MSG, { namespace: "taskbox-release" })), "owner was present"],
+      ["the retired workspace namespace", check(owner.sign(MSG, { namespace: "taskbox-workspace" })), "owner was present"],
+      ["no user presence", check(owner.sign(MSG, { flags: 0 })), "owner was present"],
+      ["not armour", check("not armour"), "isn't one taskbox reads"],
+      ["a key that isn't a security key's", check(owner.sign(MSG), { key: "ssh-ed25519 AAAA" }), "No approver key"],
     ];
-    for (const [why, p, said] of rows) {
-      const r = await p;
-      expect([why, r.ok ? "" : r.why]).toEqual([why, expect.stringContaining(said)]);
-    }
+    for (const [why, p, said] of rows) expect([why, await p]).toEqual([why, expect.stringContaining(said)]);
   }, SLOW);
-
-  test("a time more than 5 minutes off, either way, is refused", async () => {
-    for (const [at, ok] of [
-      [T - SIGNED_FOR_MS, true],
-      [T + SIGNED_FOR_MS, true],
-      [T - SIGNED_FOR_MS - 1, false],
-      [T + SIGNED_FOR_MS + 1, false],
-    ] as const) {
-      const s = { ...base, at };
-      const r = await check(s, owner.sign(s));
-      expect([at - T, r.ok]).toEqual([at - T, ok]);
-      if (!r.ok) expect(r.why).toContain("too old or from the future");
-    }
-  }, SLOW);
-
-  test("another box, or what the state expects, is refused before ssh-keygen runs", async () => {
-    const never = { run: async () => { throw new Error("ssh-keygen ran"); }, tmp: "/nonexistent" };
-    const sig = owner.sign(base);
-    const run = (o: Partial<Parameters<typeof checkSigned>[1]>) => checkSigned(never, { statement: statementText(base), signature: sig, trusted: owner.key, installId: INSTALL_ID, now: T, expect: pass, ...o });
-    expect(await run({ installId: N(9) })).toEqual({ ok: false, why: "The statement is for another box." });
-    expect(await run({ expect: () => "used" })).toEqual({ ok: false, why: "used" });
-    expect(await run({ trusted: undefined })).toMatchObject({ ok: false, why: expect.stringContaining("No approver key") });
-    expect(await run({ trusted: "ssh-ed25519 AAAA" })).toMatchObject({ ok: false, why: expect.stringContaining("No approver key") });
-    expect(await run({ signature: "not armour" })).toEqual({ ok: false, why: "The signature isn't one taskbox reads." });
-    expect(await run({ statement: "{}\n" })).toEqual({ ok: false, why: "The statement isn't one taskbox reads." });
-  });
 
   test("a signature made with no presence, its flags byte then set to 1, is refused by ssh-keygen itself", async () => {
-    const forged = withFlags(owner.sign(base, { flags: 0 }), 1);
-    expect(skFlags(new TextEncoder().encode(forged))).toBe(1);
-    const r = await check(base, forged);
-    expect(r).toEqual({ ok: false, why: "The statement isn't signed by the owner's approver key." });
+    const forged = withFlags(owner.sign(MSG, { flags: 0 }), 1);
+    expect(skFlags(new TextEncoder().encode(forged), NS)).toBe(1);
+    expect(await check(forged)).toBe("The statement isn't signed by the owner's approver key.");
   }, SLOW);
 
-  test("ssh-keygen's -n refuses a statement signed under another namespace, even when skFlags passes it", async () => {
-    // The armour says taskbox-workspace, so skFlags reads its flags; the bytes signed say taskbox-release.
-    const forged = owner.sign(base, { namespace: "taskbox-release", blobNamespace: NAMESPACE });
-    expect(skFlags(new TextEncoder().encode(forged))).toBe(5);
-    expect(await check(base, forged)).toEqual({ ok: false, why: "The statement isn't signed by the owner's approver key." });
-    // And the arguments checkSigned gives ssh-keygen: a signature made wholly under another namespace
-    // fails them, where the same statement's own passes.
+  test("ssh-keygen's -n refuses text signed under another namespace, even when skFlags passes it", async () => {
+    const forged = owner.sign(MSG, { namespace: "taskbox-release", blobNamespace: NS });
+    expect(skFlags(new TextEncoder().encode(forged), NS)).toBe(5);
+    expect(await check(forged)).toBe("The statement isn't signed by the owner's approver key.");
     let args: string[] = [];
-    const codes: number[] = [];
-    const seen = {
-      tmp: verifyDeps().tmp,
-      run: async (cmd: string, a: string[], o?: { stdin?: string | Uint8Array }) => {
-        args = a;
-        const own = await realKeygen(cmd, a, o);
-        writeFileSync(a[a.indexOf("-s") + 1]!, owner.sign(base, { namespace: "taskbox-release" }));
-        codes.push(own.code, (await realKeygen(cmd, a, o)).code);
-        return own;
-      },
-    };
-    expect((await checkSigned(seen, { statement: statementText(base), signature: owner.sign(base), trusted: owner.key, installId: INSTALL_ID, now: T, expect: pass })).ok).toBe(true);
-    expect(args.slice(args.indexOf("-n"), args.indexOf("-n") + 2)).toEqual(["-n", NAMESPACE]);
-    expect(codes[0]).toBe(0);
-    expect(codes[1]).not.toBe(0);
+    const seen = { tmp: verifyDeps().tmp, run: async (cmd: string, a: string[], o?: { stdin?: string | Uint8Array }) => ((args = a), realKeygen(cmd, a, o)) };
+    expect(await check(owner.sign(MSG), { d: seen })).toBeUndefined();
+    expect(args.slice(args.indexOf("-n"), args.indexOf("-n") + 2)).toEqual(["-n", NS]);
   }, SLOW);
 
   test("ssh-keygen as nobody reads the files: the folder at 755 and the files at 644, in a folder of the checker's own", async () => {
@@ -113,7 +62,7 @@ describe("checkSigned, with the real ssh-keygen", () => {
         return realKeygen(cmd, a, o);
       },
     };
-    expect((await checkSigned(d, { statement: statementText(base), signature: owner.sign(base), trusted: owner.key, installId: INSTALL_ID, now: T, expect: pass })).ok).toBe(true);
+    expect(await check(owner.sign(MSG), { d })).toBeUndefined();
     expect(modes).toEqual({ dir: 0o755, signers: 0o644, sig: 0o644 });
   }, SLOW);
 
@@ -127,52 +76,26 @@ describe("checkSigned, with the real ssh-keygen", () => {
     expect(tmpProblem(join(open, "none"))).toBe("is missing");
     expect(tmpProblem(verifyDeps().tmp, (process.getuid?.() ?? 0) + 1)).toBe("isn't the checker's own");
     const never = { run: async () => { throw new Error("ssh-keygen ran"); }, tmp: open };
-    const r = await checkSigned(never, { statement: statementText(base), signature: owner.sign(base), trusted: owner.key, installId: INSTALL_ID, now: T, expect: pass });
-    expect(r).toEqual({ ok: false, why: "taskbox's folder for checking signatures can be written by others." });
+    expect(await check(owner.sign(MSG), { d: never })).toBe("taskbox's folder for checking signatures can be written by others.");
+    writeFileSync(join(open, "x"), "");
   });
 
   test("skFlags reads the presence flag, and nothing from another namespace", () => {
     const enc = (s: string) => new TextEncoder().encode(s);
-    expect(skFlags(enc(owner.sign(base)))).toBe(5);
-    expect(skFlags(enc(owner.sign(base, { flags: 1 })))).toBe(1);
-    expect(skFlags(enc(owner.sign(base, { namespace: "taskbox-release" })))).toBeUndefined();
-    expect(skFlags(enc("x"))).toBeUndefined();
+    expect(skFlags(enc(owner.sign(MSG)), NS)).toBe(5);
+    expect(skFlags(enc(owner.sign(MSG, { flags: 1 })), NS)).toBe(1);
+    expect(skFlags(enc(owner.sign(MSG, { namespace: "taskbox-release" })), NS)).toBeUndefined();
+    expect(skFlags(enc("x"), NS)).toBeUndefined();
   });
 });
 
-describe("statements", () => {
-  test("only the exact text taskbox makes parses", () => {
-    const t = statementText(base);
-    expect(parseStatement(t)).toEqual(base);
-    const rows: [string, string][] = [
-      ["no newline", t.trimEnd()],
-      ["two lines", `${t}${t}`],
-      ["spaces", t.replace(",", ", ")],
-      ["reordered", `${JSON.stringify({ box: base.box, v: 1, do: "approve", name: "nova-1", agent: "nova", size: "whole", nonce: base.nonce, at: T })}\n`],
-      ["an extra field", t.replace('"at"', '"extra":1,"at"')],
-      ["no size on approve", statementText({ ...base, size: undefined })],
-      ["an unknown size", t.replace('"whole"', '"light"')],
-      ["a size on pause", t.replace('"approve"', '"pause"')],
-      ["a name not the agent's", t.replace('"nova-1"', '"juno-1"')],
-      ["a bad nonce", t.replace(N(1), "x".repeat(32))],
-      ["a version 2", t.replace('"v":1', '"v":2')],
-    ];
-    for (const [why, text] of rows) expect([why, parseStatement(text)]).toEqual([why, undefined]);
-  });
-
-  test("the steps #19 had and this release doesn't are refused", () => {
-    for (const act of ["jump", "rush", "rule", "unrule", "stop", "start", "deny"]) {
-      const { size: _, ...rest } = base;
-      expect([act, parseStatement(`${JSON.stringify({ ...rest, do: act })}\n`)]).toEqual([act, undefined]);
-    }
-  });
-
-  test("base64url round trips, with one spelling only", () => {
-    const t = statementText(base);
-    const b = toB64url(t);
+describe("base64url", () => {
+  test("round trips, with one spelling only", () => {
+    const b = toB64url(MSG);
     expect(b).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(fromB64url(b, 1024)).toBe(t);
-    expect(fromB64url(Buffer.from(t).toString("base64"), 1024)).toBeUndefined(); // padding, + and /
+    expect(fromB64url(b, 1024)).toBe(MSG);
+    expect(fromB64url(Buffer.from("ab?").toString("base64"), 1024)).toBeUndefined(); // "/"
+    expect(fromB64url(Buffer.from("ab").toString("base64"), 1024)).toBeUndefined(); // padding
     expect(fromB64url(`${b}=`, 1024)).toBeUndefined();
     expect(fromB64url(toB64url("x".repeat(2000)), 1024)).toBeUndefined();
     expect(fromB64url("", 1024)).toBeUndefined();

@@ -18,7 +18,7 @@ import { held, heldSlotsEmpty, type WorkspaceView } from "../src/held.ts";
 import { stateHold } from "../src/workspace/hold.ts";
 import { end, held as stateHeld, type WsState } from "../src/workspace/model.ts";
 import { stateText } from "../src/workspace/store.ts";
-import { approvedState, ctx } from "./ws-helpers.ts";
+import { approved, asked, emptyState, started } from "./ws-helpers.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, loopDeps, settingsDir, settingsText, tempRoot } from "./helpers.ts";
 
@@ -400,7 +400,7 @@ describe("the loop with 2 slots", () => {
     const r = heldRun(
       d,
       sys,
-      () => (ws = [{ size: "whole", phase: "waiting", name: "nova-1", approvedAt: null, ok: "you approved it" }]),
+      () => (ws = [{ size: "whole", state: "starting", name: "nova-1", approvedAt: null, ok: "approved", hold: null }]),
       () => {
         const loop = loopNow(d);
         const empty = heldSlotsEmpty(loop, held(ws, 2));
@@ -409,7 +409,7 @@ describe("the loop with 2 slots", () => {
         if (empty && emptyAt === undefined) emptyAt = sys.now();
         // Held and empty for a while: the Whole is done, and once each slot says it starts VMs again,
         // an update ends the test.
-        if (emptyAt !== undefined && sys.now() - emptyAt > 5 * 60_000) ws = [{ size: "whole", phase: "done", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+        if (emptyAt !== undefined && sys.now() - emptyAt > 5 * 60_000) ws = [{ size: "whole", state: "ended", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
         if (readFileSync(d.paths.log, "utf8").includes("slot 2: starting VMs again")) update(d);
       },
     );
@@ -431,8 +431,8 @@ describe("the loop with 2 slots", () => {
     // Both slots read held and empty, and never while the job still ran.
     expect(emptyAt).toBeDefined();
     expect(emptyEarly).toBe(false);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("no new VM: CI paused for nova-1 (you approved it)");
-    expect(readFileSync(d.paths.log, "utf8")).toContain("VM deleted while it waited for a job: CI paused for nova-1 (you approved it)");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("no new VM: CI paused for nova-1 (Whole), approved");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("VM deleted while it waited for a job: CI paused for nova-1 (Whole), approved");
     // The waiting VM's runner went from GitHub before the VM was killed, so no job could land on it.
     expect(deletes.some((x) => x.linuxUp)).toBe(true);
   });
@@ -452,13 +452,13 @@ describe("the loop with 2 slots", () => {
       d,
       sys,
       () => {
-        state = approvedState(ctx(sys.now()));
+        state = started(approved(asked(emptyState(), "nova", "whole", sys.now()), "nova-1", "whole", sys.now()), sys.now());
         guard();
       },
       () => {
         guard();
         const loop = loopNow(d);
-        const h = stateHeld(state!, 2);
+        const h = stateHeld(state!).whole ? 2 : 0;
         const empty = h > 0 && heldSlotsEmpty(loop, h);
         if (empty && Object.values(loop.slots).some((s) => ["running a job", "waiting for a job", "starting a VM"].includes((s as { slot: string }).slot))) emptyEarly = true;
         if (empty && emptyAt === undefined) {
@@ -466,8 +466,8 @@ describe("the loop with 2 slots", () => {
           shown = { kind: loop.heldKind, line: loop.heldFor };
         }
         // Held and empty for a while: the owner ends the Whole, and the slots start again.
-        if (emptyAt !== undefined && sys.now() - emptyAt > 5 * 60_000 && state!.workspaces[0]!.phase !== "done") {
-          const e = end(state!, { name: "nova-1" }, ctx(sys.now()));
+        if (emptyAt !== undefined && sys.now() - emptyAt > 5 * 60_000 && state!.workspaces[0]!.state !== "withdrawn") {
+          const e = end(state!, { name: "nova-1", by: "owner" }, sys.now());
           if (e.ok) state = e.state;
         }
         const log = readFileSync(d.paths.log, "utf8");
@@ -484,9 +484,9 @@ describe("the loop with 2 slots", () => {
     expect(ended.map((j) => j.endedAt <= emptyAt!)).toEqual(ended.map(() => true));
     expect(r.clones.filter((c) => c.at > r.heldAt! && c.at < emptyAt! + 5 * 60_000)).toEqual([]);
     // The loop's state said why, in the owner's words.
-    const at = new Date(state!.workspaces[0]!.approvedAt!).toTimeString().slice(0, 5);
-    expect(shown).toEqual({ kind: "workspace", line: `CI paused for nova-1 (you approved it at ${at})` });
-    expect(readFileSync(d.paths.log, "utf8")).toContain(`no new VM: CI paused for nova-1 (you approved it at ${at})`);
+    const at = new Date(state!.workspaces[0]!.approvedAt!).toISOString().slice(11, 16);
+    expect(shown).toEqual({ kind: "workspace", line: `CI paused for nova-1 (Whole), approved ${at}` });
+    expect(readFileSync(d.paths.log, "utf8")).toContain(`no new VM: CI paused for nova-1 (Whole), approved ${at}`);
     // Once it was done, the marks and the line went.
     const after = loopNow(d);
     expect([after.heldKind, after.heldFor, after.slots["1"].heldEmpty, after.slots["2"].heldEmpty]).toEqual([undefined, undefined, undefined, undefined]);
@@ -511,7 +511,7 @@ describe("the loop with 2 slots", () => {
       if (heldAt === undefined) {
         const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
         if (Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) {
-          ws = [{ size: "whole", phase: "waiting", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+          ws = [{ size: "whole", state: "starting", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
           heldAt = sys.now();
         }
       } else if (heldSlotsEmpty(loopNow(d), 2)) update(d);
@@ -547,11 +547,11 @@ describe("the loop with 2 slots", () => {
     sys.sleep = async (ms) => {
       await sleep(ms);
       const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
-      if (!ws.length && Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) ws = [{ size: "whole", phase: "waiting", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+      if (!ws.length && Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) ws = [{ size: "whole", state: "starting", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
       if (seen.length) update(d);
     };
     expect(await runLoop(d)).toBe(RESTART);
-    expect(seen[0]).toBe("CI paused for nova-1 (you approved it)");
+    expect(seen[0]).toBe("CI paused for nova-1 (Whole), approved");
   });
 
   test.serial("a Whole never makes a held VM give way, even with a job the source sees waiting", async () => {
@@ -575,7 +575,7 @@ describe("the loop with 2 slots", () => {
       if (heldAt === undefined) {
         const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
         if (sys.now() - sharedAt <= 5_000 && Object.values(st.slots ?? {}).filter((x) => (x as { slot: string }).slot === "waiting for a job").length === 2) {
-          ws = [{ size: "whole", phase: "active", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+          ws = [{ size: "whole", state: "ready", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
           items = [item("a"), item("b")];
           heldAt = sys.now();
         }
@@ -661,7 +661,7 @@ describe("the loop with 2 slots", () => {
     sys.sleep = async (ms) => {
       await sleep(ms);
       if (pulling && heldAt === undefined) {
-        ws = [{ size: "whole", phase: "waiting", name: "nova-1", approvedAt: null, ok: "you approved it" }];
+        ws = [{ size: "whole", state: "starting", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
         heldAt = sys.now();
       }
       if (heldAt !== undefined && readFileSync(d.paths.log, "utf8").includes("stopped pulling") && heldSlotsEmpty(loopNow(d), 2)) update(d);

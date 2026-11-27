@@ -1,59 +1,58 @@
-// The guard's workspace pass. The guard is root's
-// KeepAlive LaunchDaemon (guard.ts). Its pf read runs every 2 s; this pass runs beside it, one at a
-// time, and the tick never waits for it, so nothing here can hold up pf upkeep.
+// The guard's workspace pass. The guard is root's KeepAlive LaunchDaemon (guard.ts). Its pf read runs
+// every 2 s; this pass runs beside it, one at a time, and the tick never waits for it. Requests reach
+// the state through the agent spool's handlers (handlers/workspace.ts), beside this pass; both change
+// the state only through write.ts's lock, and every step re-checks the state it is given.
 //
 // Each pass, in this order:
-// 1. the boot stamp, the pool accounts, the pinned approver key and the state. A state that is bad
-//    but root's at 644 (a torn write) is moved aside, and the pass starts from an empty state;
-// 2. a state the guard can't use (newer, or bad and not root's), no boot stamp, or workspaces off:
-//    every pool account is stopped and the fence is kept. With no boot stamp or with workspaces
-//    off, an open workspace is paused by the box and that is written; nothing else is applied;
-// 3. a new boot: every pool process stops first, then model.onBoot() pauses what was open;
-// 4. below the free-disk floor: the pool's processes are killed first, in memory, then the pause.
-//    It kills again on every pass while the disk stays low;
-// 5. the fence: the pf anchor, reloaded only when its read-back differs, and every pool account
-//    whose workspace isn't open stopped: its launchd domains booted out, kill -9 -1 as the account,
-//    pkill rounds after, then its crontab. VMs of any pool account are killed at any time;
-// 6. the spool: at most SPOOL_PER_PASS requests, signed first, for at most SPOOL_BUDGET_MS, each
-//    opened with no link followed, checked, and unlinked before it is applied. Root only reads and
-//    unlinks there;
-// 7. the fence again, for what the spool changed;
-// 8. the head of the queue goes Active only when held slots are empty, no VM of the service account
-//    is left, and the fence is proved with a control (probe.ts);
-// 9. root's workspaces.json, through a temporary name, fsync and a rename.
+// 1. the boot stamp, the pool accounts, whether workspaces are on (box.ts), and the state. A state
+//    that is torn but root's at 644 is moved aside, and the pass starts from an empty one;
+// 2. a state the guard can't use, no boot stamp, or workspaces off: every pool account is stopped
+//    and the fence is kept. With no boot stamp or with workspaces off, what holds room or waits is
+//    paused by the box;
+// 3. a new boot: every pool process stops first, then model.onBoot() pauses what held room;
+// 4. below the free-disk floor: the pool's processes are killed first, then the pause;
+// 5. the fence: the pf anchor, and every pool account whose workspace isn't open stopped: its
+//    launchd domains booted out, kill -9 -1 as the account, pkill rounds after, then its crontab.
+//    VMs of any pool account are killed at any time;
+// 6. the time rules (expiry, quiet, saves), accounts for approved workspaces, and starts within the
+//    sizes and the VM budget;
+// 7. ending workspaces whose account runs nothing are ended;
+// 8. a starting workspace whose account another agent used has its home moved aside and cleared;
+// 9. a starting workspace goes ready once its room is free by the loop's own count and pgrep's, its
+//    account runs nothing, the disk is above its floor, and the fence is proved with a control;
+// 10. the fence note, the notes for status and the heartbeat, written.
 import { randomBytes } from "node:crypto";
-import { lstatSync, renameSync, statfsSync } from "node:fs";
+import { lstatSync, mkdirSync, statfsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { poolNames, poolOf } from "../access.ts";
 import { isAgentRole, readRecord, uidOf } from "../accounts.ts";
-import { readInstallId } from "../answers.ts";
-import { trustedKey } from "../approver.ts";
-import { type Config, type Paths, vmsAtMostOf } from "../config.ts";
+import { type Budget, budgetOf, type Config, type Paths, sizeOf } from "../config.ts";
+import type { EventLog } from "../core/events.ts";
+import { begin, end as endOp, listOps, type Op, toPhase, writeOp } from "../core/ops.ts";
+import { rootStateOf } from "../core/paths.ts";
 import { heldSlotsEmpty } from "../held.ts";
 import { readOwnedJson } from "../loopwatch.ts";
-import { FIRST_HIDDEN_ID, LAST_HIDDEN_ID, readPin, readPoolRecord } from "../pin.ts";
+import { readLogicalCpus, readMemory } from "../memory.ts";
+import { opType } from "../optypes/index.ts";
+import { readPoolRecord } from "../pin.ts";
 import type { Sys } from "../sys.ts";
-import { loopFrom, runningJobs } from "../watch.ts";
-import { asNobody, checkSigned, verifyFolder } from "./approval.ts";
-import { applyRequest, expectFor, signedParts } from "./box.ts";
-import { anchorsInOrder, bootOut, bridgesAbove, BRIDGES, PGREP, fenceExpected, fenceMatches, fenceRules, killAllAs, killVMs, lanAddresses, ownPrefixes, PFCTL, PREFIX_MAX, removeCrontab, SCREEN_SHARING_ANCHOR, stopAll, vmsOf, WS_ANCHOR } from "./fence.ts";
-import { advance, boxPause, CPU_MAX, CPU_STEP, type Ctx, emptyState, held, NOTE_MAX, OPEN, onBoot, OUTCOMES_MAX, parseBoot, POOL_USER as POOL_NAME, queued, whyWaiting, type BoxNow, type WsNotes, type WsState } from "./model.ts";
+import { loopFrom, runningJobs, type SlotView } from "../watch.ts";
+import { type PoolAccount, poolAccounts, workspacesOn } from "./box.ts";
+import { anchorsInOrder, bootOut, bridgesAbove, BRIDGES, fenceExpected, fenceMatches, fenceRules, killAllAs, killVMs, lanAddresses, ownPrefixes, PFCTL, PGREP, PREFIX_MAX, removeCrontab, SCREEN_SHARING_ANCHOR, stopAll, vmsOf, WS_ANCHOR } from "./fence.ts";
+import { deleteMoved, type HandoverDeps, moveAside } from "./handover.ts";
+import { assign, boxPause, cleared, emptyState, ended, failed, held, NOTE_MAX, onBoot, OPEN, parseBoot, ready, type Rules, start, type Step, tick, whyNotStart, type Workspace, type WsNotes, type WsState } from "./model.ts";
 import { type ProbeDeps, proveFence, realListen } from "./probe.ts";
 import { readStateFile } from "./read.ts";
-import { syncFolder, writeOwnedText } from "../core/rootfile.ts";
-import { failMode, type FileRead, readRequest, REQUEST_MAX, REQUEST_FOR_MS, requestName, requestOrder, SPOOL_MAX, SPOOL_PER_PASS, STATE_MAX, type StateRead, stateText } from "./store.ts";
-import { drainSpool as drainCoreSpool, readSpoolFile as readCoreSpoolFile, spoolProblem } from "../core/spool.ts";
+import { rulesOf } from "./rules.ts";
+import { failMode, type StateRead } from "./store.ts";
+import { change, current, moveBadState } from "./write.ts";
 
 export { readStateFile };
+export { writeStateFile, writeWithNotes, moveBadState } from "./write.ts";
 
 // The state's heartbeat is written at least this often, and on every change.
 export const BEAT_MS = 60_000;
 // A proof that failed is tried again after this long, not on every tick.
 export const PROOF_RETRY_MS = 60_000;
-// The most spool entries one pass reads, so a flood can't hold the guard.
-export const SPOOL_SCAN = 1_000;
-// The spool's share of one pass, in wall time: requests past it wait for the next pass.
-export const SPOOL_BUDGET_MS = 3_000;
 // Reads that fail this many passes in a row count as a fence that doesn't hold, and two failed disk
 // reads in a row as a full disk: one hiccup never kills a workspace. A fence known to be wrong kills at once.
 export const FENCE_TRIES = 3;
@@ -65,24 +64,26 @@ export interface WsDeps {
   cfg: Config;
   p: Paths;
   rootUid?: number;
-  // Gives root's new state file to root and wheel. Absent in tests, where the files are the tester's.
+  // Gives root's new files to root and wheel. Absent in tests, where the files are the tester's.
   chown?: (path: string, uid: number, gid: number) => void;
   probe?: ProbeDeps; // the proof's listeners and runs; the real ones on the box
   freeBytes?: () => number | undefined; // free space for the pool's files; statfs on the box
+  budget?: () => Promise<Budget>; // the VM budget; the box's memory and CPUs on the box
+  events?: EventLog; // root's event log
+  usersDir?: string; // /Users on the box
 }
 
 // What a pass keeps for the next one.
 export interface WsMemory {
-  unwritten: WsState | undefined; // a state the last pass couldn't write: the next pass starts from it
   cleared: Set<number>; // pool user IDs whose launchd domains and crontab were cleared since they closed
-  proofTriedAt: number | null;
+  proofTriedAt: Map<string, number>; // by pool account
   fenceUnsure: number; // passes in a row whose fence reads failed
   diskUnread: number; // passes in a row whose free-space read failed
   bootUnread: number; // passes in a row whose boot stamp read failed
   lastBoot: string | undefined; // the boot stamp the last good read gave
-  stuck: Set<string>; // spool names whose unlink failed: never chosen again while they are there
+  deleting: Map<string, Promise<void>>; // pool accounts whose old files are being deleted, by name
 }
-export const newWsMemory = (): WsMemory => ({ unwritten: undefined, cleared: new Set(), proofTriedAt: null, fenceUnsure: 0, diskUnread: 0, bootUnread: 0, lastBoot: undefined, stuck: new Set() });
+export const newWsMemory = (): WsMemory => ({ cleared: new Set(), proofTriedAt: new Map(), fenceUnsure: 0, diskUnread: 0, bootUnread: 0, lastBoot: undefined, deleting: new Map() });
 
 // What a pass did, and what is wrong, for the guard's log.
 export interface PassReport {
@@ -90,25 +91,9 @@ export interface PassReport {
   problems: string[];
 }
 
-type PoolAccount = { name: string; uid: number };
-
-// The pool accounts to fence: those pool.json records. A pool.json that can't be read leaves each
-// account the settings name (<pool>1 to <pool><size>) that has a hidden user ID, fenced but never
-// given a workspace.
-async function poolAccounts(d: WsDeps): Promise<{ list: PoolAccount[]; sure: boolean }> {
-  const rec = readPoolRecord(d.p.poolRecord, d.rootUid ?? 0);
-  if (rec !== "bad") return { list: Object.entries(rec.made).filter(([n]) => POOL_NAME.test(n)).map(([name, m]) => ({ name, uid: m.uid })), sure: true };
-  const list: PoolAccount[] = [];
-  for (const name of poolNames(d.cfg.accounts)) {
-    const uid = await uidOf(d.sys, name).catch(() => undefined);
-    if (uid !== undefined && uid >= FIRST_HIDDEN_ID && uid <= LAST_HIDDEN_ID) list.push({ name, uid });
-  }
-  return { list, sure: false };
-}
-
 // The agent account's user ID: the one root's accounts.json records for accounts.agent, as made or
-// as a v2 agent taskbox took (placed), and only while the account has that ID now.
-// The agent spool's pass (passes/requests.ts) reads it the same way.
+// as a v2 agent taskbox took (placed), and only while the account has that ID now. The agent spool's
+// pass (passes/requests.ts) reads it this way.
 export async function agentUid(d: Pick<WsDeps, "sys" | "cfg" | "p" | "rootUid">): Promise<number | undefined> {
   const name = d.cfg.accounts.agent;
   if (name === undefined) return undefined;
@@ -121,82 +106,6 @@ export async function agentUid(d: Pick<WsDeps, "sys" | "cfg" | "p" | "rootUid">)
   const m = readRecord(d.p.accountsRecord).made[name];
   if (!m || !isAgentRole(m.role)) return undefined;
   return (await uidOf(d.sys, name).catch(() => undefined)) === m.uid ? m.uid : undefined;
-}
-
-// Root's state, 644, written whole to a new name, flushed, renamed into place, and the folder flushed,
-// so a power cut leaves the old state or the new one, never a torn one. A link at either name is
-// replaced, never followed: the new name is removed first and made with O_EXCL. stateText refuses a
-// state the readers would refuse.
-export function writeStateFile(d: Pick<WsDeps, "chown" | "rootUid">, path: string, s: WsState): void {
-  writeOwnedText(path, stateText(s), { mode: 0o644, owner: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}) });
-}
-
-// A state whose bytes are torn (store.ts readState's torn) and that is root's plain file at 644 is a
-// damaged write of the guard's own: it is moved aside, for the owner to read, and the guard starts again from an empty
-// state, with every workspace closed and nothing held. Anything else stays where it is, and holds.
-// The new name, or undefined when it wasn't moved.
-export function moveBadState(path: string, now: number, rootUid = 0): string | undefined {
-  try {
-    const st = lstatSync(path);
-    if (!st.isFile() || st.uid !== rootUid || (st.mode & 0o7777) !== 0o644) return undefined;
-    const to = `${path}.bad-${now}`;
-    renameSync(path, to);
-    syncFolder(dirname(path));
-    return to;
-  } catch {
-    return undefined;
-  }
-}
-
-// The spool's rules are core/spool.ts's, shared with v3's other spools.
-export { spoolProblem };
-export function readSpoolFile(path: string, agent: number): Omit<FileRead, "mode"> | undefined {
-  return readCoreSpoolFile(path, agent, REQUEST_MAX);
-}
-
-// A refused request's outcome, by the id its file name gave, so the command that wrote it can answer.
-function refused(s: WsState, id: string, now: number, said: string): WsState {
-  if (s.outcomes.some((o) => o.id === id)) return s;
-  return { ...s, outcomes: [...s.outcomes, { id, at: now, ok: false, said: said.slice(0, 240), name: null }].slice(-OUTCOMES_MAX) };
-}
-
-// Root's folder for checking signatures: made here when missing, root's at 755.
-const verifyTmp = (d: WsDeps) => verifyFolder(d.p.verifyTmp, { chown: d.chown, rootUid: d.rootUid });
-
-async function drainSpool(d: WsDeps, mem: WsMemory, s: WsState, o: { agent: number | undefined; trusted: string | undefined; pool: readonly string[]; ctx: Ctx }, r: PassReport): Promise<WsState> {
-  const spool = d.p.workspaceSpool;
-  if (o.agent === undefined) {
-    r.problems.push("the agent account isn't the one accounts.json records, so the spool is closed");
-    return s;
-  }
-  const installId = readInstallId(d.p.installId, d.rootUid ?? 0) ?? "";
-  const rules = { dir: spool, owner: o.agent, rootUid: d.rootUid ?? 0, isRequest: (n: string) => requestName(n) !== undefined, order: (e: readonly { name: string; mtimeMs: number }[], n: number) => requestOrder(e, n), perPass: SPOOL_PER_PASS, max: SPOOL_MAX, scan: SPOOL_SCAN, budgetMs: SPOOL_BUDGET_MS, forMs: REQUEST_FOR_MS, requestMax: REQUEST_MAX };
-  await drainCoreSpool(rules, mem, d.sys, r, async (name, f) => {
-    const id = requestName(name)!.id;
-    try {
-      const now = o.ctx.now;
-      if (!f) {
-        s = refused(s, id, now, "The request couldn't be opened as a plain file.");
-        return;
-      }
-      const rr = readRequest(name, f, { agentUid: o.agent!, now });
-      if (!rr.ok) {
-        s = refused(s, id, now, `The request was refused: ${rr.why}.`);
-        return;
-      }
-      let checked;
-      const parts = signedParts(rr.request);
-      // The key is trustedKey()'s only: the settings' key while it is the one pinned at the box.
-      if (parts) checked = await checkSigned({ run: asNobody(d.sys), tmp: verifyTmp(d) }, { statement: parts.statement, signature: parts.signature, trusted: o.trusted, installId, now, expect: expectFor(s) });
-      const res = applyRequest(s, rr.request, { ...o.ctx, pool: o.pool, ...(checked ? { checked } : {}) });
-      s = res.state;
-      r.did.push(`applied ${rr.request.do} ${id}: ${res.said.slice(0, 120)}`);
-    } catch {
-      s = refused(s, id, o.ctx.now, "taskbox couldn't apply this request.");
-      r.problems.push(`the request ${id} couldn't be applied`);
-    }
-  });
-  return s;
 }
 
 // Free space for unprivileged writes on the volume of the box's state and the pool's home, by
@@ -223,7 +132,6 @@ export async function keepAnchor(sys: Sys, uids: readonly number[], on: boolean)
   const unsure = (why: string): FenceRead => ({ ok: false, known: false, why });
   let prefixes: string[] = [];
   let above: string[] = [];
-  // With nothing to fence and workspaces off, the anchor is empty, whatever the interfaces say.
   if (uids.length || on) {
     const ifc = await sys.run("/sbin/ifconfig", [], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: "" }));
     if (ifc.code !== 0) return unsure("the box's interfaces couldn't be read, so the workspaces' pf rules weren't checked");
@@ -236,7 +144,7 @@ export async function keepAnchor(sys: Sys, uids: readonly number[], on: boolean)
   if (shown.code !== 0) return unsure("pf's workspaces rules couldn't be read");
   if (!fenceMatches(shown.stdout, want)) {
     // -o none: pf's optimizer would merge the ranges into tables and reorder the rules, so the
-    // read-back would never match and the anchor would load on every pass (seen in the Tart run).
+    // read-back would never match and the anchor would load on every pass.
     const load = await sys.run(PFCTL, ["-o", "none", "-a", WS_ANCHOR, "-f", "-"], { stdin: fenceRules(input), timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: "", stderr: "" }));
     if (load.code !== 0) return sure(false, "the workspaces' pf rules didn't load");
     const again = await sys.run(PFCTL, ["-a", WS_ANCHOR, "-s", "rules"], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: "" }));
@@ -278,10 +186,56 @@ async function closeAccount(d: WsDeps, mem: WsMemory, a: PoolAccount, r: PassRep
   return !left;
 }
 
-const slotsOf = (cfg: Config) => vmsAtMostOf(cfg);
+// The VMs the loop lists, each with its kind and size, from its state file read as root.
+function loopVMs(loop: ReturnType<typeof loopFrom>): { kind: string; size?: string }[] {
+  const slots: SlotView[] = loop.slots ? Object.values(loop.slots) : [loop];
+  return slots.filter((x) => x.vmKind === "macos" || x.vmKind === "linux").map((x) => ({ kind: x.vmKind!, ...((x.size ?? x.vmSize) ? { size: x.size ?? x.vmSize } : {}) }));
+}
 
-// The loop's own word on its held slots, from its state file read as root, with only the fields
-// heldSlotsEmpty reads.
+// The jobs running in the loop's slots, for the reason a starting workspace waits, each with its
+// ceiling left: jobTimeoutMinutes from when its slot began the job.
+function jobsText(d: WsDeps, loop: ReturnType<typeof loopFrom>, now: number): string | undefined {
+  const jobs = runningJobs(loop)
+    .slice(0, 6)
+    .map((j) => {
+      const name = (j.job ?? "a job").replace(/[^\x20-\x7e]/g, "").slice(0, 60) || "a job";
+      const left = typeof j.slotAt === "number" ? Math.max(1, Math.round(Math.max(0, j.slotAt + d.cfg.jobTimeoutMinutes * 60_000 - now) / 60_000)) : undefined;
+      return left === undefined ? name : `${name} (at most ${left} m)`;
+    });
+  return jobs.length ? `waiting for ${jobs.join(", ")}` : undefined;
+}
+
+const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
+
+// Why a starting workspace's room isn't free yet, or undefined when it is. The loop's own word
+// (its state file: which slots have a VM, of which size) and pgrep's count of the service account's
+// VM processes must agree: a VM the loop doesn't list keeps every workspace starting. A Whole waits
+// for every VM to stop and every held slot to say it is empty; a Light or Heavy for CI's VMs to fit
+// in the budget beside every hold. With the budget unknown, it waits as a Whole does.
+export async function roomWhy(d: WsDeps, s: WsState, w: Workspace, budget: Budget, now: number): Promise<string | undefined> {
+  const service = await uidOf(d.sys, d.p.service).catch(() => undefined);
+  if (service === undefined) return "the service account's user ID can't be read";
+  const raw = readOwnedJson(d.p.loopState, service);
+  const loop = loopFrom(raw);
+  const listed = loopVMs(loop);
+  const vms = await vmsOf(d.sys, service);
+  const jobs = jobsText(d, loop, now);
+  if (vms > listed.length) return jobs ?? "a VM the loop doesn't list is still running";
+  if (w.size === "whole" || budget.memoryMB === undefined) {
+    if (vms > 0 || listed.length > 0) return jobs ?? "the last VM to stop";
+    if (w.size === "whole" && raw !== undefined) {
+      const n = typeof (raw as { slotCount?: unknown }).slotCount === "number" ? ((raw as { slotCount: number }).slotCount) : 1;
+      if (!heldSlotsEmpty(loopSlots(raw), n)) return "the loop to say every slot is empty";
+    }
+    return undefined;
+  }
+  const used = listed.reduce((n, v) => n + sizeOf(d.cfg, v.kind as "macos" | "linux", v.size).vmMemoryMB, 0);
+  const h = held(s).memoryMB;
+  if (used + h > budget.memoryMB) return `${jobs ?? "CI's VMs to stop"}: they use ${gb(used)}, and the box's ${gb(budget.memoryMB)} holds ${gb(h)} for workspaces`;
+  return undefined;
+}
+
+// The loop's own word on its held slots, with only the fields heldSlotsEmpty reads.
 function loopSlots(raw: unknown): { slots?: Record<string, { heldEmpty?: unknown }>; slotCount?: number } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const v = raw as Record<string, unknown>;
@@ -290,59 +244,6 @@ function loopSlots(raw: unknown): { slots?: Record<string, { heldEmpty?: unknown
     for (const [k, x] of Object.entries(v.slots as Record<string, unknown>)) if (/^[1-9]$/.test(k) && x && typeof x === "object") slots[k] = { heldEmpty: (x as Record<string, unknown>).heldEmpty };
   }
   return { slots, ...(Number.isInteger(v.slotCount) && (v.slotCount as number) >= 1 && (v.slotCount as number) <= 9 ? { slotCount: v.slotCount as number } : {}) };
-}
-
-// What the box is doing, for advance: the loop's held slots empty by its own heldEmpty marks, and no
-// VM process of the service account left, by pgrep.
-async function boxNow(d: WsDeps, s: WsState, boot: string, low: boolean, now: number): Promise<BoxNow> {
-  const service = await uidOf(d.sys, d.p.service).catch(() => undefined);
-  const h = held(s, slotsOf(d.cfg));
-  const empty = h === 0 || (service !== undefined && heldSlotsEmpty(loopSlots(readOwnedJson(d.p.loopState, service)), h));
-  return { now, boot, slotsBusy: empty ? 0 : 1, vmsLeft: await vmsOf(d.sys, service), ready: [], diskLow: low, jobs: jobsLeft(d, service, now) };
-}
-
-// The jobs running in the loop's slots, by its own state file (the service account's, read the safe
-// way), each with its ceiling left: jobTimeoutMinutes from when its slot began the job. They go into
-// BoxNow, so whyWaiting names them, and advance reads whyWaiting: a job listed here keeps the head of
-// the queue waiting. That can only delay a workspace, never open one: the loop's own word that its
-// held slots are empty, and pgrep's count of VMs, still decide too. The notes are display only.
-function jobsLeft(d: WsDeps, service: number | undefined, now: number): BoxNow["jobs"] {
-  if (service === undefined) return [];
-  const loop = loopFrom(readOwnedJson(d.p.loopState, service));
-  return runningJobs(loop)
-    .slice(0, 9)
-    .map((j) => ({ name: (j.job ?? "a job").replace(/[^\x20-\x7e]/g, "").slice(0, 60) || "a job", leftMs: typeof j.slotAt === "number" ? Math.max(0, j.slotAt + d.cfg.jobTimeoutMinutes * 60_000 - now) : null, atMost: true }));
-}
-
-// An account's CPU use now, in percent of one core, from ps, rounded to CPU_STEP: summed over its
-// processes. Undefined when ps can't be read.
-export async function cpuOf(sys: Sys, uid: number): Promise<number | undefined> {
-  const r = await sys.run("/bin/ps", ["-U", String(uid), "-o", "%cpu="], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
-  // ps exits 1 when the account runs nothing.
-  if (r.code !== 0 && r.stdout.trim() !== "") return undefined;
-  let sum = 0;
-  for (const l of r.stdout.split("\n")) {
-    const t = l.trim();
-    if (!t) continue;
-    const n = Number(t);
-    if (!Number.isFinite(n) || n < 0) return undefined;
-    sum += n;
-  }
-  return Math.min(CPU_MAX, Math.round(sum / CPU_STEP) * CPU_STEP);
-}
-
-// The card's notes (model.WsNotes): each waiting workspace's reason, and the Saving one's CPU use.
-async function notesFor(d: WsDeps, s: WsState, pool: readonly PoolAccount[], box: () => Promise<BoxNow>): Promise<WsNotes> {
-  const waiting: WsNotes["waiting"] = [];
-  const ws = s.workspaces.filter((w) => w.phase === "waiting");
-  if (ws.length) {
-    const b = await box();
-    for (const w of ws) waiting.push({ name: w.name, why: (whyWaiting(s, w, b) ?? "start").replace(/[^\x20-\x7e]/g, "").slice(0, NOTE_MAX) || "start" });
-  }
-  const sv = s.workspaces.find((w) => w.phase === "saving" && w.user);
-  const acct = sv ? pool.find((a) => a.name === sv.user) : undefined;
-  const cpu = acct ? await cpuOf(d.sys, acct.uid) : undefined;
-  return { waiting, saving: sv && acct && cpu !== undefined ? { name: sv.name, user: acct.name, cpuPercent: cpu } : null };
 }
 
 export function realProbe(d: WsDeps): ProbeDeps {
@@ -357,17 +258,48 @@ export function realProbe(d: WsDeps): ProbeDeps {
   };
 }
 
+async function budgetNow(d: WsDeps): Promise<Budget> {
+  if (d.budget) return d.budget();
+  const m = await readMemory(d.sys).catch(() => ({ totalGB: undefined }));
+  return budgetOf(d.cfg, m.totalGB, await readLogicalCpus(d.sys).catch(() => undefined));
+}
+
+const handoverDeps = (d: WsDeps, now: number): HandoverDeps => ({ sys: d.sys, usersDir: d.usersDir ?? "/Users", rootUid: d.rootUid ?? 0, chown: d.chown ?? (() => {}), now: () => now });
+
 // One workspace pass. It never throws for what it finds: each problem goes in the report.
 export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassReport> {
   const { sys, cfg, p } = d;
   const root = d.rootUid ?? 0;
   const r: PassReport = { did: [], problems: [] };
   const now = sys.now();
-  const ctx: Ctx = { now, nonce: () => randomBytes(16).toString("hex") };
+  const wd = { rootUid: root, ...(d.chown ? { chown: d.chown } : {}) };
+  const tell = (steps: readonly Step[]) => {
+    for (const s of steps) {
+      r.did.push(s.text);
+      try {
+        d.events?.write({ type: `workspace.${s.type}`, subject: s.name, actor: "taskbox", text: s.text });
+      } catch {}
+    }
+  };
+  // One step under the lock, its events told. False when the state can't be used.
+  const apply = async (fn: (s: WsState) => { state: WsState; steps: Step[] }): Promise<WsState | undefined> => {
+    let steps: Step[] = [];
+    const c = await change(wd, p.workspaces, (s) => {
+      const o = fn(s);
+      steps = o.steps;
+      return { state: o.state, value: undefined };
+    });
+    if (!c.ok) {
+      r.problems.push(c.why);
+      return undefined;
+    }
+    if (c.unsaved) r.problems.push(c.unsaved);
+    tell(steps);
+    return c.state;
+  };
+
   const pool = await poolAccounts(d);
-  const trusted = trustedKey(cfg.approverKey, readPin(p.approverPin, root));
-  const names = pool.sure ? poolOf(cfg.accounts, trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
-  const on = trusted !== undefined && cfg.accounts.agent !== undefined && names.length > 0;
+  const on = workspacesOn(d, pool.sure ? pool.list.map((a) => a.name) : undefined);
   const uids = pool.list.map((a) => a.uid);
   const closeAll = async () => {
     for (const a of pool.list) await closeAccount(d, mem, a, r);
@@ -378,10 +310,9 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
   mem.bootUnread = read0 === undefined ? mem.bootUnread + 1 : 0;
   if (read0) mem.lastBoot = read0;
   const boot = read0 ?? (mem.bootUnread < BOOT_TRIES ? mem.lastBoot : undefined);
-  let read: StateRead = mem.unwritten ? { kind: "ok", state: mem.unwritten } : readStateFile(p.workspaces, root);
-  // 1. A torn write of the guard's own is moved aside, and the pass starts from an empty state. Only
-  // bytes that don't decode, don't parse as JSON or are too big: a read error holds and is tried
-  // again, and a state that parses but doesn't check holds, with a check row, and is kept.
+  let read: StateRead = current(p.workspaces, root);
+  // 1. A torn write of the guard's own is moved aside, and the pass starts from an empty state. A
+  // state that parses but doesn't check holds, with a check row, and is kept.
   if (read.kind === "bad" && read.torn) {
     const to = moveBadState(p.workspaces, now, root);
     if (to) {
@@ -391,117 +322,201 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
   }
   const fm = failMode(read);
 
-  // 2. Nothing may be open: stop every pool account and keep the fence. With no boot stamp or with
-  // workspaces off, what was open is paused by the box and written, so an old approval never comes
+  // 2. Nothing may be open: every pool account stopped and the fence kept. With no boot stamp or with
+  // workspaces off, what was open or waiting is paused by the box, so an old approval never comes
   // back by itself. A state the guard can't read is never written over.
-  if (!boot || fm.stopPool || !on) {
+  if (!boot || fm.stopPool || !on.on) {
     await closeAll();
-    const f = await keepAnchor(sys, uids, on);
+    const f = await keepAnchor(sys, uids, on.on);
     if (!f.ok) r.problems.push(f.why);
     if (!boot) r.problems.push("the boot stamp can't be read, so every workspace stays closed");
     if (fm.check) r.problems.push(fm.check);
-    if (read.kind === "ok") {
-      const paused = boxPause(read.state, boot ? "off" : "noboot", ctx);
-      if (paused !== read.state) {
-        r.did.push(boot ? "workspaces are off: what was open is paused" : "no boot stamp: what was open is paused");
-        save(d, mem, { ...paused, beat: now }, r);
-      }
-    }
+    if (!on.on && boot) r.problems.push(on.why);
+    // The heartbeat still goes on, so the loop knows the guard judged the state: nothing is open.
+    if (read.kind === "ok")
+      await apply((s) => {
+        const b = boxPause(s, boot ? "off" : "noboot", now);
+        return { state: b.state === s && s.beat !== null && now - s.beat < BEAT_MS && now >= s.beat ? s : { ...b.state, beat: now }, steps: b.steps };
+      });
     return r;
   }
-  const was = read.kind === "ok" ? read.state : emptyState();
-  let s = was;
 
   // 3. A new boot: every pool process stops before anything else. Until this pass writes, the state
   // is stale and its workspaces carry the last boot's stamp, so the gate stays shut.
-  if (s.boot !== boot) {
+  const s0 = read.kind === "ok" ? read.state : emptyState();
+  if (s0.boot !== boot) {
     await closeAll();
-    s = onBoot(s, boot, ctx);
-    r.did.push("a new boot: what was open is paused by a restart");
+    await apply((s) => onBoot(s, boot, now));
   }
 
-  // 4. The disk floor: processes go first, in memory, so a state that can't be written changes
-  // nothing. A free-space read that fails twice in a row counts as low.
+  // 4. The disk floor: processes go first. A free-space read that fails twice in a row counts as low.
   const free = (d.freeBytes ?? (() => statfsFree(dirname(p.workspaces))))();
   mem.diskUnread = free === undefined ? mem.diskUnread + 1 : 0;
   const low = free === undefined ? mem.diskUnread >= DISK_TRIES : free / 1e9 < cfg.minFreeDiskGB;
   if (low) {
     await closeAll();
-    const before = s;
-    s = boxPause(s, "disk", ctx);
-    if (s !== before) r.did.push("free disk is below the floor: what was open is paused");
+    await apply((s) => boxPause(s, "disk", now));
+    r.problems.push("free disk is below the box's floor, so no workspace opens");
   }
 
-  // 5. The fence, before the spool. 7. Again after it, for what the spool changed.
-  const emptyNow = new Map<number, boolean>();
-  const fenceOnce = async (first: boolean): Promise<FenceRead> => {
-    const f = await keepAnchor(sys, uids, on);
-    if (first) mem.fenceUnsure = f.ok || f.known ? 0 : mem.fenceUnsure + 1;
-    // An open workspace keeps its processes while the fence holds, or while its reads have failed
-    // for fewer than FENCE_TRIES passes. A fence known to be wrong stops them at once.
-    const holds = f.ok || (!f.known && mem.fenceUnsure < FENCE_TRIES);
+  // 5. The fence, from the state as it is now.
+  const snap = (): WsState => {
+    const c = current(p.workspaces, root);
+    return c.kind === "ok" ? c.state : emptyState();
+  };
+  const emptyNow = new Map<string, boolean>();
+  const f = await keepAnchor(sys, uids, on.on);
+  mem.fenceUnsure = f.ok || f.known ? 0 : mem.fenceUnsure + 1;
+  // An open workspace keeps its processes while the fence holds, or while its reads have failed for
+  // fewer than FENCE_TRIES passes. A fence known to be wrong stops them at once.
+  const holds = f.ok || (!f.known && mem.fenceUnsure < FENCE_TRIES);
+  if (!f.ok) r.problems.push(f.why);
+  {
+    const s = snap();
     for (const a of pool.list) {
-      const open = s.workspaces.some((w) => w.user === a.name && OPEN.includes(w.phase));
-      if (!open || !holds) emptyNow.set(a.uid, await closeAccount(d, mem, a, r));
+      const open = s.workspaces.some((w) => w.user === a.name && OPEN.includes(w.state));
+      if (!open || !holds) emptyNow.set(a.name, await closeAccount(d, mem, a, r));
       else {
         mem.cleared.delete(a.uid);
         await killVMs(sys, a.uid);
       }
     }
-    return f;
-  };
-  await fenceOnce(true);
-
-  // 6. The spool. A failure here leaves the state as it was and never skips the fence.
-  try {
-    s = await drainSpool(d, mem, s, { agent: await agentUid(d), trusted, pool: names, ctx }, r);
-  } catch (e) {
-    r.problems.push(`the spool couldn't be read: ${String((e as Error).message ?? e).slice(0, 120)}`);
   }
-  const fence = await fenceOnce(false);
-  if (!fence.ok) r.problems.push(fence.why);
 
-  // 8. The head of the queue, when only the proof is left. What the box is doing is read once, here
-  // or for the notes.
-  let boxRead: BoxNow | undefined;
-  const boxOnce = async () => (boxRead ??= await boxNow(d, s, boot, low, now));
-  const head = queued(s)[0];
-  if (head?.user) {
-    const box = await boxOnce();
-    const acct = pool.list.find((a) => a.name === head.user);
-    if (acct && whyWaiting(s, head, { ...box, ready: [head.user] }) === null) {
-      const lastFailed = s.proof?.user === head.user && !s.proof.ok;
-      if (!fence.ok) s = { ...s, proof: { user: head.user, at: now, ok: false, why: fence.why } };
-      else if (emptyNow.get(acct.uid) !== true) s = { ...s, proof: { user: head.user, at: now, ok: false, why: `${head.user}'s processes didn't all stop` } };
-      else if (!lastFailed || mem.proofTriedAt === null || now - mem.proofTriedAt >= PROOF_RETRY_MS || now < mem.proofTriedAt) {
-        mem.proofTriedAt = now;
-        const ifc = await sys.run("/sbin/ifconfig", [], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: "" }));
-        let proof;
-        try {
-          proof = await proveFence(d.probe ?? realProbe(d), { user: head.user, lan: ifc.code === 0 ? lanAddresses(ifc.stdout) : {} });
-        } catch {
-          proof = { ok: false as const, why: "the proof couldn't run" };
-        }
-        s = { ...s, proof: { user: head.user, at: now, ok: proof.ok, why: proof.ok ? "proved: the box's own addresses refused it, and the internet answered" : proof.why } };
-        if (proof.ok) {
-          s = advance(s, { ...box, ready: [head.user] }, ctx.nonce);
-          r.did.push(`${head.name} went Active`);
-        } else r.problems.push(`the fence for ${head.user} isn't proved: ${proof.why}`);
-      }
+  // 6. The time rules, accounts and starts. The budget is read only when something may start.
+  const pre = snap();
+  const needsBudget = pre.workspaces.some((w) => w.state === "approved" || w.state === "starting");
+  const budget = needsBudget ? await budgetNow(d).catch(() => ({}) as Budget) : {};
+  const rules: Rules = rulesOf(cfg, budget);
+  await apply((s) => {
+    const t = tick(s, rules, now);
+    const a = assign(t.state, on.pool, now);
+    const st = low ? { state: a.state, steps: [] } : start(a.state, rules, now);
+    return { state: st.state, steps: [...t.steps, ...a.steps, ...st.steps] };
+  });
+
+  // 7. Ending, once its account runs nothing.
+  for (const w of snap().workspaces.filter((x) => x.state === "ending")) {
+    if (!w.user || emptyNow.get(w.user) === true || !pool.list.some((a) => a.name === w.user)) await apply((s) => ended(s, w.name, now));
+  }
+
+  // 8. Accounts handed to another agent: the old files moved aside, then deleted, as an op.
+  await clearHanded(d, mem, pool.list, emptyNow, apply, r, now);
+
+  // 9. Starting to ready.
+  const notes: WsNotes = { waiting: [] };
+  const note = (name: string, why: string) => notes.waiting.push({ name, why: why.replace(/[^\x20-\x7e]/g, "").slice(0, NOTE_MAX) || "start" });
+  for (const w of snap().workspaces.filter((x) => x.state === "starting")) {
+    const why = await readyWhy(d, mem, snap(), w, { boot, low, fence: f, emptyNow, budget, pool: pool.list, now });
+    if (why) {
+      note(w.name, why);
+      continue;
     }
+    await apply((s) => {
+      const res = ready(s, w.name, boot, now);
+      return res.ok ? { state: res.state, steps: res.steps } : { state: s, steps: [] };
+    });
   }
+  for (const w of snap().workspaces.filter((x) => x.state === "approved")) note(w.name, whyNotStart(snap(), w, rules) ?? "starting on the next pass");
 
-  // 9. The fence note, the card's notes, the heartbeat, and the write. A note that can't be made
-  // leaves the last one: it is display only.
-  s = { ...s, fence: { ok: fence.ok, why: fence.why } };
-  try {
-    s = { ...s, notes: await notesFor(d, s, pool.list, boxOnce) };
-  } catch {
-    r.problems.push("the card's notes couldn't be made");
-  }
-  const changed = JSON.stringify({ ...s, beat: null }) !== JSON.stringify({ ...was, beat: null }) || read.kind === "missing";
-  if (changed || s.beat === null || now - s.beat >= BEAT_MS || now < s.beat) save(d, mem, { ...s, beat: now }, r);
+  // 10. The fence note, the notes, the heartbeat, and the write.
+  await apply((s) => {
+    const next: WsState = { ...s, fence: { ok: f.ok, why: f.why.slice(0, 240) }, notes };
+    const changed = JSON.stringify({ ...next, beat: null }) !== JSON.stringify({ ...s, beat: null });
+    if (!changed && s.beat !== null && now - s.beat < BEAT_MS && now >= s.beat && read.kind !== "missing") return { state: s, steps: [] };
+    return { state: { ...next, beat: now }, steps: [] };
+  });
   return r;
+}
+
+// Why a starting workspace isn't ready yet, or undefined once it may be: its account clear and
+// empty, the disk above its floor, its room free, the fence holding and proved for its account.
+async function readyWhy(d: WsDeps, mem: WsMemory, s: WsState, w: Workspace, o: { boot: string; low: boolean; fence: FenceRead; emptyNow: Map<string, boolean>; budget: Budget; pool: readonly PoolAccount[]; now: number }): Promise<string | undefined> {
+  if (!w.user || !o.pool.some((a) => a.name === w.user)) return `${w.user ?? "its account"} isn't one of the box's pool accounts`;
+  if (w.clear) return `clearing ${w.user}'s last agent's files`;
+  if (o.low) return "free disk above the box's floor";
+  if (o.emptyNow.get(w.user) !== true) return `${w.user}'s processes to stop`;
+  const room = await roomWhy(d, s, w, o.budget, o.now);
+  if (room) return room;
+  if (!o.fence.ok) return `the fence: ${o.fence.why}`;
+  const last = s.proof?.user === w.user ? s.proof : undefined;
+  const tried = mem.proofTriedAt.get(w.user);
+  if (last && !last.ok && tried !== undefined && o.now - tried < PROOF_RETRY_MS && o.now >= tried) return `the fence for ${w.user} isn't proved: ${last.why}`;
+  mem.proofTriedAt.set(w.user, o.now);
+  const ifc = await d.sys.run("/sbin/ifconfig", [], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: "" }));
+  let proof;
+  try {
+    proof = await proveFence(d.probe ?? realProbe(d), { user: w.user, lan: ifc.code === 0 ? lanAddresses(ifc.stdout) : {} });
+  } catch {
+    proof = { ok: false as const, why: "the proof couldn't run" };
+  }
+  const note = { user: w.user, at: o.now, ok: proof.ok, why: (proof.ok ? "proved: the box's own addresses refused it, and the internet answered" : proof.why).slice(0, 240) };
+  await change({ rootUid: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}) }, d.p.workspaces, (st) => ({ state: { ...st, proof: note }, value: undefined }));
+  return proof.ok ? undefined : `the fence for ${w.user} isn't proved: ${proof.why}`;
+}
+
+// Starting workspaces whose account another agent used: the home moved into root's folder and made
+// again, empty, then the workspace may go on, and the old files are deleted beside the passes. Each
+// is an op of type workspace-clear, so op list shows it, and one a restart left is carried on.
+async function clearHanded(d: WsDeps, mem: WsMemory, pool: readonly PoolAccount[], emptyNow: Map<string, boolean>, apply: (fn: (s: WsState) => { state: WsState; steps: Step[] }) => Promise<WsState | undefined>, r: PassReport, now: number): Promise<void> {
+  const root = d.rootUid ?? 0;
+  const ops = { dir: rootStateOf(d.p).ops, owner: root, ...(d.chown ? { chown: d.chown } : {}) };
+  const h = handoverDeps(d, now);
+  const rec = readPoolRecord(d.p.poolRecord, root);
+  const s = current(d.p.workspaces, root);
+  if (s.kind !== "ok") return;
+  let running: Op[] = [];
+  try {
+    running = listOps(ops).ops.filter((o) => o.state === "running" && o.type === "workspace-clear");
+  } catch {}
+  for (const w of s.state.workspaces.filter((x) => x.state === "starting" && x.clear && x.user)) {
+    const a = pool.find((x) => x.name === w.user);
+    const gid = rec !== "bad" ? rec.groups[w.user!]?.gid : undefined;
+    if (!a || gid === undefined || emptyNow.get(a.name) !== true) continue;
+    if (running.some((o) => o.subject === a.name)) continue;
+    let op: Op;
+    try {
+      const b = begin(running, opType("workspace-clear"), { subject: a.name, params: { workspace: w.name }, actor: "taskbox" }, now);
+      if (b.kind !== "start") continue;
+      op = b.op;
+      mkdirSync(ops.dir, { recursive: true, mode: 0o755 });
+      writeOp(ops, op);
+    } catch (e) {
+      r.problems.push(`the clear of ${a.name} couldn't start: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
+      continue;
+    }
+    const why = moveAside(h, { user: a.name, uid: a.uid, gid });
+    if (why) {
+      try {
+        writeOp(ops, endOp(op, "failed", now, { why }));
+      } catch {}
+      await apply((st) => failed(st, w.name, `its account's files couldn't be cleared: ${why}`, now));
+      continue;
+    }
+    op = toPhase(op, "deleting");
+    try {
+      writeOp(ops, op);
+    } catch {}
+    await apply((st) => ({ state: cleared(st, w.name), steps: [{ name: w.name, type: "cleared", text: `${a.name}'s last agent's files moved where only root reads them; ${w.name} may start` }] }));
+    running.push(op);
+  }
+  // Every running clear, this pass's and any a restart left, deleted beside the passes, once each.
+  for (const op of running) {
+    const user = op.subject;
+    if (mem.deleting.has(user)) continue;
+    const job = (async () => {
+      const left = await deleteMoved(h, user);
+      const at = d.sys.now();
+      const done = left.length ? endOp(op, "failed", at, { why: `${left.length} folder${left.length === 1 ? "" : "s"} couldn't be deleted; the next clear tries again` }) : endOp(op, "succeeded", at, { result: { account: user } });
+      try {
+        writeOp(ops, done);
+      } catch {}
+      try {
+        d.events?.write({ type: "workspace.cleared", subject: user, op: op.id, actor: "taskbox", text: left.length ? `${user}'s old files: ${left.length} folder(s) couldn't be deleted` : `${user}'s old files deleted` });
+      } catch {}
+    })().finally(() => mem.deleting.delete(user));
+    mem.deleting.set(user, job);
+  }
 }
 
 // A guard under the wrong label (guard.ts labelProblem): the fence only, with no write. Every pool
@@ -510,41 +525,14 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
 export async function fencePass(d: WsDeps, mem: WsMemory): Promise<PassReport> {
   const r: PassReport = { did: [], problems: [] };
   const pool = await poolAccounts(d);
-  const trusted = trustedKey(d.cfg.approverKey, readPin(d.p.approverPin, d.rootUid ?? 0));
-  const names = pool.sure ? poolOf(d.cfg.accounts, trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
-  const on = trusted !== undefined && d.cfg.accounts.agent !== undefined && names.length > 0;
+  const on = workspacesOn(d, pool.sure ? pool.list.map((a) => a.name) : undefined);
   const read = readStateFile(d.p.workspaces, d.rootUid ?? 0);
-  const f = await keepAnchor(d.sys, pool.list.map((a) => a.uid), on);
+  const f = await keepAnchor(d.sys, pool.list.map((a) => a.uid), on.on);
   if (!f.ok) r.problems.push(f.why);
   for (const a of pool.list) {
-    const open = on && f.ok && read.kind === "ok" && read.state.workspaces.some((w) => w.user === a.name && OPEN.includes(w.phase));
+    const open = on.on && f.ok && read.kind === "ok" && read.state.workspaces.some((w) => w.user === a.name && OPEN.includes(w.state));
     if (open) await killVMs(d.sys, a.uid);
     else await closeAccount(d, mem, a, r);
   }
   return r;
-}
-
-// The state written, and if stateText refuses it with its notes, written again without them: the
-// notes are for the card, and never keep the state itself from being written.
-export function writeWithNotes(d: Pick<WsDeps, "chown" | "rootUid">, path: string, s: WsState): WsState {
-  try {
-    writeStateFile(d, path, s);
-    return s;
-  } catch (e) {
-    if (!Object.hasOwn(s, "notes")) throw e;
-    const { notes: _, ...bare } = s;
-    writeStateFile(d, path, bare);
-    return bare;
-  }
-}
-
-// The write, or the state kept in memory for the next pass when it fails.
-function save(d: WsDeps, mem: WsMemory, s: WsState, r: PassReport): void {
-  try {
-    if (writeWithNotes(d, d.p.workspaces, s) !== s) r.problems.push("the card's notes couldn't be written, so the state went without them");
-    mem.unwritten = undefined;
-  } catch (e) {
-    mem.unwritten = s;
-    r.problems.push(`the workspaces state couldn't be written: ${String((e as Error).message ?? e).slice(0, 120)}`);
-  }
 }

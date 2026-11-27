@@ -1,6 +1,6 @@
 // The workspace pass beside the guard's 2 s pf tick: never awaited, one at a time, and a failure in
-// it never stops pf upkeep. Also the guard's label (no lease), the install's spool, and taskbox
-// check's Workspaces fence row.
+// it never stops pf upkeep. Also the guard's label (no lease), and taskbox check's Workspaces fence
+// row, which reads the agent spool workspace requests come through.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -8,7 +8,7 @@ import { writeRecord } from "../src/accounts.ts";
 import { CHECK_EXTRA, type CheckContext, fenceRow } from "../src/checks.ts";
 import { GUARD_LABEL, paths, previousLabels } from "../src/config.ts";
 import { ANCHOR, expectedLoaded, GUARD_TICK_MS, guardWatch, labelProblem, PFCTL, workspacesFor } from "../src/guard.ts";
-import { placeProgress, placeSpool } from "../src/install.ts";
+import { rootStateOf } from "../src/core/paths.ts";
 import { emptyState } from "../src/workspace/model.ts";
 import { writeStateFile } from "../src/workspace/pass.ts";
 import { FakeSys } from "./fake.ts";
@@ -126,49 +126,6 @@ describe("no lease: only the guard under its current label writes workspaces", (
   });
 });
 
-describe("the install's workspace spool", () => {
-  function spoolPaths() {
-    const p = paths(tempRoot(), testBox());
-    mkdirSync(dirname(p.workspaceSpool), { recursive: true, mode: 0o755 });
-    const chowns: string[] = [];
-    return { p, chowns, d: { paths: p, chown: (path: string, uid: number, gid: number) => chowns.push(`${path} ${uid}:${gid}`) } };
-  }
-
-  test("made for the agent account at mode 700", () => {
-    const { p, chowns, d } = spoolPaths();
-    placeSpool(d, 482);
-    expect(lstatSync(p.workspaceSpool).mode & 0o7777).toBe(0o700);
-    expect(chowns).toEqual([`${p.workspaceSpool} 482:20`]);
-  });
-
-  test("the progress folder: made for the agent account at mode 700, by the spool's rules", () => {
-    const { p, chowns, d } = spoolPaths();
-    placeProgress(d, 482);
-    expect(lstatSync(p.workspaceProgress).mode & 0o7777).toBe(0o700);
-    expect(chowns).toEqual([`${p.workspaceProgress} 482:20`]);
-    const o = spoolPaths();
-    symlinkSync(dirname(o.p.workspaceProgress), o.p.workspaceProgress);
-    expect(() => placeProgress(o.d, me)).toThrow("is there and isn't taskbox's");
-  });
-
-  test("the agent's own folder at another mode is put back to 700", () => {
-    const { p, d } = spoolPaths();
-    mkdirSync(p.workspaceSpool, { mode: 0o755 });
-    placeSpool(d, me);
-    expect(lstatSync(p.workspaceSpool).mode & 0o7777).toBe(0o700);
-  });
-
-  test("a link, a file or another account's folder stops the install", () => {
-    for (const how of ["link", "file", "owner"] as const) {
-      const { p, d } = spoolPaths();
-      if (how === "link") symlinkSync(dirname(p.workspaceSpool), p.workspaceSpool);
-      if (how === "file") writeFileSync(p.workspaceSpool, "");
-      if (how === "owner") mkdirSync(p.workspaceSpool, { mode: 0o700 });
-      expect(() => placeSpool(d, how === "owner" ? me + 1 : me)).toThrow("is there and isn't taskbox's");
-    }
-  });
-});
-
 describe("taskbox check's Workspaces fence row", () => {
   function ctx(o: { key?: boolean } = {}) {
     const root = tempRoot();
@@ -177,11 +134,12 @@ describe("taskbox check's Workspaces fence row", () => {
     sys.clock = T;
     mkdirSync(dirname(p.workspaces), { recursive: true, mode: 0o755 });
     writeRecord({ chown: () => {}, rootUid: me }, p.accountsRecord, { made: { "taskbox-agent": { role: "agent", uid: me } } });
-    mkdirSync(p.workspaceSpool, { mode: 0o700 });
-    chmodSync(p.workspaceSpool, 0o700);
+    const spool = rootStateOf(p).agentSpool;
+    mkdirSync(spool, { mode: 0o700 });
+    chmodSync(spool, 0o700);
     const c: CheckContext = { sys, cfg: { ...CFG, ...(o.key === false ? {} : { approverKey: "x" }) }, paths: p, uid: 0, serviceUid: undefined, rootUid: me };
     const state = (s: Partial<ReturnType<typeof emptyState>> = {}) => writeStateFile({ rootUid: me }, p.workspaces, { ...emptyState(), boot: BOOT1, beat: T, fence: { ok: true, why: "pf fences the pool account" }, ...s });
-    return { c, p, state };
+    return { c, p, state, spool };
   }
 
   test("is a row, after the Workspace account row", () => {
@@ -206,13 +164,13 @@ describe("taskbox check's Workspaces fence row", () => {
     ["a fence that doesn't hold", (x: ReturnType<typeof ctx>) => x.state({ fence: { ok: false, why: "pf is off, so the workspaces' rules do nothing" } }), "pf is off"],
     ["no fence note", (x: ReturnType<typeof ctx>) => x.state({ fence: undefined }), "hasn't checked the workspaces fence yet"],
     ["a state the guard moved aside", (x: ReturnType<typeof ctx>) => (x.state(), writeFileSync(`${x.p.workspaces}.bad-1800000000000`, "{")), "moved it to "],
-    ["a spool at 755", (x: ReturnType<typeof ctx>) => (x.state(), chmodSync(x.p.workspaceSpool, 0o755)), "the spool isn't mode 700"],
+    ["a spool at 755", (x: ReturnType<typeof ctx>) => (x.state(), chmodSync(x.spool, 0o755)), "the spool isn't mode 700"],
     ["a spool that is a link", (x: ReturnType<typeof ctx>) => {
       x.state();
-      const real = join(dirname(x.p.workspaceSpool), "real");
+      const real = join(dirname(x.spool), "real");
       mkdirSync(real, { mode: 0o700 });
-      Bun.spawnSync(["/bin/rmdir", x.p.workspaceSpool]);
-      symlinkSync(real, x.p.workspaceSpool);
+      Bun.spawnSync(["/bin/rmdir", x.spool]);
+      symlinkSync(real, x.spool);
     }, "the spool isn't a folder"],
   ] as const) {
     test(`FAIL with ${what}`, async () => {

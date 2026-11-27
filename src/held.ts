@@ -1,17 +1,19 @@
-// Slots held for workspaces. The loop reads a small view of the
-// workspaces, never the full state model: only model.ts's phases come from there. A workspace holds slots from
-// the top: with n slots and h held, slots n - h + 1 to n start no VM, and the scheduler sees n - h.
-import { HOLDS, type Phase } from "./workspace/model.ts";
+// What workspaces hold of the box, as the loop needs it. The loop reads a small view of root's
+// workspaces state, never the full model: only model.ts's states and sizes come from there.
+// - A Whole holds every slot from the top: with n slots and h held, slots n - h + 1 to n start no VM,
+//   and the scheduler sees n - h. So CI drains for it, and the watchers say why.
+// - A Light or Heavy holds its memory and CPUs out of the VM budget: the scheduler starts only what
+//   fits in the rest, and a waiting VM that no longer fits gives way.
+import { HOLDS, type Hold, type Size, type State } from "./workspace/model.ts";
 
-// What the loop needs to know of one workspace. Only an approved request reaches this view: a
-// request nobody approved holds nothing, so it isn't listed.
-// The sizes and phases are workspace/model.ts's. This release has Whole only.
+// What the loop needs to know of one workspace. Only one that holds room or waits reaches this view.
 export interface WorkspaceView {
-  size: "whole";
-  phase: Phase;
-  name: string; // nova-1, for the watchers' line
+  size: Size;
+  state: State;
+  name: string; // nova-3, for the watchers' line
   approvedAt: number | null; // the owner's last OK: the approve, or the last resume
-  ok: string; // that OK in the owner's words: "you approved it at 14:02", "you resumed it at Nov 19 14:02"
+  ok: string; // that OK in words: "approved 14:02", "resumed Nov 19 14:02"
+  hold: Hold | null; // what it holds of the budget, from starting
 }
 
 // What the loop knows of the workspaces now, from root's state (workspace/hold.ts).
@@ -29,6 +31,24 @@ export interface WorkspacesNow {
 // How many of n slots are held now: all of them for a state that can't be trusted.
 export const heldOf = (w: WorkspacesNow, n: number): number => (w.all ? Math.max(0, n) : held(w.views, n));
 
+// What Lights and Heavies hold of the VM budget now. A Whole holds slots instead (held).
+export function roomHeld(w: WorkspacesNow): { memoryMB: number; cpus: number } {
+  let memoryMB = 0;
+  let cpus = 0;
+  for (const v of w.views) {
+    if (v.size === "whole" || !HOLDS.includes(v.state)) continue;
+    memoryMB += v.hold?.memoryMB ?? 0;
+    cpus += v.hold?.cpus ?? 0;
+  }
+  return { memoryMB, cpus };
+}
+
+// The budget the scheduler sees: the VMs' share of the box less what workspaces hold. A part of the
+// budget that isn't known stays unknown.
+export function lessHeld(b: { memoryMB?: number; cpus?: number }, h: { memoryMB: number; cpus: number }): { memoryMB?: number; cpus?: number } {
+  return { ...(b.memoryMB !== undefined ? { memoryMB: Math.max(0, b.memoryMB - h.memoryMB) } : {}), ...(b.cpus !== undefined ? { cpus: Math.max(0, b.cpus - h.cpus) } : {}) };
+}
+
 export type HoldKind = "workspace" | "bad" | "newer" | "stale";
 export const STALE_TEXT = "the guard hasn't made a pass for 3 minutes, so the workspaces state is stale and no workspace opens";
 
@@ -38,25 +58,22 @@ export const STALE_TEXT = "the guard hasn't made a pass for 3 minutes, so the wo
 export function holdReason(w: WorkspacesNow): { kind: HoldKind; text: string } | undefined {
   if (w.all) return w.all;
   if (w.stale) return { kind: "stale", text: STALE_TEXT };
-  const first = w.views.filter((v) => v.size === "whole" && HOLDS.includes(v.phase)).sort((a, b) => (a.approvedAt ?? 0) - (b.approvedAt ?? 0))[0];
+  const first = w.views.filter((v) => v.size === "whole" && HOLDS.includes(v.state)).sort((a, b) => (a.approvedAt ?? 0) - (b.approvedAt ?? 0))[0];
   if (!first) return w.newer;
-  return { kind: "workspace", text: `CI paused for ${first.name} (${first.ok})` };
+  return { kind: "workspace", text: `CI paused for ${first.name} (Whole), ${first.ok}` };
 }
 
-// How many of the box's n slots are held now. 0 normally, and n for a Whole that waits, is active
-// or is saving. Light and Heavy come in a later release.
+// How many of the box's n slots are held now: n while a Whole holds room, else 0.
 export function held(state: readonly WorkspaceView[], n: number): number {
-  if (state.some((w) => w.size === "whole" && HOLDS.includes(w.phase))) return n;
-  return 0;
+  return state.some((w) => w.size === "whole" && HOLDS.includes(w.state)) ? n : 0;
 }
 
 // Whether a slot is one of the held ones. With none held, no slot is, whatever its number.
 export const isHeld = (slot: number, n: number, h: number): boolean => h > 0 && slot > n - h;
 
 // Whether every held slot is empty, from the loop's state: each slot the loop found held with no VM
-// writes heldEmpty: true under slots, and drops it once it isn't held. For the guard's check that a
-// waiting Whole may go active. That is all the guard needs from the loop. It is the
-// loop's word only: the guard still counts the service account's VM processes itself, since two
+// writes heldEmpty: true under slots, and drops it once it isn't held. The guard reads it before a
+// starting Whole goes ready, beside its own count of the service account's VM processes, since two
 // loops could write one state file. No held slots: nothing to wait for.
 export function heldSlotsEmpty(loop: { slots?: Record<string, { heldEmpty?: unknown }>; slotCount?: number }, h: number): boolean {
   const n = loop.slotCount ?? 1;

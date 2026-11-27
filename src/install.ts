@@ -492,14 +492,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     if (kept) d.say(`The old requests folder, ${d.paths.requests}, couldn't be removed: another user keeps something in it. Nothing reads it, and taskbox never walks into what they left.`);
     // The box's install ID, made once and kept across updates, for a controller's pairing.
     placeInstallId(d.paths, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
-    // The workspace spool, while the box has its pool account: the agent's, where agent commands
-    // leave requests for the guard.
-    if (step.pool.some((x) => !("leave" in x.plan)) && relAccounts.agent !== undefined) {
-      const agentUid = await uidOf(d, relAccounts.agent);
-      if (agentUid === undefined) throw new Stop(`${relAccounts.agent} isn't there, so the workspace spool can't be made. Type taskbox update again.`, true);
-      placeSpool(d, agentUid);
-      placeProgress(d, agentUid);
-    }
+    // Workspace requests go through the agent spool, which the guard keeps (passes/requests.ts).
     const next = mkdtempSync(`${dirname(d.paths.opt)}/taskbox-${head.sha.slice(0, 12)}-`);
     mkdirSync(join(next, "bin"), { recursive: true });
     mkdirSync(join(next, "runner"), { recursive: true });
@@ -1148,36 +1141,6 @@ export function placeShared(p: Paths, serviceUid: number, chown: (path: string, 
   // says so; the install removes the folder, never walking into what a user left (requests.ts).
   const r = removeRequests(p.requests);
   return r.removed ? 0 : Math.max(1, r.left);
-}
-
-// The workspace spool, /opt/taskbox-state/workspace-spool: the agent account's, mode 700, in root's
-// folder, so the agent can't swap the spool itself. Agent commands write each request there; the
-// guard only reads and unlinks in it (workspace/pass.ts). One that is there and isn't a real folder
-// of the agent's stops the install. Its mode is put back to 700 each time: the folder itself is in
-// root's, so the path can't be swapped under the change.
-export function placeSpool(d: Pick<InstallDeps, "paths" | "chown">, agentUid: number): void {
-  placeAgentFolder(d, d.paths.workspaceSpool, agentUid);
-}
-
-// The agent's progress folder, /opt/taskbox-state/workspace-progress: the agent account's, mode 700,
-// in root's folder, by the spool's rules. taskbox progress keeps the agent's last words there, out
-// of root's state; the agent's own commands read them, root never writes them, and they carry no authority.
-export function placeProgress(d: Pick<InstallDeps, "paths" | "chown">, agentUid: number): void {
-  placeAgentFolder(d, d.paths.workspaceProgress, agentUid);
-}
-
-function placeAgentFolder(d: Pick<InstallDeps, "chown">, dir: string, agentUid: number): void {
-  let st;
-  try {
-    st = lstatSync(dir);
-  } catch {
-    mkdirSync(dir, { mode: 0o700 });
-    d.chown(dir, agentUid, 20);
-    chmodSync(dir, 0o700);
-    return;
-  }
-  if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== agentUid) throw new Stop(`${dir} is there and isn't taskbox's. Nothing was installed. Nothing to do: agents fix it.`);
-  if ((st.mode & 0o7777) !== 0o700) chmodSync(dir, 0o700);
 }
 
 // The install ID: 32 hex characters from a cryptographic random source, made once, root's

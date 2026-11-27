@@ -1,6 +1,7 @@
 // The owner's commands at the box. Each one ends with three lines: Now (the state), Did (what
 // changed) and Next (one step). They read the files the loop writes; only clean, undo and remove
 // change anything.
+import { workspacesBlock } from "./workspace/show.ts";
 import { createHash } from "node:crypto";
 import { existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -172,6 +173,7 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   d.say(`  Installed: ${installedLine(d.paths)}`);
   const avail = availabilityLine(rootStateOf(d.paths).control, d.rootUid ?? 0);
   if (avail) d.say(`  Available: ${avail}`);
+  for (const l of workspacesBlock(d.paths.workspaces, d.sys.now(), d.rootUid ?? 0)) d.say(`  ${l}`);
   d.say(`  Download:  ${pullLine(readPull(d.paths.pull), d.sys.now(), running, readStopped(d.paths, d.rootUid ?? 0)?.at)}`);
   const linux = readPull(d.paths.pullLinux);
   if (linux) d.say(`  Linux:     ${pullLine(linux, d.sys.now(), running, readStopped(d.paths, d.rootUid ?? 0)?.at)}`);

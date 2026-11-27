@@ -6,6 +6,7 @@ import { POOL_USER, validateAccounts } from "./access.ts";
 import { LABEL_PREFIX, LABEL_PREFIX_SHAPE, PROJECT_NAME } from "./settings/core.ts";
 
 export { type AwaySettings, awayOf, checkAway, CRON_INTERVALS, DEFAULT_AWAY, PUBLIC_ADDRESS_SOURCES, type PublicAddressSource, RESTART_PLANS, type RestartPlan } from "./settings/away.ts";
+export { DEFAULT_WORKSPACES, type WorkspaceSettings, workspacesOf } from "./settings/workspaces.ts";
 export { assetUrl, checkConfig, type Config, LABEL_PREFIX, PROJECT_NAME, releaseRepoOf } from "./settings/core.ts";
 export { allLabelsFor, ANY_LABEL, type Budget, budgetOf, bySize, capOf, DEFAULT_QUIET_TURN_MINUTES, DEFAULT_SIZE, DEFAULT_TURN_IDLE_MINUTES, forKind, forSize, keepsOf, type Kind, kindCapOf, KIND_WORD, kindOfLabel, type KindSettings, kindsOf, labelsFor, MACOS_MAX, MAX_SLOTS, mergeLabels, pathsForKind, RUNNER_DEFAULT_LABELS, runnerDefaults, type Size, sizeOf, sizesOf, sizeWord, smallestSize, vmsAtMostOf, warmSizeOf } from "./settings/kinds.ts";
 export { loadConfig, loadConfigFrom } from "./settings/layers.ts";
@@ -176,8 +177,6 @@ export interface Paths {
   poolRecord: string; // /opt/taskbox-state/pool.json: root's, the pool account and group taskbox made (pin.ts)
   poolHome: string; // /Users/<pool account>: its own, mode 700
   workspaces: string; // /opt/taskbox-state/workspaces.json: root's, 644, the guard its only writer (workspace/store.ts)
-  workspaceSpool: string; // /opt/taskbox-state/workspace-spool: the agent account's, 700; root only reads and unlinks in it
-  workspaceProgress: string; // /opt/taskbox-state/workspace-progress: the agent account's, 700; the agent's last words (workspace/agent.ts)
   verifyTmp: string; // /var/run/taskbox-verify: root's, 755, where ssh-keygen as nobody reads a signature (approval.ts)
   cronDeny: string; // /usr/lib/cron/cron.deny: users cron refuses
   atDeny: string; // /usr/lib/cron/at.deny: users at refuses
@@ -254,8 +253,6 @@ export function paths(root: string, box: BoxNames): Paths {
     poolRecord: join(root, "opt/taskbox-state/pool.json"),
     poolHome: join(root, "Users", POOL_USER),
     workspaces: join(root, "opt/taskbox-state/workspaces.json"),
-    workspaceSpool: join(root, "opt/taskbox-state/workspace-spool"),
-    workspaceProgress: join(root, "opt/taskbox-state/workspace-progress"),
     verifyTmp: join(root, "private/var/run/taskbox-verify"),
     cronDeny: join(root, "usr/lib/cron/cron.deny"),
     atDeny: join(root, "usr/lib/cron/at.deny"),

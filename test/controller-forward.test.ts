@@ -25,10 +25,10 @@ describe("the line", () => {
     for (const bad of [["status", "--box"], ["status", "--box", "a;b"], ["status", "--box", "a", "--box=b"]]) expect(cutBox(bad)).toHaveProperty("no");
   }, CEILING);
 
-  test("the box gets --json in the version agreed, and the agent's own verbs as typed", () => {
+  test("the box gets --json in the version agreed", () => {
     expect(lineFor(spec("job list"), ["job", "list", "-n", "5"], 4)).toBe("job list -n 5 --json --answers 4");
-    expect(lineFor(spec("workspaces"), ["workspaces", "--json"], 4)).toBe("workspaces --json");
-    expect(lineFor(spec("progress"), ["progress", "ws1", "-w"], 4)).toBe("progress ws1 -w");
+    expect(lineFor(spec("workspace list"), ["workspace", "list"], 4)).toBe("workspace list --json --answers 4");
+    expect(lineFor(spec("workspace progress"), ["workspace", "progress", "nova-1", "Frame 1200"], 4)).toBe('workspace progress nova-1 "Frame 1200" --json --answers 4');
     expect(lineFor(spec("check"), ["check", "--away"], 4)).toBe("check --away --json --answers 4");
     // A word the box's shell would split differently is never sent.
     expect(() => lineFor(spec("workspace end"), ["workspace", "end", 'a"b'], 4)).toThrow();
@@ -39,7 +39,7 @@ describe("every command the agent shell runs", () => {
   test("goes to the box as a line its shell takes, or is said to run at the box, and never throws", async () => {
     const { w, d } = v3();
     for (const s of registry().filter((x) => x.shell && !x.internal)) {
-      const argv = [...s.path, ...(s.args?.min ? Array(s.args.min).fill("agent-a-1") : [])];
+      const argv = [...s.path, ...(s.args?.min ? Array(s.args.min).fill("nova-1") : [])];
       const a = readLine(d, argv);
       if ("shown" in a) {
         expect({ argv, line: a.shown.lines[0] }).toEqual({ argv, line: expect.stringMatching(/runs at the box|answers only as text|^taskbox |^Type taskbox |Usage|needs|takes/) });
@@ -51,7 +51,7 @@ describe("every command the agent shell runs", () => {
     expect(w.calls.length).toBeGreaterThan(0);
   }, 60_000);
 
-  test("load status, which answers in text only, runs at the box; template show answers in JSON and goes to the box; the agent's verbs keep their own words", async () => {
+  test("load status, which answers in text only, runs at the box; template show answers in JSON and goes to the box; workspace commands go as any other", async () => {
     const { w, d, box } = v3();
     for (const argv of [["load", "status"], ["status", "--state", "/tmp/x"]]) {
       const r = await runLine(d, argv);
@@ -62,10 +62,10 @@ describe("every command the agent shell runs", () => {
     const t = await runLine(d, ["template", "show", "load"]);
     expect(box.sent.at(-1)).toBe("template show load --json --answers 4");
     expect([t.code, t.lines[0]]).toEqual([1, "taskbox.json names no test repo, so there is no load test."]);
-    await runLine(d, ["workspaces", "--json"]);
-    expect(box.sent.at(-1)).toBe("workspaces --json");
-    // The agent's verbs: the box's own parser says what is wrong, as a usage error.
-    const r = await runLine(d, ["deny", "a1"]);
+    await runLine(d, ["workspace", "list", "--json"]);
+    expect(box.sent.at(-1)).toBe("workspace list --json --answers 4");
+    // A word a workspace command doesn't take is a usage error here, before anything is sent.
+    const r = await runLine(d, ["workspace", "deny", "a1"]);
     expect(r.code).toBe(2);
     expect(r.lines[0]).not.toMatch(/runs at the box/);
   }, 30_000);

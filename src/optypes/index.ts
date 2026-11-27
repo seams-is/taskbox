@@ -5,11 +5,13 @@ import * as availability from "./availability.ts";
 import type { OpDecl } from "./decl.ts";
 import * as remove from "./remove.ts";
 import * as tools from "./tools.ts";
+import * as workspace from "./workspace.ts";
 
 export const opTypeFiles: readonly { file: string; optypes: readonly OpDecl[] }[] = [
   { file: "availability.ts", optypes: availability.optypes },
   { file: "remove.ts", optypes: remove.optypes },
   { file: "tools.ts", optypes: tools.optypes },
+  { file: "workspace.ts", optypes: workspace.optypes },
 ];
 
 export const opDecls = (): OpDecl[] => {

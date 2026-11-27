@@ -13,7 +13,6 @@ import { earlierWorkspaces, install, type InstallDeps, TRUST_FILES, trustFilesLi
 import { FakeSys, githubRoutes } from "./fake.ts";
 import { Dir } from "./fake-dir.ts";
 import { CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
-import { boxFacts, workspacesJson } from "../src/workspace/show.ts";
 import { approver, realKeygen } from "./ws-helpers.ts";
 import { keyChangeVerifier, toB64url } from "../src/workspace/approval.ts";
 

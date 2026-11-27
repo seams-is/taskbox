@@ -26,53 +26,46 @@ describe("remote's shell", () => {
     expect(commandFor("status --force")).toEqual({ no: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]" });
     for (const line of ["status myproject", "job list -n x", "job list --tail", "job", "check --away --away", "logs --json=1", "template show nothing", "policy show", "connect github", "key reset approver"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
   });
-  test("takes the agent's workspace commands, each checked in full", () => {
+  test("takes the workspace commands, each word checked by the registry's parser", () => {
     for (const line of [
-      'taskbox queue --as nova --why "Render the launch video"',
-      "queue --as nova --why 'Render the launch video' --json",
-      "wait nova-1",
-      "taskbox wait nova-1 --json",
-      'progress nova-1 "Frame 1200 of 4000" --step 1200/4000 --can-pause',
-      'progress nova-1 "Building shaders" --busy',
-      'progress nova-1 --saved "Saved after frame 1800"',
+      'taskbox workspace request --as nova --size light --why "Render the launch video"',
+      "workspace request --as nova --why 'Render the launch video' --json",
+      "workspace wait nova-1 --for ready --timeout 10m",
+      "workspace status nova-1 --json",
+      "workspace list --state requested",
+      'workspace progress nova-1 "Frame 1200 of 4000" --step 1200/4000',
+      'workspace progress nova-1 "Saved after frame 1800" --saved',
       "workspace end nova-1",
-      'deny nova-2 --as laptop --reason "after 6pm"',
-      "signed eyJhY3Rpb24iOiJhcHByb3ZlIn0 U1NIU0lHAAAAAQ_-",
-      "workspaces",
-      "taskbox workspaces --json",
+      'workspace deny nova-2 --reason "after 6pm"',
+      "workspace connect nova-1",
+      "workspace approve nova-1 --size light --signed eyJhY3Rpb24iOiJhcHByb3ZlIn0.U1NIU0lHAAAAAQ_-",
     ]) {
       const c = commandFor(line);
       expect({ line, ok: "args" in c }).toEqual({ line, ok: true });
     }
-    expect(commandFor('queue --as nova --why "Render it"')).toEqual({ args: ["queue", "--as", "nova", "--why", "Render it"] });
+    expect(commandFor('workspace request --as nova --why "Render it"')).toEqual({ args: ["workspace", "request", "--as", "nova", "--why", "Render it"] });
   });
   test("refuses a workspace command with bad words, a missing part, or anything the word filter refuses", () => {
     for (const line of [
-      "queue",
-      "queue --as nova",
-      'queue --as nova --why "a" --size huge',
-      'queue --as ../x --why "a"',
-      "wait",
-      "wait nova",
-      "wait nova-1 nova-2",
-      "wait nova-1; id",
-      'progress nova-1 "x" --can-pause --busy',
-      'progress nova-1 "x" --step 9/4',
-      "progress nova-1",
-      'progress nova-1 --saved "x" --busy',
+      "workspace request",
+      "workspace request --as nova",
+      'workspace request --as nova --why "a" --size huge',
+      'workspace request --as ../x --why "a"',
+      "workspace wait",
+      "workspace wait nova",
+      "workspace wait nova-1 nova-2",
+      "workspace wait nova-1; id",
+      "workspace wait nova-1 --for gone",
+      'workspace progress nova-1 "x" --step 9/4',
+      "workspace progress nova-1",
       "workspace end",
       "workspace end nova-1 --now",
-      "release nova-1",
-      "deny nova-2",
-      "deny nova-2 --as owner",
-      "deny nova-2 --as taskbox",
-      'deny nova-2 --as owner --reason "$(id)"',
-      "signed a+b c",
-      "signed eyJ4IjoxfQ",
-      "signed eyJ4IjoxfQ== c2ln",
-      "workspaces nova-1",
-      'progress nova-1 "Frame 1 \\ 2"',
-      "queue --as nova --why `id`",
+      "workspace deny nova-2 extra",
+      'workspace deny nova-2 --reason "$(id)"',
+      'workspace progress nova-1 "Frame 1 \\ 2"',
+      "workspace request --as nova --why `id`",
+      "queue --as nova --why x",
+      "workspaces",
     ]) {
       expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
     }

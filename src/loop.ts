@@ -25,7 +25,7 @@ import { beatFor, RESTARTS_WINDOW_MS, staleBeat } from "./beat.ts";
 import { holdsLine } from "./sizes.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
 import { readLoop } from "./watch.ts";
-import { heldOf, holdReason, isHeld, type WorkspacesNow } from "./held.ts";
+import { heldOf, holdReason, isHeld, lessHeld, roomHeld, type WorkspacesNow } from "./held.ts";
 import { readKick } from "./loopwatch.ts";
 import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
@@ -727,6 +727,19 @@ const NONE: WorkspacesNow = { views: [] };
 export const heldNow = (d: Pick<LoopDeps, "workspaces" | "box" | "cfg">): number => heldOf(d.workspaces?.() ?? NONE, d.box?.count ?? slotCount(d.cfg));
 const slotHeld = (d: LoopDeps): boolean => isHeld(d.slot, d.box?.count ?? slotCount(d.cfg), heldNow(d));
 
+// The VM this slot holds up and waiting, when it doesn't fit in the VM budget beside the other VMs
+// and what Lights and Heavies hold: the hold's wait, which ends it. A running job is never ended.
+function roomWait(d: LoopDeps): { key: string; text: string } | undefined {
+  const room = roomHeld(d.workspaces?.() ?? NONE);
+  if (room.memoryMB <= 0 || !d.box) return undefined;
+  const b = budgetOf(d.cfg, d.box.totalGB, d.box.logicalCpus);
+  if (b.memoryMB === undefined) return undefined;
+  const me = d.box.held.get(d.slot);
+  const mine = me ? (me.memoryMB ?? sizeOf(d.cfg, me.kind, me.size).vmMemoryMB) : 0;
+  if (othersMB(d) + mine + room.memoryMB <= b.memoryMB) return undefined;
+  return { key: "workspace", text: `workspaces hold ${(room.memoryMB / 1024).toFixed(1)} GB of the VM budget, so this waiting VM gives them room` };
+}
+
 // The box's availability, from root's control.json (availability.ts): read on every turn, inside the
 // start gate, and every few seconds while a job runs.
 // A break-glass start at the box (startHere) runs past the gen it was asked over, while its note counts:
@@ -760,6 +773,9 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
   }
   const hold = drainOrHold(d);
   if (hold) return hold;
+  // A waiting VM that no longer fits beside what Lights and Heavies hold gives way to them.
+  const room = up ? roomWait(d) : undefined;
+  if (room) return room;
   if (readState(d).guardClosed === true && !d.cfg.vmnetPfProven && (await screenSharingOn(d.sys))) {
     return { key: "guard", text: "the guard's rules went missing when a VM started, so no VM starts while Screen Sharing is on" };
   }
@@ -1648,7 +1664,8 @@ export async function runLoop(d: LoopDeps): Promise<number> {
         claim: (o) => box.held.set(o.slot, o),
         history: () => box.history(kindsOf(d.cfg), (k) => sizesOf(d.cfg, k).map((z) => z.name)),
         // The VMs' share of the box: its memory as last read, less boxKeepsGB, and its CPUs.
-        budget: () => budgetOf(d.cfg, box.totalGB, box.logicalCpus),
+        // Less what Lights and Heavies hold of it (held.ts): the scheduler starts only what fits beside them.
+        budget: () => lessHeld(budgetOf(d.cfg, box.totalGB, box.logicalCpus), roomHeld(d.workspaces?.() ?? NONE)),
         // v2.6.0: the load test's window, read each time a slot asks (load.ts).
         load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now()) : undefined),
         // The slots held for workspaces, read each time a slot asks: the scheduler sees the rest.

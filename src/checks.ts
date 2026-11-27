@@ -27,7 +27,9 @@ import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
 import { MAX_HOLD_MS, rollbackWatchState } from "./hop.ts";
 import type { Sys } from "./sys.ts";
 import { fresh } from "./workspace/model.ts";
-import { readStateFile, spoolProblem } from "./workspace/pass.ts";
+import { readStateFile } from "./workspace/pass.ts";
+import { spoolProblem } from "./core/spool.ts";
+import { rootStateOf } from "./core/paths.ts";
 import { socketDirProblem } from "./tssocket.ts";
 import { failMode } from "./workspace/store.ts";
 
@@ -709,7 +711,7 @@ export async function fenceRow(c: CheckContext): Promise<Omit<Check, "name">> {
   if (!r.state.fence.ok) return fail(`${r.state.fence.why}, so no workspace opens`);
   const agent = c.cfg.accounts.agent;
   const uid = agent !== undefined ? readRecord(c.paths.accountsRecord).made[agent]?.uid : undefined;
-  const spool = uid === undefined ? "the agent account isn't taskbox's" : spoolProblem(c.paths.workspaceSpool, uid, root);
+  const spool = uid === undefined ? "the agent account isn't taskbox's" : spoolProblem(rootStateOf(c.paths).agentSpool, uid, root);
   if (spool) return fail(`${spool}, so agents can't ask for a workspace. As your admin user, type taskbox update.`);
   return ok(`${r.state.fence.why}. The spool is the agent account's at mode 700, and the state is root's and fresh`);
 }

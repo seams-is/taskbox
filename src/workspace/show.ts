@@ -1,132 +1,100 @@
-// taskbox workspaces, at the box: each workspace with its
-// agent, account, state and disk use, and the last steps the box applied. It reads root's state and
-// nothing on the laptop can change what it shows.
-//
-// Every user sees the same names: root's state is 644, so anyone on the box can read them anyway (an
-// accepted residual). Disk use needs root, since each pool account's home is its
-// own at mode 700: an admin sees it at taskbox workspace clear. The agent's last words show to whoever can
-// read the agent's progress folder: the agent account and root.
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { join } from "node:path";
-import { type Mode, progressFile, type Step } from "./agent.ts";
-import { FINAL, fresh, stateLine, WORDS_RE, type WsState } from "./model.ts";
+// What workspace list, workspace status and status show of root's workspaces state. Every account
+// on the box reads the same: root's state is 644. Words an agent wrote carry no authority and are
+// shown as words only.
+import { clockOf, FINAL, fresh, quietFor, type Rules, SIZE_WORD, stateLine, type Workspace, type WsState } from "./model.ts";
+import { readStateFile } from "./read.ts";
 import type { StateRead } from "./store.ts";
-import { fingerprint, type Pin } from "../approver.ts";
 
-// Done and denied workspaces show for this long after they finished.
-export const SHOW_FINAL_MS = 24 * 3_600_000;
-export const SHOW_STEPS = 5;
-
-export type Word = { at: number; words: string; step: Step | null; mode: Mode | null };
-
-export interface ShowInputs {
-  read: StateRead;
-  now: number;
-  disk: (user: string) => number | undefined; // bytes, when this reader can see them
-  word: (name: string) => Word | undefined; // the agent's last word, when this reader can see it
-  // What the owner's laptop signs against: the box's install
-  // ID, and the approver key the box pinned, by its fingerprint and generation. Both files are
-  // readable by every user on the box (the install ID 444, the pin 644), so this gives nobody more.
-  box?: BoxFacts;
-}
-
-export type BoxFacts = { installId: string | null; approver: { fingerprint: string | null; gen: number } | null };
-
-// The pin as the laptop needs it: a pinned key's fingerprint and the generation a key change names.
-export function boxFacts(installId: string | undefined, pin: Pin): BoxFacts {
-  const approver = pin.state === "pinned" ? { fingerprint: fingerprint(pin.key), gen: pin.gen } : pin.state === "cleared" ? { fingerprint: null, gen: pin.gen } : null;
-  return { installId: installId ?? null, approver };
-}
-
-const clock = (at: number) => new Date(at).toTimeString().slice(0, 5);
-export const day = (at: number, now: number) => (new Date(at).toDateString() === new Date(now).toDateString() ? clock(at) : `${new Date(at).toDateString().slice(4, 10)} ${clock(at)}`);
+export const clock = (at: number) => new Date(at).toISOString().slice(11, 16);
+export const day = (at: number, now: number) => (new Date(at).toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? clock(at) : `${new Date(at).toUTCString().slice(8, 11)} ${new Date(at).toISOString().slice(8, 10)} ${clock(at)}`);
 export const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`;
-
-const shown = (s: WsState, now: number) => s.workspaces.filter((w) => !FINAL.includes(w.phase) || now - w.changedAt <= SHOW_FINAL_MS);
+const gib = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
 
 // Why the state can't be shown, or undefined.
-function problem(r: StateRead): string | undefined {
-  if (r.kind === "missing") return "No workspaces on this box yet.";
+export function problem(r: StateRead): string | undefined {
+  if (r.kind === "missing") return undefined;
   if (r.kind !== "ok") return `The workspaces state can't be read: ${r.why}. Every workspace stays closed.`;
   return undefined;
 }
+export const stateOf = (r: StateRead): WsState | undefined => (r.kind === "ok" ? r.state : undefined);
 
-export function workspacesLines(i: ShowInputs): string[] {
-  const p = problem(i.read);
-  if (p) return [p];
-  const s = (i.read as { state: WsState }).state;
+// The waiting reason the guard noted for a workspace, while approved or starting.
+export const waitingWhy = (s: WsState, w: Workspace): string | null => (w.state === "approved" || w.state === "starting" ? (s.notes?.waiting.find((x) => x.name === w.name)?.why ?? null) : null);
+
+// One workspace as JSON: the fields a reader acts on, and its words as words.
+export function workspaceJson(s: WsState, w: Workspace, now: number, r?: Pick<Rules, "requestMs" | "approvalMs">) {
+  return {
+    id: w.name,
+    agent: w.agent,
+    size: w.size,
+    asked: w.asked,
+    state: w.state,
+    line: stateLine(w),
+    account: w.user,
+    why: w.why,
+    waiting: waitingWhy(s, w),
+    reason: w.reason,
+    pausedBy: w.pausedBy,
+    endedBy: w.endedBy,
+    approvedBy: w.by,
+    requestedAt: new Date(w.at).toISOString(),
+    changedAt: new Date(w.changedAt).toISOString(),
+    expires: r ? expiry(w, r) : null,
+    hold: w.hold,
+    word: w.word ? { at: new Date(w.word.at).toISOString(), text: w.word.text, step: w.word.step } : null,
+    quietMs: quietFor(w, now),
+  };
+}
+
+// When a request or an approval that hasn't started lapses, as ISO 8601, or null.
+export function expiry(w: Workspace, r: Pick<Rules, "requestMs" | "approvalMs">): string | null {
+  if (w.state === "requested") return new Date(w.at + r.requestMs).toISOString();
+  if (w.state === "approved" && w.approvedAt !== null) return new Date(w.approvedAt + r.approvalMs).toISOString();
+  return null;
+}
+
+// The workspaces shown by list: every one that isn't over, and those that ended in the last day.
+export const SHOW_FINAL_MS = 24 * 3_600_000;
+export function shown(s: WsState, now: number, state?: string): Workspace[] {
+  return s.workspaces.filter((w) => (state ? w.state === state : !FINAL.includes(w.state) || now - w.changedAt <= SHOW_FINAL_MS));
+}
+
+// One line per workspace: id, agent, size, account, state, why.
+export function listLines(s: WsState | undefined, now: number, state?: string): string[] {
   const out: string[] = [];
-  if (!fresh(s, i.now)) out.push(`The guard hasn't made a pass for 3 minutes${s.beat ? ` (its last was at ${day(s.beat, i.now)})` : ""}, so every workspace stays closed.`);
-  const list = shown(s, i.now);
-  if (!list.length) out.push("No workspaces now.");
-  for (const w of list) {
-    const bytes = w.user ? i.disk(w.user) : undefined;
-    const disk = !w.user ? "no account yet" : bytes === undefined ? "disk use shows at taskbox workspace clear" : gb(bytes);
-    out.push(`${w.name}  ${w.agent}  ${w.user ?? "-"}  ${stateLine(w)}  ${disk}`);
-    out.push(`  Why: ${w.why}`);
-    const n = noteOf(s, w.name, w.phase);
-    if (n.waitingWhy) out.push(`  Waiting for: ${n.waitingWhy}`);
-    if (n.cpuPercent !== null) out.push(`  ${w.user ?? "Its account"} uses ${n.cpuPercent}% CPU.`);
-    const word = i.word(w.name);
-    if (word) out.push(`  Last word, ${day(word.at, i.now)}: ${word.words}${word.step ? ` (${word.step.n}/${word.step.m})` : ""}${word.mode ? `, ${word.mode === "busy" ? "busy" : "can pause"}` : ""}`);
-  }
-  if (s.fence && !s.fence.ok) out.push(`The fence doesn't hold: ${s.fence.why}`);
-  const steps = s.history.slice(-SHOW_STEPS);
-  if (steps.length) {
-    out.push("Last steps:");
-    for (const e of steps) out.push(`  ${day(e.at, i.now)}  ${e.text}`);
-  }
+  if (s && !fresh(s, now)) out.push(`The guard hasn't made a pass for 3 minutes${s.beat ? ` (its last was at ${day(s.beat, now)} UTC)` : ""}, so every workspace stays closed.`);
+  const list = s ? shown(s, now, state) : [];
+  if (!list.length) return [...out, state ? `No workspace is ${state}.` : "No workspaces on this box now."];
+  for (const w of list) out.push(`${w.name}  ${w.agent}  ${SIZE_WORD[w.size]}  ${w.user ?? "-"}  ${stateLine(w)}  ${w.why}`.slice(0, 120));
   return out;
 }
 
-// The guard's notes for one workspace (model.WsNotes), only while it is in the phase they describe.
-function noteOf(s: WsState, name: string, phase: string): { waitingWhy: string | null; cpuPercent: number | null } {
-  const waitingWhy = phase === "waiting" ? (s.notes?.waiting.find((x) => x.name === name)?.why ?? null) : null;
-  const sv = s.notes?.saving;
-  return { waitingWhy, cpuPercent: phase === "saving" && sv?.name === name ? sv.cpuPercent : null };
+// One workspace in full: state and why, the room it holds, the agent's last words.
+export function statusLines(s: WsState, w: Workspace, now: number): string[] {
+  const out = [`${w.name}: ${stateLine(w)}.`, `Agent ${w.agent}, ${SIZE_WORD[w.size]}${w.size !== w.asked ? ` (asked for ${SIZE_WORD[w.asked]})` : ""}, account ${w.user ?? "not given yet"}.`, `Why: ${w.why}`];
+  const wait = waitingWhy(s, w);
+  if (wait) out.push(`Waiting for: ${wait}.`);
+  if (w.hold && w.size !== "whole") out.push(`Holds ${gib(w.hold.memoryMB)} and ${w.hold.cpus} CPUs of the VM budget.`);
+  if (w.size === "whole" && w.hold) out.push("Holds the whole box: CI is paused for it.");
+  if (w.by) out.push(`Approved ${day(w.approvedAt ?? w.at, now)} UTC by ${w.by}.`);
+  if (w.word) out.push(`Last word, ${day(w.word.at, now)} UTC: ${w.word.text}${w.word.step ? ` (${w.word.step.n}/${w.word.step.m})` : ""}`);
+  const q = quietFor(w, now);
+  if (q !== null && q >= 10 * 60_000) out.push(`No word from ${w.agent} for ${Math.round(q / 60_000)} m.`);
+  if (w.state === "saving" && w.saveAskedAt) out.push(`Save asked at ${clockOf(w.saveAskedAt)}.`);
+  return out.map((l) => l.slice(0, 120));
 }
 
-export function workspacesJson(i: ShowInputs): string {
-  const p = problem(i.read);
-  if (p) return JSON.stringify({ ok: i.read.kind === "missing", said: p, box: i.box ?? null, workspaces: [] });
-  const s = (i.read as { state: WsState }).state;
-  return JSON.stringify({
-    ok: true,
-    fresh: fresh(s, i.now),
-    beat: s.beat,
-    box: i.box ?? null,
-    // nonce: what the owner's next signed statement for it names. Root's state is 644, so anyone on
-    // the box reads it anyway; it is good only with the owner's signature, once.
-    workspaces: shown(s, i.now).map((w) => ({ name: w.name, agent: w.agent, user: w.user, size: w.size, phase: w.phase, state: stateLine(w), why: w.why, nonce: w.nonce, endedBy: w.endedBy, ...noteOf(s, w.name, w.phase), changedAt: w.changedAt, diskBytes: w.user ? (i.disk(w.user) ?? null) : null, word: i.word(w.name) ?? null })),
-    fence: s.fence ?? null,
-    history: s.history.slice(-SHOW_STEPS),
-  });
+// The status block: one line per live workspace, and why CI is held.
+export function statusBlock(s: WsState | undefined, now: number): string[] {
+  if (!s) return [];
+  const live = s.workspaces.filter((w) => !FINAL.includes(w.state));
+  if (!live.length) return [];
+  return ["Workspaces:", ...live.map((w) => `  ${w.name} (${SIZE_WORD[w.size]}, ${w.agent}): ${stateLine(w)}${waitingWhy(s, w) ? `, waiting for ${waitingWhy(s, w)}` : ""}`.slice(0, 120))];
 }
 
-// The agent's last word on a workspace, from its progress file: no link followed, a plain file of
-// the agent account's, small, and in the shape the agent's command writes. Anything else is no word.
-export function readWord(dir: string, name: string, agentUid: number | undefined): Word | undefined {
-  if (agentUid === undefined) return undefined;
-  let fd: number;
-  try {
-    fd = openSync(join(dir, progressFile(name)), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch {
-    return undefined;
-  }
-  try {
-    const st = fstatSync(fd);
-    if (!st.isFile() || st.uid !== agentUid || st.size > 1024) return undefined;
-    const buf = Buffer.alloc(st.size);
-    const n = readSync(fd, buf, 0, st.size, 0);
-    const v = JSON.parse(buf.subarray(0, n).toString("utf8")) as Record<string, unknown>;
-    if (v.v !== 1 || v.name !== name || !Number.isSafeInteger(v.at) || typeof v.words !== "string" || !WORDS_RE.test(v.words)) return undefined;
-    const step = v.step as { n?: unknown; m?: unknown } | null;
-    const okStep = step === null || (typeof step === "object" && Number.isSafeInteger(step.n) && Number.isSafeInteger(step.m));
-    const mode = v.mode === "busy" || v.mode === "can-pause" ? v.mode : null;
-    return okStep ? { at: v.at as number, words: v.words, step: step === null ? null : { n: step.n as number, m: step.m as number }, mode } : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    closeSync(fd);
-  }
+// The status block from root's state file, or one line saying it can't be read.
+export function workspacesBlock(path: string, now: number, rootUid = 0): string[] {
+  const r = readStateFile(path, rootUid);
+  const p = problem(r);
+  return p ? [`Workspaces: ${p}`] : statusBlock(stateOf(r), now);
 }

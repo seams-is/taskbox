@@ -327,9 +327,9 @@ describe("the proof and a held box", () => {
     guestAnswers(sys);
     const d = linuxDeps(sys);
     d.box = new Slots(2);
-    d.workspaces = () => ({ views: [{ size: "whole", phase: "active", name: "nova-1", approvedAt: null, ok: "you approved it" }] });
+    d.workspaces = () => ({ views: [{ size: "whole", state: "ready", name: "nova-1", approvedAt: null, ok: "approved", hold: { memoryMB: 22360, cpus: 10 } }] });
     const r = await proveLinux(d);
-    expect(r).toMatchObject({ ok: false, notRun: true, detail: "CI paused for nova-1 (you approved it)" });
+    expect(r).toMatchObject({ ok: false, notRun: true, detail: "CI paused for nova-1 (Whole), approved" });
     expect(sys.tartCalls().some((c) => c.startsWith("clone"))).toBe(false);
   });
 });

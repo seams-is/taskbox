@@ -85,11 +85,11 @@ export interface CommandSpec {
   typed?: boolean;
   // Readers that anyone but the service account and root reads from the copies every user may read (shared.ts).
   sharedReads?: boolean;
-  // Its own parser checks every word (the workspace agent's commands). No flag is read here.
+  // Its own parser checks every word. No flag is read here, and the agent shell runs none.
   raw?: boolean;
-  // For a raw command: the verb the workspace parser (workspace/agent.ts) knows it by, where that isn't its
-  // first word. workspace end is the agent's release.
-  agent?: string;
+  // It takes --signed, and run without it is an unsigned request any account may send, which gives
+  // nobody more of the box (the agent's own workspace end).
+  unsigned?: true;
   // Its exit 1 is a verdict (check: a row failed), not a failure of the command: the envelope carries
   // the whole result, with no error.
   verdict?: boolean;

@@ -144,6 +144,11 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
   { good: [], bad: ["release nova-1"] },
+  // Workspace ids are an agent's name and a number. Words go as one argument, so the table's lines use one-word words.
+  {
+    good: ["workspace request --as nova --size heavy --why Render", "workspace request --as nova --why Render --json", "workspace list", "workspace list --state ready -w", "workspace status nova-1 --json", "workspace wait nova-1 --for ended --timeout 10m", "workspace connect nova-1", "workspace progress nova-1 Frames --step 1/4 --saved", "workspace end nova-1 --force", "workspace approve nova-1 --size light", "workspace deny nova-1 --reason later", "workspace pause nova-1", "workspace resume nova-1"],
+    bad: ["workspace request --as nova", "workspace request --as Owner! --why x", "workspace request --as nova --why x --size huge", "workspace list --state gone", "workspace list --json -w", "workspace status nova", "workspace wait nova-1 --for gone", "workspace progress nova-1", "workspace progress nova Frames", "workspace progress nova-1 Frames --step 5/4", "workspace end", "workspace approve nova-1 --size huge", "workspace deny", "workspace pause nova-1 --now", "workspace resume", "workspaces", "queue --as nova --why x"],
+  },
 ];
 
 describe("the command line", () => {
