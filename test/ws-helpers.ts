@@ -7,6 +7,7 @@ import { NAMESPACE, type Statement, statementText } from "../src/workspace/appro
 import { approve, type BoxNow, type Ctx, emptyState, queue, type Result, type WsState } from "../src/workspace/model.ts";
 import type { RunResult } from "../src/sys.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
+import { lasting } from "./tmpclean.ts";
 
 export const T = 1_800_000_000_000;
 export const INSTALL_ID = "0123456789abcdef0123456789abcdef";
@@ -39,7 +40,7 @@ export async function realKeygen(cmd: string, args: string[], opts: { stdin?: st
 
 // One folder for every check in a test run; each check makes and removes its own inside it.
 let tmp: string | undefined;
-export const verifyDeps = () => ({ run: realKeygen, tmp: (tmp ??= mkdtempSync(join(tmpdir(), "ws-verify-"))) });
+export const verifyDeps = () => ({ run: realKeygen, tmp: (tmp ??= lasting("ws-verify-")) });
 
 export function approver() {
   const k = keyPair();

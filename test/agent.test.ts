@@ -13,6 +13,7 @@ import { Log } from "../src/log.ts";
 import { readFileSync } from "node:fs";
 import { FakeSys, githubRoutes } from "./fake.ts";
 import { CFG, copyRepo, tempRoot, testBox } from "./helpers.ts";
+import { lasting } from "./tmpclean.ts";
 
 const AGENT = "taskbox-agent";
 const guidFor = (uid: number) => `0F0F0F0F-0000-0000-0000-${String(uid).padStart(12, "0")}`;
@@ -361,7 +362,7 @@ describe("an agent step that stops the install", () => {
     // stageRelease does (helpers.ts). Real tar and gzip were most of each test's work, and under load
     // ran past its limit.
     srcTree ??= (() => {
-      const top = join(mkdtempSync(join(tmpdir(), "taskbox-src-")), "example-org-taskbox-abc1234");
+      const top = join(lasting("taskbox-src-"), "example-org-taskbox-abc1234");
       copyRepo(top, ["test", "docs"]);
       writeFileSync(join(top, "taskbox.json"), JSON.stringify(CFG));
       return top;
