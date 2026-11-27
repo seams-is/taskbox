@@ -250,7 +250,8 @@ describe("no sudo in what the owner reads", () => {
       const lines = readFileSync(join(repo, "src", f), "utf8").split("\n");
       for (const [i, line] of lines.entries()) {
         if (/^\s*\/\//.test(line)) continue; // a comment
-        const left = line.replace(/\/usr\/bin\/sudo/g, "").replace(/\bSUDO(_USER|_UID)?\b/g, "");
+        // Paths a program names are not words the owner reads: sudo itself, and the agent shell's rule file.
+        const left = line.replace(/\/usr\/bin\/sudo|\/etc\/sudoers\.d\/|\/usr\/sbin\/visudo/g, "").replace(/\bSUDO(_USER|_UID)?\b/g, "");
         if (/sudo/i.test(left)) throw new Error(`src/${f}:${i + 1} says sudo: ${line.trim()}`);
       }
     }
