@@ -13,7 +13,7 @@ const GH = "/opt/homebrew/bin/gh";
 
 // A Mac where nothing is set up yet. The fake keeps what each command would have made.
 function mac(o: { answers?: string[] } = {}) {
-  const answers = [...(o.answers ?? ["yes", "agents-bot", "example-org/app example-org/web", ""])];
+  const answers = [...(o.answers ?? ["yes", "agents-bot", "example-org/settings", ""])];
   const d = deps(new World(), answers);
   writeConfig(d.home, controllerConfig([pairing(), pairing({ name: "taskbox-2", node: "nBox2CNTRL", installId: "f".repeat(32), agent: "remote" })]));
   const m = { group: false, user: false, rule: false, folder: false, acl: false, homeMode: "755", ownerInGroup: false, ownerWrites: false, shared: false, collab: new Set<string>(), agentsGh: "", claude: false, rules: "", agent: false };
@@ -55,8 +55,8 @@ function mac(o: { answers?: string[] } = {}) {
     if (a === "/usr/bin/dscl . -list /Users UniqueID") return ok("root 0\n_www 70\nowner 501\n");
     if (a === `${GH} api user --jq .id`) return ok("1\n");
     if (a === `${GH} api user --jq .login`) return ok("owner-login\n");
-    const collab = /^\/opt\/homebrew\/bin\/gh api (--method PUT )?repos\/([^ ]+)\/collaborators\/agents-bot/.exec(a);
-    if (collab) return collab[1] ? (m.collab.add(collab[2]!), ok("")) : m.collab.has(collab[2]!) ? ok("") : fail(1, "HTTP 404");
+    const collab = /^\/opt\/homebrew\/bin\/gh api (--method PUT )?repos\/([^ ]+)\/collaborators\/agents-bot(\/permission)?/.exec(a);
+    if (collab) return collab[1] ? (m.collab.add(`${collab[2]} ${a.split("permission=")[1]}`), ok("")) : m.collab.has(`${collab[2]} pull`) ? ok("read\n") : fail(1, "HTTP 404");
     if (argv[0] === "/usr/bin/touch") return m.ownerWrites ? ok("") : fail(1, "Permission denied");
     if (a.startsWith("/bin/launchctl print")) return m.agent ? ok("") : fail(113, "");
     if (a.startsWith("/bin/launchctl bootstrap")) return (m.agent = true), ok("");
@@ -111,10 +111,11 @@ describe("self setup", () => {
     expect(x.ran).toContainEqual([SUDO, "-n", "-u", AGENTS, "-H", "/bin/mkdir", "-p", PROJECTS]);
     expect(x.ran).toContainEqual([SUDO, "-n", "-u", AGENTS, "-H", "/bin/chmod", "-h", "2770", PROJECTS]);
     expect([...x.ran, ...x.termed].some((a) => a.join(" ").includes("+a") || a.join(" ").includes(`-a owner`))).toBe(false);
-    // The invitation, through your own gh, push on each repo; and a sign-in that isn't your account.
-    expect(x.ran).toContainEqual([GH, "api", "--method", "PUT", "repos/example-org/app/collaborators/agents-bot", "-f", "permission=push"]);
-    expect(readConfig(x.d.home)).toMatchObject({ ok: true, config: { agents: { login: "agents-bot", repos: ["example-org/app", "example-org/web"] } } });
-    expect(x.d.printed).toContain("Invited agents-bot to example-org/app. In a private window signed in as agents-bot, accept it: https://github.com/example-org/app/invitations");
+    // The invitation, through your own gh, read on the settings repo only; never push.
+    expect(x.ran).toContainEqual([GH, "api", "--method", "PUT", "repos/example-org/settings/collaborators/agents-bot", "-f", "permission=pull"]);
+    expect(x.ran.some((r) => r.join(" ").includes("permission=push"))).toBe(false);
+    expect(readConfig(x.d.home)).toMatchObject({ ok: true, config: { agents: { login: "agents-bot", repos: ["example-org/settings"] } } });
+    expect(x.d.printed).toContain("Invited agents-bot to example-org/settings, read only. In a private window signed in as agents-bot, accept it if GitHub asks: https://github.com/example-org/settings/invitations");
     // The deny rules, in the agents user's own settings, for each paired box's account.
     expect(JSON.parse(x.m.rules).permissions.deny).toEqual(denyRules(["taskbox-agent", "remote"]));
     // The notifier: the folder for it is made on a fresh user, an old one is booted out first.
