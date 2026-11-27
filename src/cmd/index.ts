@@ -9,6 +9,7 @@
 import type { CommandFile } from "../registry.ts";
 import * as broker from "./broker.ts";
 import * as check from "./check.ts";
+import * as confirm from "./confirm.ts";
 import * as connect from "./connect.ts";
 import * as daemons from "./daemons.ts";
 import * as drain from "./drain.ts";
@@ -43,6 +44,7 @@ import * as workspace from "./workspace.ts";
 export const commandFiles: readonly CommandFile[] = [
   { file: "broker.ts", module: broker },
   { file: "check.ts", module: check },
+  { file: "confirm.ts", module: confirm },
   { file: "connect.ts", module: connect },
   { file: "daemons.ts", module: daemons },
   { file: "drain.ts", module: drain },
