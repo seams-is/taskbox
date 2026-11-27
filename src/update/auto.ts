@@ -9,7 +9,7 @@ import type { Channel } from "../release.ts";
 import { inWindow, type UpdateSettings } from "../settings/update.ts";
 import { type Listed, pick } from "./pick.ts";
 import type { Marks } from "./records.ts";
-import { HOLDS } from "../workspace/model.ts";
+import { HOLDS, type WsState } from "../workspace/model.ts";
 import { readStateFile } from "../workspace/read.ts";
 
 export const CHECK_EVERY_MS = 3_600_000;
@@ -19,16 +19,38 @@ export const CHECK_EVERY_MS = 3_600_000;
 export type Hold = () => string | undefined;
 export const noHold: Hold = () => undefined;
 
-// The box's own hold: a workspace approved, starting, ready, saving or ending holds the box, of any
-// size (workspace/model.ts HOLDS, and approved, which waits to start). A state that can't be read
-// holds it too.
-const HOLDING: readonly string[] = ["approved", ...HOLDS];
-export function workspaceHold(path: string, rootUid = 0): string | undefined {
+// The box's own hold: only a Whole or a Heavy whose processes may run (starting, ready, saving or
+// ending: workspace/model.ts HOLDS) holds an update, and for HOLD_MAX_MS at most from the owner's
+// last OK of it (its approval, or its last resume). An approved one in the queue, any Light, and a
+// state that can't be read hold nothing: no workspace keeps the box off a release for long.
+export const HOLD_MAX_MS = 12 * 3600_000;
+const HOLD_SIZES: readonly string[] = ["whole", "heavy"];
+export interface UpdateHold {
+  name: string;
+  size: string;
+  state: string;
+  since: number;
+  until: number;
+  line: string;
+}
+export function holdOf(s: WsState, now: number): UpdateHold | undefined {
+  for (const w of s.workspaces) {
+    if (!HOLDS.includes(w.state) || !HOLD_SIZES.includes(w.size)) continue;
+    const since = w.approvedAt ?? w.changedAt;
+    const until = since + HOLD_MAX_MS;
+    if (now >= until) continue;
+    const name = w.name.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40);
+    return { name, size: w.size, state: w.state, since, until, line: `workspace ${name} (${w.size}, ${w.state})` };
+  }
+  return undefined;
+}
+// The workspaces past their bound, for the update.held event and the row.
+export function holdsPast(s: WsState, now: number): string[] {
+  return s.workspaces.filter((w) => HOLDS.includes(w.state) && HOLD_SIZES.includes(w.size) && now >= (w.approvedAt ?? w.changedAt) + HOLD_MAX_MS).map((w) => w.name);
+}
+export function workspaceHold(path: string, rootUid: number, now: number): string | undefined {
   const r = readStateFile(path, rootUid);
-  if (r.kind === "missing") return undefined;
-  if (r.kind !== "ok") return "workspaces whose state can't be read";
-  const w = r.state.workspaces.find((x) => HOLDING.includes(x.state));
-  return w ? `workspace ${w.name.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40)} (${w.state})` : undefined;
+  return r.kind === "ok" ? holdOf(r.state, now)?.line : undefined;
 }
 
 export interface AutoInput {

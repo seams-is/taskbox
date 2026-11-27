@@ -74,7 +74,7 @@
 {"file": "tools/inloop.ts", "reads": 6, "why": "a baking slot's beat and times, as every slot's are written, and a refresh op's end time: labels and beats"}
 {"file": "tools/pass.ts", "reads": 3, "why": "when the store's hashes were last checked and when a failed fetch or bake is tried again: a step only checks sooner or later"}
 {"file": "tsrotate.ts", "reads": 3, "why": "the waits for the sign-in and for the box to be online: a step only ends a wait sooner or later"}
-{"file": "update/box.ts", "reads": 12, "why": "labels in the install record, the marks and the watch file (whose placedAt and deadline v2.6.1's watcher reads; v3's counts mono), the deadline put on the monotonic clock's scale and moved later within the watch's cap, and whether a job or a proof came after the swap"}
+{"file": "update/box.ts", "reads": 13, "why": "labels in the install record, a workspace hold's bound (a clock step only ends it sooner, so an update goes ahead), the marks and the watch file (whose placedAt and deadline v2.6.1's watcher reads; v3's counts mono), the deadline put on the monotonic clock's scale and moved later within the watch's cap, and whether a job or a proof came after the swap"}
 {"file": "update/cmd.ts", "reads": 1, "why": "the 7-day line about the release check, for display"}
 {"file": "update/gate.ts", "reads": 2, "why": "the update window for a settings commit is the box's own wall time: a step moves the window, never a limit"}
 {"file": "update/signerwatch.ts", "reads": 1, "why": "when an admin's yes for a signer removal was given: the record's label; the 7-day wait is judged by signers.ts on the time it was first seen"}

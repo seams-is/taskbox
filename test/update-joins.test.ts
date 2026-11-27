@@ -1,7 +1,7 @@
 // The joins: a rollback's settings narrowed, a signer removal raised for confirm and its yes taken,
 // a revoke read from the release that carries the change, and a workspace holding an update.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readPending } from "../src/core/pending.ts";
@@ -10,11 +10,12 @@ import { writeOwnedText } from "../src/core/rootfile.ts";
 import { NAMESPACE, signerFingerprint } from "../src/release.ts";
 import { meet, REVOKE, shaOf, type SignerState } from "../src/release/signers.ts";
 import { emptyState } from "../src/workspace/model.ts";
-import { workspaceHold } from "../src/update/auto.ts";
+import { HOLD_MAX_MS, holdsPast, workspaceHold } from "../src/update/auto.ts";
+import { workspacesBlock } from "../src/workspace/show.ts";
 import { narrowed } from "../src/update/narrow.ts";
 import { raiseRemoval, readRevoke, signerFiles, takeSignerYes } from "../src/update/signerwatch.ts";
 import { FakeSys } from "./fake.ts";
-import { approved, asked, readyState } from "./ws-helpers.ts";
+import { approved, asked, readyState, T } from "./ws-helpers.ts";
 import { writeStateFile } from "../src/workspace/write.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
 
@@ -90,19 +91,35 @@ describe("a release signer removal", () => {
 });
 
 describe("a workspace holding an update", () => {
-  test("approved, ready or saving holds the box; ended or none doesn't", () => {
+  test("only a running or saving Whole or Heavy holds, for HOLD_MAX_MS from its approval; an approved one, a Light, a torn state or none don't", () => {
     const s = state();
     const file = join(s.dir, "workspaces.json");
-    expect(workspaceHold(file, me)).toBeUndefined();
-    const ap = approved(asked(emptyState()), "nova-1", "whole");
-    writeStateFile({ rootUid: me }, file, ap);
-    expect(workspaceHold(file, me)).toBe("workspace nova-1 (approved)");
-    const rd = readyState("light");
-    writeStateFile({ rootUid: me }, file, rd);
-    expect(workspaceHold(file, me)).toBe(`workspace ${rd.workspaces[0]!.name} (ready)`);
-    writeStateFile({ rootUid: me }, file, { ...rd, workspaces: rd.workspaces.map((w) => ({ ...w, state: "ended" as const })) });
-    expect(workspaceHold(file, me)).toBeUndefined();
-    writeStateFile({ rootUid: me }, file, emptyState());
-    expect(workspaceHold(file, me)).toBeUndefined();
+    expect(workspaceHold(file, me, T)).toBeUndefined();
+    writeStateFile({ rootUid: me }, file, approved(asked(emptyState()), "nova-1", "whole"));
+    expect(workspaceHold(file, me, T)).toBeUndefined();
+    const light = readyState("light");
+    writeStateFile({ rootUid: me }, file, light);
+    expect(workspaceHold(file, me, T)).toBeUndefined();
+    const whole = readyState("whole");
+    writeStateFile({ rootUid: me }, file, whole);
+    const name = whole.workspaces[0]!.name;
+    expect(workspaceHold(file, me, T)).toBe(`workspace ${name} (whole, ready)`);
+    const heavy = readyState("heavy");
+    writeStateFile({ rootUid: me }, file, heavy);
+    expect(workspaceHold(file, me, T)).toBe(`workspace ${name} (heavy, ready)`);
+    // Bounded: past HOLD_MAX_MS from its approval, it holds no more.
+    expect(workspaceHold(file, me, T + HOLD_MAX_MS - 1)).toBeDefined();
+    expect(workspaceHold(file, me, T + HOLD_MAX_MS)).toBeUndefined();
+    expect(holdsPast(heavy, T + HOLD_MAX_MS)).toEqual([name]);
+    writeStateFile({ rootUid: me }, file, { ...whole, workspaces: whole.workspaces.map((w) => ({ ...w, state: "ended" as const })) });
+    expect(workspaceHold(file, me, T)).toBeUndefined();
+    writeFileSync(file, "{ torn");
+    expect(workspaceHold(file, me, T)).toBeUndefined();
+  });
+  test("status shows the hold and its latest end", () => {
+    const s = state();
+    const file = join(s.dir, "workspaces.json");
+    writeStateFile({ rootUid: me }, file, readyState("whole"));
+    expect(workspacesBlock(file, T, me).at(-1)).toBe(`Updates:   held by workspace nova-1 (whole, ready) until ${new Date(T + HOLD_MAX_MS).toISOString().slice(11, 16)} UTC at the latest`);
   });
 });

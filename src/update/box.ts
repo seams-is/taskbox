@@ -190,7 +190,7 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
       const r = await changeControl(ctl, requestOf("drain", { reason: `${d.type} ${d.op}`, ...(o.force && o.deadline ? { force: true, timeout: `${Math.max(1, Math.ceil((o.deadline - d.sys.now()) / 1000))}s` } : {}) }, actor));
       return r.ok ? undefined : r.said;
     },
-    hold: () => workspaceHold(d.p.workspaces, root),
+    hold: () => workspaceHold(d.p.workspaces, root, d.sys.now()),
     drained() {
       const c = readControl(d.state.control, root);
       if (c.kind !== "ok") return "gone";
