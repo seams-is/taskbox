@@ -6,6 +6,7 @@ import type { HandlerFile } from "../core/dispatch.ts";
 import * as availability from "./availability.ts";
 import * as connect from "./connect.ts";
 import * as op from "./op.ts";
+import * as poll from "./poll.ts";
 import * as settings from "./settings.ts";
 import * as update from "./update.ts";
 
@@ -13,6 +14,7 @@ export const handlerFiles: readonly HandlerFile[] = [
   { file: "availability.ts", handlers: availability.handlers },
   { file: "connect.ts", handlers: connect.handlers },
   { file: "op.ts", handlers: op.handlers },
+  { file: "poll.ts", handlers: poll.handlers },
   { file: "settings.ts", handlers: settings.handlers },
   { file: "update.ts", handlers: update.handlers },
 ];

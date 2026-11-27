@@ -3,6 +3,8 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pairedNames } from "./commands.ts";
+import { type SetupDeps, STEPS } from "./setup.ts";
+import { signingKey } from "./signer.ts";
 import { chooseBoxes, helloOf, type Connected, type Deps, helloStop, isStop, peerOrStop, type Stop, tsDeps } from "./reach.ts";
 import { knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { TailnetState } from "./tailscale.ts";
@@ -25,7 +27,7 @@ export interface BoxLines {
   connected?: Connected;
 }
 
-export async function controllerChecks(d: Deps): Promise<{ lines: Line[]; boxes: BoxLines[] }> {
+export async function controllerChecks(d: Deps, setupDeps?: SetupDeps): Promise<{ lines: Line[]; boxes: BoxLines[] }> {
   const out: Line[] = [];
   const add = (name: string, ok: boolean, detail: string, fix?: string) => out.push({ name, ok, detail, ...(ok ? {} : { fix }) });
 
@@ -44,6 +46,14 @@ export async function controllerChecks(d: Deps): Promise<{ lines: Line[]; boxes:
   add("Install", installed, installed ? `taskbox ${d.version}, from signed releases` : "no signed release in use", "Install taskbox for a controller again, from its release page.");
 
   add("Pairing", boxes.length > 0, boxes.length ? `${boxes.length} ${boxes.length === 1 ? "box" : "boxes"}: ${boxes.map((b) => b.name).join(", ")}` : "no box paired", "Type taskbox box add.");
+  const key = signingKey(d.home, d.uid ?? -1);
+  add("Approver key", "key" in key, "key" in key ? key.fingerprint : key.why, "Type taskbox box add, which makes it.");
+  // The agents user and the rest of self setup, each as its own step reads it.
+  if (setupDeps)
+    for (const st of STEPS) {
+      const done = await st.done(setupDeps);
+      add(st.name, done, done ? "set up" : "not set up", st.signIn ? "Type taskbox self setup." : "Type taskbox self check --fix.");
+    }
   const state = ts.ok && ts.state.running ? ts.state : undefined;
   return { lines: out, boxes: await Promise.all(boxes.map((b) => boxLines(d, b, state))) };
 }
@@ -79,8 +89,8 @@ async function boxLines(d: Deps, box: Paired, state: TailnetState | undefined): 
 
 const lineText = (l: Line) => `${l.ok ? "OK  " : "FAIL"}  ${l.name}: ${l.detail}${l.fix ? `. ${l.fix}` : ""}`.replace(/\.\. /g, ". ");
 
-export async function check(d: Deps): Promise<Screen> {
-  const r = await controllerChecks(d);
+export async function check(d: Deps, setupDeps?: SetupDeps): Promise<Screen> {
+  const r = await controllerChecks(d, setupDeps);
   const lines = [header(r.boxes.length ? r.boxes.map((b) => b.box.name) : pairedNames(d), d.version), "On this controller:", ...r.lines.map(lineText)];
   let failed = r.lines.filter((l) => !l.ok).length;
   for (const b of r.boxes) {

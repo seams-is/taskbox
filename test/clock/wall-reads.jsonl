@@ -16,9 +16,10 @@
 {"file": "cmd/workspace.ts", "reads": 2, "why": "moved from cli.ts: the workspaces screen's now, and the agent commands' now for the state's freshness, which fails closed both ways, and their waits for the guard's answer, which give up and change nothing"}
 {"file": "connectchild.ts", "reads": 1, "why": "the code wait's end when the op has no deadline: the op's record ends the wait first"}
 {"file": "connectflow.ts", "reads": 9, "why": "when a connect began, and the waits for GitHub, a code and the keeping phase: a step only ends a wait, which changes nothing and says so"}
-{"file": "controller/forward.ts", "reads": 4, "why": "the time on an envelope the controller makes, and when a status was read: display"}
+{"file": "controller/forward.ts", "reads": 5, "why": "the time on an envelope the controller makes, a signed statement's time (the box judges its 5 minutes), and when a status was read: display"}
 {"file": "controller/home.ts", "reads": 1, "why": "a temp file's unique name"}
 {"file": "controller/main.ts", "reads": 4, "why": "the controller's Clock, and the time on its own envelopes and events: labels"}
+{"file": "controller/notify.ts", "reads": 2, "why": "when a box was first not reached, when each note was last said, and the hold lease's times: a step only moves when a note is said again"}
 {"file": "controller/pair.ts", "reads": 4, "why": "when a box was paired, and the time on the controller's events: labels"}
 {"file": "controller/update.ts", "reads": 6, "why": "when the controller last looked for an update, and the time on its events: a step only looks sooner or later"}
 {"file": "core/child.ts", "reads": 3, "why": "an op's end time and spawn time, and the 30 s a new job has to take its lease: a step only changes that grace; a free lease is the proof. Op deadlines are on mono"}
