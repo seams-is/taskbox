@@ -183,7 +183,7 @@ describe("the keeping pass", () => {
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     return { c, s, sys, uid };
   }
-  test("N7 and L9: it sweeps temporary names a crash left, and outcomes past their hour", async () => {
+  test("it sweeps temporary names a crash left, and outcomes past their hour", async () => {
     const { c, s, sys, uid } = ctx();
     const { recordOutcome } = await import("../../src/core/spool.ts");
     writeFileSync(join(s.dir, "nonces.json.new.999999.0123456789abcdef"), "half");

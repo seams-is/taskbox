@@ -678,7 +678,7 @@ describe("control.json is the truth: power cuts, rollbacks and restarts", () => 
   );
 });
 
-describe("the review's other fixes", () => {
+describe("forced stops, start notes and cancels racing a take-over", () => {
   test("a forced drain or stop with no mono reading is refused, never one that forces nothing", () => {
     for (const r of [requestOf("stop", { force: true }, "service"), requestOf("drain", { force: true, timeout: "10m" }, "service")]) {
       const a = applyControl(initialControl(), r, { wall: T });

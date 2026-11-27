@@ -620,7 +620,7 @@ describe("the registry and the command line", () => {
   });
 });
 
-describe("the review's cases", () => {
+describe("signatures and the order requests are seen in", () => {
   // A forged word: the current nonce, a well-formed signature naming the owner's pinned key, over other bytes.
   const forged = (nonce: string, i: number) => {
     const st = statementFor({ box: INSTALL_ID, action: "drain", args: drainArgs(), subject: "box", nonce, now: T });

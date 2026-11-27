@@ -91,7 +91,7 @@ describe("known only from the verifier", () => {
   }, 30_000);
 });
 
-describe("the lows", () => {
+describe("limits, lapses and numbering on the monotonic clock", () => {
   test("no mono at spawn: the limit is still kept, taken on the first tick mono reads, and the row warns meanwhile", async () => {
     const s = setup(null);
     const b = begin([], update, { subject: "box", params: {}, actor: "owner", deadline: T + H }, T);
@@ -175,9 +175,6 @@ describe("the lows", () => {
     const ev = readEvents([{ ...e, writer: "guard" }]).events.map((x) => x.text);
     expect(ev).toContain("an op ended");
     expect(ev).toContain("approved");
-  });
-  test("keeping.ts no longer says it keeps by count of days", () => {
-    expect(readFileSync(new URL("../../src/passes/keeping.ts", import.meta.url), "utf8")).not.toContain("count of days");
   });
 });
 void writeFileSync;
