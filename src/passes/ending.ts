@@ -11,7 +11,7 @@
 import { AGENT_LABEL, LAUNCHCTL_MS } from "../config.ts";
 import { monoNow } from "../core/boot.ts";
 import { eventLog } from "../core/events.ts";
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { GUARD_FULL_MS, GUARD_TICK_MS } from "../guard.ts";
 import { readOwnedJson, runningNow } from "../loopwatch.ts";
@@ -21,8 +21,9 @@ export const ENDING_GRACE_MS = 5 * 60_000;
 export const ENDING_KILL_MS = 30_000;
 export const ENDING_CEILING_MS = 24 * 3_600_000;
 
-export const endingPass: PassMaker = {
+export const endingPass: PlacedMaker = {
   name: "ending-loop",
+  order: 400,
   make(c) {
     if (!c.writer) return undefined;
     const s = rootStateOf(c.p);

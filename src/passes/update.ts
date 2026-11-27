@@ -9,7 +9,7 @@ import { eventLog } from "../core/events.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "../core/rootfile.ts";
 import { parseSignerState, settle } from "../release/signers.ts";
 import { listOps } from "../core/ops.ts";
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { updateOf } from "../settings/update.ts";
 import { autoStep, CHECK_EVERY_MS, noHold } from "../update/auto.ts";
@@ -18,7 +18,8 @@ import { listedReleases, type Listed } from "../update/pick.ts";
 import { readMarks, writeMarks } from "../update/records.ts";
 import { CHILD_FILE, startUpdateOp, UPDATE_EVENTS } from "../update/start.ts";
 
-export const updatePass: PassMaker = {
+export const updatePass: PlacedMaker = {
+  order: 550,
   name: "update",
   make(c) {
     if (!c.writer) return undefined;
