@@ -23,7 +23,7 @@ const REPO_PATH = /^(\.\.?\/|src\/|templates\/|signers\/|launchd\/|test\/|versio
 const PROCESS_OK = new Set(["arch", "env", "exit", "exitCode", "getuid", "getgid", "kill", "on", "once", "off", "pid", "platform", "stdin", "stdout", "stderr", "hrtime", "umask", "uptime", "nextTick"]);
 const BUN_OK = new Set(["gunzipSync", "gzipSync", "serve", "spawn", "spawnSync", "stdin", "stdout", "stderr", "sleep", "hash", "CryptoHasher"]);
 // The entries bun runs, which read their own words as process.argv.slice(2) and nothing else of argv.
-export const ENTRIES = ["src/cli.ts", "src/gate.ts", "src/shell.ts", "src/listen.ts", "src/workspace/probe.ts", "src/controller/main.ts"];
+export const ENTRIES = ["src/cli.ts", "src/gate.ts", "src/shell.ts", "src/workspace/probe.ts", "src/controller/main.ts"];
 // Files that hand the whole process object to a function, which reads only its named members
 // (remove.ts: proc for signals; core/events.ts: on, off and exit).
 const WHOLE_PROCESS = ["src/cmd/remove.ts", "src/core/events.ts"];

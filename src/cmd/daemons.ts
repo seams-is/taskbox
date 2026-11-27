@@ -283,14 +283,20 @@ export const commands: CommandSpec[] = [
         // Under an earlier install's label, the loop moves to its own before anything else.
         const moved = await handOver({ sys, cfg, paths: p, log }, uid, process.pid);
         if (moved !== undefined) return moved;
-        const pem = readFileSync(p.key, "utf8");
-        log.secret(pem);
-        const gh = new GitHub(sys, cfg, pem, log);
+        // v3: with the GitHub key keeper on this box, the loop asks it and holds no App key.
+        const { askerFor, BrokerGitHub, brokerHere, brokerSourceTokens } = await import("../broker.ts");
+        const { brokerPathsOf } = await import("../keys.ts");
+        const keeper = brokerHere(brokerPathsOf(p).socket) ? askerFor(brokerPathsOf(p).socket) : undefined;
+        // Once box.json names the runner App, the keeper holds it: the loop never falls back to an old key.
+        if (!keeper && cfg.runnerApp) throw new Error("the GitHub key keeper isn't running, so the loop waits for it");
+        const pem = keeper ? "" : readFileSync(p.key, "utf8");
+        if (pem) log.secret(pem);
+        const gh = keeper ? new BrokerGitHub(sys, cfg, log, keeper) : new GitHub(sys, cfg, pem, log);
         const checks = { sys, cfg, paths: p, uid, serviceUid: cu };
         // The job source (v2.4.0): the read-only App's reader, or why there is none. Without one, the
         // box follows the jobs its VMs take.
         const keyPath = sourceKeyPath(p, sourceAppId(cfg));
-        const reader = queueReaderFor(sys, cfg, p.actionsKeyDir, keyPath, cu, log);
+        const reader = keeper ? (await import("../queue.ts")).brokerQueueReader(sys, cfg, log, brokerSourceTokens(keeper)) : queueReaderFor(sys, cfg, p.actionsKeyDir, keyPath, cu, log);
         // v2.6.0: the test repo is read only while a load test session is on, and for 2 minutes after.
         if (reader instanceof QueueReader) reader.loadWanted = () => loadWanted(p, sys.now());
         // What the source sees waiting is kept for taskbox job list. No job runs yet, so no job file

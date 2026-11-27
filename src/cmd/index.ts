@@ -7,6 +7,7 @@
 // when loadRegistry runs. So nothing in src/cmd calls registry() or loadRegistry at a module's top
 // level: there it would meet a module not yet finished.
 import type { CommandFile } from "../registry.ts";
+import * as broker from "./broker.ts";
 import * as check from "./check.ts";
 import * as confirm from "./confirm.ts";
 import * as connect from "./connect.ts";
@@ -30,6 +31,7 @@ import * as remove from "./remove.ts";
 import * as resume from "./resume.ts";
 import * as rollback from "./rollback.ts";
 import * as size from "./size.ts";
+import * as source from "./source.ts";
 import * as start from "./start.ts";
 import * as status from "./status.ts";
 import * as stop from "./stop.ts";
@@ -40,6 +42,7 @@ import * as update from "./update.ts";
 import * as workspace from "./workspace.ts";
 
 export const commandFiles: readonly CommandFile[] = [
+  { file: "broker.ts", module: broker },
   { file: "check.ts", module: check },
   { file: "confirm.ts", module: confirm },
   { file: "connect.ts", module: connect },
@@ -63,6 +66,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "resume.ts", module: resume },
   { file: "rollback.ts", module: rollback },
   { file: "size.ts", module: size },
+  { file: "source.ts", module: source },
   { file: "start.ts", module: start },
   { file: "status.ts", module: status },
   { file: "stop.ts", module: stop },

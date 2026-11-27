@@ -3,6 +3,7 @@
 import type { PassMaker } from "../core/passes.ts";
 import { accountsPass } from "./accounts.ts";
 import { beatPass } from "./beat.ts";
+import { connectPass } from "./connect.ts";
 import { controlPass } from "./control.ts";
 import { endingPass } from "./ending.ts";
 import { gpuPass } from "./gpu.ts";
@@ -13,4 +14,4 @@ import { probePass } from "./probe.ts";
 import { requestsPass } from "./requests.ts";
 import { v2Passes } from "./v2.ts";
 
-export const passMakers = (): PassMaker[] => [beatPass, ...v2Passes(), probePass, endingPass, keepingPass, opsPass, accountsPass, requestsPass, controlPass, gpuPass, pfStartsPass];
+export const passMakers = (): PassMaker[] => [beatPass, ...v2Passes(), probePass, endingPass, keepingPass, opsPass, accountsPass, requestsPass, controlPass, connectPass, gpuPass, pfStartsPass];
