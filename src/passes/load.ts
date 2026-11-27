@@ -1,12 +1,14 @@
 // The guard's load pass, every tick, by the one writer only: each running load op whose session has
 // ended (load stop at the box, its --for, the box ending it) is ended to match (loadop.ts).
 import { eventLog } from "../core/events.ts";
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { reconcileLoadOps } from "../loadop.ts";
 
-export const loadPass: PassMaker = {
+export const loadPass: PlacedMaker = {
   name: "load",
+  // After every other pass: it reads what the requests and the control pass wrote this tick.
+  order: 1300,
   make(c) {
     if (!c.writer) return undefined;
     const root = c.rootUid ?? 0;
