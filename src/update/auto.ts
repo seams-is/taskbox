@@ -5,7 +5,8 @@
 // next window: an auto-update never stops a running job. Each version is tried once a window.
 import type { Op } from "../core/ops.ts";
 import { BOX_EXCLUSIVE } from "../core/ops.ts";
-import type { Channel } from "../release.ts";
+import { type Channel, channelOf } from "../release.ts";
+import type { TrialSays } from "../trialresult.ts";
 import { inWindow, type UpdateSettings } from "../settings/update.ts";
 import { type Listed, pick } from "./pick.ts";
 import type { Marks } from "./records.ts";
@@ -42,9 +43,13 @@ export interface AutoInput {
   hold?: string; // a workspace's line, when one holds the box
   listed: Listed[] | undefined; // undefined: not read this pass
   tried: Set<string>; // version@window-end, tried already
+  // What taskbox's own VM said of a trial release (trialresult.ts): one waits for it, and one that
+  // failed is marked bad. Absent, trials don't gate.
+  trial?: (version: string) => TrialSays;
 }
 
-export type AutoStep = { kind: "idle"; why: string } | { kind: "list" } | { kind: "start"; version: string; timeout: string; key: string } | { kind: "held"; line: string };
+export type AutoStep = { kind: "idle"; why: string } | { kind: "list" } | { kind: "start"; version: string; timeout: string; key: string } | { kind: "held"; line: string } | { kind: "bad"; version: string; why: string };
+export const TRIAL_FAILED = "it failed its trial in taskbox's own VM";
 
 export function autoStep(o: AutoInput): AutoStep {
   if (!o.u.auto) return { kind: "idle", why: "update.auto is off" };
@@ -55,6 +60,10 @@ export function autoStep(o: AutoInput): AutoStep {
   if (!o.listed) return { kind: "list" };
   const p = pick({ listed: o.listed, installed: o.installed, channel: o.channel, marks: o.marks, auto: { now: o.now, delayHours: o.u.delayHours } });
   if (p.kind !== "take") return { kind: "idle", why: p.why };
+  // A trial release is tried in taskbox's own VM first (selftest run --release, which the loop starts).
+  const says = o.trial && channelOf(p.version) === "beta" ? o.trial(p.version) : "passed";
+  if (says === "failed") return { kind: "bad", version: p.version, why: TRIAL_FAILED };
+  if (says === "none") return { kind: "held", line: `update ${p.version} waits for its trial in taskbox's own VM` };
   if (o.hold) return { kind: "held", line: `update ${p.version} held by ${o.hold}` };
   const key = `${p.version}@${w.endsAt}`;
   if (o.tried.has(key)) return { kind: "idle", why: `${p.version} was tried in this window` };

@@ -16,9 +16,9 @@ From the controller, with Remote Login on at the new Mac (System Settings, Gener
 
 `taskbox box install ADMIN@MAC --settings ORG/REPO`
 
-It fetches the signed release and checks it, reads `taskbox.json` through your own GitHub session, copies both to the Mac, and runs the install there over ssh: each password is asked in your terminal. The install verifies the release again against the keys it pins, shows the release, the key that signed it and the settings commit, and takes your `yes`. Then it turns Remote Login off, and runs `taskbox box add` and `taskbox connect github` from the controller.
+It fetches the signed release and checks it, reads `taskbox.json` through your own GitHub session, copies both to the Mac, and runs the install there over ssh: each password is asked in your terminal. The install verifies the release again against the keys it pins, shows the release, the key that signed it and the settings commit, and takes your `yes`. Then it turns Remote Login off and restarts the Mac. At its screen, unlock the disk with the service account's password, log in as your admin user and type `taskbox confirm`: type `yes` to each release key only if `taskbox sign --fingerprint` on the signing Mac shows the same. Until then the box takes no update and starts no workspace. Back at the controller, press Return: it runs `taskbox box add` and `taskbox connect github`.
 
-At the Mac's screen instead, as your admin user: download `statement.json`, `statement.json.sig` and `taskbox-vX.Y.Z.tar.gz` from the release page into one folder, unpack the tarball there, and type `sh taskbox/install.sh --settings ORG/REPO`. It reads a public settings repo itself; a private one goes through `taskbox box install`. Then, from the controller, `taskbox box add` and `taskbox connect github`.
+At the Mac's screen instead, as your admin user: download `statement.json`, `statement.json.sig` and `taskbox-vX.Y.Z.tar.gz` from the release page into one folder, unpack the tarball there, and type `sh taskbox/install.sh --settings ORG/REPO`. It reads a public settings repo itself; a private one goes through `taskbox box install`. Then `taskbox confirm` there, to check the release keys, and from the controller `taskbox box add` and `taskbox connect github`.
 
 As the service account, type `taskbox status -w` to watch, and `taskbox check`. Every line should say OK.
 

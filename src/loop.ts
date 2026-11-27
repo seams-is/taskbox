@@ -35,7 +35,10 @@ import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
 import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readLogicalCpus, readMemory } from "./memory.ts";
 import { clean, mirrorPull, PullRecorder, pullLine, readPull, writeReady } from "./progress.ts";
-import { type AskSteps, readAsk, takeAsk } from "./loopask.ts";
+import { askLoop, type AskSteps, readAsk, takeAsk } from "./loopask.ts";
+import { trialOf } from "./trialresult.ts";
+import { listedReleases, pick } from "./update/pick.ts";
+import { channelOf } from "./release.ts";
 import { type TrialEnv, type TrialResult, tryRelease } from "./trial.ts";
 import { publicRelease, TARBALL_LIMIT } from "./hop.ts";
 import { verifyRelease, type VerifyDeps } from "./release.ts";
@@ -850,6 +853,31 @@ function selftestEvent(d: Pick<LoopDeps, "paths" | "sys">, result: "passed" | "f
   } catch {}
 }
 
+// The loop's own trial ask: hourly it reads the public repo's releases with no token, and the release
+// an auto-update would take next, when it is a trial (rc) release with no trial result yet, is asked
+// for as selftest run --release would ask. A trial that didn't run is asked again the next hour.
+const trialChecked = new WeakMap<object, number>();
+export const TRIAL_CHECK_MS = 3_600_000;
+export async function autoTrial(d: LoopDeps, box: object): Promise<string | undefined> {
+  const now = d.sys.now();
+  if (now - (trialChecked.get(box) ?? -Infinity) < TRIAL_CHECK_MS) return undefined;
+  trialChecked.set(box, now);
+  const repo = d.cfg.publicRepo;
+  const dir = linkTarget(d.paths.opt);
+  const rec = dir ? readInstallRecord(dir, d.checks.rootUid ?? 0) : undefined;
+  if (!repo || rec?.kind !== "ok") return undefined;
+  const res = await d.sys.fetch(`https://api.github.com/repos/${repo}/releases?per_page=100`, { redirect: "error", signal: d.sys.timeout(30_000), headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox" } });
+  if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+  const p = pick({ listed: listedReleases(await res.json()), installed: rec.value.version, channel: updateOf(d.cfg).channel, marks: { v: 1, bad: [] } });
+  if (p.kind !== "take" || channelOf(p.version) !== "beta") return undefined;
+  const ev = loopState(d.paths.state).events;
+  if (trialOf({ dir: ev, owner: process.getuid?.() ?? 0 }, p.version) !== "none") return undefined;
+  const asked = askLoop(loopAsks(d), "selftest-run", "release", { release: p.version }, now, "taskbox");
+  if ("busy" in asked) return undefined;
+  d.log.write(`release ${p.version} is new on this box's channel: trying it in taskbox's own VM before it installs (${asked.op.id})`);
+  return p.version;
+}
+
 // One asked release trial, from its ask to its event. Never throws.
 export async function releaseTrialStep(d: LoopDeps): Promise<void> {
   const asked = takeAsk(loopAsks(d), "release", () => d.sys.now());
@@ -910,7 +938,7 @@ function trialEnv(d: LoopDeps, progress: (t: string) => void, cancelled: () => b
     },
     async verify(r, version) {
       const dir = linkTarget(d.paths.opt);
-      const rec = dir ? readInstallRecord(dir) : undefined;
+      const rec = dir ? readInstallRecord(dir, d.checks.rootUid ?? 0) : undefined;
       const installed = rec?.kind === "ok" ? { version: rec.value.version, sha256: rec.value.sha256 } : null;
       const keygen: VerifyDeps = { run: (cmd, args, o) => d.sys.run(cmd, args, o) };
       const workRoot = join(d.paths.projectState, "trial");
@@ -2005,8 +2033,11 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     if (stoppedToWait) continue;
     // The tool cache: fetch, build and bake between VMs (tools/inloop.ts). A bake holds this slot.
     if (toolsOn(d.cfg) && (await toolsStep(d, c))) continue;
+    // A new trial release on the box's channel is tried before the box installs it: the loop asks
+    // itself, at most hourly (autoTrial).
+    if (!c.proving && c.held.has("macos")) await autoTrial(d, c.box).catch((e: Error) => d.log.write(`the release trial check failed: ${String(e?.message ?? e).slice(0, 120)}`));
     // A signed release tried in taskbox's own macOS VM (selftest run --release, trial.ts): asked
-    // only, in a free slot, one at a time with the Linux proof.
+    // by the command or by autoTrial, in a free slot, one at a time with the Linux proof.
     if (!c.proving && readAsk(loopAsks(d), "release") !== undefined && !gateOf(d).wait && heldNow({ ...d, box: c.box }) === 0 && c.held.has("macos")) {
       c.proving = true;
       const mac = forKind(d.cfg, "macos");

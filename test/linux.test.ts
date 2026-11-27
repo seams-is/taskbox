@@ -689,7 +689,7 @@ describe("the install", () => {
     expect(said).toContain("  runnerLinux 2.338.2: matches its pin");
     expect(sys.requests.some((r) => r.url.endsWith("actions-runner-linux-arm64-2.338.2.tar.gz"))).toBe(true);
     expect(existsSync(join(d.paths.opt, "runner/actions-runner-linux.tar.gz"))).toBe(true);
-    expect(said.at(-1)).toBe("Installed 3.0.0. From the controller: taskbox box add, then taskbox connect github.");
+    expect(said.at(-1)).toBe("Installed 3.0.0. At the box's screen, as your admin user, type taskbox confirm and check the release keys it shows against taskbox sign --fingerprint on the signing Mac. Then, from the controller: taskbox box add, then taskbox connect github.");
   });
 
   test.serial("a Linux kind with no Linux runner pinned installs nothing", async () => {
@@ -705,7 +705,7 @@ describe("the install", () => {
     expect(said).toContain("  runner 2.338.2: matches its pin");
     expect(said.some((l) => l.includes("runnerLinux"))).toBe(false);
     expect(existsSync(join(d.paths.opt, "runner/actions-runner-linux.tar.gz"))).toBe(false);
-    expect(said.at(-1)).toBe("Installed 3.0.0. From the controller: taskbox box add, then taskbox connect github.");
+    expect(said.at(-1)).toBe("Installed 3.0.0. At the box's screen, as your admin user, type taskbox confirm and check the release keys it shows against taskbox sign --fingerprint on the signing Mac. Then, from the controller: taskbox box add, then taskbox connect github.");
   });
 
   // Install.sh run again over a service with state keeps that state; the key goes in root's folder.

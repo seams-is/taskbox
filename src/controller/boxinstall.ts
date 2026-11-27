@@ -130,18 +130,21 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
     }
 
     // Remote Login off, as root, then read back: a new ssh connection must fail.
-    out("closing: Remote Login off at the Mac. It may ask the admin password once more.");
-    await term([SSH, "-t", ...lan, host, "/usr/bin/sudo /bin/launchctl disable system/com.openssh.sshd && /usr/bin/sudo /bin/launchctl bootout system/com.openssh.sshd"]);
+    out("closing: Remote Login off at the Mac, then it restarts in a minute. It may ask the admin password once more.");
+    await term([SSH, "-t", ...lan, host, "/usr/bin/sudo /bin/launchctl disable system/com.openssh.sshd && /usr/bin/sudo /bin/launchctl bootout system/com.openssh.sshd && /usr/bin/sudo /sbin/shutdown -r +1"]);
     const back = await d.run([SSH, ...lan, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, "true"], { limitMs: 20_000, maxBytes: 4_000 });
     const off = back.code !== 0;
     appendEvent(d.home, d.now(), "box.installed", `box install put taskbox ${tag} on ${m[2]}.`, { host: m[2]!, tag, remoteLoginOff: off });
     out(off ? `Remote Login is off at ${m[2]}.` : `Remote Login still answers at ${m[2]}. Turn it off there: System Settings, General, Sharing.`);
+    // At the Mac's screen, after the restart: the service account's password unlocks the disk, then
+    // an admin checks the release keys there. Nothing is pinned from this controller's word alone.
+    out(`At ${m[2]}'s screen, once it restarts: unlock the disk with the service account's password; log in as the admin, open Terminal and type taskbox confirm; type yes to each release key it shows only if taskbox sign --fingerprint on the signing Mac shows the same.`);
     const name = boxNameOf(sf.text);
     if (!off || !name || !d.after) {
-      out("At the Mac's screen: unlock FileVault, then compare the fingerprints it shows with taskbox self check here and taskbox sign --fingerprint on the signing Mac.");
-      for (const l of footer(`taskbox ${tag} on ${m[2]}.`, "Installed taskbox on the Mac.", "Type taskbox box add, then taskbox connect github.")) out(l);
+      for (const l of footer(`taskbox ${tag} on ${m[2]}.`, "Installed taskbox on the Mac.", "Once its screen has checked the keys: taskbox box add, then taskbox connect github.")) out(l);
       return off ? EXIT.ok : EXIT.failed;
     }
+    await d.ask("Press Return once the Mac's screen says the release keys are checked: ");
     // pairing, then the GitHub Apps: box add, then connect github, from here.
     out(`pairing: taskbox box add ${name}, then taskbox connect github --box ${name}.`);
     return await d.after(name, out);

@@ -22,6 +22,7 @@ import { OP_ROWS } from "./ops.ts";
 import { SETTINGS_ROWS } from "./settings.ts";
 import { SIZE_ROWS } from "./sizes.ts";
 import { TOOL_ROWS } from "./tools.ts";
+import { TRUST_ROWS } from "../trust.ts";
 import { WORKSPACE_ROWS } from "./workspaces.ts";
 
 function v2Rows(): Row[] {
@@ -53,6 +54,7 @@ export function allRows(): Row[] {
     ...SETTINGS_ROWS,
     ...SIZE_ROWS,
     ...TOOL_ROWS,
+    ...TRUST_ROWS,
     ...WORKSPACE_ROWS,
   ];
   const why = rowsProblem(rows);
