@@ -310,9 +310,13 @@ describe("a day session, as a saved day for the simulator", () => {
     const { c, p } = ctx();
     await applyStart(c, { pattern: "day" }, OWNER);
     const job = (repo: string, kind: "macos" | "linux", t: number, m: number, extra: Partial<JobRecord> = {}): JobRecord => ({ v: 1, startedAt: NOW + (t - 2) * M, jobAt: NOW + t * M, endedAt: NOW + (t + m) * M, repo, vmKind: kind, result: "passed", vmDeleted: true, guard: "ok", job: "build the secret thing", phases: { queued: -M, guestUp: M, runnerStarted: 1.5 * M, jobStarted: 2 * M, jobDone: (2 + m) * M }, ...extra });
-    const jobs = [job(TEST.name, "linux", 1, 3, { usage: { samples: 4, memPeakMB: 1900, memP90MB: 1800, memTotalMB: 8000, cpuPeak: 1.5, cpuP90: 1, cpus: 4 } }), job(TEST.name, "macos", 2, 6), job(CFG.jobsFrom, "linux", 3, 2, { className: "merge" })];
+    const jobs = [job(TEST.name, "linux", 1, 3, { usage: { samples: 4, memPeakMB: 1900, memP90MB: 1800, memTotalMB: 8000, cpuPeak: 1.5, cpuP90: 1, cpus: 4, netInMB: 10.4, netOutMB: 2 }, cpus: 4, memoryMB: 8192, tools: "gen1" }), job(TEST.name, "macos", 2, 6), job(CFG.jobsFrom, "linux", 3, 2, { className: "merge" })];
     const r = loadReport(LOADCFG, jobs, readLoad(p, false, ME), [], NOW + 30 * M, true);
     if (typeof r === "string") throw new Error(r);
+    // The report's v3 summaries, each side apart.
+    expect(r.network).toEqual({ load: { jobs: 1, inMB: 10, outMB: 2 } });
+    expect(r.sizes.load).toEqual([{ kind: "linux", cpus: 4, memoryMB: 8192, jobs: 1 }, { kind: "macos", jobs: 1 }]);
+    expect(r.tools).toEqual({ withCache: 1, without: 2, generations: ["gen1"] });
     const day = replayDay(r, jobs);
     expect(day.pattern).toBe("day");
     expect(day.jobs).toHaveLength(3);

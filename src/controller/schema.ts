@@ -26,6 +26,7 @@ export interface Status {
   lastJob: { at: number | null; result: (typeof OUTCOMES)[number] | null } | null;
   jobs: { name: string | null; kind: (typeof KINDS)[number] | null; since: number | null }[];
   slots: { total: number; busy: number };
+  timings?: string | null; // version 4 only: the box's timing settings and how many jobs back them
 }
 export type JobLine = { kind: "job"; startedAt: number | null; jobAt: number | null; endedAt: number | null; name: string | null; result: (typeof RESULTS)[number] | null; vmDeleted: boolean };
 export interface Jobs {

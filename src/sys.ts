@@ -7,6 +7,7 @@ export interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
+  over?: true; // maxBytes was passed: the child was killed and its output cut
 }
 
 export interface RunOptions {
@@ -15,6 +16,28 @@ export interface RunOptions {
   env?: Record<string, string>; // added to childEnv's, never in place of it
   cwd?: string; // the child's folder; the caller's when absent
   group?: boolean; // the child leads a process group of its own, and a timeout kills the whole group
+  maxBytes?: number; // the most of stdout, and of stderr, read: past it the child is killed (output a guest makes)
+}
+
+// A stream read whole, or up to max bytes: past it, over() is called once and the rest is left.
+export async function readCapped(s: ReadableStream<Uint8Array>, max: number | undefined, over: () => void): Promise<{ text: string; over: boolean }> {
+  if (max === undefined) return { text: await new Response(s).text(), over: false };
+  const parts: Uint8Array[] = [];
+  let held = 0;
+  const reader = s.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (held + value.length > max) {
+      parts.push(value.subarray(0, max - held));
+      over();
+      void reader.cancel().catch(() => {});
+      return { text: new TextDecoder().decode(Buffer.concat(parts)), over: true };
+    }
+    parts.push(value);
+    held += value.length;
+  }
+  return { text: new TextDecoder().decode(Buffer.concat(parts)), over: false };
 }
 
 export interface Proc {
@@ -86,13 +109,9 @@ export function realSys(home: string): Sys {
         p.kill(9);
       };
       if (opts.timeoutMs) cancel = realClock.after(opts.timeoutMs, kill);
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(p.stdout).text(),
-        new Response(p.stderr).text(),
-        p.exited,
-      ]);
+      const [out, err, code] = await Promise.all([readCapped(p.stdout as ReadableStream<Uint8Array>, opts.maxBytes, kill), readCapped(p.stderr as ReadableStream<Uint8Array>, opts.maxBytes, kill), p.exited]);
       cancel?.();
-      return { code, stdout, stderr };
+      return { code, stdout: out.text, stderr: err.text, ...(out.over || err.over ? { over: true as const } : {}) };
     },
     spawn(cmd, args, opts = {}) {
       assertNotTest();

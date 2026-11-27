@@ -60,10 +60,7 @@ export function toolsOf(jobs: JobRecord[]): ToolCount {
 }
 // The guest's network bytes, where the job's usage holds them.
 export function netOf(jobs: JobRecord[]): NetSum | undefined {
-  const xs = jobs.flatMap((j) => {
-    const u = j.usage as { netInMB?: unknown; netOutMB?: unknown } | undefined;
-    return typeof u?.netInMB === "number" && typeof u?.netOutMB === "number" ? [{ i: u.netInMB, o: u.netOutMB }] : [];
-  });
+  const xs = jobs.flatMap((j) => (j.usage?.netInMB !== undefined && j.usage.netOutMB !== undefined ? [{ i: j.usage.netInMB, o: j.usage.netOutMB }] : []));
   if (!xs.length) return undefined;
   return { jobs: xs.length, inMB: Math.round(xs.reduce((n, x) => n + x.i, 0)), outMB: Math.round(xs.reduce((n, x) => n + x.o, 0)) };
 }
@@ -151,12 +148,6 @@ export function loadReport(cfg: Config, jobs: JobRecord[], file: LoadFile, gaveW
   };
 }
 
-// The guest sampler's peak, where the job's usage holds one.
-const spikeOf = (u: object): { memSpikeMB?: number } => {
-  const v = (u as { memSpikeMB?: unknown }).memSpikeMB;
-  return typeof v === "number" ? { memSpikeMB: v } : {};
-};
-
 // One session as a saved day for the simulator (test/replays, test/sim.ts replayFromJobs): every
 // job that ran in it, real and test, with its kind, class, times, phases and use, and nothing that
 // names a job, a repo or a run.
@@ -171,7 +162,7 @@ export function replayDay(r: LoadReport, jobs: JobRecord[]) {
       jobAt: j.jobAt ?? null,
       endedAt: j.endedAt,
       phases: j.phases ?? null,
-      usage: j.usage ? { memPeakMB: j.usage.memPeakMB, cpuPeak: j.usage.cpuPeak, ...spikeOf(j.usage) } : null,
+      usage: j.usage ? { memPeakMB: j.usage.memPeakMB, cpuPeak: j.usage.cpuPeak, ...(j.usage.memSpikeMB !== undefined ? { memSpikeMB: j.usage.memSpikeMB } : {}) } : null,
     })),
   };
 }

@@ -90,13 +90,15 @@ export function eventLine(e: Event): string {
   return line;
 }
 
-export type Draft = Omit<Event, "id" | "at" | "writer"> & { at?: number };
+// id: one made before the write, for a record that names the event before it is written (appendAdmin).
+export type Draft = Omit<Event, "id" | "at" | "writer"> & { at?: number; id?: string };
 
 // A new event from a draft, its id and time from the clock. Text is cut to one printable line.
 export function newEvent(writer: Writer, d: Draft, clock: Pick<Clock, "now">, rand: Rand = realRand, next?: (now: number) => string): Event {
   const now = d.at ?? clock.now();
   const text = d.text.replace(/[^\x20-\x7e]/g, " ").slice(0, TEXT_MAX);
-  const e: Event = { id: next ? `ev_${next(now)}` : idOf("ev", now, rand), at: new Date(now).toISOString(), writer, type: d.type, actor: d.actor, text };
+  if (d.id !== undefined && !isId("ev", d.id)) throw new Error("an event's id must be ev_ and a ULID");
+  const e: Event = { id: d.id ?? (next ? `ev_${next(now)}` : idOf("ev", now, rand)), at: new Date(now).toISOString(), writer, type: d.type, actor: d.actor, text };
   if (d.op !== undefined) e.op = d.op;
   if (d.subject !== undefined) e.subject = d.subject;
   if (d.data !== undefined) e.data = d.data;
