@@ -145,13 +145,104 @@ describe("taskbox status", () => {
 
   // v2.1.1: remote's status listed stop, start, clean and the admin commands, none of which it can run.
   test("each user sees only the commands they can run", () => {
+    // One command per line, so two branches adding commands to different files don't touch one line.
+    const says = (words: string[], lead?: string, more?: string[]) => `Commands: ${words.join(", ")}${more ? `, and ${lead}${more.join(", ")}` : ""}.`;
     const { d } = ops({ running: true });
     const notCi = { ...d, uid: d.uid + 1 };
     expect(commandsFor(d, { remote: false, admin: false })).toBe(commandList());
-    expect(commandList()).toBe("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, resume, size, connect, start, status, stop, template, tool, workspace, and as your admin user: confirm, connect, disconnect, key, remove, rollback, unlock, update.");
-    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, drain, hello, image, job, load, logins, logs, nonce, op, pause, resume, size, start, status, stop, template, tool, workspace.");
-    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, image, job, load, logins, logs, op, policy, size, connect, status, template, tool, workspace, and confirm, connect, disconnect, key, remove, rollback, unlock, update.");
-    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, image, job, load, logins, logs, op, policy, size, connect, status, template, tool, workspace.");
+    expect(commandList()).toBe(says([
+      "check",
+      "drain",
+      "image",
+      "job",
+      "load",
+      "logins",
+      "logs",
+      "op",
+      "pause",
+      "policy",
+      "prune",
+      "resume",
+      "size",
+      "connect",
+      "start",
+      "status",
+      "stop",
+      "template",
+      "tool",
+      "workspace",
+    ], "as your admin user: ", [
+      "confirm",
+      "connect",
+      "disconnect",
+      "key",
+      "remove",
+      "rollback",
+      "unlock",
+      "update",
+    ]));
+    expect(commandsFor(notCi, { remote: true, admin: false })).toBe(says([
+      "check",
+      "drain",
+      "hello",
+      "image",
+      "job",
+      "load",
+      "logins",
+      "logs",
+      "nonce",
+      "op",
+      "pause",
+      "resume",
+      "size",
+      "start",
+      "status",
+      "stop",
+      "template",
+      "tool",
+      "workspace",
+    ]));
+    expect(commandsFor(notCi, { remote: false, admin: true })).toBe(says([
+      "check",
+      "image",
+      "job",
+      "load",
+      "logins",
+      "logs",
+      "op",
+      "policy",
+      "size",
+      "connect",
+      "status",
+      "template",
+      "tool",
+      "workspace",
+    ], "", [
+      "confirm",
+      "connect",
+      "disconnect",
+      "key",
+      "remove",
+      "rollback",
+      "unlock",
+      "update",
+    ]));
+    expect(commandsFor(notCi, { remote: false, admin: false })).toBe(says([
+      "check",
+      "image",
+      "job",
+      "load",
+      "logins",
+      "logs",
+      "op",
+      "policy",
+      "size",
+      "connect",
+      "status",
+      "template",
+      "tool",
+      "workspace",
+    ]));
     expect(commandsFor(notCi, undefined)).toBe(commandList());
   });
 

@@ -2,13 +2,14 @@
 // every BEAT_TICKS ticks after. Counting ticks keeps a clock step from stopping it. Only the one
 // writer beats: a guard under another label runs no passes.
 import { bootId } from "../core/boot.ts";
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { beatNow, watchPaths, writeBeat } from "../guardwatch.ts";
 
 export const BEAT_TICKS = 5;
 
-export const beatPass: PassMaker = {
+export const beatPass: PlacedMaker = {
   name: "beat",
+  order: 100,
   make(c) {
     if (!c.writer) return undefined;
     const file = watchPaths(c.p).guardBeat;

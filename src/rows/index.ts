@@ -1,5 +1,5 @@
 // Every check row, from every package that has rows (core/rows.ts). A package with rows adds a file
-// here that exports its Row[], and one line below. The list is built on first use, since the modules
+// here that exports its Row[], one import and one line in allRows, each sorted by file. The list is built on first use, since the modules
 // that hold rows import each other.
 //
 // Places, by number: away's own rows from 100, the pre-start rows from 1000, the rest of check from
@@ -9,15 +9,15 @@ import { CHECK_EXTRA, INSTALL_PREFLIGHT, PRESTART } from "../checks.ts";
 import { loadRepoOf } from "../config.ts";
 import { type Place, type Row, type RowFn, numbered, rowsFor, rowsProblem } from "../core/rows.ts";
 import { TEST_REPO_ROW, testRepoRow } from "../loadcmd.ts";
+import { PF_ROWS } from "../pfstarts.ts";
 import { SECOND_KEY_ROW, secondKeyRow } from "../queue.ts";
-import { GUARD_ROWS } from "./guard.ts";
-import { OP_ROWS } from "./ops.ts";
-import { CLOCK_ROWS } from "./clock.ts";
 import { ACCOUNT_ROWS } from "./accounts.ts";
 import { BEAT_ROWS } from "./away.ts";
+import { CLOCK_ROWS } from "./clock.ts";
 import { CONNECT_ROWS } from "./connect.ts";
+import { GUARD_ROWS } from "./guard.ts";
+import { OP_ROWS } from "./ops.ts";
 import { SIZE_ROWS } from "./sizes.ts";
-import { PF_ROWS } from "../pfstarts.ts";
 import { TOOL_ROWS } from "./tools.ts";
 import { WORKSPACE_ROWS } from "./workspaces.ts";
 
@@ -35,7 +35,20 @@ function v2Rows(): Row[] {
 let built: Row[] | undefined;
 export function allRows(): Row[] {
   if (built) return built;
-  const rows = [...v2Rows(), ...GUARD_ROWS, ...OP_ROWS, ...CLOCK_ROWS, ...BEAT_ROWS, ...SIZE_ROWS, ...TOOL_ROWS, ...ACCOUNT_ROWS, ...CONNECT_ROWS, ...PF_ROWS, ...WORKSPACE_ROWS];
+  // One line each, sorted by file: a row's place is its own order, not its place here.
+  const rows = [
+    ...v2Rows(),
+    ...PF_ROWS,
+    ...ACCOUNT_ROWS,
+    ...BEAT_ROWS,
+    ...CLOCK_ROWS,
+    ...CONNECT_ROWS,
+    ...GUARD_ROWS,
+    ...OP_ROWS,
+    ...SIZE_ROWS,
+    ...TOOL_ROWS,
+    ...WORKSPACE_ROWS,
+  ];
   const why = rowsProblem(rows);
   if (why) throw new Error(`the check rows can't be used: ${why}`);
   return (built = rows);

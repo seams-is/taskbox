@@ -19,7 +19,7 @@ import { readBeat, watchPaths } from "../guardwatch.ts";
 import { appendAdmin, eventLog } from "../core/events.ts";
 import { Verified } from "../core/statement.ts";
 import { readOp, withProgress, writeOp } from "../core/ops.ts";
-import type { PassCtx, PassMaker } from "../core/passes.ts";
+import type { PassCtx, PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { drainSpool, dropsLine, newSpoolMemory, orderBy, type Outcome, parseRequestName, readOutcome, readRequest, recordOutcome, type SpoolReport } from "../core/spool.ts";
 import type { ErrorCode } from "../command.ts";
@@ -206,8 +206,9 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
   }
 }
 
-export const controlPass: PassMaker = {
+export const controlPass: PlacedMaker = {
   name: "control",
+  order: 900,
   make(c) {
     if (!c.writer) return undefined;
     // The beat before this guard's own: the beat pass writes one before this pass first runs.

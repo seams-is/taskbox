@@ -1,0 +1,61 @@
+{"file": "availability.ts", "reads": 1, "why": "the time label in controlNow's wall: control.json's since and the op's times, for people to read. A forced deadline is on this boot's mono (forceAt), and the break-glass stop's wait is counted"}
+{"file": "away.ts", "reads": 2, "why": "days until a date and recent logins: display"}
+{"file": "awaychecks.ts", "reads": 7, "why": "how long ago the loop's last request and beat were: rows that say OK with a time; the power log's last 30 days, a WARN only; when a lasting change lapses, with mono and the boot beside it"}
+{"file": "broker.ts", "reads": 3, "why": "the hour the GitHub key keeper's counts are kept under, and GitHub's Date against the box's for the clock guard: display and a reason"}
+{"file": "checks.ts", "reads": 5, "why": "the guard's and the workspaces state's freshness (a stale read FAILs, so a step fails closed) and how recent a loss or a moved log is: display"}
+{"file": "cli.ts", "reads": 3, "why": "the answers envelope's at, for a usage error, a rename and every answer: a label"}
+{"file": "clock.ts", "reads": 1, "why": "the real Clock itself: every other read goes through it or Sys"}
+{"file": "cmd/confirm.ts", "reads": 2, "why": "the id of the declined event, made before the admin's entry that names it: a label; and the list of waiting changes, judged by the box's boot and monotonic clock as well, so a step either way lapses an item, never keeps one"}
+{"file": "cmd/connect.ts", "reads": 2, "why": "when the connect op began, and how long the listener may live inside the op's deadline: the op's record and GitHub's created_at decide"}
+{"file": "cmd/daemons.ts", "reads": 2, "why": "moved from cli.ts: the load session's wanted read and the workspaces hold's freshness for the loop, which fails closed both ways. The guard's step-down proof reads no clock: a new guard record file"}
+{"file": "cmd/job.ts", "reads": 6, "why": "the timings' now, --since back from now, how long a live job has run, which queued lines are fresh, and when a stop was asked: display and labels"}
+{"file": "cmd/logins.ts", "reads": 1, "why": "moved from cli.ts: the now the logins screen counts back from: display"}
+{"file": "cmd/status.ts", "reads": 2, "why": "moved from cli.ts: the now for status's recent-logins line: display"}
+{"file": "cmd/tool.ts", "reads": 3, "why": "when a tool refresh was asked, and how long the command watches it: a step only stops watching sooner or later, and the refresh carries on"}
+{"file": "confirmapply.ts", "reads": 1, "why": "the guard's answer to a confirm: pending.ts judges each item by wall, boot and monotonic clock together, so a step either way lapses it"}
+{"file": "connectchild.ts", "reads": 1, "why": "the code wait's end when the op has no deadline: the op's record ends the wait first"}
+{"file": "connectflow.ts", "reads": 9, "why": "when a connect began, and the waits for GitHub, a code and the keeping phase: a step only ends a wait, which changes nothing and says so"}
+{"file": "controller/forward.ts", "reads": 5, "why": "the time on an envelope the controller makes, and when a status was read: display; a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter"}
+{"file": "controller/home.ts", "reads": 1, "why": "a temp file's unique name"}
+{"file": "controller/main.ts", "reads": 4, "why": "the controller's Clock, and the time on its own envelopes and events: labels"}
+{"file": "controller/pair.ts", "reads": 4, "why": "when a box was paired, and the time on the controller's events: labels"}
+{"file": "controller/update.ts", "reads": 6, "why": "when the controller last looked for an update, and the time on its events: a step only looks sooner or later"}
+{"file": "core/child.ts", "reads": 3, "why": "an op's end time and spawn time, and the 30 s a new job has to take its lease: a step only changes that grace; a free lease is the proof. Op deadlines are on mono"}
+{"file": "core/dispatch.ts", "reads": 1, "why": "a request's 2 minutes and a signed statement's 5 minutes: times another machine wrote, which only the wall clock can judge; the nonce is what makes a signature work once"}
+{"file": "core/events.ts", "reads": 5, "why": "an event's time and id, and the minute windows of its rate limits: a step only shortens or lengthens a window"}
+{"file": "core/passes.ts", "reads": 2, "why": "when each guard pass starts and ends: a pass's timing for its row"}
+{"file": "core/spool.ts", "reads": 4, "why": "a stale temp name in a spool (removing it early costs a resend) and the spool pass's time budget (a step leaves requests for the next pass)"}
+{"file": "gate.ts", "reads": 2, "why": "the workspaces gate's now: the state must be within 3 minutes either way, so a step fails closed"}
+{"file": "github.ts", "reads": 5, "why": "a GitHub App JWT's iat, for the loop and connect, the offset GitHub reports, and a failure's time for a status line"}
+{"file": "guard.ts", "reads": 7, "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too"}
+{"file": "guardwatch.ts", "reads": 2, "why": "a beat's wall time and a log line's time, for people to read only: every age is judged on mono"}
+{"file": "install.ts", "reads": 6, "why": "installedAt labels, the lock's time, and the wait for Tailscale to start: a step only waits less or more"}
+{"file": "jobs.ts", "reads": 1, "why": "when a stop was asked: a label in the stop's file"}
+{"file": "keys.ts", "reads": 3, "why": "a GitHub App JWT's iat and the clock offset GitHub reports: GitHub judges the JWT"}
+{"file": "kinds.ts", "reads": 8, "why": "the scheduler's now: when slots became ready or busy, an idle VM's turn, and when a VM was told to give way: a step only reorders a choice, gives an idle VM's turn away or ends a wait for a VM to go; no running job is ended"}
+{"file": "loadcmd.ts", "reads": 1, "why": "the load command's now for its session's labels and freshness: display and a refusal to start"}
+{"file": "log.ts", "reads": 1, "why": "a log line's time label"}
+{"file": "loop.ts", "reads": 101, "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label."}
+{"file": "loopwatch.ts", "reads": 2, "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"}
+{"file": "opcmd.ts", "reads": 2, "why": "op list --since: a duration back from now, which only shows more or fewer records; and a loop op's cancel time, a label"}
+{"file": "ops.ts", "reads": 22, "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h. Remove's op record takes its start, end and phase times from it, for people to read; no deadline or lapse rests on them. A stale or stopped remove's end time, and the update lock's note of when remove took it, too. The workspaces block's now in status: display."}
+{"file": "passes/control.ts", "reads": 1, "why": "the time label on a control.json written again as paused"}
+{"file": "passes/keeping.ts", "reads": 1, "why": "the wall part of a Moment: a pending change and an outcome lapse on the wall clock too, and mono and the boot hold them to their limits"}
+{"file": "passes/requests.ts", "reads": 1, "why": "a statement's 5 minutes and a request's time when the spool is over its cap, and a dropped request's outcome time: times another machine wrote, or a label; nothing is removed by it but what the spool's cap already removes"}
+{"file": "passes/v2.ts", "reads": 1, "why": "the logins keeper's minute: a timer"}
+{"file": "pfstarts.ts", "reads": 3, "why": "the time on the guard's record of starts when it changes, a lock file's age, and the id of an event made before the admin's entry that names it: a step only makes a lock look stale or fresh sooner, the record's order is its sequence number, and an id's time is a label"}
+{"file": "progress.ts", "reads": 3, "why": "a progress record's updatedAt and its rate: display"}
+{"file": "queue.ts", "reads": 3, "why": "when the queue was read and a run's queued time when GitHub gives none: the scheduler's order; a refusal's time, for its clock offset and a rate limit's wait when GitHub sends no Date"}
+{"file": "rows/connect.ts", "reads": 1, "why": "how old the keeper's counts file is, for a WARN row: display"}
+{"file": "rows/guard.ts", "reads": 1, "why": "the guard's record's freshness: a stale read FAILs, so a step fails closed"}
+{"file": "shell.ts", "reads": 1, "why": "the agent shell's refusal envelope's at: a label"}
+{"file": "tools/bake.ts", "reads": 3, "why": "the bake's wait for its guest to shut down, and the base record's time: a step only ends a wait sooner or later, and the time is a label"}
+{"file": "tools/inloop.ts", "reads": 6, "why": "a baking slot's beat and times, as every slot's are written, and a refresh op's end time: labels and beats"}
+{"file": "tools/pass.ts", "reads": 3, "why": "when the store's hashes were last checked and when a failed fetch or bake is tried again: a step only checks sooner or later"}
+{"file": "watch.ts", "reads": 1, "why": "the watch screen's now: display"}
+{"file": "watchdog.ts", "reads": 3, "why": "a JWT, and whether the hourly workflows check and the last run are recent: a row's SKIP and display"}
+{"file": "workspace/caps.ts", "reads": 1, "why": "the memory caps' 60 s over the size, on the guard's 2 s tick: a step forward asks a save or warns a minute early, a step back late; the stop at 150% reads no clock"}
+{"file": "workspace/clear.ts", "reads": 1, "why": "workspace clear's name for the folder moved aside: unique by a counter, so a step only renames it"}
+{"file": "workspace/cmd.ts", "reads": 8, "why": "the workspace commands' now: freshness and quiet shown in list and status (display), and wait's --timeout, which gives up and changes nothing; a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter; rule list's live or expired, display"}
+{"file": "workspace/handover.ts", "reads": 1, "why": "the moved-aside folder's name, from the caller's now: unique by a counter, so a step only renames it"}
+{"file": "workspace/pass.ts", "reads": 2, "why": "the workspaces pass's now: its beat, the time rules (expiry, quiet, saves) and a failed proof's retry, all timers either way of a step; and when a clear's delete ended, for its op record"}

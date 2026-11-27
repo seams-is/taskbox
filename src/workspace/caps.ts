@@ -7,7 +7,7 @@
 // - CPU, by priority: the account's processes run at the size's nice, set again each tick, so CI's
 //   VMs win when they compete. macOS has no per-user CPU quota.
 // The rule is pure (capStep); the pass reads ps and sysctl, and changes the state through write.ts.
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { eventLog } from "../core/events.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { workspacesOf } from "../settings/workspaces.ts";
@@ -187,8 +187,10 @@ export function usageOf(s: WsState, name: string, u: { memoryMB: number; cpu: nu
 }
 
 // The guard's caps pass: every tick, by the one writer only.
-export const capsPass: PassMaker = {
+// After the v3 passes: its own judgement reads the state the workspace pass keeps.
+export const capsPass: PlacedMaker = {
   name: "workspace-caps",
+  order: 1300,
   make(c) {
     if (!c.writer) return undefined;
     const run = newCapsRun();
