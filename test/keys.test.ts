@@ -5,7 +5,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTIONS_PERMISSIONS, KeyStop, keyFromDownloads, placeActionsKey, placeSourceKey, proveActionsKey, removeReadFile } from "../src/actionskey.ts";
+import { ACTIONS_PERMISSIONS, KeyStop, keyFromDownloads, placeActionsKey, placeSourceKey, proveActionsKey, removeReadFile } from "../src/keys.ts";
 import { type Config, paths, sourceKeyPath } from "../src/config.ts";
 import type { InstallDeps } from "../src/install.ts";
 import { Log } from "../src/log.ts";
