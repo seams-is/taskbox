@@ -38,6 +38,7 @@ async function statusText(c: C) {
     const { openWindow, windowLine } = await import("../settings/adminssh.ts");
     const temp = openWindow(cfg.adminSsh, c.ops.sys.now());
     if (temp) extra.push(`Admin SSH: ${windowLine(temp, false)}.`);
+    extra.push(...(await signerLines(c)));
     who = { remote: cfg.accounts.agent !== undefined && name === cfg.accounts.agent, admin: await isAdmin(c.ops.sys, name) };
     logins = recentLine(readSeen(c.own), c.ops.sys.now());
   } catch {
@@ -77,6 +78,19 @@ async function streamBox(c: C, stream: NonNullable<C["stream"]>): Promise<number
   }
   c.say("Stopped watching. taskbox status -w --json watches again.");
   return 0;
+}
+
+// The release signers: a change that waits, and a revoke list that couldn't be read, which holds an
+// update and a key add until a read works.
+async function signerLines(c: C): Promise<string[]> {
+  const { readOwnedJson } = await import("../core/rootfile.ts");
+  const { rootStateOf } = await import("../core/paths.ts");
+  const { updateFiles } = await import("../update/box.ts");
+  const { changeLine, parseSignerState } = await import("../release/signers.ts");
+  const r = readOwnedJson(updateFiles(rootStateOf(c.p)).signers, { owner: c.deps.rootUid ?? 0, max: 64 * 1024 }, (v) => parseSignerState(v) ?? "out of shape");
+  if (r.kind !== "ok") return [];
+  const clean = (t: string) => t.replace(/[^\x20-\x7e]/g, " ");
+  return [...(r.value.pending ? [`Signers:   ${clean(changeLine(r.value.pending))}.`] : []), ...(r.value.revokeProblem ? [`Signers:   FAIL ${clean(r.value.revokeProblem)}. No update installs and no key is added until it can be read.`] : [])];
 }
 
 // The box's timings line, as check shows it, or null when the settings or the jobs can't be read.

@@ -12,6 +12,7 @@ import { handlerFiles } from "../handlers/index.ts";
 import { renamed } from "../renames.ts";
 import { commandFor } from "../shell.ts";
 import { readEnvelopes } from "../schema.ts";
+import { type BoxPolicy, policyBlock, policyEntries, policyOfAnswer, policyText } from "../policy.ts";
 import type { BoxStatus } from "./commands.ts";
 import { NAME, type Paired, readConfig } from "./home.ts";
 import { ask as boxAsk, chooseBoxes, configOrStop, connectBox, type Connected, type Deps, isStop, linesFor, type Stop, sshDeps, sshStop, tailnetOrStop } from "./reach.ts";
@@ -131,6 +132,10 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
   if (cut.sel === "all" && !reads(spec)) {
     const l = `--box all is for commands that read. Name one box for ${name}.`;
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [l], { code: "usage", message: l, fix: null, who: null }) };
+  }
+  if (spec.path.join(" ") === "policy show" && typeof p.opts.owner !== "string") {
+    const l = "taskbox policy show on the controller needs --owner with your Tailscale login: each box's rules are checked against it.";
+    return { shown: refusal(d, json, "policy.show", EXIT.usage, [l], { code: "usage", message: l, fix: null, who: null }) };
   }
   let line: string | undefined;
   try {
@@ -385,8 +390,40 @@ export async function answers(d: Deps, a: Ask): Promise<One[] | (Stop & { done?:
   return list;
 }
 
+// taskbox policy show on the controller: never a box's own lines. Each box's --json result is read
+// through policyOfAnswer, with the install ID this controller paired and the owner's login typed
+// here, so a box's rules reach only its own tag, from people, never root. The text to paste is
+// made here from those results: policyBlock for several boxes, the entries or --whole for one.
+export function policyShown(d: Deps, a: Ask, list: One[], owner: string): Shown {
+  const good: BoxPolicy[] = [];
+  const bad: string[] = [];
+  for (const o of list) {
+    const e = o.envelopes?.at(-1);
+    if (o.stop) bad.push(`${o.box.name}: ${o.stop.stop}`);
+    else if (!e || !e.ok || !e.result) bad.push(`${o.box.name}: it gave no policy taskbox reads${e?.error ? ` (${cleanLine(e.error.message).slice(0, 160)})` : ""}.`);
+    else {
+      const r = policyOfAnswer(e.result, o.box.installId, owner);
+      if (typeof r === "string") bad.push(`${o.box.name}: its policy was refused: ${r}. None of its lines are shown. Check the box at its screen.`);
+      else good.push(r);
+    }
+  }
+  let text: string | undefined;
+  if (good.length && !bad.length) {
+    if (list.length === 1) text = a.parsed.opts.whole === true ? policyText(good[0]!.policy) : policyEntries(good[0]!.policy);
+    else {
+      const b = policyBlock(good);
+      if ("refused" in b) bad.push(...b.refused);
+      else text = b.text;
+    }
+  }
+  const lines = [...bad, ...(text !== undefined ? [list.length === 1 && a.parsed.opts.whole === true ? "The tailnet policy file, made on this controller from the box's checked answer:" : "The tailnet policy's entries, made on this controller from each box's checked answer. Add each one to your policy file in the admin console. Keep what the file already has.", "", ...text.replace(/\n$/, "").split("\n")] : ["Nothing to paste: every box's policy must be read and checked first."])];
+  const exit = text !== undefined ? EXIT.ok : EXIT.failed;
+  return { lines, json: a.json ? [asciiJson(envelope({ command: "policy.show", box: null, at: d.now(), exit, lines, result: text !== undefined ? { text } : null }))] : [], exit };
+}
+
 async function round(d: Deps, a: Ask): Promise<Shown & { done?: boolean }> {
   const list = await answers(d, a);
+  if (!isStop(list) && a.spec.path.join(" ") === "policy show") return policyShown(d, a, list, String(a.parsed.opts.owner));
   if (!isStop(list)) return show(d, a, list);
   const json = a.json ? [ownEnvelope(d, a.spec.path.join("."), null, EXIT.failed, [list.stop], { code: "unreachable", message: list.stop, fix: list.next, who: "from-away" })] : [];
   return { lines: [header(null, d.version), list.stop, ...footer("Not reached.", "Nothing changed.", list.next)], json, exit: EXIT.failed, done: list.done };

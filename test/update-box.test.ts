@@ -9,6 +9,8 @@ import { paths } from "../src/config.ts";
 import { gitTreeSha } from "../src/hop.ts";
 import { prune } from "../src/layout.ts";
 import { statementText } from "../src/release.ts";
+import { EMPTY_REVOKES, REVOKES, revokeListText } from "../src/release/revokes.ts";
+import type { SignerState } from "../src/release/signers.ts";
 import { boxEnv, readSigners, runningOf, updateFiles } from "../src/update/box.ts";
 import { readInstallRecord, writeInstallRecord } from "../src/update/records.ts";
 import type { Downloaded } from "../src/update/run.ts";
@@ -53,7 +55,7 @@ function box() {
 }
 
 // A release tree for 3.0.1 under one top folder, pinning `pin`, its tarball by the real tar.
-function release(root: string, pin: string, extra: Record<string, string> = {}) {
+function release(root: string, pin: string, extra: Record<string, string> = {}, list: string | null = EMPTY_REVOKES) {
   const dir = join(root, "rel");
   const top = join(dir, "taskbox");
   mkdirSync(join(top, "src"), { recursive: true });
@@ -64,8 +66,8 @@ function release(root: string, pin: string, extra: Record<string, string> = {}) 
   for (const [k, v] of Object.entries(extra)) writeFileSync(join(top, k), v);
   const tgz = join(dir, "taskbox-v3.0.1.tar.gz");
   Bun.spawnSync(["/usr/bin/tar", "-czf", tgz, "-C", dir, "taskbox"], { env: { PATH: "/usr/bin:/bin" } });
-  const st = statementFor("3.0.1", { tree: gitTreeSha(top), sha256: sha(readFileSync(tgz)) });
-  const d: Downloaded = { statement: new TextEncoder().encode(statementText(st)), signature: new TextEncoder().encode("sig"), tarball: tgz, tarballSha256: st.sha256, assets: {} };
+  const st = statementFor("3.0.1", { tree: gitTreeSha(top), sha256: sha(readFileSync(tgz)), assets: { [REVOKES]: sha(EMPTY_REVOKES) } });
+  const d: Downloaded = { statement: new TextEncoder().encode(statementText(st)), signature: new TextEncoder().encode("sig"), tarball: tgz, tarballSha256: st.sha256, assets: {}, ...(list === null ? {} : { revokes: new TextEncoder().encode(list) }) };
   return { st, d };
 }
 
@@ -85,6 +87,18 @@ describe("the box's update env", () => {
     const e = box();
     const k = release(e.root, keyPair().line);
     expect(await e.env.stage(k.d, k.st)).toEqual({ why: "it pins other release keys and carries no signed transition" });
+  });
+
+  test("stage: a release whose revoke list can't be read, or isn't its statement's, isn't installed, and the reason is kept for status", async () => {
+    for (const [list, why] of [
+      [null, "3.0.1's revoke list can't be read"],
+      [revokeListText(["9".repeat(64)]), "3.0.1's revoke list isn't the one its statement names"],
+    ] as const) {
+      const b = box();
+      const r = release(b.root, b.key.line, {}, list);
+      expect(await b.env.stage(r.d, r.st)).toEqual({ why });
+      expect((JSON.parse(readFileSync(updateFiles(rootStateOf(b.p)).signers, "utf8")) as SignerState).revokeProblem).toBe(why);
+    }
   });
 
   test("install: the tree as app beside the running install's tools and bin links, with both records; the swap moves both links", async () => {

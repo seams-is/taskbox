@@ -17,12 +17,12 @@ export const commands: CommandSpec[] = [
       { name: "--admin", value: "NAME", check: (v) => SHORT.test(v), repeat: true },
       { name: "--whole" },
     ],
-    // The agent account's shell runs it, so the controller reads it for every paired box.
-    shell: true,
     file: (c) => c.opts.whole === true,
     // The controller reads --json, and its answer must name the real owner, never a placeholder.
     check: ({ opts, flags }) => (flags.json !== undefined && typeof opts.owner !== "string" ? "policy show --json needs --owner with your Tailscale login, which the controller passes." : undefined),
     did: "Printed the policy. Nothing changed.",
+    // The controller asks each box for --json, checks it, and makes the text to paste itself.
+    shell: true,
     async run(c) {
       const { loadConfig, tagOf } = await import("../config.ts");
       const { adminsOf, adminState } = await import("../elevate.ts");

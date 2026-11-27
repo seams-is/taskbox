@@ -1,6 +1,7 @@
 // taskbox on the controller, against a fake Tailscale, a fake ssh, a box on v2.6.1 and a v3 box
 // answered by the box's own code.
 import { describe, expect, test } from "bun:test";
+import { envelope } from "../src/envelope.ts";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkAnswer, errorAnswer, helloAnswer, jobsAnswer, logAnswer, statusAnswer } from "../src/answers.ts";
@@ -267,6 +268,46 @@ describe("box commands over ssh, from a v3 box", () => {
     expect(JSON.parse(j.lines[0]!)).toMatchObject({ error: { code: "refused-over-ssh", who: "at-the-box" } });
     expect(w.calls).toEqual([]);
   }, CEILING);
+
+  describe("policy show", () => {
+    const LOGIN = "me@example.com";
+    const LINE = `policy show --owner ${LOGIN} --json --answers 4`;
+    const answer = (rules: Record<string, unknown>, o: { owners?: string[]; installId?: string } = {}) => ({
+      stdout: `${JSON.stringify(envelope({ command: "policy.show", box: { name: "taskbox-1", installId: INSTALL_ID, release: "v3.0.0-rc.1" }, at: 1, exit: 0, lines: ["box lines, never shown"], result: { installId: o.installId ?? INSTALL_ID, tag: "tag:taskbox", owners: o.owners ?? [LOGIN], rules: { grants: [], ssh: [], sshTests: [], tests: [], ...rules } } }))}\n`,
+      code: 0,
+    });
+    const accept = { action: "accept", src: [LOGIN], dst: ["tag:taskbox"], users: ["taskbox-agent"] };
+
+    test("needs --owner, which each box's rules are checked against", async () => {
+      const { w, d } = v3();
+      expect((await runLine(d, ["policy", "show"])).lines[0]).toBe("taskbox policy show on the controller needs --owner with your Tailscale login: each box's rules are checked against it.");
+      expect(w.calls).toEqual([]);
+    }, CEILING);
+
+    test("the text to paste is made here from the box's checked answer, never the box's own lines", async () => {
+      const { d, box } = v3();
+      box.over.set(LINE, answer({ ssh: [accept] }));
+      const r = await runLine(d, ["policy", "show", "--owner", LOGIN]);
+      expect(r.code).toBe(0);
+      expect(r.lines).not.toContain("box lines, never shown");
+      expect(r.lines).toContain(`  { "action": "accept", "src": ["${LOGIN}"], "dst": ["tag:taskbox"], "users": ["taskbox-agent"] }`);
+    }, CEILING);
+
+    test("a box's answer that lets root in, reaches past its tag or names another owner is refused, and nothing is shown to paste", async () => {
+      for (const [a, why] of [
+        [answer({ ssh: [{ ...accept, users: ["root"] }] }), "an SSH rule lets in root or any user"],
+        [answer({ ssh: [{ ...accept, dst: ["tag:taskbox", "tag:other"] }] }), "a rule in ssh reaches more than tag:taskbox"],
+        [answer({}, { owners: ["thief@example.com"] }), "its tag isn't owned by your login"],
+        [answer({}, { installId: "f".repeat(32) }), "the answer names another box's install ID"],
+      ] as const) {
+        const { d, box } = v3();
+        box.over.set(LINE, a);
+        const r = await runLine(d, ["policy", "show", "--owner", LOGIN]);
+        expect(r.code).toBe(1);
+        expect(r.lines).toEqual([`taskbox-1: its policy was refused: ${why}. None of its lines are shown. Check the box at its screen.`, "Nothing to paste: every box's policy must be read and checked first."]);
+      }
+    }, CEILING);
+  });
 
   test("the box's own words and flags: usage errors and renames come from the box's registry, here", async () => {
     const { w, d } = v3();

@@ -115,7 +115,7 @@ const GAPS = [
   // Small differences from the table, each its own fix.
   "op show: extra --timeout", "job timings: missing --kind", "workspace connect: extra --json", "workspace rush: extra --yes", "template show: extra --json",
   // Controller rows.
-  "box add: missing --json", "box add: extra --jobs-repo", "box remove: missing --yes", "box remove: missing --json",
+  "box add: missing --json", "box add: extra --jobs-repo", "box add: extra --load-repo", "box remove: missing --yes", "box remove: missing --json",
   "self update: extra --auto", "self rollback: missing --json", "self setup: missing --json", "self events: missing --follow", "sign: extra command",
 ];
 
