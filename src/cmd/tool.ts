@@ -40,7 +40,7 @@ async function refresh(c: BoxCtx): Promise<{ exit: number; result?: Record<strin
   const id = got.op.id;
   const say = (l: string) => (c.json ? c.err(l) : c.say(l));
   say(`${got.attached ? "Watching the tool refresh in progress" : "Asked the loop to refresh the tools"}: ${id}. It re-checks every hash, fetches what is missing, and bakes each kind's base VM again if its tools changed. taskbox op cancel ${id} stops it.`);
-  const { loopRunning } = await import("../stopstart.ts");
+  const { loopRunning } = await import("../availability.ts");
   if (!(await loopRunning(sys, c.uid, c.own.loopLabels).catch(() => true))) say("The loop isn't running, so the refresh starts when it does: taskbox start.");
   if (c.flags.detach) return { exit: 0, result: { op: id } };
   const limit = typeof c.flags.timeout === "string" ? (duration(c.flags.timeout) ?? 0) : 0;

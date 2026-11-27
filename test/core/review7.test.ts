@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { chmodSync, closeSync, constants, mkdtempSync, openSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHILD_BUN, follow, O_EXLOCK, runChild } from "../../src/core/child.ts";
 import { appendEvent, eventLog, keepEvents, newEvent, readEvents } from "../../src/core/events.ts";
-import { begin, opProblem, type OpType, readOp, writeOp } from "../../src/core/ops.ts";
+import { begin, opProblem, readOp, writeOp } from "../../src/core/ops.ts";
 import { answer, LAPSE_MS, lapse, noPending, raise } from "../../src/core/pending.ts";
 import { keepOutcomes, recordOutcome } from "../../src/core/spool.ts";
 import { checkSigned, CONTROL_NS, signedWord, statementFor, statementText, Verified } from "../../src/core/statement.ts";
@@ -17,7 +18,7 @@ const T = Date.parse("2026-11-25T12:00:00Z");
 const H = 3_600_000;
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-r7-"));
 const APP = "/opt/taskbox/app/src/cli.ts";
-const update: OpType = { type: "update", phases: ["a", "b"], onBoot: () => "fail" };
+const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["a", "b"], onBoot: () => "fail" };
 
 function setup(mono: number | null = 1_000_000, uuid = "11111111-2222-3333-4444-555555555555") {
   const sys = new FakeSys();
@@ -108,7 +109,7 @@ describe("the lows", () => {
     closeSync(l);
   });
   test("a resumed op takes a new monoAt and keeps only what is left of its limit", async () => {
-    const resumer: OpType = { ...update, onBoot: () => "resume" };
+    const resumer: OpDecl = { ...update, onBoot: () => "resume" };
     const s = setup(10 ** 9);
     const b = begin([], resumer, { subject: "box", params: {}, actor: "owner", deadline: T + 10 * H }, T);
     if (b.kind !== "start") throw new Error();

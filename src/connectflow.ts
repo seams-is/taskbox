@@ -8,7 +8,8 @@ import { readBoxFile } from "./boxsettings.ts";
 import { type AppRole, appName, appPage, conversionProblem, deleteLine, hookProblem, type InstallFail, installationProblem, installationsOf, installPage, PERMISSIONS, permissionsPage, publicProblem, reposProblem, ROLE_NAME, SLUG } from "./connect.ts";
 import type { Config, LoadRepo, Paths, SourceSettings } from "./config.ts";
 import { jobLabel, leasePath, progressPath, type Report, reporter, reportsPath } from "./core/child.ts";
-import { begin, listOps, type Op, type OpFolder, type OpType, readOp, writeOp } from "./core/ops.ts";
+import { begin, listOps, type Op, type OpFolder, readOp, writeOp } from "./core/ops.ts";
+import { opType } from "./optypes/index.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "./core/rootfile.ts";
 import type { UnsignedHandler } from "./core/dispatch.ts";
 import { readRequest, readSpoolFile } from "./core/spool.ts";
@@ -28,8 +29,8 @@ export const CONNECT_MS = 60 * 60_000;
 export const PHASES = ["making-runner", "installing-runner", "making-source", "installing-source", "keeping"] as const;
 export type Phase = (typeof PHASES)[number];
 
-// Cancellable until it keeps; a restart fails it, and the next connect finds a pending App again.
-export const CONNECT_OP: OpType = { type: "connect", phases: [...PHASES], pointOfNoReturn: "keeping", cancellable: true, onBoot: () => "fail" };
+// The op's declaration is src/optypes/connect.ts's.
+export const CONNECT_OP = { type: "connect" } as const;
 
 // What the browser should do, in the op's progress text, for the controller to read back.
 export type BrowserAsk = { make: AppRole; name: string } | { open: string };
@@ -524,13 +525,16 @@ export async function cancelConnect(d: Pick<FlowDeps, "sys" | "log" | "cfg" | "k
   return lines;
 }
 
-// The hook op cancel calls for this op's type, once the op cancel command lands (core/ops.ts cancel
-// is pure, and has no hook of its own yet).
-export interface OpCancelHook {
-  type: string;
-  cancel(d: Parameters<typeof cancelConnect>[0], op?: string): Promise<string[]>;
+// op cancel's cleanup, from the guard's handler context (src/optypes/connect.ts): the op's own pending
+// Apps, with the keeper's keys.
+export async function cancelPending(c: Pick<import("./core/dispatch.ts").HandlerCtx, "sys" | "cfg" | "p" | "state" | "rootUid" | "chown">, op: string): Promise<string[]> {
+  const { uidOf } = await import("./accounts.ts");
+  const { BROKER_ACCOUNT, brokerPathsOf } = await import("./keys.ts");
+  const { Log } = await import("./log.ts");
+  const uid = await uidOf(c.sys, BROKER_ACCOUNT);
+  if (uid === undefined) return [];
+  return cancelConnect({ sys: c.sys, log: new Log(), cfg: c.cfg, keys: { dir: brokerPathsOf(c.p).keys, ownerUid: uid, ownerGid: 0 }, pendingFile: join(c.state.dir, "connect-pending.json"), rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) }, op);
 }
-export const CONNECT_CANCEL: OpCancelHook = { type: CONNECT_OP.type, cancel: cancelConnect };
 
 // ---- The controller's code, through the agent spool ----
 // Unsigned, so anyone with the agent account can send one. The controller makes one 64-hex state per
@@ -718,7 +722,7 @@ export async function adoptSource(d: ReleaseSourceDeps, cfg: Config = d.cfg): Pr
 // the lease and sends reports, and the guard's follow is the record's only writer. from: "box" or
 // "controller", which says where the code comes from.
 export function openConnectOp(o: { ops: OpFolder; now: number; boot: string; actor: string; params: Record<string, Json> }): { op: Op; send: (r: Report) => void } | { why: string } {
-  const b = begin(listOps(o.ops).ops, CONNECT_OP, { subject: "box", params: o.params, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
+  const b = begin(listOps(o.ops).ops, opType(CONNECT_OP.type), { subject: "box", params: o.params, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
   if (b.kind !== "start") return { why: b.kind === "busy" ? b.why : `A connect (${b.op.id}) is running already. taskbox op show ${b.op.id} -w follows it.` };
   const op = { ...b.op, child: { label: jobLabel(b.op.id), boot: o.boot, spawnedAt: o.now, applied: 0, events: ["connect."], limitMs: CONNECT_MS } };
   writeOp(o.ops, op);
@@ -775,7 +779,7 @@ export function openControllerConnect(o: { ops: OpFolder; now: number; actor: st
   const why = stateHashesProblem(o.stateHashes);
   if (why) return { why };
   const h = o.stateHashes as StateHashes;
-  const b = begin(listOps(o.ops).ops, CONNECT_OP, { subject: "box", params: { ...o.params, from: "controller", stateHashes: { runner: h.runner, source: h.source } }, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
+  const b = begin(listOps(o.ops).ops, opType(CONNECT_OP.type), { subject: "box", params: { ...o.params, from: "controller", stateHashes: { runner: h.runner, source: h.source } }, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
   if (b.kind !== "start") return { why: b.kind === "busy" ? b.why : `A connect (${b.op.id}) is running already. taskbox op show ${b.op.id} -w follows it.` };
   writeOp(o.ops, b.op);
   return { op: b.op };

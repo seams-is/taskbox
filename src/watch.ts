@@ -7,7 +7,7 @@ import { readStateJson } from "./config.ts";
 import { KIND_WORD } from "./config.ts";
 import { activePull, clean, type PullState, pullLine, readPull } from "./progress.ts";
 import { computeState } from "./state.ts";
-import { stoppedLine } from "./stopstart.ts";
+import { stoppedLine } from "./availability.ts";
 import { type Clock, realClock } from "./clock.ts";
 
 export interface LoopView {

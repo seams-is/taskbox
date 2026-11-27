@@ -14,7 +14,7 @@ const clock = (t = { now: 0 }) => ({ now: () => t.now, t });
 
 describe("the pass registry", () => {
   test("the guard's passes: its beat first, v2's in their order, then v3's", () => {
-    expect(passMakers().map((m) => m.name)).toEqual(["beat", "workspaces", "loop-watch", "logins", "tailscaled", "tailscaled-probe", "ending-loop", "keeping", "ops", "accounts", "requests", "key-keeper"]);
+    expect(passMakers().map((m) => m.name)).toEqual(["beat", "workspaces", "loop-watch", "logins", "tailscaled", "tailscaled-probe", "ending-loop", "keeping", "ops", "accounts", "requests", "control", "key-keeper"]);
   });
   test("each pass starts at its stage, and runs one at a time, never awaited by the tick", async () => {
     const c = clock();
@@ -157,7 +157,7 @@ describe("the ops pass", () => {
     const uid = process.getuid!();
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     expect(opsPass.make({ ...c, writer: false })).toBeUndefined();
-    const b = begin([], { type: "update", phases: ["a", "b"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "taskbox" }, sys.now());
+    const b = begin([], { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["a", "b"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "taskbox" }, sys.now());
     if (b.kind !== "start") throw new Error();
     writeOp({ dir: s.ops, owner: uid }, { ...b.op, child: { label: `local.taskbox.op.${b.op.id}`, boot: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", spawnedAt: sys.now(), applied: 0, events: [] } });
     writeFileSync(reportsPath({ dir: s.ops }, b.op.id), `${reportLine({ n: 1, phase: "b", end: { state: "succeeded" } })}\n`, { mode: 0o600 });

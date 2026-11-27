@@ -1,6 +1,5 @@
 // Where the loop meets the tool cache: the pass between VMs, the VM each job clones, and the lines
 // its runner's .env gets. loop.ts calls these three; everything else is the tool cache's own.
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { allOk, freeGB, runChecks } from "../checks.ts";
 import { forKind, type Kind, KIND_WORD, kindsOf, MACOS_MAX, smallestSize } from "../config.ts";
@@ -8,7 +7,7 @@ import { eventLog } from "../core/events.ts";
 import { loopState } from "../core/paths.ts";
 import { guestOf, GUEST_USER } from "../guest.ts";
 import { beatFor } from "../beat.ts";
-import { engineOf, kindDeps, type LoopDeps, type Slots, writeLoopState } from "../loop.ts";
+import { engineOf, gateOf, kindDeps, type LoopDeps, type Slots, writeLoopState } from "../loop.ts";
 import { rows } from "../rows/index.ts";
 import { type CloneSource, cloneSourceOf, pinKey, readBases } from "./base.ts";
 import { type Get, realGet, realResolve, type Resolve } from "./fetch.ts";
@@ -121,7 +120,7 @@ export async function toolsStep(d: LoopDeps, c: { box: Slots; held: Set<Kind>; u
     gate: () => c.box.enter(d.slot, d.sys, () => c.box.halt !== undefined),
     gateFree,
     guestOf: (k) => ({ user: GUEST_USER, loginShell: guestOf(k).loginShell }),
-    stopIf: () => (c.updated() ? "an update was installed" : c.box.halt !== undefined ? "the loop is stopping" : (asked && refreshCancelled(ops, asked.op) && "the refresh was cancelled") || (existsSync(d.paths.drain) && "a drain began") || false),
+    stopIf: () => (c.updated() ? "an update was installed" : c.box.halt !== undefined ? "the loop is stopping" : (asked && refreshCancelled(ops, asked.op) && "the refresh was cancelled") || (gateOf(d).wait && "the box isn't active (taskbox pause, drain or stop)") || false),
     write: (s) => writeLoopState(d.paths, { tools: s }),
   };
   if (asked) {

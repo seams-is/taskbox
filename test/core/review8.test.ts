@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { chmodSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bootId, monoNow } from "../../src/core/boot.ts";
 import { eventLog, flushEvents, keepEvents, readEvents, WINDOWS_MAX } from "../../src/core/events.ts";
-import { begin, listOps, type OpType, writeOp } from "../../src/core/ops.ts";
+import { begin, listOps, writeOp } from "../../src/core/ops.ts";
 import { lapse, noPending, parsePending, raise } from "../../src/core/pending.ts";
 import { keepOutcomes, recordOutcome } from "../../src/core/spool.ts";
 import { checkSigned, CONTROL_NS, statementFor, statementText, signedWord, Verified } from "../../src/core/statement.ts";
@@ -78,7 +79,7 @@ describe("the lows", () => {
   test.serial("past 20,000 records, no running op is hidden by the folder's order", () => {
     const f = { dir: tmp(), owner: uid };
     chmodSync(f.dir, 0o755);
-    const t: OpType = { type: "drain", phases: ["a"], onBoot: () => "fail" };
+    const t: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "drain", phases: ["a"], onBoot: () => "fail" };
     const b = begin([], t, { subject: "box", params: {}, actor: "owner" }, T);
     if (b.kind !== "start") throw new Error();
     const running: string[] = [];

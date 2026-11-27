@@ -1,7 +1,7 @@
 // The connect pieces around the flow: the keeper's folders, the listener's private start file and its
 // watch on the command, the old-key and key-use rows, key.used into root's log, and the child.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aclProblem, brokerFoldersProblem, brokerPathsIn } from "../src/keys.ts";
@@ -139,5 +139,43 @@ describe("the keeper's beat, as guardwatch reads it", () => {
     const sys = new FakeSys();
     await expect((await keeperBeat(sys, join(root, "beat/broker.beat"), me, 4242))()).resolves.toBeUndefined();
     expect(existsSync(join(root, "beat"))).toBe(false);
+  });
+});
+
+describe("op cancel on a connect", () => {
+  test("ends the op as cancelled, then drops the op's own pending App: uninstalled, key and record gone", async () => {
+    const { cancelOp } = await import("../src/opcancel.ts");
+    const { openConnectOp } = await import("../src/connectflow.ts");
+    const { readOp } = await import("../src/core/ops.ts");
+    const { rootStateOf } = await import("../src/core/paths.ts");
+    const { paths } = await import("../src/config.ts");
+    const { testBox, CFG } = await import("./helpers.ts");
+    const { generateKeyPairSync } = await import("node:crypto");
+    const root = mkdtempSync(join(tmpdir(), "taskbox-opc-"));
+    const p = paths(root, testBox());
+    const s = rootStateOf(p);
+    mkdirSync(s.ops, { recursive: true });
+    const keys = (await import("../src/keys.ts")).brokerPathsOf(p).keys;
+    mkdirSync(keys, { recursive: true, mode: 0o700 });
+    const sys = new FakeSys();
+    sys.responders.push((cmd, args) => (cmd === "/usr/bin/id" && args.join(" ") === "-u _taskboxgh" ? { code: 0, stdout: `${me}\n`, stderr: "" } : undefined));
+    const calls: string[] = [];
+    sys.fetch = async (url, init) => {
+      calls.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+      return new URL(url).pathname === "/app/installations" ? new Response(JSON.stringify([{ id: 9, account: { login: "example-org" } }])) : new Response(null, { status: 204 });
+    };
+    const opened = openConnectOp({ ops: { dir: s.ops, owner: me }, now: sys.now(), boot: "B", actor: "admin pat", params: { from: "box" } });
+    if (!("op" in opened)) throw new Error(opened.why);
+    const pem = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey;
+    writeFileSync(join(keys, "runner-7000.pending.pem"), pem, { mode: 0o600 });
+    writeFileSync(join(s.dir, "connect-pending.json"), JSON.stringify({ v: 1, apps: { runner: { appId: 7000, slug: "x-runners-1f2e", op: opened.op.id } } }), { mode: 0o600 });
+    const events = { write: (e: unknown) => e, refused: (e: unknown) => e };
+    const a = await cancelOp({ sys, cfg: CFG, p, state: s, rootUid: me, events, log: () => {}, now: sys.now() } as never, opened.op.id, "admin", "an admin");
+    expect(a).toMatchObject({ ok: true, said: expect.stringMatching(/cancelled\. Dropped the App x-runners-1f2e/) });
+    const r = readOp({ dir: s.ops, owner: me }, opened.op.id);
+    expect(r.kind === "ok" && r.value.state).toBe("cancelled");
+    expect(readdirSync(keys)).toEqual([]);
+    expect(existsSync(join(s.dir, "connect-pending.json"))).toBe(false);
+    expect(calls).toContain("DELETE /app/installations/9");
   });
 });

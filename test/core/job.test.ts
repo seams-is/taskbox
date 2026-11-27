@@ -1,18 +1,19 @@
 // An op's child as a launchd job of its own. launchd owns its processes and ends
 // them on bootout; its life is a lock it holds; its reports go one way, through its handoff file.
 // No pid is read, compared or signalled.
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { describe, expect, test } from "bun:test";
 import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHILD_BUN, FULL_WHY, follow, jobLabel, KEEP_MAX, leaseHeld, leasePath, O_EXLOCK, parseReport, progressPath, reporter, reportLine, reportsPath, runChild, STARTUP_MS, stopChildren } from "../../src/core/child.ts";
 import { eventLog, readEvents } from "../../src/core/events.ts";
-import { begin, type OpType, readOp, writeOp } from "../../src/core/ops.ts";
+import { begin, readOp, writeOp } from "../../src/core/ops.ts";
 import { FakeSys } from "../fake.ts";
 
 const uid = process.getuid!();
 const APP = "/opt/taskbox/app/src/cli.ts";
-const update: OpType = { type: "update", phases: ["downloading", "verifying", "installing", "proving"], pointOfNoReturn: "installing", onBoot: () => "fail" };
+const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["downloading", "verifying", "installing", "proving"], pointOfNoReturn: "installing", onBoot: () => "fail" };
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-job-"));
 
 function setup(launchctl: (args: string[]) => number = () => 0) {
