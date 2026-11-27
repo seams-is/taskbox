@@ -14,3 +14,18 @@ describe("confirm shows every line", () => {
     expect(asked).toEqual(["  (25 more lines of this change. Press return to see them.) ", "  (5 more lines of this change. Press return to see them.) "]);
   });
 });
+
+describe("a workspaces state started again after a torn one", () => {
+  test("every pool account is cleared before its next agent, and ids go on past the lost ones", async () => {
+    const { afterReset } = await import("../src/workspace/pass.ts");
+    const { assign, emptyState } = await import("../src/workspace/model.ts");
+    const { approved, asked, POOL, T } = await import("./ws-helpers.ts");
+    const s = afterReset(emptyState(), POOL, T);
+    expect(s.nameSeq).toBeGreaterThan(1000);
+    const a = asked(s, "nova", "light");
+    const name = a.workspaces[0]!.name;
+    expect(Number(name.split("-")[1])).toBe(s.nameSeq + 1);
+    const got = assign(approved(a, name, "light"), POOL, T).state.workspaces[0]!;
+    expect(got.clear).toBe(true);
+  });
+});

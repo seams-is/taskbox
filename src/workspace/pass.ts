@@ -270,6 +270,15 @@ async function budgetNow(d: WsDeps): Promise<Budget> {
 const handoverDeps = (d: WsDeps, now: number): HandoverDeps => ({ sys: d.sys, usersDir: d.usersDir ?? "/Users", rootUid: d.rootUid ?? 0, chown: d.chown ?? (() => {}), now: () => now });
 
 // One workspace pass. It never throws for what it finds: each problem goes in the report.
+// A state started again after a torn one: each pool account marked as used by nobody taskbox knows
+// (an agent's name can't be taskbox), so the free-account rule clears its files first; ids from a
+// count no earlier state reached, minutes since 2020.
+export const RESET_AGENT = "taskbox";
+export function afterReset(s: WsState, pool: readonly string[], now: number): WsState {
+  const accounts = Object.fromEntries(pool.slice(0, 8).map((u) => [u, { agent: RESET_AGENT, usedAt: 1 }]));
+  return { ...s, accounts: { ...accounts, ...s.accounts }, nameSeq: Math.max(s.nameSeq, Math.floor((now - Date.UTC(2020, 0, 1)) / 60_000)) };
+}
+
 export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassReport> {
   const { sys, cfg, p } = d;
   const root = d.rootUid ?? 0;
@@ -321,6 +330,13 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
     if (to) {
       r.did.push(`moved the workspaces state, which couldn't be read (${read.why}), to ${to}, and started again with every workspace closed`);
       read = { kind: "missing" };
+      // Who used each pool account is lost with it: every one is cleared before its next agent, and
+      // ids go on past any the lost state could have given, so none is reused.
+      await apply((x) => ({ state: afterReset(x, pool.list.map((a) => a.name), now), steps: [] }));
+      try {
+        d.events?.write({ type: "workspace.state-reset", subject: "workspaces", actor: "taskbox", text: `The workspaces state couldn't be read, so it was moved aside and started again: every workspace is closed, and each pool account's files are cleared before its next agent.` });
+      } catch {}
+      read = current(p.workspaces, root);
     }
   }
   const fm = failMode(read);
