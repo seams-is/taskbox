@@ -37,6 +37,12 @@ export interface PassMaker {
   make(c: PassCtx): GuardPass | undefined; // undefined: this guard doesn't run it
 }
 
+// A pass in src/passes: its order is its place in each tick, lowest first, kept in its own file so
+// two packages adding passes never edit one shared line.
+export interface PlacedMaker extends PassMaker {
+  order: number;
+}
+
 // The passes the makers give. A maker that throws leaves its pass out, and says so, so one bad pass
 // never stops the guard before its first pf pass.
 // problems: what failed, by pass name, for the guard's record and the "Guard passes" check row.
