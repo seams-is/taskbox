@@ -265,12 +265,22 @@ describe("no sudo in what the owner reads", () => {
     expect(sh).toContain("/usr/sbin/dseditgroup -o checkmember -m");
   });
 
-  test("install.sh stops on a copy with no taskbox.json, before it asks for a password", () => {
+  test("install.sh stops on a release without its signed files, before it asks for a password", () => {
     const sh = readFileSync(join(repo, "install.sh"), "utf8");
-    const check = sh.indexOf('if [ ! -f "$here/taskbox.json" ]; then');
+    const check = sh.indexOf('if [ ! -f "$from/statement.json" ] || [ ! -f "$from/statement.json.sig" ]; then');
     expect(check).toBeGreaterThan(0);
     expect(check).toBeLessThan(sh.indexOf("exec /usr/bin/sudo"));
-    expect(sh.slice(check).split("\n").slice(1, 3).join("\n")).toMatch(/echo "This copy of taskbox has no taskbox\.json\. .*"\n\s+exit 1/);
+    expect(sh.slice(check).split("\n").slice(1, 3).join("\n")).toMatch(/echo "The release isn't complete in .*"\n\s+exit 1/);
+  });
+
+  test("install.sh takes the settings repo, and reads a public one at a commit, by https only", () => {
+    const sh = readFileSync(join(repo, "install.sh"), "utf8");
+    expect(sh).toContain('if [ -z "$settings" ]; then');
+    expect(sh).toContain("--proto '=https' --tlsv1.2");
+    expect(sh).toContain('"https://api.github.com/repos/$settings/commits/HEAD"');
+    expect(sh).toContain('"https://raw.githubusercontent.com/$settings/$sha/taskbox.json"');
+    // Nothing from the admin's Downloads, and no App key.
+    expect(sh).not.toMatch(/Downloads|private-key/);
   });
 });
 
@@ -347,7 +357,7 @@ describe("an update that can't reach GitHub", () => {
   });
 
   test("its line is plain and gives the owner the step", () => {
-    expect(CANT_REACH).toBe("taskbox can't reach GitHub. Check the box's network, then type taskbox update again.");
+    expect(CANT_REACH).toBe("taskbox can't reach GitHub. Check the box's network, then run the install again.");
   });
 });
 

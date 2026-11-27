@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { AGENT_LABEL, assetUrl, boxNames, GUARD_LABEL, LABEL_PREFIX, loadConfig, paths, previousLabels, OLD_TAILSCALE_SOCKET, TAILSCALE_SOCKET, TAILSCALED_LABEL } from "../src/config.ts";
-import { BOOTOUT_WAIT_S, keepsKept, labelsBack, retirePrevious, Stop, tailscaleUrlProblem } from "../src/install.ts";
+import { BOOTOUT_WAIT_S, labelsBack, Stop } from "../src/install.ts";
 import { CHECK_EXTRA, serviceNamesRow, tailscaleRow } from "../src/checks.ts";
 import { handOver, relabelDue, RESTART, underOldLabel } from "../src/loop.ts";
 import { Log } from "../src/log.ts";
@@ -107,42 +107,8 @@ describe("an update on a box installed under the old labels", () => {
     return { sys, l, p, files, said, d: { sys, paths: p, say: (s: string) => said.push(s) } };
   }
 
-  test("boots out the old guard and tailscaled, and removes all three old files", async () => {
-    const b = box({ [`system/${old.guard}`]: 100, [`system/${old.tailscaled}`]: 101, [`gui/502/${old.loop}`]: 102 });
-    await retirePrevious(b.d, OLD);
-    expect(b.l[`system/${old.guard}`]).toBeUndefined();
-    expect(b.l[`system/${old.tailscaled}`]).toBeUndefined();
-    for (const f of b.files) expect(existsSync(f)).toBe(false);
-    // The loop in ci's session is left running, so a job isn't cut: it moves itself later.
-    expect(b.l[`gui/502/${old.loop}`]).toBe(102);
-    expect(b.sys.calls.some((c) => c.args[0] === "bootout" && c.args[1]!.startsWith("gui/"))).toBe(false);
-    expect(b.said).toEqual([]);
-  });
 
-  test("an old tailscaled that won't stop loads nothing new, puts the guard back, keeps every old file and stops the update", async () => {
-    const sys = new FakeSys();
-    servicesObey(sys);
-    quietBox(sys);
-    const l = launchd(sys, { [`system/${old.guard}`]: 100, [`system/${old.tailscaled}`]: 101 }, { bootoutFails: [`system/${old.tailscaled}`] });
-    const p = paths(tempRoot(), testBox(OLD));
-    mkdirSync(join(p.guardPlist, ".."), { recursive: true });
-    mkdirSync(join(p.agentPlist, ".."), { recursive: true });
-    const files = [join(p.agentPlist, "..", `${old.loop}.plist`), join(p.guardPlist, "..", `${old.guard}.plist`), join(p.guardPlist, "..", `${old.tailscaled}.plist`)];
-    for (const f of files) writeFileSync(f, "<plist/>");
-    await expect(retirePrevious({ sys, paths: p, say: () => {} }, OLD)).rejects.toThrow("tailscaled under the old name didn't stop, so the services keep their old names and nothing new was loaded. Type taskbox update again; if it says this twice, restart the Mac, then type taskbox update.");
-    // The old guard, booted out, is loaded again from its file, so Screen Sharing stays guarded.
-    expect(l[`system/${old.guard}`]).toBeGreaterThan(0);
-    expect(l[`system/${old.tailscaled}`]).toBe(101);
-    for (const f of files) expect(existsSync(f)).toBe(true);
-    expect(Object.keys(l).some((k) => k.includes(LABEL_PREFIX))).toBe(false);
-  });
 
-  test("a box already moved, or never under the old names, is left as it is", async () => {
-    const b = box({ [`system/${GUARD_LABEL}`]: 200 });
-    await retirePrevious(b.d, OLD);
-    expect(b.l).toEqual({ [`system/${GUARD_LABEL}`]: 200 });
-    expect(b.said).toEqual([]);
-  });
 
 });
 
@@ -419,32 +385,7 @@ describe("taskbox rollback back across the label move", () => {
 });
 
 describe("the old tailscaled at the second update", () => {
-  test("the second update waits for the old tailscaled to finish exiting, then retires it", async () => {
-    const sys = new FakeSys();
-    servicesObey(sys);
-    quietBox(sys);
-    sys.sleep = async () => {};
-    const l = launchd(sys, { [`system/${old.guard}`]: 100, [`system/${old.tailscaled}`]: 101 }, { lingers: { [`system/${old.tailscaled}`]: 3 } });
-    const p = paths(tempRoot(), testBox(OLD));
-    mkdirSync(join(p.guardPlist, ".."), { recursive: true });
-    mkdirSync(join(p.agentPlist, ".."), { recursive: true });
-    await retirePrevious({ sys, paths: p, say: () => {} }, OLD);
-    expect(l).toEqual({});
-    expect(existsSync(join(p.guardPlist, "..", `${old.tailscaled}.plist`))).toBe(false);
-  });
 
-  test("one that never goes is stuck only after the wait", async () => {
-    const sys = new FakeSys();
-    servicesObey(sys);
-    quietBox(sys);
-    let slept = 0;
-    sys.sleep = async () => void slept++;
-    launchd(sys, { [`system/${old.tailscaled}`]: 101 }, { lingers: { [`system/${old.tailscaled}`]: 999 } });
-    const p = paths(tempRoot(), testBox(OLD));
-    mkdirSync(join(p.guardPlist, ".."), { recursive: true });
-    await expect(retirePrevious({ sys, paths: p, say: () => {} }, OLD)).rejects.toThrow("tailscaled under the old name didn't stop");
-    expect(slept).toBe(BOOTOUT_WAIT_S);
-  });
 
   test("undo starts the old tailscaled only once the new one has gone, since they share a socket", async () => {
     const sys = new FakeSys();
@@ -620,14 +561,6 @@ describe("undo restarts the root services on the code it went back to", () => {
 
 });
 
-describe("the install kept for undo", () => {
-  test("an update to the commit already installed keeps the install kept for undo", () => {
-    expect(keepsKept("abc", "abc", "/opt/taskbox-v221")).toBe(true);
-    expect(keepsKept("abc", "def", "/opt/taskbox-v221")).toBe(false);
-    expect(keepsKept("abc", "abc", undefined)).toBe(false);
-    expect(keepsKept(undefined, "abc", undefined)).toBe(false);
-  });
-});
 
 describe("between the two updates that move the names: what the owner is told", () => {
   const ctx = (sys: FakeSys, prefix?: string) => ({ sys, cfg: CFG, paths: paths(tempRoot(), testBox(prefix)), uid: 0, serviceUid: 502, rootUid: process.getuid!() });
@@ -678,56 +611,6 @@ describe("between the two updates that move the names: what the owner is told", 
     expect((await tailscaleRow(c)).detail).toContain("tailscaled's LaunchDaemon isn't taskbox's");
   });
 
-  test("a daemon that won't stop is an owner step, and says what is true", async () => {
-    const sys = new FakeSys();
-    servicesObey(sys);
-    quietBox(sys);
-    sys.sleep = async () => {};
-    launchd(sys, { [`system/${old.tailscaled}`]: 101 }, { lingers: { [`system/${old.tailscaled}`]: 999 } });
-    const p = paths(tempRoot(), testBox(OLD));
-    mkdirSync(join(p.guardPlist, ".."), { recursive: true });
-    const e = await retirePrevious({ sys, paths: p, say: () => {} }, OLD).catch((x: unknown) => x);
-    expect(e).toBeInstanceOf(Stop);
-    expect((e as Stop).owner).toBe(true);
-    expect((e as Stop).message).not.toContain("runs as before");
-  });
 
-  test("the old tailscale address only counts in the copy whose repo it names", () => {
-    const own = { org: "example-org", repo: "taskbox" };
-    const url = "https://api.github.com/repos/example-org/taskbox/releases/assets/7";
-    expect(tailscaleUrlProblem(undefined, own, 7)).toBe(false);
-    expect(tailscaleUrlProblem(url, own, 7)).toBe(false);
-    expect(tailscaleUrlProblem(url, own, 8)).toBe(true);
-    expect(tailscaleUrlProblem(url, { org: "another-org", repo: "taskbox" }, 9)).toBe(false);
-    expect(tailscaleUrlProblem(url, { org: "example-org", repo: "taskbox-fork" }, 9)).toBe(false);
-  });
 
-  test("each new plist is written before its old one goes, so a power cut never leaves neither", async () => {
-    const sys = new FakeSys();
-    servicesObey(sys);
-    quietBox(sys);
-    launchd(sys, { [`system/${old.guard}`]: 1, [`system/${old.tailscaled}`]: 2 });
-    const p = paths(tempRoot(), testBox(OLD));
-    const app = join(p.app, "launchd");
-    mkdirSync(app, { recursive: true });
-    for (const l of [AGENT_LABEL, GUARD_LABEL, TAILSCALED_LABEL]) writeFileSync(join(app, `${l}.plist`), `<plist>${l}</plist>`);
-    for (const f of [p.guardPlist, p.agentPlist]) mkdirSync(join(f, ".."), { recursive: true });
-    for (const [f, l] of [[p.guardPlist, old.guard], [p.tailscaledPlist, old.tailscaled], [p.agentPlist, old.loop]] as const) writeFileSync(join(f, "..", `${l}.plist`), "<plist>old</plist>");
-    // What reaches the disk, in order.
-    const order: string[] = [];
-    const [write, rm] = [fs.writeFileSync, fs.rmSync] as unknown as ((...a: unknown[]) => void)[];
-    const w = spyOn(fs, "writeFileSync").mockImplementation(((...a: unknown[]) => (order.push(`write ${basename(String(a[0]))}`), write!(...a))) as never);
-    const r = spyOn(fs, "rmSync").mockImplementation(((...a: unknown[]) => (order.push(`rm ${basename(String(a[0]))}`), rm!(...a))) as never);
-    try {
-      await retirePrevious({ sys, paths: p, say: () => {} }, OLD);
-    } finally {
-      w.mockRestore();
-      r.mockRestore();
-    }
-    for (const [f, l] of [[p.guardPlist, GUARD_LABEL], [p.tailscaledPlist, TAILSCALED_LABEL], [p.agentPlist, AGENT_LABEL]] as const) expect(readFileSync(f, "utf8")).toBe(`<plist>${l}</plist>`);
-    for (const [now, then] of [[GUARD_LABEL, old.guard], [TAILSCALED_LABEL, old.tailscaled], [AGENT_LABEL, old.loop]]) {
-      expect(order.indexOf(`write ${now}.plist`)).toBeGreaterThan(-1);
-      expect(order.indexOf(`write ${now}.plist`)).toBeLessThan(order.indexOf(`rm ${then}.plist`));
-    }
-  });
 });

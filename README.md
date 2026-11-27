@@ -6,22 +6,19 @@ Every job on a box is untrusted code. A box never runs a job that holds secrets:
 
 ## First setup
 
-1. Make a private copy of this repo in your organisation, named `taskbox`.
-2. Make a GitHub App there: Contents read-only, Self-hosted runners read and write. Install it on your copy. Its ID is `appId`.
-3. Make a runner group, limited to selected private repos, that lists the one repo whose jobs the box runs.
-4. Build tailscaled with `.github/workflows/build-tailscale.yml` ([docs](docs/build-tailscale.md)), publish it on a release of your copy, and pin it in `versions.json`.
-5. Copy `taskbox.example.json` to `taskbox.json` and fill in your values: `org`, `jobsFrom` (the one repo), `appId` and `runnerGroup` are yours. The rest have defaults.
-6. Merge a PR and publish the first release: a tag such as `v3.0.0` on a commit on `main`.
+1. Make a private settings repo in your organisation. Copy `taskbox.example.json` to `taskbox.json` there and fill in your values: `org`, `jobsFrom` (the one repo whose jobs the box runs) and `runnerGroup` are yours. The rest have defaults. Everything that makes a setup your own lives in that repo; the code comes from this repo's signed releases.
+2. Make a runner group, limited to selected private repos, that lists the one repo.
+3. Install taskbox for the controller on your own Mac, from the [release page](https://github.com/seams-is/taskbox/releases).
 
-## Set up the box
+## Set up a box
 
-At the box, on Ethernet, as your admin user:
+From the controller, with Remote Login on at the new Mac (System Settings, General, Sharing):
 
-1. In a Safari Private window, sign in to GitHub. Open your App's page, then Credentials, then Key pairs, and click "New key". The key lands in Downloads.
-2. Download `https://github.com/<org>/taskbox/archive/refs/heads/main.zip` and unpack it in Downloads.
-3. In Terminal, type `sh ~/Downloads/taskbox-main/install.sh`.
-4. It shows the release, its PR and its commit. If they match your release page, type `yes`.
-5. Follow its prompts: the service account's password, the Tailscale policy entry ([docs](docs/tailnet-policy.md)), then log in as the service account.
+`taskbox box install ADMIN@MAC --settings ORG/REPO`
+
+It fetches the signed release and checks it, reads `taskbox.json` through your own GitHub session, copies both to the Mac, and runs the install there over ssh: each password is asked in your terminal. The install verifies the release again against the keys it pins, shows the release, the key that signed it and the settings commit, and takes your `yes`. Then it turns Remote Login off, and runs `taskbox box add` and `taskbox connect github` from the controller.
+
+At the Mac's screen instead, as your admin user: download `statement.json`, `statement.json.sig` and `taskbox-vX.Y.Z.tar.gz` from the release page into one folder, unpack the tarball there, and type `sh taskbox/install.sh --settings ORG/REPO`. It reads a public settings repo itself; a private one goes through `taskbox box install`. Then, from the controller, `taskbox box add` and `taskbox connect github`.
 
 As the service account, type `taskbox status -w` to watch, and `taskbox check`. Every line should say OK.
 

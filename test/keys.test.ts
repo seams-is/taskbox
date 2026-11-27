@@ -5,9 +5,8 @@ import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACTIONS_PERMISSIONS, KeyStop, keyFromDownloads, placeActionsKey, placeSourceKey, proveActionsKey, removeReadFile } from "../src/keys.ts";
+import { ACTIONS_PERMISSIONS, placeSourceKey, proveActionsKey } from "../src/keys.ts";
 import { type Config, paths, sourceKeyPath } from "../src/config.ts";
-import type { InstallDeps } from "../src/install.ts";
 import { Log } from "../src/log.ts";
 import { actionsKeyProblem, queueReaderFor, QueueReader, readActionsKey, secondKeyRow } from "../src/queue.ts";
 import { FakeSys, json } from "./fake.ts";
@@ -43,7 +42,7 @@ function box() {
   const sys = new FakeSys();
   // chmod sets the key folder's ACL.
   sys.responders.push((cmd) => (cmd === "/bin/chmod" ? { code: 0, stdout: "", stderr: "" } : undefined));
-  const d = { sys, paths: p, log: new Log(), say: () => {}, ask: async () => "", chown: (path: string, uid: number, gid: number) => chowned.push(`${path.slice(root.length)} ${uid}:${gid}`), owner: "owner", ownerHome, workRoot: root, configDir: root, rootUid: me, tty: () => 0 } as InstallDeps;
+  const d = { sys, paths: p, log: new Log(), chown: (path: string, uid: number, gid: number) => void chowned.push(`${path.slice(root.length)} ${uid}:${gid}`), rootUid: me };
   const download = (name: string, body = KEY2) => writeFileSync(join(ownerHome, "Downloads", name), body);
   return { root, p, sys, d, chowned, download, dl: join(ownerHome, "Downloads") };
 }
@@ -168,93 +167,6 @@ describe("placing a key", () => {
     c.sys.responders.unshift((cmd) => (cmd === "/bin/chmod" ? { code: 1, stdout: "", stderr: "" } : undefined));
     expect(await placeSourceKey(c.d, KEY2, 4242, me)).toMatch(/^chmod -N failed/);
     expect(existsSync(join(c.p.actionsKeyDir, "actions-4242.pem"))).toBe(false);
-  });
-});
-
-describe("a new key from Downloads (connect --new-key)", () => {
-  test("exactly one new key file, read safely, and only that file deleted after", () => {
-    const b = box();
-    const since = Date.now() - 1000;
-    b.download("example-jobs.2026-11-18.private-key.pem");
-    const got = keyFromDownloads(b.dl, since);
-    if (!("pem" in got)) throw new Error(got.why);
-    expect(got.pem).toBe(KEY2);
-    expect(removeReadFile(got.from, got.dev, got.ino)).toBe(true);
-    expect(existsSync(got.from)).toBe(false);
-  });
-
-  test("none yet, a download in progress, or an old file: wait", () => {
-    const b = box();
-    expect(keyFromDownloads(b.dl, 0)).toEqual({ why: "no new key in Downloads yet", wait: true });
-    b.download("x.private-key.pem.download");
-    expect(keyFromDownloads(b.dl, 0)).toEqual({ why: "no new key in Downloads yet", wait: true });
-    b.download("old.private-key.pem");
-    expect(keyFromDownloads(b.dl, Date.now() + 60_000)).toEqual({ why: "no new key in Downloads yet", wait: true });
-  });
-
-  test("two new keys, a file that isn't a key, a link or a hard link: stopped, with a plain reason", () => {
-    for (const setup of [
-      (b: ReturnType<typeof box>) => (b.download("a.private-key.pem"), b.download("b.private-key.pem")),
-      (b: ReturnType<typeof box>) => b.download("a.private-key.pem", "not a key"),
-      (b: ReturnType<typeof box>) => (writeFileSync(join(b.root, "elsewhere.pem"), KEY2), symlinkSync(join(b.root, "elsewhere.pem"), join(b.dl, "a.private-key.pem"))),
-      (b: ReturnType<typeof box>) => (writeFileSync(join(b.root, "elsewhere.pem"), KEY2), linkSync(join(b.root, "elsewhere.pem"), join(b.dl, "a.private-key.pem"))),
-      (b: ReturnType<typeof box>) => b.download("a.private-key.pem", KEY2 + "x".repeat(20_001)),
-    ]) {
-      const b = box();
-      setup(b);
-      const got = keyFromDownloads(b.dl, 0);
-      expect("why" in got && !got.wait).toBe(true);
-    }
-  });
-
-  test("a name with control characters reaches the terminal as printable text only", () => {
-    const b = box();
-    b.download("\u001b]0;owned\u0007x.private-key.pem", "not a key");
-    const got = keyFromDownloads(b.dl, 0);
-    expect(got).toEqual({ why: "]0;ownedx.private-key.pem in Downloads isn't a key GitHub made", wait: false });
-  });
-});
-
-describe("the update's key step", () => {
-  const place = (b: ReturnType<typeof box>) => {
-    mkdirSync(b.p.actionsKeyDir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(b.p.actionsKeyDir, "actions-4242.pem"), KEY2, { mode: 0o600 });
-  };
-
-  test("the key in place is proved again; one that passes is kept", async () => {
-    const b = box();
-    place(b);
-    const calls = github(b.sys);
-    expect(await placeActionsKey(b.d, QCFG, me, 20, false)).toEqual({ skipped: "in place, and proved with GitHub again", proved: true });
-    expect(calls[0]).toBe("GET /app");
-  });
-
-  test("an App that gained rights stops the update; one that is gone lets it go on with no source", async () => {
-    const b = box();
-    place(b);
-    github(b.sys, { permissions: { actions: "write", metadata: "read" } });
-    const e = await placeActionsKey(b.d, QCFG, me, 20, false).catch((x) => x);
-    expect(e).toBeInstanceOf(KeyStop);
-    expect((e as Error).message).toMatch(/^The job source App's key no longer passes: that App has more rights.*taskbox connect github to replace it/);
-    const c = box();
-    place(c);
-    github(c.sys, { appStatus: 401 });
-    expect(await placeActionsKey(c.d, QCFG, me, 20, false)).toEqual({ skipped: "it no longer works (GitHub refused it as App 4242's key), so the box follows the jobs its VMs take. Type taskbox connect github" });
-  });
-
-  test("no source App, a first install, or no key on the box: skipped, nothing asked of GitHub, nothing taken from Downloads", async () => {
-    for (const [cfg, first, line] of [
-      [CFG, false, "none on this box. To add one, type taskbox connect github"],
-      [QCFG, true, "once the box is installed, type taskbox connect github"],
-      [QCFG, false, "not on this box. Type taskbox connect github"],
-    ] as const) {
-      const b = box();
-      b.download("a.private-key.pem");
-      const calls = github(b.sys);
-      expect(await placeActionsKey(b.d, cfg, me, 20, first)).toEqual({ skipped: line });
-      expect(calls).toEqual([]);
-      expect(existsSync(join(b.dl, "a.private-key.pem"))).toBe(true);
-    }
   });
 });
 

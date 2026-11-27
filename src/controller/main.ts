@@ -263,8 +263,16 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
       return print(await boxRemove(d, p.args[0]!));
     case "box install": {
       const settings = typeof p.opts.settings === "string" ? p.opts.settings : undefined;
-      if (!json) return boxInstall(d, p.args[0]!, settings, io.out);
-      return asOneEnvelope(d, "box.install", io, (jio) => boxInstall(d, p.args[0]!, settings, jio.out));
+      // Then box add for the new box, and connect github from this controller's browser.
+      const after = async (name: string, out: (l: string) => void) => {
+        const added = await boxAdd(d, [name], {}, false, { ...io, out });
+        if (added !== EXIT.ok) return added;
+        const { connectFromController } = await import("./connect.ts");
+        return connectFromController(d, ["connect", "github", "--box", name], out);
+      };
+      const bd = { ...d, after };
+      if (!json) return boxInstall(bd, p.args[0]!, settings, io.out);
+      return asOneEnvelope(d, "box.install", io, (jio) => boxInstall(bd, p.args[0]!, settings, jio.out));
     }
     case "template apply":
     {

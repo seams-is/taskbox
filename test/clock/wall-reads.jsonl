@@ -40,13 +40,13 @@
 {"file": "guard.ts", "reads": 7, "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too"}
 {"file": "guardwatch.ts", "reads": 2, "why": "a beat's wall time and a log line's time, for people to read only: every age is judged on mono"}
 {"file": "hooks/net.ts", "reads": 4, "why": "network diagnostics: the netwatch record's age, a job's window end and the detail files' age; nothing but a diagnostics file past keepDays is removed on it"}
-{"file": "install.ts", "reads": 6, "why": "installedAt labels, the lock's time, and the wait for Tailscale to start: a step only waits less or more"}
+{"file": "install.ts", "reads": 5, "why": "installedAt labels, the lock's time, the settings' read time, and the wait for Tailscale to start: a step only waits less or more"}
 {"file": "jobs.ts", "reads": 1, "why": "when a stop was asked: a label in the stop's file"}
 {"file": "keychild.ts", "reads": 1, "why": "a rotation's deadline when its record has none: the guard ends the child on mono time"}
 {"file": "keycmd.ts", "reads": 3, "why": "when an op began, a listener's minutes and a key's age: labels, and a wait the op's mono deadline bounds"}
 {"file": "keyops.ts", "reads": 3, "why": "an op's start, its deadline and a refused op's end: the child's limit runs on mono time (child.ts)"}
 {"file": "keyrotate.ts", "reads": 2, "why": "when an App was retired, a label, and the code wait: a step only ends a wait"}
-{"file": "keys.ts", "reads": 3, "why": "a GitHub App JWT's iat and the clock offset GitHub reports: GitHub judges the JWT"}
+{"file": "keys.ts", "reads": 1, "why": "a GitHub App JWT's iat: GitHub judges the JWT"}
 {"file": "kinds.ts", "reads": 8, "why": "the scheduler's now: when slots became ready or busy, an idle VM's turn, and when a VM was told to give way: a step only reorders a choice, gives an idle VM's turn away or ends a wait for a VM to go; no running job is ended"}
 {"file": "loadcmd.ts", "reads": 3, "why": "load status, load stop and load report: now for a session's labels, the source's freshness and the report's end: display only"}
 {"file": "log.ts", "reads": 1, "why": "a log line's time label"}

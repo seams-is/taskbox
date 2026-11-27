@@ -38,35 +38,6 @@ describe("the head of main", () => {
   });
 });
 
-describe("update refuses a commit that is not on main", () => {
-  for (const [status, want] of [
-    ["ahead", true],
-    ["identical", true],
-    ["diverged", false],
-    ["behind", false],
-  ] as const) {
-    test(`compare status ${status}`, async () => {
-      const sys = new FakeSys();
-      githubRoutes(sys, { compareStatus: status });
-      const gh = new GitHub(sys, CFG, PEM, new Log());
-      expect(await gh.onMain("t", "abc1234")).toBe(want);
-    });
-  }
-
-  test("GitHub not answering is an error, not a no", async () => {
-    const sys = new FakeSys(); // no routes: every call is 404
-    const gh = new GitHub(sys, CFG, PEM, new Log());
-    await expect(gh.onMain("t", "abc1234")).rejects.toThrow();
-  });
-
-  test("anything that is not a commit id, without asking GitHub", async () => {
-    const sys = new FakeSys();
-    const gh = new GitHub(sys, CFG, PEM, new Log());
-    for (const bad of ["main", "refs/heads/x", "abc..def", "../../x", ""]) expect(await gh.onMain("t", bad)).toBe(false);
-    expect(sys.requests).toEqual([]);
-  });
-});
-
 describe("tokens", () => {
   test("each token carries one permission, and contents only for taskbox", async () => {
     const sys = new FakeSys();

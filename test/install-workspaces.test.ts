@@ -1,7 +1,7 @@
-// taskbox update and workspaces: the yes screen
-// names any change to the approver key on its own line, with its fingerprint; a new key after the
-// first needs the old key's signed statement; and after the yes the install pins the key and makes
-// the pool account before anything else is installed.
+// The install and workspaces: the yes screen names any change to the approver key on its own line,
+// with its fingerprint; a new key after one an earlier install pinned needs the old key's signed
+// statement; and after the yes the install pins the key and makes the pool account before anything
+// else is installed.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,10 +9,10 @@ import { dirname, join } from "node:path";
 import { POOL_USER } from "../src/access.ts";
 import { readPin, readPoolRecord, type PoolRecord, writePin, writePoolRecord } from "../src/pin.ts";
 import { APPROVER_NAMESPACE, fingerprint, keyChangeText, ROTATE_ASK, type Verifier } from "../src/approver.ts";
-import { earlierWorkspaces, install, type InstallDeps, TRUST_FILES, trustFilesLine } from "../src/install.ts";
-import { FakeSys, githubRoutes } from "./fake.ts";
+import { earlierWorkspaces, install, type InstallDeps } from "../src/install.ts";
+import { FakeSys } from "./fake.ts";
 import { Dir } from "./fake-dir.ts";
-import { CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
+import { CFG, healthyBox, installDeps, stageRelease, TAILSCALE_URL, writeSettings } from "./helpers.ts";
 import { approver, realKeygen } from "./ws-helpers.ts";
 import { keyChangeVerifier, toB64url } from "../src/workspace/approval.ts";
 
@@ -49,38 +49,33 @@ function poolDir(sys: FakeSys, dir = new Dir()): Dir {
   return dir;
 }
 
-// An update of a box whose release names these settings. Each question takes the next answer.
-function update(settings: Record<string, unknown>, answer: string | string[] = "no", o: { verify?: Verifier; pin?: string; gen?: number; dir?: Dir; changed?: (string | { filename: string; previous_filename?: string })[] } = {}) {
+// A first install of a box whose settings name these. Each question takes the next answer.
+function update(settings: Record<string, unknown>, answer: string | string[] = "no", o: { verify?: Verifier; pin?: string; gen?: number; dir?: Dir } = {}) {
   const sys = new FakeSys();
   healthyBox(sys);
   const dir = poolDir(sys, o.dir);
-  githubRoutes(sys, { settings: { accounts: ACCOUNTS, ...settings } });
-  // The files the release changes since the installed commit, by name.
-  if (o.changed) sys.routes.unshift((_m, url) => (url.includes("/compare/") && !url.endsWith("...eeee1234def5678abc1234def5678abc1234def5") ? new Response(JSON.stringify({ status: "ahead", behind_by: 0, files: o.changed!.map((f) => (typeof f === "string" ? { filename: f } : f)) })) : undefined));
+  stageRelease(sys);
   const { d, said } = installDeps(sys, "no");
+  writeSettings(d.release, { ...CFG, accounts: ACCOUNTS, ...settings });
   const answers = Array.isArray(answer) ? [...answer] : [answer];
   const asked: string[] = [];
   d.ask = async (q) => (asked.push(q), answers.shift() ?? "no");
-  mkdirSync(d.paths.state, { recursive: true });
-  mkdirSync(dirname(d.paths.key), { recursive: true });
-  writeFileSync(d.paths.key, PEM);
   mkdirSync(dirname(d.paths.installId), { recursive: true });
   writeFileSync(d.paths.installId, `${BOX}\n`, { mode: 0o444 });
-  if (o.changed) mkdirSync(dirname(d.paths.installed), { recursive: true });
-  if (o.changed) writeFileSync(d.paths.installed, JSON.stringify({ commit: "56027d1c5671baa8eadd5aeaf1cdeb4d89254470", tag: "v1.0.0", pr: 1, title: "x", mergedAt: "x", installedAt: "x", files: {} }));
   if (o.pin) writePin({ chown: () => {}, rootUid: process.getuid!() }, d.paths.approverPin, { key: o.pin, gen: o.gen ?? 1, cleared: [] });
   if (o.verify) d.verify = o.verify;
   // What the owner had read when the first question came.
   let before: string[] | undefined;
   const ask = d.ask;
   d.ask = async (q) => ((before ??= [...said]), ask(q));
-  const run = () => install(d, { first: false }).then(() => "installed", (e: Error) => e.message);
+  const run = () => install(d).then(() => "installed", (e: Error) => e.message);
   return { sys, d, said, dir, run, asked, before: () => before };
 }
-const tarball = (sys: FakeSys) => sys.requests.some((r) => r.url.includes("/tarball/"));
+// Nothing fetched: no tool, so nothing past the yes.
+const tarball = (sys: FakeSys) => sys.requests.some((r) => new URL(r.url).hostname === "github.com" || r.url === TAILSCALE_URL);
 const dsclWrites = (sys: FakeSys) => sys.calls.filter((c) => c.cmd === "/usr/bin/dscl" && (c.args[1] === "-create" || c.args[1] === "-delete") && c.args.some((a) => a.includes("taskbox-ws")));
 
-describe("the update's yes screen and the approver key", () => {
+describe("the install's yes screen and the approver key", () => {
   test("the first key: its fingerprint on its own line before the yes, and the pool account it makes", async () => {
     const u = update({ approverKey: A });
     expect(await u.run()).toMatch(/You typed "no"/);
@@ -92,16 +87,16 @@ describe("the update's yes screen and the approver key", () => {
     expect(dsclWrites(u.sys)).toEqual([]);
   });
 
-  test("the same key: no line", async () => {
+  test("the same key: no line but the one for the key an earlier install pinned", async () => {
     const u = update({ approverKey: A }, "no", { pin: A });
     await u.run();
-    expect(u.before()!.some((l) => l.includes("Approver key"))).toBe(false);
+    expect(u.before()!.filter((l) => l.includes("Approver key"))).toEqual([`  Approver key: an earlier install on this box pinned ${fingerprint(A)}, and this install keeps it. If that isn't your key, type no, then taskbox key reset approver once taskbox is installed.`]);
   });
 
   test("a new key with no statement from the old one is refused before the yes, and nothing is downloaded", async () => {
     const u = update({ approverKey: B }, "yes", { pin: A, verify: async () => true });
     const out = await u.run();
-    expect(out).toContain(`The release's taskbox.json names a new approver key, ${fingerprint(B)}, with no statement signed by the old key. The box keeps ${fingerprint(A)}.`);
+    expect(out).toContain(`taskbox.json names a new approver key, ${fingerprint(B)}, with no statement signed by the old key. The box keeps ${fingerprint(A)}.`);
     expect(out).toContain("taskbox key reset approver");
     expect(u.before()).toBeUndefined();
     expect(tarball(u.sys)).toBe(false);
@@ -116,7 +111,7 @@ describe("the update's yes screen and the approver key", () => {
     expect(u.before()).toContain(`  Approver key: from ${fingerprint(A)} to ${fingerprint(B)}, signed by the old key. Check the new one is the fingerprint taskbox approver showed on the controller: the next question asks for its last 6 characters.`);
     expect(asked).toEqual([A]);
     // Its own question first, then the install's yes.
-    expect(u.asked).toEqual([ROTATE_ASK, "Type yes to install v2.0.0: "]);
+    expect(u.asked).toEqual([ROTATE_ASK, "Type yes to install 3.0.0: "]);
     // Until the yes, the box keeps the old key.
     expect(readPin(u.d.paths.approverPin, process.getuid!())).toEqual({ state: "pinned", key: A, gen: 1, cleared: [] });
   });
@@ -135,14 +130,14 @@ describe("the update's yes screen and the approver key", () => {
     expect(await u.run()).toContain("doesn't name this box, generation 3");
   });
 
-  test("with no verifier given, the update's own one refuses a statement that isn't signed", async () => {
+  test("with no verifier given, the install's own one refuses a statement that isn't signed", async () => {
     const change = { statement: Buffer.from(keyChangeText(BOX, 1, fingerprint(A), B)).toString("base64url"), signature: Buffer.from("-----BEGIN SSH SIGNATURE-----\nU0lH\n-----END SSH SIGNATURE-----\n").toString("base64url") };
     const u = update({ approverKey: B, approverKeyChange: change }, "yes", { pin: A });
     expect(await u.run()).toContain("the old key's signature on it doesn't check");
     expect(tarball(u.sys)).toBe(false);
   });
 
-  describe("the update's own verifier, with the real ssh-keygen as nobody", () => {
+  describe("the install's own verifier, with the real ssh-keygen as nobody", () => {
     // ssh-keygen -Y verify as the update runs it: sudo -n -u nobody env -i ... ssh-keygen. Here the
     // test user runs the same ssh-keygen command, after the prefix is checked.
     const asNobodyReal = (sys: FakeSys, seen: string[][]) =>
@@ -224,22 +219,15 @@ describe("the update's yes screen and the approver key", () => {
     expect(u.before()!.some((l) => l.includes(POOL_USER))).toBe(false);
   });
 
-  test("a bad key in the release is refused before the yes", async () => {
+  test("a bad key in the settings is refused before the yes", async () => {
     const u = update({ approverKey: `${A} pat@controller` }, "yes");
-    expect(await u.run()).toMatch(/can't turn workspaces on \(approverKey is one ssh public key line/);
+    expect(await u.run()).toMatch(/can't be used: approverKey is one ssh public key line/);
     expect(u.before()).toBeUndefined();
   });
 
   test("a key with no agent is refused before the yes", async () => {
-    const sys = new FakeSys();
-    healthyBox(sys);
-    poolDir(sys);
-    githubRoutes(sys, { settings: { accounts: { service: "taskbox", people: [] }, approverKey: A } });
-    const { d } = installDeps(sys, "yes");
-    mkdirSync(d.paths.state, { recursive: true });
-    mkdirSync(dirname(d.paths.key), { recursive: true });
-    writeFileSync(d.paths.key, PEM);
-    expect(await install(d, { first: false }).then(() => "", (e: Error) => e.message)).toMatch(/accounts\.agent is needed too/);
+    const u = update({ accounts: { service: "taskbox", people: [] }, approverKey: A }, "yes");
+    expect(await u.run()).toMatch(/accounts\.agent is needed too/);
   });
 
   test("an account by the pool's name that taskbox didn't make is named before the yes, and left alone", async () => {
@@ -254,15 +242,16 @@ describe("a first install on a box an earlier install left workspace files on", 
     const sys = new FakeSys();
     healthyBox(sys);
     poolDir(sys, new Dir().user(POOL_USER, { uid: 471, attrs: {} }).group(POOL_USER, 471));
-    githubRoutes(sys, { settings: { accounts: ACCOUNTS, approverKey: A } });
+    stageRelease(sys);
     const { d } = installDeps(sys, "no");
+    writeSettings(d.release, { ...CFG, accounts: ACCOUNTS, approverKey: A });
     const said: string[] = [];
     let before: string[] | undefined;
     d.say = (l) => said.push(l);
     d.ask = async () => ((before ??= [...said]), "no");
     writePin({ chown: () => {}, rootUid: process.getuid!() }, d.paths.approverPin, { key: A, gen: 2, cleared: [] });
     writePoolRecord({ chown: () => {}, rootUid: process.getuid!() }, d.paths.poolRecord, { made: { [POOL_USER]: { uid: 471 } }, groups: { [POOL_USER]: { gid: 471 } } });
-    expect(await install(d, { first: true }).then(() => "", (e: Error) => e.message)).toMatch(/You typed "no"/);
+    expect(await install(d).then(() => "", (e: Error) => e.message)).toMatch(/You typed "no"/);
     expect(before).toContain(`  Approver key: an earlier install on this box pinned ${fingerprint(A)}, and this install keeps it. If that isn't your key, type no, then taskbox key reset approver once taskbox is installed.`);
     expect(before).toContain(`  The workspace account ${POOL_USER}, from an earlier install, stays, and keeps its files.`);
   });
@@ -271,72 +260,23 @@ describe("a first install on a box an earlier install left workspace files on", 
     expect(earlierWorkspaces({ state: "cleared", gen: 1, cleared: [] }, "bad")).toEqual(["Approver key: an earlier install on this box cleared its key, and the keys it cleared stay refused.", "The workspace account's record from an earlier install can't be read, so taskbox leaves that account alone."]);
     expect(earlierWorkspaces({ state: "bad" }, { made: {}, groups: {} })[0]).toMatch(/can't read, so no new key is taken/);
   });
-  test("an update says none of it", async () => {
-    const u = update({ approverKey: A }, "no", { pin: A });
-    await u.run();
-    expect(u.before()!.some((l) => l.includes("earlier install"))).toBe(false);
-  });
 });
 
-describe("the trust files", () => {
-  test("an update that changes one names it on its own line before the yes", async () => {
-    const u = update({ approverKey: A }, "no", { pin: A, changed: ["src/loop.ts", "src/approver.ts", "src/pin.ts"] });
-    expect(await u.run()).toMatch(/You typed "no"/);
-    expect(u.before()).toContain("  Trust files: it changes src/approver.ts, src/pin.ts, which decide which approver key the box trusts. Read that change in its PR before you type yes.");
-  });
-  test("a trust file renamed away is named by its old name", async () => {
-    const u = update({ approverKey: A }, "no", { pin: A, changed: [{ filename: "src/other.ts", previous_filename: "src/pin.ts" }] });
-    await u.run();
-    expect(u.before()).toContain("  Trust files: it changes src/pin.ts, which decides which approver key the box trusts. Read that change in its PR before you type yes.");
-    // One file changed, though two names are read.
-    expect(u.before()).toContain("  Changes: 1 files since the installed commit");
-  });
-  test("one that changes none says nothing; one GitHub may have cut short says it may", () => {
-    expect(trustFilesLine({ names: ["src/loop.ts"], complete: true })).toEqual([]);
-    expect(trustFilesLine({ names: Array(300).fill("x"), complete: false })[0]).toMatch(/^Trust files: GitHub lists only the first 300 changed files, so it may change src\/approver\.ts/);
-    expect(trustFilesLine({ names: ["src/workspace/approval.ts"], complete: true })[0]).toContain("it changes src/workspace/approval.ts, which decides");
-    expect(trustFilesLine(undefined)).toEqual([]);
-    expect(TRUST_FILES).toEqual(["src/approver.ts", "src/pin.ts", "src/workspace/approval.ts"]);
-  });
-});
-
-// The whole update, with the commit's tarball this repo, to the step after the accounts: the pin
-// and the pool account are in place after the yes, before anything is downloaded.
+// The whole install, to the step after the accounts: the pin and the pool account are in place after
+// the yes, before anything is downloaded.
 describe("after the yes", () => {
-  const repo = join(import.meta.dir, "..");
   async function run(dir: Dir) {
     const sys = new FakeSys();
     healthyBox(sys);
     poolDir(sys, dir);
-    const settings = { ...CFG, approverKey: A };
-    githubRoutes(sys, { settings });
-    const stage = mkdtempSync(join(tmpdir(), "taskbox-src-"));
-    const top = join(stage, "example-org-taskbox-abc1234");
-    copyRepo(top, ["test", "docs"]);
-    writeFileSync(join(top, "taskbox.json"), JSON.stringify(settings));
     // An empty tailscale pin, so the install stops right after the accounts, with nothing downloaded.
-    const v = JSON.parse(readFileSync(join(top, "versions.json"), "utf8"));
-    v.tailscale = { version: "1.104.5", url: "", sha256: "", files: { tailscale: "", tailscaled: "" } };
-    writeFileSync(join(top, "versions.json"), JSON.stringify(v));
-    // Unpacked by copying the staged files, as stageRelease does (helpers.ts): real tar and gzip
-    // were most of this test's work, and under load ran past its limit.
-    const TARBALL = "the commit's tarball";
-    sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(TARBALL) : undefined));
-    const real = sys.run.bind(sys);
-    sys.run = async (cmd, args, opts) => {
-      if (cmd === "/usr/bin/tar" && args[0] === "-xzf" && args[1]!.endsWith("src.tar.gz")) {
-        // What was downloaded is what is unpacked: the install's own file must hold the tarball.
-        if (readFileSync(args[1]!, "utf8") !== TARBALL) return { code: 1, stdout: "", stderr: "tar: Unrecognized archive format\n" };
-        cpSync(top, args[3]!, { recursive: true });
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      return real(cmd, args, opts);
-    };
+    stageRelease(sys, CFG, (v) => (v.tailscale = { version: "1.104.5", url: "", sha256: "", files: { tailscale: "", tailscaled: "" } }));
     const { d } = installDeps(sys, "yes");
+    writeSettings(d.release, { ...CFG, approverKey: A });
     mkdirSync(dirname(d.paths.cronDeny), { recursive: true });
     writeFileSync(d.paths.cronDeny, "");
     writeFileSync(d.paths.atDeny, "");
-    const out = await install(d, { first: true }).then(() => "installed", (e: Error) => e.message);
+    const out = await install(d).then(() => "installed", (e: Error) => e.message);
     return { out, d: d as InstallDeps, sys };
   }
 

@@ -3,7 +3,7 @@
 import { createPrivateKey, createSign } from "node:crypto";
 import { type Config, releaseRepoOf } from "./config.ts";
 import type { Log } from "./log.ts";
-import { bodyFailed, CALL_LIMIT_MS, classify, clockOffsetS, DOWNLOAD_LIMIT_MS, fetchFailed, GitHubError } from "./ghfail.ts";
+import { bodyFailed, CALL_LIMIT_MS, classify, clockOffsetS, fetchFailed, GitHubError } from "./ghfail.ts";
 import type { Sys } from "./sys.ts";
 
 const API = "https://api.github.com";
@@ -174,123 +174,12 @@ export class GitHub {
     return parseHead(c);
   }
 
-  // The commit's taskbox.json, read before the owner's yes (v2.7.0), so the accounts it names are
-  // known before anything is made. One small file through the contents API; the tree itself is
-  // downloaded only after the yes.
-  async settingsAt(token: string, sha: string): Promise<Record<string, unknown>> {
-    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a commit");
-    const f = await this.json<{ type?: string; encoding?: string; content?: string; size?: number }>("GET", `/repos/${this.cfg.org}/${this.cfg.repo}/contents/taskbox.json?ref=${sha}`, token);
-    if (f.type !== "file" || f.encoding !== "base64" || typeof f.content !== "string" || (f.size ?? 0) > 1_000_000) throw new Error("the release's taskbox.json can't be read");
-    return JSON.parse(Buffer.from(f.content, "base64").toString("utf8"));
-  }
-
-  // The newest published release, or the named one. undefined when there is none.
-  async release(token: string, tag?: string): Promise<Release | undefined> {
-    if (tag !== undefined) {
-      if (!RELEASE_TAG.test(tag)) return undefined;
-      const res = await this.call("GET", `/repos/${this.cfg.org}/${this.repo}/releases/tags/${tag}`, token);
-      if (res.status === 404) return undefined;
-      if (!res.ok) throw new Error(`GitHub releases answered ${res.status}`);
-      return newestRelease([(await res.json()) as Record<string, unknown>], true);
-    }
-    return newestRelease(await this.json<Record<string, unknown>[]>("GET", `/repos/${this.cfg.org}/${this.repo}/releases?per_page=100`, token));
-  }
-
-  // A file attached to one of taskbox's own releases, such as tailscaled's. The
-  // repo is private, so the API serves it with the token. GitHub answers with a redirect to its file
-  // store; the token is never sent there.
-  async asset(token: string, url: string): Promise<Uint8Array> {
-    const want = `${API}/repos/${this.cfg.org}/${this.repo}/releases/assets/`;
-    if (!url.startsWith(want) || !/^\d{1,12}$/.test(url.slice(want.length))) throw new Error("not a taskbox release asset");
-    return this.download(token, url, "application/octet-stream");
-  }
-
-  // A file the API answers with a redirect to GitHub's file store. The token goes to the API only:
-  // the redirect is followed by hand, without it, and only to https. From v2.6.1 a redirect from the
-  // API to the API itself, as GitHub answers for a renamed repo, is followed with the token, at most
-  // twice, since it never leaves api.github.com.
-  private async download(token: string, url: string, accept: string): Promise<Uint8Array> {
-    // A download may be large, so it has 10 minutes, the whole file included (v2.5.0).
-    const signal = this.sys.timeout(DOWNLOAD_LIMIT_MS);
-    const api = (at: string) => this.sys.fetch(at, {
-      redirect: "manual",
-      signal,
-      headers: { Accept: accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox", Authorization: `Bearer ${token}` },
-    });
-    let file = await api(url);
-    for (let hop = 0; file.status >= 300 && file.status < 400; hop++) {
-      const to = file.headers.get("location") ?? "";
-      if (!/^https:\/\/[^/]+\//.test(to)) throw new Error("GitHub's redirect isn't https");
-      if (new URL(to).host === new URL(API).host) {
-        if (hop >= 2) throw new Error("GitHub's API redirected too many times");
-        file = await api(to);
-        continue;
-      }
-      file = await this.sys.fetch(to, { redirect: "manual", signal, headers: { "User-Agent": "taskbox" } });
-      break;
-    }
-    if (!file.ok) throw new Error(`GitHub's download answered ${file.status}`);
-    return new Uint8Array(await file.arrayBuffer());
-  }
-
-  // The commit a release tag names, read from refs/tags/<tag> so a branch of the same name can't
-  // stand in. An annotated tag is followed to its commit.
-  async tagCommit(token: string, tag: string): Promise<string> {
-    if (!RELEASE_TAG.test(tag)) throw new Error("not a release tag");
-    let o = (await this.json<{ object: { type: string; sha: string } }>("GET", `/repos/${this.cfg.org}/${this.repo}/git/ref/tags/${tag}`, token)).object;
-    for (let i = 0; o.type === "tag" && i < 3; i++) {
-      o = (await this.json<{ object: { type: string; sha: string } }>("GET", `/repos/${this.cfg.org}/${this.repo}/git/tags/${o.sha}`, token)).object;
-    }
-    if (o.type !== "commit" || !/^[0-9a-f]{40}$/.test(o.sha)) throw new Error(`release ${tag} doesn't name a commit`);
-    return o.sha;
-  }
-
   // The commit at the head of the branch main, read from refs/heads/main so a tag of the same name
   // can't stand in.
   async mainCommit(token: string): Promise<string> {
     const o = (await this.json<{ object: { type: string; sha: string } }>("GET", `/repos/${this.cfg.org}/${this.repo}/git/ref/heads/main`, token))?.object;
     if (o?.type !== "commit" || !/^[0-9a-f]{40}$/.test(o.sha)) throw new Error("taskbox main doesn't name a commit");
     return o.sha;
-  }
-
-  // True only when sha is main itself or an ancestor of it.
-  async onMain(token: string, sha: string): Promise<boolean> {
-    if (!/^[0-9a-f]{7,40}$/.test(sha)) return false;
-    return this.follows(token, sha, await this.mainCommit(token));
-  }
-
-  // Whether `to` is `from` or comes after it: GitHub's compare of from...to is ahead or identical, and
-  // not behind.
-  async follows(token: string, from: string, to: string): Promise<boolean> {
-    if (!/^[0-9a-f]{7,40}$/.test(from) || !/^[0-9a-f]{7,40}$/.test(to)) return false;
-    const res = await this.call("GET", `/repos/${this.cfg.org}/${this.repo}/compare/${from}...${to}`, token);
-    // A failed request is an error, never a "no": the update then says GitHub couldn't be asked (v2.1.1).
-    if (!res.ok) throw new Error(`GitHub's compare of two taskbox commits answered ${res.status}`);
-    const c = (await res.json()) as { status: string; behind_by: number };
-    return (c.status === "ahead" || c.status === "identical") && c.behind_by === 0;
-  }
-
-  async changedFiles(token: string, from: string, to: string): Promise<number> {
-    return (await this.changes(token, from, to)).files;
-  }
-
-  // The files changed between two commits, by name. GitHub's compare lists at most 300: complete is
-  // false when it may have left some out.
-  async changes(token: string, from: string, to: string): Promise<{ names: string[]; files: number; complete: boolean }> {
-    const c = await this.json<{ files?: { filename?: unknown; previous_filename?: unknown }[] }>(
-      "GET",
-      `/repos/${this.cfg.org}/${this.repo}/compare/${from}...${to}`,
-      token,
-    );
-    const files = c.files ?? [];
-    // A renamed file counts under its old name too, so moving a trust file away is named.
-    const names = files.flatMap((f) => [f?.filename, f?.previous_filename].filter((n): n is string => typeof n === "string"));
-    return { names, files: files.length, complete: files.length < 300 };
-  }
-
-  async tarball(token: string, sha: string): Promise<Uint8Array> {
-    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a commit");
-    return this.download(token, `${API}/repos/${this.cfg.org}/${this.repo}/tarball/${sha}`, "application/vnd.github+json");
   }
 
   // group and repo: the runner group a VM registers in, and the one repo it must list. The box's own
