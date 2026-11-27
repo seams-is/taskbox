@@ -8,7 +8,7 @@ import { ANCHOR, PFCTL } from "./guard.ts";
 import { BOOTOUT_WAIT_S, dropReloadJob, keepInert, labelsBack, RELOAD_JOB, reloadPlistPath, setSetuid } from "./install.ts";
 export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
-import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, treeProblem } from "./checks.ts";
+import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, screenSharingOn, treeProblem } from "./checks.ts";
 import { GUARDWATCH_LABEL, guardStaleSince, watchPaths } from "./guardwatch.ts";
 import { sourceWords } from "./sourcefail.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
@@ -174,9 +174,11 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   if (linux) d.say(`  Linux:     ${pullLine(linux, d.sys.now(), running, readStopped(d.paths)?.at)}`);
   const choosing = choiceLine(loop, existsSync(d.paths.runnerTarballLinux) ? 2 : 1);
   if (choosing) d.say(`  Choosing:  ${choosing}`);
-  // VM starts with Screen Sharing on (pfstarts.ts): closed or open, the count, and how to reopen.
+  // VM starts with Screen Sharing on (pfstarts.ts): closed or open, the count, and the command. Left
+  // out on a box that is open, has counted nothing, and has Screen Sharing off.
   try {
-    d.say(`  VM starts: ${pfLine(d.paths, d.rootUid ?? 0, loadConfig(d.paths.app, d.paths.boxSettings))}`);
+    const pf = pfLine(d.paths, d.rootUid ?? 0, loadConfig(d.paths.app, d.paths.boxSettings), await screenSharingOn(d.sys));
+    if (pf.shown) d.say(`  VM starts: ${pf.line}`);
   } catch {}
   // v2.6.0: the load test's session, while one is on.
   const lf = readLoad(d.paths, !asService(d));
@@ -627,10 +629,28 @@ export async function cameOverSsh(sys: Sys, pid: number = process.pid): Promise<
     const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(r.stdout);
     if (r.code !== 0 || !m) return true;
     const comm = m[2]!.split("/").pop()!;
-    if (/^(sshd|sshd-session|sshd-auth|tailscaled)$/.test(comm)) return true;
+    if (/^(sshd|sshd-session|sshd-auth|tailscaled|mosh-server)$/.test(comm)) return true;
     at = Number(m[1]);
   }
   return false;
+}
+
+// Why this process isn't an admin at the box's own screen, or undefined when it is. Over SSH, mosh
+// or Tailscale SSH by the environment or an ancestor; then its terminal must be a local one: the
+// console or a Terminal window, as `who` lists it with no remote host (tmux, screen and remote
+// sessions aren't), and the one logged in at the screen must be the admin who ran sudo.
+export async function atBoxScreen(sys: Sys, env: Record<string, string | undefined>, pid: number = process.pid): Promise<string | undefined> {
+  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) return "it came over SSH";
+  if (await cameOverSsh(sys, pid)) return "it came over SSH, mosh or Tailscale SSH";
+  const t = await sys.run("/bin/ps", ["-o", "tty=", "-p", String(pid)], { timeoutMs: 5_000 }).catch(() => ({ code: -1, stdout: "" }));
+  const tty = t.stdout.trim();
+  if (t.code !== 0 || !/^(console|ttys?\d{1,4})$/.test(tty)) return "it has no terminal at the box's screen";
+  const c = await sys.run("/usr/bin/stat", ["-f", "%Su", "/dev/console"], { timeoutMs: 5_000 }).catch(() => ({ code: -1, stdout: "" }));
+  if (c.code !== 0 || !env.SUDO_USER || c.stdout.trim() !== env.SUDO_USER) return "the admin who typed it isn't the one logged in at the box's screen";
+  const w = await sys.run("/usr/bin/who", [], { timeoutMs: 5_000 }).catch(() => ({ code: -1, stdout: "" }));
+  const line = w.code === 0 ? w.stdout.split("\n").find((l) => l.trim().split(/\s+/)[1] === tty) : undefined;
+  if (!line || line.includes("(")) return "its terminal isn't one at the box's screen: tmux, screen or a remote session";
+  return undefined;
 }
 
 // taskbox's tailscaled (v2.2.2): before v2.2.2 remove left it running, with its LaunchDaemon, state

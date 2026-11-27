@@ -6,7 +6,7 @@
 // Nothing here can hold a start or fail a job: every read is one that may fail and is left out.
 import type { HookDeps, JobEnd, JobHook, JobRunning } from "../core/hooks.ts";
 import { folderMB, type Footprint, footprintMB, gpuShare, readGpu, rusageFootprint, swapUsedMB, vmFolder, vmPids } from "../measure.ts";
-import { type BoxUsage, MAX_SAMPLES, SAMPLE_EVERY_MS } from "../usage.ts";
+import { type BoxUsage, MAX_SAMPLES, p90, SAMPLE_EVERY_MS } from "../usage.ts";
 
 interface Watch {
   at: number;
@@ -19,7 +19,6 @@ interface Watch {
   swapBeforeMB?: number;
 }
 
-const p90 = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.ceil(0.9 * xs.length) - 1)]!;
 
 export function measureHook(read: Footprint = rusageFootprint): JobHook {
   const watching = new Map<string, Watch>();

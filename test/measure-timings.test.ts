@@ -39,6 +39,14 @@ describe("busyForMinutes, from one push's jobs", () => {
     const jobs = [job({ at: 0, commit: sha(1), event: "push" }), job({ at: 2 * M, commit: sha(1), event: "push" }), job({ at: 7 * M, commit: sha(1), event: "push" }), job({ at: M, commit: sha(1), event: "push", vk: "macos" }), job({ at: 3 * M, commit: sha(1), event: "pull_request" }), job({ at: 4 * M, commit: sha(2), event: "push" }), job({ at: 5 * M })];
     expect(pushGaps(jobs).sort((a, b) => a - b)).toEqual([2 * M, 5 * M]);
   });
+  test("a re-run of a run counts each job once, and a gap past 240 min is no burst's", () => {
+    const run = (at: number, job: string, githubRun = 7): JobRecord => ({ ...job_(at), job, githubRun });
+    const job_ = (at: number) => job({ at, commit: sha(9), event: "push" });
+    // The run's three jobs, then the same three re-run three hours later.
+    const jobs = [run(0, "a"), run(M, "b"), run(2 * M, "c"), run(180 * M, "a"), run(181 * M, "b"), run(182 * M, "c")];
+    expect(pushGaps(jobs)).toEqual([M, M]);
+    expect(pushGaps([job({ at: 0, commit: sha(3) }), job({ at: 300 * M, commit: sha(3) })])).toEqual([]);
+  });
   test("it suggests the minutes that span 9 in 10 of the gaps, once 10 are measured", () => {
     const pushes = Array.from({ length: 4 }, (_, p) => [0, 1, 2, 4].map((g) => job({ at: p * 60 * M + g * M, commit: sha(p + 1), event: "push" }))).flat();
     expect(pushGaps(pushes)).toHaveLength(12);
@@ -64,7 +72,7 @@ describe("floorMinutes, from macOS waits in bursts", () => {
     expect(burstWaits([...day(5).filter((j) => j.vmKind === "macos")])).toEqual([]);
   });
   test("waits with room under 12 min lengthen the floor; waits over shorten it, never under twice the give-way time", () => {
-    expect(byName(C2, day(5)).floorMinutes).toMatchObject({ now: 8, suggests: 15, from: "macOS jobs in bursts waited 5.0 min 9 times in 10 (6 jobs), against 12 min" });
+    expect(byName(C2, day(5)).floorMinutes).toMatchObject({ now: 8, suggests: 15, from: "macOS jobs in bursts waited 5.0 min 9 times in 10 (6 jobs), against 12 min, so the floor can rise by the difference. The waits were measured under the floor now, so read it again after a change" });
     // The Linux jobs' boot and run suggest a 5 min give-way, so the floor stays at 10 or more.
     expect(byName(C2, day(14)).giveWayMinutes!.suggests).toBe(5);
     expect(byName(C2, day(14)).floorMinutes!.suggests).toBe(10);

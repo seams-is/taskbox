@@ -8,7 +8,7 @@
 import type { Budget, ClassRule, Kind, Timings } from "../src/config.ts";
 import { DEFAULT_TIMINGS, MACOS_MAX, runnerDefaults } from "../src/config.ts";
 import { decide, type Decision, type KindHistory, type KindView, type SizeView, type SlotState } from "../src/scheduler.ts";
-import { OVER_SHARE, SUITS_SHARE } from "../src/usage.ts";
+import { type SizeShape, sizeFor } from "../src/usage.ts";
 import type { JobRecord } from "../src/jobs.ts";
 import type { WaitingItem } from "../src/source.ts";
 
@@ -232,14 +232,15 @@ export function replayFromJobs(answer: { jobs: DayJob[] }, labels = LABELS, kind
   return { jobs, bootMs: { macos: med(boots.macos, 150_000), linux: med(boots.linux, 60_000) } };
 }
 
-// The size one run's peak suits, as the size suggestions judge a job (usage.ts): past 85% of the
-// default, the next size up; else the smallest it fits within 60% of, CPUs included; else the default.
+// The size one run's peak suits, by the size suggestions' own rule (usage.ts sizeFor), from the
+// kind's default size.
 export function sizeForPeak(k: KindView | undefined, peakMB: number, cpuPeak: number): SizeView | undefined {
-  const sizes = [...(k?.sizes ?? [])].sort((a, b) => a.memoryMB - b.memoryMB || a.cpus - b.cpus);
-  const def = sizes.find((z) => z.name === "default");
+  const views = k?.sizes ?? [];
+  const shape = (z: SizeView): SizeShape => ({ kind: k!.kind, name: z.name, labels: z.labels, vmCpus: z.cpus, vmMemoryMB: z.memoryMB });
+  const def = views.find((z) => z.name === "default");
   if (!def) return undefined;
-  if (peakMB > OVER_SHARE * def.memoryMB) return sizes.find((z) => z.memoryMB > def.memoryMB) ?? def;
-  return sizes.find((z) => z.memoryMB <= def.memoryMB && peakMB <= SUITS_SHARE * z.memoryMB && cpuPeak <= z.cpus) ?? def;
+  const r = sizeFor(views.map(shape), shape(def), peakMB, cpuPeak);
+  return r.to ? views.find((z) => z.name === r.to!.name) : def;
 }
 
 // One replay's outcome: how many jobs ran at once at most, and how long jobs waited.

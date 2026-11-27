@@ -137,3 +137,42 @@ describe("over the job", () => {
     expect(labelUsage(Array.from({ length: 3 }, () => run(3900)))[0]!.memPeak.median).toBe(3900);
   });
 });
+
+describe("the guest's output, cut on the box's side", () => {
+  test("a stream past its cap is cut, and the child is told to go", async () => {
+    const { readCapped } = await import("../src/sys.ts");
+    let killed = 0;
+    const big = new ReadableStream<Uint8Array>({
+      pull(c) {
+        c.enqueue(new Uint8Array(10_000).fill(65));
+      },
+    });
+    const r = await readCapped(big, 65_536, () => killed++);
+    expect([r.text.length, r.over, killed]).toEqual([65_536, true, 1]);
+    const small = await readCapped(new Response("cpu 1 2").body!, 65_536, () => killed++);
+    expect([small.text, small.over, killed]).toEqual(["cpu 1 2", false, 1]);
+    expect((await readCapped(new Response("x").body!, undefined, () => {})).text).toBe("x");
+  });
+  test("a guest that writes past the cap gives no sample, and the engine reads with the cap", async () => {
+    const { engineFor } = await import("../src/vm.ts");
+    const { paths } = await import("../src/config.ts");
+    const { FakeSys } = await import("./fake.ts");
+    const { tempRoot, testBox } = await import("./helpers.ts");
+    const { PROBE_MAX } = await import("../src/tart.ts");
+    const { OUTPUT_MAX } = await import("../src/usage.ts");
+    expect(PROBE_MAX).toBe(OUTPUT_MAX);
+    const sys = new FakeSys();
+    let out = MAC("100");
+    sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "exec" ? { code: 0, stdout: out, stderr: "" } : undefined));
+    const t = engineFor("tart", sys, paths(tempRoot(), testBox()));
+    const probe = { cmd: MACOS_USAGE, parse: parseMacUsage };
+    expect(await t.usage("job-x", probe, 10_000)).toMatchObject({ memUsedMB: 4063 });
+    out = MAC("100") + "x".repeat(70_000);
+    expect(await t.usage("job-x", probe, 10_000)).toBeUndefined();
+  });
+  test("a CPU line made to backtrack reads at once, as no sample", () => {
+    const t0 = performance.now();
+    expect(parseLinuxUsage(LINUX().replace(/^cpu .*$/m, `cpu ${"1".repeat(40)}x`))).toBeUndefined();
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+});

@@ -75,17 +75,26 @@ export interface MeasureFrom {
 
 // The gaps between jobs of one push: jobs GitHub tied to a run, grouped by the run's head commit, its
 // event and the job's kind, each gap from one job's start to the next one's. A kind stays busy
-// busyForMinutes after a quick start, so the gaps it should span are these.
+// busyForMinutes after a quick start, so the gaps it should span are these. A re-run repeats a run's
+// jobs later, so each job of a run counts once, its first; a gap past the setting's highest is no
+// burst's, and is left out.
+export const GAP_MAX_MS = 240 * 60_000;
 export function pushGaps(jobs: JobRecord[]): number[] {
   const by = new Map<string, number[]>();
-  for (const j of jobs) {
+  const seen = new Set<string>();
+  for (const j of [...jobs].sort((a, b) => (a.jobAt ?? 0) - (b.jobAt ?? 0))) {
     if (!j.commit || j.jobAt === undefined) continue;
+    if (j.githubRun !== undefined && j.job !== undefined) {
+      const once = `${j.githubRun} ${j.job}`;
+      if (seen.has(once)) continue;
+      seen.add(once);
+    }
     const k = `${j.commit} ${j.event ?? ""} ${j.vmKind ?? "macos"}`;
     by.set(k, [...(by.get(k) ?? []), j.jobAt]);
   }
   return [...by.values()].flatMap((ts) => {
     const v = [...ts].sort((a, b) => a - b);
-    return v.slice(1).map((t, i) => t - v[i]!).filter((g) => g > 0);
+    return v.slice(1).map((t, i) => t - v[i]!).filter((g) => g > 0 && g <= GAP_MAX_MS);
   });
 }
 
@@ -141,7 +150,7 @@ export function suggestions(cfg: Config, all: KindTimings[], m: MeasureFrom = {}
   const waits = spread(burstWaits(m.jobs ?? []));
   if (waits && waits.n >= MIN_BURST_WAITS) {
     const over = waits.p90 / 60_000 - ACCEPT.macosWaitP90Minutes;
-    out.push({ setting: "floorMinutes", now: t.floorMinutes, suggests: clamp(t.floorMinutes - Math.ceil(over), 2 * gw, 240), from: `macOS jobs in bursts waited ${(waits.p90 / 60_000).toFixed(1)} min 9 times in 10 (${waits.n} jobs), against ${ACCEPT.macosWaitP90Minutes} min` });
+    out.push({ setting: "floorMinutes", now: t.floorMinutes, suggests: clamp(t.floorMinutes - Math.ceil(over), 2 * gw, 240), from: `macOS jobs in bursts waited ${(waits.p90 / 60_000).toFixed(1)} min 9 times in 10 (${waits.n} jobs), against ${ACCEPT.macosWaitP90Minutes} min, so the floor can ${over > 0 ? "fall" : "rise"} by the difference. The waits were measured under the floor now, so read it again after a change` });
   } else out.push({ setting: "floorMinutes", now: t.floorMinutes, suggests: Math.max(t.floorMinutes, 2 * gw), from: `at least twice giveWayMinutes, until ${MIN_BURST_WAITS} macOS jobs in bursts have queue times` });
   // Busy: three times the slowest kind's 90th percentile of how soon a ready VM took its job, and
   // never under 30 s, since GitHub takes seconds to hand a waiting job to a runner. Too low, and the box never sees a kind as busy.

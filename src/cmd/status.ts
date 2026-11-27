@@ -45,17 +45,33 @@ export const commands: CommandSpec[] = [
 ];
 
 // The box's timings line, as check shows it, or null when the settings or the jobs can't be read.
+// Kept while the job lines, the rate looks and the settings files are as they were.
+let timingsKept: { key: string; line: string | null } | undefined;
 async function timingsNow(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Promise<string | null> {
+  const { statSync } = await import("node:fs");
   const { loadConfig } = await import("../config.ts");
   const { readJobs } = await import("../jobs.ts");
-  const { readRate } = await import("../sourcerate.ts");
+  const { rateFile, readRate } = await import("../sourcerate.ts");
   const { timingsLine } = await import("../timings.ts");
+  const stamp = (f: string) => {
+    try {
+      const st = statSync(f);
+      return `${st.mtimeMs}:${st.size}`;
+    } catch {
+      return "-";
+    }
+  };
+  const key = [c.p.jobsFile, rateFile(c.p), c.p.app, c.p.boxSettings].map(stamp).join(" ");
+  if (timingsKept?.key === key) return timingsKept.line;
+  let line: string | null = null;
   try {
     const jobs = c.cu === undefined ? undefined : readJobs(c.p, c.cu);
-    return jobs ? timingsLine(loadConfig(c.p.app, c.p.boxSettings), jobs, readRate(c.p, c.cu!)) : null;
+    line = jobs ? timingsLine(loadConfig(c.p.app, c.p.boxSettings), jobs, readRate(c.p, c.cu!)) : null;
   } catch {
-    return null;
+    line = null;
   }
+  timingsKept = { key, line };
+  return line;
 }
 
 // The screen, drawn again as the box changes. --state reads another state folder, as the service account.

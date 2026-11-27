@@ -1,6 +1,7 @@
-// The simulator, calibrated from saved days (test/sim.ts): each job's queue time, length and recorded
-// peak, with the size its peak suits, replayed under v2.6.0's rules and v3's, comparing how many jobs
-// run at once and how long they wait.
+// The simulator's replays of saved days (test/sim.ts): each job's queue time, length and peak, on the
+// size its peak suits by the size suggestions' own rule, under v2.6.0's rules and v3's, comparing how
+// many jobs run at once and how long they wait. No day saved from a box holds peaks yet, so the 17
+// and 18 Nov days carry assumed ones: the sizes tests' mapping, the longest tenth on the default.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,8 +22,9 @@ const KINDS: KindView[] = [
 ];
 const V3 = { kinds: KINDS, budget: { memoryMB: 22360, cpus: 10 }, slots: 5 };
 
-// A day as the box's job list saved it: the jobs as they ran under the rules of the day, each with
-// the peak its use record would hold. Linux jobs that ran 3 min or more are the CPU-heavy tenth.
+// A day as the box's job list saved it: the jobs as they ran under the rules of the day, each with an
+// assumed peak, as the sizes tests map those days: Linux jobs that ran 3 min or more are the heavy
+// tenth (default size), the rest fit small.
 function savedDay(jobs: SimJob[], peak: (j: SimJob) => { memPeakMB: number; cpuPeak: number }, github: "oldest" | "newest" = "oldest"): { jobs: DayJob[] } {
   const runs = simulate({ jobs, slots: 2, mode: "v221", github }).runs;
   return {
@@ -58,7 +60,10 @@ describe("a saved day, calibrated", () => {
     // Without sizes, the replay is v2.4.0's: every job on its kind's one label.
     expect(replayFromJobs(day).jobs.map((j) => j.labels[0])).toEqual(["taskbox-linux", "taskbox-linux-merge", "taskbox-linux", "taskbox-macos"]);
   });
-  test("the size a peak suits", () => {
+  test("the size a peak suits is the size suggestions' own rule", async () => {
+    const { sizeFor } = await import("../src/usage.ts");
+    const shapes = KINDS[1]!.sizes!.map((x) => ({ kind: "linux" as const, name: x.name, labels: x.labels, vmCpus: x.cpus, vmMemoryMB: x.memoryMB }));
+    for (const [mem, cpu] of [[2457, 2], [2460, 2], [1000, 2.5], [7000, 4]] as const) expect(sizeForPeak(KINDS[1], mem, cpu)!.name).toBe(sizeFor(shapes, shapes[0]!, mem, cpu).to?.name ?? "default");
     const lin = KINDS[1];
     expect(sizeForPeak(lin, 2457, 2)!.name).toBe("small");
     expect(sizeForPeak(lin, 2460, 2)!.name).toBe("default");
@@ -69,7 +74,7 @@ describe("a saved day, calibrated", () => {
 });
 
 describe("v2.6.0's rules against v3's, on the saved days", () => {
-  test("17 Nov: every job runs, more at once, the burst ends sooner, and no job waits longer", () => {
+  test("17 Nov, with assumed peaks: every job runs, more at once, the burst ends sooner, and no job waits longer", () => {
     const c = compareRules(savedDay(NOV17, peaks((j) => j.minutes >= 3)), V3);
     expect([c.v260.jobs, c.v3.jobs]).toEqual([NOV17.length, NOV17.length]);
     expect(c.v260.atOnce).toBe(2);
@@ -78,7 +83,7 @@ describe("v2.6.0's rules against v3's, on the saved days", () => {
     expect(c.v3.waitMax).toBeLessThan(c.v260.waitMax);
     expect(c.v3.waitP90).toBeLessThanOrEqual(c.v260.waitP90);
   });
-  test("18 Nov: more jobs at once through the stall, and the longest wait shorter", () => {
+  test("18 Nov, with assumed peaks: more jobs at once through the stall, and the longest wait shorter", () => {
     const c = compareRules(savedDay(NOV18, peaks((j) => j.name === "pr-3" || j.name === "pr-10"), "newest"), V3);
     expect(c.v3.jobs).toBe(NOV18.length);
     expect(c.v3.atOnce).toBeGreaterThan(c.v260.atOnce);

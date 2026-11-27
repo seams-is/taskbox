@@ -184,7 +184,7 @@
     "why": "when a stop was asked: a label in the stop's file"
   },
   "pfstarts.ts": {
-    "reads": 1,
-    "why": "when an admin reopened the box to VM starts: a label in the guard's record"
+    "reads": 2,
+    "why": "the time on the guard's record of starts when it changes, and a lock file's age: a step only makes a lock look stale or fresh sooner, and the record's order is its sequence number"
   }
 }

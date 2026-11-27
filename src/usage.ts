@@ -156,7 +156,8 @@ export function parseMacUsage(out: string): UsageSample | undefined {
 export function parseLinuxUsage(out: string): UsageSample | undefined {
   const kb = (name: string) => num(new RegExp(`^${name}:\\s+(\\d+) kB$`, "m").exec(out)?.[1]);
   const cpus = num(/^ncpu (\d+)$/m.exec(out)?.[1]);
-  const stats = [...out.matchAll(/^cpu\s+((?:\d+\s*)+)$/gm)].map((m) => m[1]!.trim().split(/\s+/).map(Number));
+  // No nested quantifier: the guest writes this text, so it must not backtrack.
+  const stats = [...out.matchAll(/^cpu[ \t]+(\d+(?:[ \t]+\d+)*)[ \t]*$/gm)].map((m) => m[1]!.split(/[ \t]+/).map(Number));
   if (stats.length !== 2) return undefined;
   // user nice system idle iowait irq softirq: idle is idle and iowait. Steal, time the host gave other
   // VMs, is left out of both, so a busy box doesn't make a job look busier. It is kept on its own.
@@ -210,7 +211,7 @@ export interface JobUsage {
   box?: BoxUsage;
 }
 
-const p90 = (xs: number[]) => {
+export const p90 = (xs: number[]) => {
   const v = [...xs].sort((a, b) => a - b);
   return v[Math.min(v.length - 1, Math.ceil(0.9 * v.length) - 1)]!;
 };
@@ -415,6 +416,19 @@ export interface SizeAdvice {
   fitDown: number;
   over: number;
 }
+// The size rule for one job's peak memory and CPUs, against the size it ran in: past 85% of that
+// size's memory, the next one up; else the smallest below it the job fits within 60% of, CPUs
+// included; else keep. The size suggestions and the simulator's replays both use it.
+export function sizeFor(sizes: readonly SizeShape[], at: SizeShape, memMB: number, cpus: number): { verdict: "bigger" | "smaller" | "keep"; to?: SizeShape } {
+  const all = ordered(sizes.filter((z) => z.kind === at.kind));
+  const i = all.findIndex((z) => z.name === at.name);
+  if (memMB > OVER_SHARE * at.vmMemoryMB) {
+    const to = all[i + 1];
+    return { verdict: "bigger", ...(to ? { to } : {}) };
+  }
+  const to = all.slice(0, Math.max(0, i)).find((z) => memMB <= SUITS_SHARE * z.vmMemoryMB && cpus <= z.vmCpus);
+  return to ? { verdict: "smaller", to } : { verdict: "keep" };
+}
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.ceil(0.5 * xs.length) - 1)]!;
 const ordered = (sizes: SizeShape[]) => [...sizes].sort(bySize);
 
@@ -449,21 +463,20 @@ export function jobUsage(runs: UsageRun[], sizes: SizeShape[], last = SUGGEST_RU
     const us = g.rs.map((r) => r.usage!);
     const memP90MB = p90(us.map(peakOf));
     const cpuMedian = median(us.map((u) => u.cpuPeak));
-    const all = ordered(sizes.filter((z) => z.kind === g.size.kind));
-    const at = all.findIndex((z) => z.name === g.size.name);
+    const rule = sizeFor(sizes, g.size, memP90MB, cpuMedian);
     const why = [
-      ...(memP90MB > OVER_SHARE * g.size.vmMemoryMB ? ["memory"] : []),
+      ...(rule.verdict === "bigger" ? ["memory"] : []),
       ...(g.rs.some((r) => r.pressure === "high" || r.pressure === "very high") ? ["pressure"] : []),
       ...(us.some((u) => (u.oom ?? 0) > 0) ? ["oom"] : []),
     ];
     const base = { job: g.job, label: g.label, runs: g.rs.length, memP90MB, cpuMedian, size: g.size.name };
     if (why.length) {
-      const to = all[at + 1];
+      const all = ordered(sizes.filter((z) => z.kind === g.size.kind));
+      const to = all[all.findIndex((z) => z.name === g.size.name) + 1];
       jobs.push({ ...base, verdict: "bigger", ...(to ? { to } : {}), why });
       continue;
     }
-    const to = all.slice(0, at).find((z) => memP90MB <= SUITS_SHARE * z.vmMemoryMB && cpuMedian <= z.vmCpus);
-    if (to) jobs.push({ ...base, verdict: "smaller", to });
+    if (rule.verdict === "smaller") jobs.push({ ...base, verdict: "smaller", to: rule.to! });
   }
   const out: SizeAdvice[] = [];
   for (const { size, us } of perSize.values()) {

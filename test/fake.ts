@@ -51,6 +51,8 @@ export class FakeSys implements Sys {
     this.events.push(`run ${cmd.split("/").pop()} ${args.slice(0, 2).join(" ")}`);
     for (const r of [...this.responders, ...this.fallbacks]) {
       const out = r(cmd, args, opts);
+      // As the real Sys reads it: past maxBytes the child is killed and its output cut.
+      if (out && opts?.maxBytes !== undefined && (out.stdout.length > opts.maxBytes || out.stderr.length > opts.maxBytes)) return { code: -9, stdout: out.stdout.slice(0, opts.maxBytes), stderr: out.stderr.slice(0, opts.maxBytes), over: true };
       if (out) return out;
     }
     // The box's two clocks that a wall clock step doesn't move, unless a test answers them itself.

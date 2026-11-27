@@ -133,7 +133,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
   { good: ["stop", "start", "drain", "prune"], bad: ["stop --now", "start x", "drain --force", "prune --dry-run"] },
   { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
-  { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova", "reopen"], bad: ["rollback --to 2.6.1", "reopen now", "reopen -y", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
+  { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova", "confirm", "confirm --refuse screen-sharing"], bad: ["rollback --to 2.6.1", "confirm now", "confirm -y", "confirm --refuse", "confirm --refuse ../x", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
   { good: ["connect github", "connect github --new-key", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "disconnect"] },
   { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
@@ -175,7 +175,7 @@ describe("the command line", () => {
   test("--help gives the command's line and usage, and taskbox --help the commands", async () => {
     expect((await run(["job", "list", "--help"])).said).toEqual(["One line per job, newest first: 20, or -n N, or --all.", "Usage: taskbox job list [--all] [--state STATE] [--kind KIND] [--size NAME] [--class NAME] [--result RESULT] [--json] [--tail N] [--since TIME] [--watch]"]);
     const all = await run(["--help"]);
-    expect([all.code, all.said[0]]).toEqual([0, expect.stringMatching(/^Commands: .*and as your admin user: connect, /)]);
+    expect([all.code, all.said[0]]).toEqual([0, expect.stringMatching(/^Commands: .*and as your admin user: confirm, connect, /)]);
     expect(all.said[0]).not.toContain("guard");
   });
 

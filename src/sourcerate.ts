@@ -1,6 +1,8 @@
 // What each look at the job source cost against GitHub's rate limit, kept for job timings'
 // sourcePollSeconds (timings.ts): the GETs that counted and the hourly limit GitHub named. The
-// service's file beside the job lines, anyone may read it. Written at most once a minute.
+// service's file beside the job lines, anyone may read it. Written at most once a minute, so the
+// looks of the last minute before a restart are lost: the suggestion reads a 90th percentile over
+// up to 500 looks, which a minute's worth doesn't move.
 import { join } from "node:path";
 import type { Paths } from "./config.ts";
 import { readOwnedText, writeOwnedText } from "./core/rootfile.ts";
