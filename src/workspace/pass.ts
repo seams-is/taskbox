@@ -39,6 +39,7 @@ import { loopFrom, runningJobs, type SlotView } from "../watch.ts";
 import { type PoolAccount, poolAccounts, workspacesOn } from "./box.ts";
 import { anchorsInOrder, bootOut, bridgesAbove, BRIDGES, fenceExpected, fenceMatches, fenceRules, killAllAs, killVMs, lanAddresses, ownPrefixes, PFCTL, PGREP, PREFIX_MAX, removeCrontab, SCREEN_SHARING_ANCHOR, stopAll, vmsOf, WS_ANCHOR } from "./fence.ts";
 import { deleteMoved, type HandoverDeps, launchAgentsPlaceholder, moveAside } from "./handover.ts";
+import { trustWaiting } from "../trust.ts";
 import { assign, boxPause, cleared, emptyState, ended, failed, held, NOTE_MAX, onBoot, OPEN, parseBoot, ready, type Rules, seen, start, type Step, tick, whyNotStart, type Workspace, type WsNotes, type WsState } from "./model.ts";
 import { flowsTick } from "./flows.ts";
 import { type ProbeDeps, proveFence, realListen } from "./probe.ts";
@@ -424,13 +425,15 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
   const needsBudget = pre.workspaces.some((w) => w.state === "approved" || w.state === "starting");
   const budget = needsBudget ? await budgetNow(d).catch(() => ({}) as Budget) : {};
   const rules: Rules = rulesOf(cfg, budget);
+  // A fresh box starts no workspace until an admin at its screen checked the release keys (trust.ts).
+  const untrusted = trustWaiting(p, root);
   await apply((s) => {
     const f = flowsTick(s, rules, now);
     const e = expireRules(f.state, now);
     const t0 = tick(e.state, rules, now);
     const t = { state: t0.state, steps: [...f.steps, ...e.steps, ...t0.steps] };
     const a = assign(t.state, on.pool, now);
-    const st = low ? { state: a.state, steps: [] } : start(a.state, rules, now);
+    const st = low || untrusted ? { state: a.state, steps: [] } : start(a.state, rules, now);
     return { state: st.state, steps: [...t.steps, ...a.steps, ...st.steps] };
   });
 
@@ -457,7 +460,7 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
       return res.ok ? { state: res.state, steps: res.steps } : { state: s, steps: [] };
     });
   }
-  for (const w of snap().workspaces.filter((x) => x.state === "approved")) note(w.name, whyNotStart(snap(), w, rules) ?? "starting on the next pass");
+  for (const w of snap().workspaces.filter((x) => x.state === "approved")) note(w.name, untrusted ?? whyNotStart(snap(), w, rules) ?? "starting on the next pass");
 
   // The owner's own Whole in use counts as its word: Screen Sharing connected, or its account busy.
   for (const w of snap().workspaces.filter((x) => x.own && x.user && OPEN.includes(x.state))) {

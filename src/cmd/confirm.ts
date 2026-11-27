@@ -56,6 +56,32 @@ async function closure(c: BoxCtx, refuse: string | undefined): Promise<{ exit: n
   }
 }
 
+// The first install's release keys (trust.ts): each fingerprint shown, a typed yes for each. Until
+// all are yes, the box takes no update and starts no workspace. undefined when none wait.
+export const TRUST_ID = "release-keys";
+export async function firstTrust(c: BoxCtx, refuse: string | undefined): Promise<{ exit: number; done: boolean } | undefined> {
+  const { readTrust, writeTrust } = await import("../trust.ts");
+  const root = c.ops.rootUid ?? 0;
+  const r = readTrust(c.p, root);
+  if (r.kind !== "ok" || r.value.confirmed || (refuse !== undefined && refuse !== TRUST_ID)) return undefined;
+  if (refuse !== undefined) {
+    c.say("Left waiting: the box takes no update and starts no workspace until the release keys are checked here.");
+    return { exit: 0, done: false };
+  }
+  c.say(`${TRUST_ID}: the release keys this box pins. On the signing Mac, taskbox sign --fingerprint shows the same.`);
+  for (const fp of r.value.signers) {
+    c.say(`  ${fp}`);
+    if ((await c.ask(`Type yes if that is a key taskbox sign --fingerprint shows: `)).trim().toLowerCase() !== "yes") {
+      c.say("Left waiting: the box takes no update and starts no workspace until each key is checked. If a key isn't yours, take taskbox off with taskbox remove.");
+      return { exit: 1, done: false };
+    }
+  }
+  const by = (c.env.SUDO_USER || "admin").replace(/[^a-z0-9_.-]/g, "").slice(0, 32) || "admin";
+  writeTrust(c.p, { ...r.value, confirmed: { at: c.ops.sys.now(), by } }, { rootUid: root, ...(c.chown ? { chown: c.chown } : {}) });
+  c.say("Checked: the box takes updates and starts workspaces from now on.");
+  return { exit: 0, done: true };
+}
+
 async function confirm(c: BoxCtx): Promise<Outcome> {
   const { atBoxScreen } = await import("../ops.ts");
   const screen = await atBoxScreen(c.ops.sys, c.env);
@@ -74,7 +100,11 @@ async function confirm(c: BoxCtx): Promise<Outcome> {
   const root = c.ops.rootUid ?? 0;
   const admin = (c.env.SUDO_USER || "admin").replace(/[^a-z0-9_.-]/g, "").slice(0, 32) || "admin";
   const refuse = typeof c.opts.refuse === "string" ? c.opts.refuse : undefined;
-  const pf = await closure(c, refuse);
+  const ft = await firstTrust(c, refuse);
+  if (ft && (refuse !== undefined || ft.exit !== 0)) return ft.exit;
+  const pf0 = await closure(c, refuse);
+  // The two box gates read as one for what follows: either shown makes "nothing waits" untrue.
+  const pf = pf0 ?? (ft ? { exit: ft.exit, done: ft.done } : undefined);
   if (pf && refuse !== undefined) return pf.exit;
   const pend = readPending(rootStateOf(c.own).pending, root);
   if (pend.kind === "bad") c.say(`The waiting changes can't be read (${pend.why}), so ${pf ? "only the box's own closure was shown" : "nothing changed"}. taskbox check says more.`);

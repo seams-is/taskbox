@@ -15,9 +15,10 @@ import { undo } from "../src/ops.ts";
 import { readInForce, settingsFilesForApp } from "../src/settings/inforce.ts";
 import { readInstallRecord } from "../src/update/records.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, PEM, RELEASE_VERSION, SETTINGS_REPO, SETTINGS_SHA, TAILSCALE_URL, testBox, asRoot, fakeLaunchd, fakeTailscale, healthyBox, installDeps, quietBox, stageRelease, writeSettings } from "./helpers.ts";
+import { CFG, PEM, RELEASE_PIN, RELEASE_VERSION, SETTINGS_REPO, SETTINGS_SHA, TAILSCALE_URL, testBox, asRoot, fakeLaunchd, fakeTailscale, healthyBox, installDeps, quietBox, stageRelease, writeSettings } from "./helpers.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
-import { NAMESPACE } from "../src/release.ts";
+import { NAMESPACE, signerPrints } from "../src/release.ts";
+import { readTrust } from "../src/trust.ts";
 
 const repo = new URL("..", import.meta.url).pathname;
 const toolFetched = (sys: FakeSys) => sys.requests.some((r) => new URL(r.url).hostname === "github.com" || r.url === TAILSCALE_URL);
@@ -144,7 +145,7 @@ describe("an install run to the end", () => {
     writeFileSync(join(d.ownerHome, "example.2026-11-12.private-key.pem"), PEM);
     const log = launchdLog(sys, d.paths.opt);
     expect(await outcome(d)).toBe("installed");
-    expect(said.at(-1)).toBe(`Installed ${RELEASE_VERSION}. From the controller: taskbox box add, then taskbox connect github.`);
+    expect(said.at(-1)).toBe(`Installed ${RELEASE_VERSION}. At the box's screen, as your admin user, type taskbox confirm and check the release keys it shows against taskbox sign --fingerprint on the signing Mac. Then, from the controller: taskbox box add, then taskbox connect github.`);
     const folder = linkTarget(d.paths.opt)!;
     expect(basename(folder)).toMatch(new RegExp(`^taskbox-${RELEASE_VERSION.replace(/\./g, "\\.")}-`));
     expect(statSync(d.paths.softnet).mode & 0o7777).toBe(0o4755);
@@ -158,6 +159,9 @@ describe("an install run to the end", () => {
     expect(f.kind === "ok" && [f.value.sha, f.value.doc.runnerNamePrefix]).toEqual([SETTINGS_SHA, CFG.runnerNamePrefix]);
     expect(loadConfig(d.paths.app, undefined, process.getuid!()).settingsIn?.sha).toBe(SETTINGS_SHA);
     expect(JSON.parse(readFileSync(d.paths.boxSettings, "utf8")).settingsRepo).toBe(SETTINGS_REPO);
+    // The release keys it pins wait for an admin's yes at the box's screen.
+    const t = readTrust(d.paths, process.getuid!());
+    expect(t.kind === "ok" && [t.value.signers, t.value.confirmed]).toEqual([signerPrints(RELEASE_PIN), undefined]);
     for (const [label, file] of [[AGENT_LABEL, d.paths.agentPlist], [GUARD_LABEL, d.paths.guardPlist], [TAILSCALED_LABEL, d.paths.tailscaledPlist]] as const) {
       expect(readFileSync(file, "utf8")).toContain(`<string>${label}</string>`);
     }
@@ -221,6 +225,7 @@ describe("an install run to the end", () => {
     expect(sys.spawned.some((p) => p.args.includes("up"))).toBe(false);
     expect(sys.calls.some((c) => c.cmd === "/usr/bin/fdesetup" && c.args[0] === "add")).toBe(false);
     expect(out).toBe("installed");
+    expect(readTrust(d.paths, process.getuid!()).kind).toBe("missing");
     expect(said.at(-1)).toBe(`Installed ${RELEASE_VERSION} as a guest test. the GitHub Apps (connect github) is the controller's next step on a real box.`);
   });
 

@@ -18,6 +18,11 @@ import { runningOf, updateFiles } from "../update/box.ts";
 import { listedReleases, type Listed } from "../update/pick.ts";
 import { readMarks, writeMarks } from "../update/records.ts";
 import { CHILD_FILE, startUpdateOp, UPDATE_EVENTS } from "../update/start.ts";
+import { trustWaiting } from "../trust.ts";
+import { trialOf } from "../trialresult.ts";
+import { loopState } from "../core/paths.ts";
+import { uidOf } from "../accounts.ts";
+import { markBad } from "../update/records.ts";
 
 export const updatePass: PlacedMaker = {
   order: 550,
@@ -75,6 +80,12 @@ export const updatePass: PlacedMaker = {
           for (const l of st.said) events.write({ type: "update.signers", actor: "taskbox", subject: "box", text: `The box ${l}.`.slice(0, 240) });
         }
       }
+      // A fresh box auto-updates once an admin at its screen checked the release keys (trust.ts).
+      const trust = trustWaiting(c.p, root);
+      if (trust) {
+        if (heldSaid !== trust) log((heldSaid = trust));
+        return;
+      }
       const marks = readMarks(updateFiles(s).marks, root);
       let installed: string;
       try {
@@ -83,8 +94,11 @@ export const updatePass: PlacedMaker = {
         return;
       }
       const offsetMin = -new Date(now).getTimezoneOffset();
+      // The loop's own record of its trials, the service account's; one that can't be read waits.
+      const svc = await uidOf(c.sys, c.p.service).catch(() => undefined);
+      const trial = (v: string) => (svc === undefined ? ("none" as const) : trialOf({ dir: loopState(c.p.state).events, owner: svc }, v));
       const fresh = now - listedAt < CHECK_EVERY_MS ? listed : undefined;
-      let step = autoStep({ now, offsetMin, u, channel: u.channel, installed, marks, running: all, hold: workspaceHold(c.p.workspaces, root, now), listed: fresh, tried });
+      let step = autoStep({ now, offsetMin, u, channel: u.channel, installed, marks, running: all, hold: workspaceHold(c.p.workspaces, root, now), listed: fresh, tried, trial });
       if (step.kind === "list") {
         if (!c.cfg.publicRepo) return;
         try {
@@ -99,7 +113,7 @@ export const updatePass: PlacedMaker = {
           listed = [];
           return;
         }
-        step = autoStep({ now, offsetMin, u, channel: u.channel, installed, marks, running: all, hold: workspaceHold(c.p.workspaces, root, now), listed, tried });
+        step = autoStep({ now, offsetMin, u, channel: u.channel, installed, marks, running: all, hold: workspaceHold(c.p.workspaces, root, now), listed, tried, trial });
       }
       if (step.kind === "held" && step.line !== heldSaid) {
         heldSaid = step.line;
@@ -107,6 +121,12 @@ export const updatePass: PlacedMaker = {
         try {
           events.write({ type: "update.held", actor: "taskbox", subject: "box", text: `${step.line[0]!.toUpperCase()}${step.line.slice(1)}, for at most ${HOLD_MAX_MS / 3600_000} hours from its approval or last resume.`.slice(0, 240) });
         } catch {}
+      }
+      if (step.kind === "bad") {
+        writeMarks(updateFiles(s).marks, markBad(readMarks(updateFiles(s).marks, root), step.version, step.why, now), { rootUid: root });
+        log(`${step.version}: ${step.why}, so the box won't install it by itself`);
+        events.write({ type: "update.trial-failed", actor: "taskbox", subject: "box", text: `${step.version} failed its trial in taskbox's own VM, so the box won't install it by itself. taskbox selftest list says why.`.slice(0, 240), data: { version: step.version } });
+        return;
       }
       if (step.kind !== "start") return;
       tried.add(step.key);

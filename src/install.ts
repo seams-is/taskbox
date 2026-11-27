@@ -51,7 +51,8 @@ import { asNobody, keyChangeVerifier, verifyFolder } from "./workspace/approval.
 import { approverLine, approverPlan, fingerprint, type Pin as KeyPin, type KeyChange, ROTATE_ASK, rotateConfirmed, type Verifier } from "./approver.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin } from "./pin.ts";
 import { EMBEDDED } from "./embedded.ts";
-import { describeStatement, signerLines, type Statement, verifyRelease, type VerifyDeps } from "./release.ts";
+import { describeStatement, signerLines, signerPrints, type Statement, verifyRelease, type VerifyDeps } from "./release.ts";
+import { writeTrust } from "./trust.ts";
 import { SUDO } from "./elevate.ts";
 import { type InstallRecord, writeInstallRecord } from "./update/records.ts";
 import { settingsFilesForApp, SHA, updateState, writeInForce, writeValidated } from "./settings/inforce.ts";
@@ -98,8 +99,9 @@ const SMALL_MAX = 16_384;
 const SETTINGS_MAX = 512_000;
 // What a guest test skips, said on its own line each time.
 export const GUEST_SKIPS = ["FileVault's disk unlock", "the Tailscale sign-in", "the GitHub Apps (connect github)"] as const;
-// The preflight rows a guest VM can't pass, whatever the release: its SSH is how it is reached.
-export const GUEST_ROWS = ["Sharing services off", "FileVault", "SSD health", "Free disk"];
+// The preflight rows a guest VM can't pass, whatever the release: its SSH is how it is reached, and
+// Tart's macOS images run with SIP off (Tart run of #51).
+export const GUEST_ROWS = ["Sharing services off", "FileVault", "System Integrity Protection", "SSD health", "Free disk"];
 
 // The install's check of a new approver key: the old key's signature, by ssh-keygen -Y verify as
 // nobody, in root's folder for checking signatures, made only when a key change comes. Anything that
@@ -470,6 +472,9 @@ async function installUnlocked(d: InstallDeps): Promise<void> {
     writeInForce(sf, { v: 1, sha: c.v.sha, at, held: [], doc: c.v.doc, overlayKeys: [], overlayIgnored: [], unknown: c.v.unknown }, { rootUid: root, chown: d.chown });
     await updateState(sf, { rootUid: root, chown: d.chown }, (s) => ({ state: { ...s, repo: d.settingsRepo, inUse: c.v.sha }, out: undefined }));
     writeBoxKeys({ boxFile: d.paths.boxSettings, rootUid: root, chown: d.chown, say: () => {} }, { settingsRepo: d.settingsRepo });
+    // The release keys it pins wait for an admin's yes at the box's own screen (trust.ts): until then
+    // the box takes no update and starts no workspace. A guest test has no screen to check them at.
+    if (!guest) writeTrust(d.paths, { v: 1, signers: signerPrints(pinned).slice(0, 4), placedAt: at }, { rootUid: root, chown: d.chown });
 
     // 8. One rename swaps it in. An install run again over one that stopped keeps that one for undo.
     let old: string | undefined;
@@ -528,7 +533,7 @@ async function installUnlocked(d: InstallDeps): Promise<void> {
     await makeServiceHome(d);
     if (accounts.agent !== undefined) d.say(`  Agents and the controller reach the box as ${accounts.agent}: the controller pairs with that name.`);
     if (notStarted.length) throw new Stop(`The install isn't finished: ${notStarted.join(" and ")} didn't start. Run the install again.`, true);
-    d.say(guest ? `Installed ${st.version} as a guest test. ${GUEST_SKIPS[2]} is the controller's next step on a real box.` : `Installed ${st.version}. From the controller: taskbox box add, then taskbox connect github.`);
+    d.say(guest ? `Installed ${st.version} as a guest test. ${GUEST_SKIPS[2]} is the controller's next step on a real box.` : `Installed ${st.version}. At the box's screen, as your admin user, type taskbox confirm and check the release keys it shows against taskbox sign --fingerprint on the signing Mac. Then, from the controller: taskbox box add, then taskbox connect github.`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
