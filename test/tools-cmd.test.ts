@@ -56,6 +56,28 @@ async function run(argv: string[], uid = CI) {
   return { code, said, errs, p };
 }
 
+describe("the record the loop writes is the one the screens read", () => {
+  test("stateOf, through JSON and toolsStateOf, to toolsScreen", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { createHash } = await import("node:crypto");
+    const { newRun, stateOf } = await import("../src/tools/pass.ts");
+    const { toolsScreen, toolsStateOf } = await import("../src/tools/state.ts");
+    const { toolsOf } = await import("../src/tools/settings.ts");
+    const { ensureStore, blobPath } = await import("../src/tools/store.ts");
+    const s = storeOf(join(mkdtempSync(join(tmpdir(), "taskbox-rt-")), "tools"));
+    ensureStore(s);
+    const body = "node bytes";
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    writeFileSync(blobPath(s, sha256), body);
+    const view = toolsOf({ tools: { entries: [{ name: "node.tar.xz", os: "linux", url: "https://example.com/n", sha256 }] } });
+    const st = stateOf({ sys: new FakeSys(), view, store: s, kinds: () => ["linux"], imageOf: () => "x@sha256:" + "1".repeat(64) }, newRun(), []);
+    const back = toolsStateOf(JSON.parse(JSON.stringify(st)));
+    expect(back).toEqual(st);
+    expect(toolsScreen(back)).toEqual(["Tool cache: 0 of 1 pinned in use, 0 MB.", `  linux  node.tar.xz                   held        0 MB  ${sha256.slice(0, 12)}`, "Linux job VMs clone the pinned image: no base VM is baked yet."]);
+  });
+});
+
 describe("taskbox tool and image", () => {
   test("tool list shows each pin and what each kind's jobs clone", async () => {
     const r = await run(["tool", "list"]);
@@ -80,7 +102,8 @@ describe("taskbox tool and image", () => {
   test("tool refresh --timeout watches, then stops watching with exit 3 while the refresh carries on", async () => {
     const r = await run(["tool", "refresh", "--timeout", "10s"]);
     expect(r.code).toBe(3);
-    expect(r.said.at(-4) ?? r.said.join("\n")).toBeDefined();
+    // It said what happens, that the loop isn't running here, then the phase it watched.
+    expect(r.said.slice(1, 3)).toEqual(["The loop isn't running, so the refresh starts when it does: taskbox start.", "waiting"]);
     expect(r.said.join("\n")).toContain("The refresh carries on.");
   });
   test("image list shows each kind's image and the base VM its jobs clone", async () => {

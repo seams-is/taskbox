@@ -7,14 +7,14 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Config, paths } from "../src/config.ts";
-import { oneJob } from "../src/loop.ts";
+import { oneJob, Slots } from "../src/loop.ts";
 import type { Proc, RunResult } from "../src/sys.ts";
 import { TartEngine } from "../src/tart.ts";
-import { type BaseRecord, baseNameFor, cloneSourceOf, readBases, writeBase } from "../src/tools/base.ts";
+import { type BaseRecord, baseNameFor, cloneSourceOf, pinKey, readBases, writeBase } from "../src/tools/base.ts";
 import { BAKE_NET, bake, type BakeDeps } from "../src/tools/bake.ts";
 import { cleanup } from "../src/tools/cleanup.ts";
-import { bakeScript, DEFAULT_TOOL_CACHE, runnerEnvScript, SHARE_TAG, toolCacheOf } from "../src/tools/guest.ts";
-import { storeFor, toolsOn } from "../src/tools/inloop.ts";
+import { bakeScript, DEFAULT_TOOL_CACHE, runnerEnvScript, SHARE_TAG, sealScript, toolCacheOf } from "../src/tools/guest.ts";
+import { bakeRoomWhy, cloneSource, roomFor, storeFor, toolsOn, toolsStep } from "../src/tools/inloop.ts";
 import { newRun, type ToolsLoop, toolsDue, toolsPass } from "../src/tools/pass.ts";
 import { askRefresh, readRefresh, refreshSteps } from "../src/tools/refresh.ts";
 import { type ToolEntry, toolsOf } from "../src/tools/settings.ts";
@@ -22,6 +22,7 @@ import { baseColumn, type ToolsState, toolsLine, toolsRow, toolsScreen } from ".
 import { blobPath, buildGeneration, ensureStore, type Generation, storeOf } from "../src/tools/store.ts";
 import type { NetPolicy, VmEngine, VmInfo } from "../src/vm.ts";
 import { FakeSys } from "./fake.ts";
+import { web } from "./tools-web.ts";
 import { CFG, loopDeps, tempRoot, testBox } from "./helpers.ts";
 import { readOp } from "../src/core/ops.ts";
 
@@ -42,6 +43,8 @@ class Engine implements VmEngine {
   stdin: string[] = [];
   guestAnswers = true;
   script: RunResult = ok("copied\nbaked\n");
+  seal: RunResult = ok("sealed\n");
+  scripts: string[] = []; // each root script, in order
   shutsDown = true;
   disk: string;
   constructor(dir: string) {
@@ -82,7 +85,11 @@ class Engine implements VmEngine {
     this.calls.push(`exec ${vm} ${cmd.join(" ").slice(0, 60)}`);
     if (typeof stdin === "string") this.stdin.push(stdin);
     if (cmd[0] === "/usr/bin/true") return this.guestAnswers ? ok() : { code: 1, stdout: "", stderr: "" };
-    if (cmd.includes("/bin/sh") && cmd.includes("-s") && cmd[0] === "/usr/bin/sudo") return this.script;
+    if (cmd.includes("/bin/sh") && cmd.includes("-s") && cmd[0] === "/usr/bin/sudo") {
+      const text = String(stdin);
+      this.scripts.push(text.includes("echo sealed") ? "seal" : "bake");
+      return text.includes("echo sealed") ? this.seal : this.script;
+    }
     if (cmd.join(" ").includes("shutdown") || cmd.join(" ").includes("poweroff")) {
       if (this.shutsDown) this.vms.get(vm)?.running?.();
       return ok();
@@ -153,14 +160,14 @@ describe("the bake", () => {
     // The base stays, stopped; its record names the image, the generation, the pins and the disk's hash.
     expect(e.vms.has(name)).toBe(true);
     const [rec] = readBases(s);
-    expect(rec).toMatchObject({ v: 1, name, kind: "linux", image: LINUX_IMAGE, gen: gen.id, entries: [`${node.name}@${node.sha256}`], diskSha256: sha(`disk of ${name} from ${LINUX_IMAGE}`) });
+    expect(rec).toMatchObject({ v: 1, name, kind: "linux", image: LINUX_IMAGE, gen: gen.id, entries: [pinKey(node)], diskSha256: sha(`disk of ${name} from ${LINUX_IMAGE}`) });
     // The bake step ran as root from stdin, with the generation's hashes in it.
     expect(e.stdin.find((x) => x.includes("GENERATION"))).toContain(node.sha256);
   });
 
   test("a failed bake step deletes the half-made VM, writes no record, and the last good base stays the one jobs clone", async () => {
     const { dir, s } = storeWith([node], [NODE, "older"]);
-    const older: BaseRecord = { v: 1, name: baseNameFor("linux", "a".repeat(64), LINUX_IMAGE), kind: "linux", image: LINUX_IMAGE, gen: "a".repeat(64), entries: [`${node.name}@${node.sha256}`], diskSha256: "b".repeat(64), bakedAt: 1 };
+    const older: BaseRecord = { v: 1, name: baseNameFor("linux", "a".repeat(64), LINUX_IMAGE), kind: "linux", image: LINUX_IMAGE, gen: "a".repeat(64), entries: [pinKey(node)], diskSha256: "b".repeat(64), bakedAt: 1 };
     writeBase(s, older);
     const gen = (await buildGeneration(s, "linux", [node])).gen!;
     const e = new Engine(dir);
@@ -170,7 +177,7 @@ describe("the bake", () => {
     expect(r).toEqual({ ok: false, why: "the bake step failed: /opt/taskbox-tools.new/sha256/x does not match its hash" });
     expect(e.vms.has(baseNameFor("linux", gen.id, LINUX_IMAGE))).toBe(false);
     expect(readBases(s).map((b) => b.name)).toEqual([older.name]);
-    const src = cloneSourceOf({ enabled: true, kind: "linux", image: LINUX_IMAGE, current: gen.id, pinned: new Set([`${node.name}@${node.sha256}`]), bases: readBases(s), vms: await e.list() });
+    const src = cloneSourceOf({ enabled: true, kind: "linux", image: LINUX_IMAGE, current: gen.id, pinned: new Set([pinKey(node)]), bases: readBases(s), vms: await e.list() });
     expect(src.source).toBe(older.name);
   });
 
@@ -212,7 +219,7 @@ describe("the VM each job clones", () => {
   const rec = (gen: string, entries: string[], at: number, image = LINUX_IMAGE): BaseRecord => ({ v: 1, name: baseNameFor("linux", gen, image), kind: "linux", image, gen, entries, diskSha256: "c".repeat(64), bakedAt: at });
   const A = "a".repeat(64);
   const B = "b".repeat(64);
-  const pin = `${node.name}@${node.sha256}`;
+  const pin = pinKey(node);
   const vms = (...r: BaseRecord[]) => r.map((x) => ({ name: x.name, image: false }));
   test("the image when the cache is off, or nothing is pinned for the kind", () => {
     const a = rec(A, [pin], 1);
@@ -221,7 +228,7 @@ describe("the VM each job clones", () => {
   });
   test("the current generation's base, then an older one only while all its pins are still pinned", () => {
     const old = rec(A, [pin], 1);
-    const now = rec(B, [pin, "bun@" + "d".repeat(64)], 2);
+    const now = rec(B, [pin, "bun@" + "d".repeat(64) + "#"], 2);
     expect(cloneSourceOf({ enabled: true, kind: "linux", image: LINUX_IMAGE, current: B, pinned: new Set([pin]), bases: [now, old], vms: vms(now, old) }).source).toBe(now.name);
     // Waiting for B's bake: A still serves, its one pin is still pinned.
     expect(cloneSourceOf({ enabled: true, kind: "linux", image: LINUX_IMAGE, current: B, pinned: new Set([pin]), bases: [old], vms: vms(old) }).source).toBe(old.name);
@@ -258,7 +265,7 @@ describe("cleanup", () => {
 });
 
 // The pass with fakes for the loop around it.
-function loopFor(e: Engine, s: ReturnType<typeof storeOf>, view: ReturnType<typeof toolsOf>, o: { kinds?: string[]; claim?: string; body?: Record<string, string> } = {}) {
+function loopFor(e: Engine, s: ReturnType<typeof storeOf>, view: ReturnType<typeof toolsOf>, o: { kinds?: string[]; claim?: string; body?: Record<string, string>; bakeRoom?: string; gateFree?: () => boolean } = {}) {
   const sys = new FakeSys();
   const events: string[] = [];
   const states: ToolsState[] = [];
@@ -267,15 +274,16 @@ function loopFor(e: Engine, s: ReturnType<typeof storeOf>, view: ReturnType<type
     engine: e,
     store: s,
     view,
-    fetch: { fetch: async (url) => (o.body?.[url] !== undefined ? new Response(o.body[url]) : new Response("", { status: 404 })), resolve: async () => ["140.82.112.3"], timeout: () => new AbortController().signal },
+    fetch: web(Object.fromEntries(Object.entries(o.body ?? {}).map(([u, b]) => [u, () => new Response(b)]))),
     log: () => {},
     event: (type, text) => events.push(`${type}: ${text}`),
     kinds: () => (o.kinds ?? ["linux"]) as ("linux" | "macos")[],
     imageOf: (k) => (k === "linux" ? LINUX_IMAGE : MAC_IMAGE),
     roomBytes: async () => 1e9,
+    bakeRoom: async () => o.bakeRoom,
     claim: async () => (o.claim ? o.claim : { release: () => {}, size: { cpus: 4, memoryMB: 8192 } }),
     gate: async () => () => {},
-    gateFree: () => true,
+    gateFree: o.gateFree ?? (() => true),
     guestOf: () => ({ user: "admin", loginShell: ["/bin/bash", "-l", "-c"] }),
     stopIf: () => false,
     write: (x) => states.push(x),
@@ -437,7 +445,7 @@ describe("a job VM on the box", () => {
     const s = storeFor(d);
     ensureStore(s);
     const gen = "f".repeat(64);
-    const base: BaseRecord = { v: 1, name: baseNameFor("macos", gen, MAC_IMAGE), kind: "macos", image: MAC_IMAGE, gen, entries: [`${pin.name}@${pin.sha256}`], diskSha256: "c".repeat(64), bakedAt: 1 };
+    const base: BaseRecord = { v: 1, name: baseNameFor("macos", gen, MAC_IMAGE), kind: "macos", image: MAC_IMAGE, gen, entries: [pinKey(pin)], diskSha256: "c".repeat(64), bakedAt: 1 };
     writeBase(s, base);
     e.vms.set(base.name, { image: false });
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("done");
@@ -460,6 +468,226 @@ describe("a job VM on the box", () => {
     expect(e.calls.find((c) => c.startsWith("clone"))).toMatch(new RegExp(`^clone ${MAC_IMAGE.replace(/[.@]/g, "\\$&")} job-`));
     expect(e.stdin.some((x) => x.includes("TASKBOX_TOOLS_GEN"))).toBe(false);
     expect(JSON.parse(readFileSync(d.paths.jobsFile, "utf8").trim()).tools).toBeUndefined();
+  });
+});
+
+describe("the review's fixes", () => {
+  test("SSH goes off first, before the tool cache is probed or anything is copied in; a guest that won't turn it off fails the bake", async () => {
+    const { dir, s } = storeWith([node], [NODE]);
+    const gen = (await buildGeneration(s, "linux", [node])).gen!;
+    const e = new Engine(dir);
+    expect((await bake(bakeDeps(e), s, "linux", LINUX_IMAGE, gen)).ok).toBe(true);
+    expect(e.scripts).toEqual(["seal", "bake"]);
+    const name = baseNameFor("linux", gen.id, LINUX_IMAGE);
+    const at = (x: string) => e.calls.findIndex((c) => c.startsWith(`exec ${name} ${x}`));
+    expect(at("/usr/bin/sudo -n /bin/sh -s")).toBeLessThan(at("/bin/bash -l -c"));
+    const e2 = new Engine(dir);
+    e2.seal = { code: 1, stdout: "", stderr: "Failed to mask unit\n" };
+    expect(await bake(bakeDeps(e2), s, "linux", LINUX_IMAGE, gen)).toMatchObject({ ok: false, why: "SSH couldn't be turned off in the linux guest: Failed to mask unit" });
+    expect(e2.scripts).toEqual(["seal"]);
+    expect(e2.vms.size).toBe(0);
+  });
+  test("the seal turns SSH and IPv6 off on each kind; macOS turns IPv6 back on at the bake's end", () => {
+    const l = sealScript("linux");
+    expect(l).toContain("/usr/bin/systemctl mask --now ssh.socket ssh.service");
+    expect(l).toContain("net.ipv6.conf.all.disable_ipv6=1");
+    const m = sealScript("macos");
+    expect(m).toContain("/bin/launchctl disable system/com.openssh.sshd");
+    expect(m).toContain("/bin/launchctl bootout system/com.openssh.sshd");
+    expect(m).toContain("-setv6off");
+    const man = { v: 1 as const, os: "macos" as const, entries: [] };
+    expect(bakeScript("macos", "a".repeat(64), man, DEFAULT_TOOL_CACHE, "admin")).toContain("-setv6automatic");
+    expect(bakeScript("linux", "a".repeat(64), { ...man, os: "linux" }, DEFAULT_TOOL_CACHE, "admin")).not.toContain("setv6");
+  });
+  test("a Linux base is left with no machine-id and no saved random seed; the manifest's hash is checked in the guest", () => {
+    const l = bakeScript("linux", "a".repeat(64), { v: 1, os: "linux", entries: [] }, DEFAULT_TOOL_CACHE, "admin");
+    for (const x of ["/bin/rm -f /var/lib/systemd/random-seed", ": > /etc/machine-id", "systemctl stop systemd-random-seed.service", "cloud-init clean --logs --seed"]) expect(l).toContain(x);
+    expect(l).toContain(`check "$D.new/manifest.json" '${"a".repeat(64)}'`);
+    expect(bakeScript("macos", "a".repeat(64), { v: 1, os: "macos", entries: [] }, DEFAULT_TOOL_CACHE, "admin")).not.toContain("machine-id");
+  });
+  test("every value is checked again as one path part, strip too, and chown reaches only what the bake made", () => {
+    const one = (e: Partial<{ name: string; tool: string; version: string; arch: string; strip: number }>) => ({ v: 1 as const, os: "linux" as const, entries: [{ name: e.name ?? "node.tar.gz", sha256: "b".repeat(64), bytes: 1, toolcache: { tool: e.tool ?? "node", version: e.version ?? "1.0.0", arch: e.arch ?? "arm64", strip: e.strip ?? 1 } }] });
+    for (const bad of [{ name: ".." }, { name: "a/b.tar.gz" }, { tool: ".." }, { tool: "a/b" }, { version: "." }, { arch: "../x" }, { strip: 7 }, { strip: 1.5 }]) expect(() => bakeScript("linux", "a".repeat(64), one(bad), DEFAULT_TOOL_CACHE, "admin")).toThrow("not a value the bake takes");
+    expect(() => bakeScript("linux", "a".repeat(64), one({}), DEFAULT_TOOL_CACHE, "admin; rm")).toThrow("not a value the bake takes");
+    const sh = bakeScript("linux", "a".repeat(64), one({}), DEFAULT_TOOL_CACHE, "admin");
+    expect(sh.split("\n").filter((l) => l.includes("chown"))).toEqual([`/bin/chown 'admin' "$TC"`, `/bin/chown 'admin' "$TC/"'node'`, `/bin/chown -R 'admin' "$TC/"'node'/'1.0.0'`]);
+    expect(bakeScript("linux", "a".repeat(64), { v: 1, os: "linux", entries: [] }, DEFAULT_TOOL_CACHE, "admin")).not.toContain("chown");
+  });
+  test("an odd tool cache path from the image is never used", () => {
+    for (const said of ["/.", "//", "/opt", "/usr/local/toolcache", "/System/x", "/var/tmp/toolcache", "/etc/x"]) expect(toolCacheOf(said)).toBe(DEFAULT_TOOL_CACHE);
+    expect(toolCacheOf("/Users/admin/hostedtoolcache")).toBe("/Users/admin/hostedtoolcache");
+    expect(toolCacheOf("/home/runner/toolcache")).toBe("/home/runner/toolcache");
+  });
+  test("an older base whose toolcache mapping changed is never served: jobs clone the image until the bake", () => {
+    const old: BaseRecord = { v: 1, name: baseNameFor("linux", "a".repeat(64), LINUX_IMAGE), kind: "linux", image: LINUX_IMAGE, gen: "a".repeat(64), entries: [pinKey(node)], diskSha256: "c".repeat(64), bakedAt: 1 };
+    const moved = { ...node, toolcache: { ...node.toolcache!, version: "24.22.4" } };
+    expect(pinKey(moved)).not.toBe(pinKey(node));
+    expect(cloneSourceOf({ enabled: true, kind: "linux", image: LINUX_IMAGE, current: "b".repeat(64), pinned: new Set([pinKey(moved)]), bases: [old], vms: [{ name: old.name, image: false }] }).source).toBe(LINUX_IMAGE);
+    expect(cloneSourceOf({ enabled: true, kind: "linux", image: LINUX_IMAGE, current: "b".repeat(64), pinned: new Set([pinKey(node)]), bases: [old], vms: [{ name: old.name, image: false }] }).source).toBe(old.name);
+  });
+  test("a bake that keeps failing waits twice as long each time, and the row fails from the third", async () => {
+    const { dir, s } = storeWith([node], [NODE]);
+    const e = new Engine(dir);
+    e.script = { code: 1, stdout: "", stderr: "no room in the guest\n" };
+    const { t, sys, states, events } = loopFor(e, s, toolsOf({ tools: { entries: [node] } }));
+    const run = newRun();
+    await toolsPass(t, run);
+    expect(states.at(-1)!.bakeWhy?.linux).toBe("failed once: the bake step failed: no room in the guest; it tries again in 30 min");
+    expect(toolsRow(states.at(-1)).status).toBe("WARN");
+    sys.clock += 29 * 60_000;
+    expect(toolsDue(t, run)).toBe(false);
+    sys.clock += 2 * 60_000;
+    expect(toolsDue(t, run)).toBe(true);
+    await toolsPass(t, run);
+    expect(states.at(-1)!.bakeWhy?.linux).toContain("failed 2 times");
+    expect(states.at(-1)!.bakeWhy?.linux).toContain("again in 60 min");
+    sys.clock += 59 * 60_000;
+    expect(toolsDue(t, run)).toBe(false);
+    sys.clock += 2 * 60_000;
+    await toolsPass(t, run);
+    expect(toolsRow(states.at(-1)).status).toBe("FAIL");
+    expect(events.filter((x) => x.startsWith("tool.failed: The linux bake failed")).length).toBe(3);
+    // Capped at 6 hours.
+    for (let i = 0; i < 4; i++) {
+      sys.clock += 7 * 3600_000;
+      await toolsPass(t, run);
+    }
+    expect(run.bakeFails.linux!.next - sys.now()).toBe(6 * 3600_000);
+  });
+  test("a bake with no room on the disk waits, says so in the row, and writes one event", async () => {
+    const { dir, s } = storeWith([node], [NODE]);
+    const e = new Engine(dir);
+    const { t, sys, states, events } = loopFor(e, s, toolsOf({ tools: { entries: [node] } }), { bakeRoom: "61 GB free, 70 GB needed" });
+    const run = newRun();
+    expect(await toolsPass(t, run)).toBe(false);
+    expect(states.at(-1)!.bakeWhy?.linux).toBe("waits: no room for the bake: 61 GB free, 70 GB needed");
+    expect(toolsRow(states.at(-1)).status).toBe("WARN");
+    expect(e.calls.some((c) => c.startsWith("clone"))).toBe(false);
+    sys.clock += 31 * 60_000;
+    await toolsPass(t, run);
+    expect(events.filter((x) => x.includes("no room for it on the disk")).length).toBe(1);
+  });
+  test("the room for a fetch and for a bake: the floor for each VM, maxGB, and four times the tools with a margin", () => {
+    expect(roomFor({ freeGB: 100, floorGB: 60, running: 0, maxGB: 5, heldBytes: 1e9 })).toBe(4e9);
+    expect(roomFor({ freeGB: 100, floorGB: 30, running: 2, maxGB: 50, heldBytes: 0 })).toBe(10e9);
+    expect(roomFor({ freeGB: 100, floorGB: 60, running: 1, maxGB: 50, heldBytes: 0 })).toBeLessThan(0);
+    expect(roomFor({ freeGB: undefined, floorGB: 60, running: 0, maxGB: 5, heldBytes: 0 })).toBeUndefined();
+    expect(bakeRoomWhy({ freeGB: 70, floorGB: 60, running: 0, genBytes: 1e9 })).toBeUndefined();
+    expect(bakeRoomWhy({ freeGB: 68, floorGB: 60, running: 0, genBytes: 1e9 })).toBe("68 GB free, 69 GB needed");
+    expect(bakeRoomWhy({ freeGB: 200, floorGB: 60, running: 2, genBytes: 0 })).toBeUndefined();
+    expect(bakeRoomWhy({ freeGB: 150, floorGB: 60, running: 2, genBytes: 0 })).toBe("150 GB free, 185 GB needed");
+    expect(bakeRoomWhy({ freeGB: undefined, floorGB: 60, running: 0, genBytes: 0 })).toBe("the free disk can't be read");
+  });
+  test("a cleanup that finds the gate held waits for it, and never deletes a base while a start holds it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-churn-"));
+    const s = storeOf(join(dir, "tools"));
+    const e = new Engine(dir);
+    let free = true;
+    const v1 = { ...node, url: "https://example.com/node1.tar.xz", sha256: sha("node one") };
+    const v2 = { ...node, url: "https://example.com/node2.tar.xz", sha256: sha("node two") };
+    const one = loopFor(e, s, toolsOf({ tools: { entries: [v1] } }), { body: { [v1.url]: "node one" }, gateFree: () => free });
+    const run = newRun();
+    await toolsPass(one.t, run);
+    const a = baseNameFor("linux", run.gens.linux!.id, LINUX_IMAGE);
+    const genA = run.gens.linux!.id;
+    expect(e.vms.has(a)).toBe(true);
+    // The pin moves on. A start holds the gate throughout this pass: the new base is baked, the old stays.
+    free = false;
+    const two = loopFor(e, s, toolsOf({ tools: { entries: [v2] } }), { body: { [v2.url]: "node two" }, gateFree: () => free });
+    two.t.sys = one.t.sys;
+    let cloned: string[] = [];
+    const clone = e.clone.bind(e);
+    e.clone = async (from, vm) => ((cloned = [...e.vms.keys()]), clone(from, vm));
+    await toolsPass(two.t, run);
+    const b = baseNameFor("linux", run.gens.linux!.id, LINUX_IMAGE);
+    expect(cloned).toContain(a);
+    expect(e.vms.has(a) && e.vms.has(b)).toBe(true);
+    expect(run.cleanupOwed).toBe(true);
+    expect(toolsDue(two.t, run)).toBe(false);
+    // The gate is free: the pass comes back for the cleanup, and the old base, generation and blob go.
+    free = true;
+    expect(toolsDue(two.t, run)).toBe(true);
+    await toolsPass(two.t, run);
+    expect(e.vms.has(a)).toBe(false);
+    expect(e.vms.has(b)).toBe(true);
+    expect(readdirSync(s.gen)).not.toContain(genA);
+    expect(readdirSync(s.blobs)).toEqual([v2.sha256]);
+    expect(run.cleanupOwed).toBe(false);
+  });
+  test("a cleanup that can't remove a base says so each pass, and the row fails from the third", async () => {
+    const { dir, s } = storeWith([node], [NODE]);
+    const e = new Engine(dir);
+    const stuck: BaseRecord = { v: 1, name: baseNameFor("linux", "e".repeat(64), LINUX_IMAGE), kind: "linux", image: LINUX_IMAGE, gen: "e".repeat(64), entries: ["gone@" + "f".repeat(64) + "#"], diskSha256: "c".repeat(64), bakedAt: 0 };
+    writeBase(s, stuck);
+    e.vms.set(stuck.name, { image: false });
+    const del = e.delete.bind(e);
+    e.delete = async (vm) => (vm === stuck.name ? { code: 1, stdout: "", stderr: "busy" } : del(vm));
+    const { t, sys, states, events } = loopFor(e, s, toolsOf({ tools: { entries: [node] } }));
+    const run = newRun();
+    for (let i = 0; i < 3; i++) {
+      run.cleanupOwed = true;
+      await toolsPass(t, run);
+      sys.clock += 31 * 60_000;
+    }
+    expect(states.at(-1)!.cleanupWhy).toBe(`couldn't remove ${stuck.name}`);
+    expect(toolsRow(states.at(-1)).status).toBe("FAIL");
+    expect(events.filter((x) => x.includes("couldn't remove")).length).toBe(3);
+  });
+  test("a pin taken away is forgotten with its failure, so nothing waits on it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-pass-"));
+    const s = storeOf(join(dir, "tools"));
+    const e = new Engine(dir);
+    const run = newRun();
+    const a = loopFor(e, s, toolsOf({ tools: { entries: [node] } }), { body: {} });
+    await toolsPass(a.t, run);
+    expect(run.pinWhy.size).toBe(1);
+    const b = loopFor(e, s, toolsOf({ tools: { entries: [] } }));
+    b.t.sys = a.t.sys;
+    // The next daily check.
+    a.sys.clock += 25 * 3600_000;
+    await toolsPass(b.t, run);
+    expect(run.pinWhy.size).toBe(0);
+    expect(run.next).toBe(0);
+  });
+});
+
+describe("toolsStep, on the loop's own parts", () => {
+  function box(freeGB: number) {
+    const sys = new FakeSys();
+    const d = loopDeps(sys, tempRoot());
+    const e = new Engine(mkdtempSync(join(tmpdir(), "taskbox-step-")));
+    d.engine = e;
+    d.cfg = { ...CFG, tools: { entries: [bun] } } as Config;
+    d.checks = { ...d.checks, cfg: d.cfg };
+    d.tools = { get: web({ [bun.url]: () => new Response(BUN) }).get, resolve: async () => ["140.82.112.3"] };
+    sys.responders.push((cmd) => (cmd === "/bin/df" ? { code: 0, stdout: `F 1 U A C M\n/dev/disk3s5 1 1 ${(freeGB * 1e9) / 1024} 1% /\n`, stderr: "" } : undefined));
+    const c = { box: new Slots(2), held: new Set<"macos" | "linux">(["macos"]), updated: () => false };
+    return { sys, d: { ...d, box: c.box }, e, c };
+  }
+  test("with the disk under its floor, nothing is fetched and the pin says why", async () => {
+    const { d, c } = box(50);
+    expect(await toolsStep(d, c)).toBe(false);
+    const st = JSON.parse(readFileSync(d.paths.loopState, "utf8")).tools as ToolsState;
+    expect(st.pins[0]).toMatchObject({ state: "failed", why: "has no room: the cache is at maxGB or the disk at its floor" });
+  });
+  test("with room, it fetches, bakes in this slot as a macOS VM, lets the slot go, and the job VMs clone the base", async () => {
+    const { d, c, e } = box(500);
+    expect(await toolsStep(d, c)).toBe(true);
+    const st = JSON.parse(readFileSync(d.paths.loopState, "utf8"));
+    expect(st.tools.sources.macos).toMatch(/^base-macos-/);
+    expect(st.slots["1"].slot).toBe("idle");
+    expect(c.box.held.size).toBe(0);
+    expect(e.shares.length).toBe(1);
+    expect((await cloneSource(d, "macos")).source).toBe(st.tools.sources.macos);
+  });
+  test("with two macOS VMs up, the macOS bake waits for one to end", async () => {
+    const { d, c, e } = box(500);
+    for (const slot of [2, 3]) c.box.held.set(slot, { slot, kind: "macos", labels: [], job: true, up: true, size: "default", memoryMB: 8192, cpus: 4 });
+    expect(await toolsStep(d, c)).toBe(false);
+    const st = JSON.parse(readFileSync(d.paths.loopState, "utf8")).tools as ToolsState;
+    expect(st.bakeWhy?.macos).toBe("waits: 2 macOS VMs run already");
+    expect(e.shares.length).toBe(0);
+    expect(c.box.held.has(1)).toBe(false);
   });
 });
 

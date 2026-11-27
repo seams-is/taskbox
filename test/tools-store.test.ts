@@ -6,7 +6,8 @@ import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, re
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkConfig, type Config } from "../src/config.ts";
-import { fetchBlob, type FetchDeps, hostProblem, privateAddress } from "../src/tools/fetch.ts";
+import { fetchBlob, hostProblem, privateAddress, STALL_MS } from "../src/tools/fetch.ts";
+import { web } from "./tools-web.ts";
 import { checkTools, entriesFor, type ToolEntry, toolsOf, urlProblem } from "../src/tools/settings.ts";
 import { blobPath, buildGeneration, dropBadBlobs, ensureStore, generationProblem, genIdOf, manifestText, removeTree, storeOf } from "../src/tools/store.ts";
 import { CFG } from "./helpers.ts";
@@ -66,7 +67,7 @@ describe("the tools settings", () => {
 });
 
 describe("the box's side of the internet", () => {
-  test.each(["10.1.2.3", "100.64.0.1", "100.127.255.254", "127.0.0.1", "169.254.1.1", "172.16.0.1", "172.31.9.9", "192.168.1.20", "192.0.0.8", "198.18.0.1", "224.0.0.1", "255.255.255.255", "0.0.0.0", "::1", "::", "fd7a:115c:a1e0::1", "fc00::1", "fe80::1", "ff02::1", "::ffff:10.0.0.1", "::ffff:a00:1", "64:ff9b::10.0.0.1", "2001:db8::1", "nonsense"])("%s is refused", (a) => {
+  test.each(["2002:a00:1::1", "2001:0:4136:e378::1", "64:ff9b:1::a00:1", "::ffff:0:10.0.0.1", "10.1.2.3", "100.64.0.1", "100.127.255.254", "127.0.0.1", "169.254.1.1", "172.16.0.1", "172.31.9.9", "192.168.1.20", "192.0.0.8", "198.18.0.1", "224.0.0.1", "255.255.255.255", "0.0.0.0", "::1", "::", "fd7a:115c:a1e0::1", "fc00::1", "fe80::1", "ff02::1", "::ffff:10.0.0.1", "::ffff:a00:1", "64:ff9b::10.0.0.1", "2001:db8::1", "nonsense"])("%s is refused", (a) => {
     expect(privateAddress(a)).toBe(true);
   });
   test.each(["140.82.112.3", "104.16.1.1", "100.128.0.1", "172.32.0.1", "2606:4700::1111", "::ffff:8.8.8.8"])("%s is the internet", (a) => {
@@ -81,24 +82,6 @@ describe("the box's side of the internet", () => {
   });
 });
 
-// A fake web: each URL's answer, and the names' addresses.
-function web(routes: Record<string, () => Response>, addrs: Record<string, string[]> = {}): FetchDeps & { asked: string[]; inits: RequestInit[] } {
-  const asked: string[] = [];
-  const inits: RequestInit[] = [];
-  return {
-    asked,
-    inits,
-    async fetch(url, init) {
-      asked.push(url);
-      inits.push(init ?? {});
-      const r = routes[url];
-      if (!r) return new Response("no", { status: 404 });
-      return r();
-    },
-    resolve: async (h) => addrs[h] ?? ["140.82.112.3"],
-    timeout: () => new AbortController().signal,
-  };
-}
 const redirect = (to: string, status = 302) => () => new Response(null, { status, headers: { location: to } });
 
 describe("fetching a pin", () => {
@@ -110,7 +93,8 @@ describe("fetching a pin", () => {
     expect(readFileSync(p, "utf8")).toBe(BUN);
     expect(statSync(p).mode & 0o777).toBe(0o444);
     expect(readdirSync(s.staging)).toEqual([]);
-    expect(w.inits[0]!.redirect).toBe("manual");
+    // The bytes on the wire are hashed: no decompression is asked for.
+    expect(w.gets[0]!.headers["Accept-Encoding"]).toBe("identity");
   });
   test("a hash mismatch is refused, and its bytes go", async () => {
     const s = store();
@@ -156,8 +140,46 @@ describe("fetching a pin", () => {
   test("a server that refuses, or a fetch that throws, is a failure with its reason", async () => {
     expect(await fetchBlob(web({ [bun.url]: () => new Response("", { status: 503 }) }), store(), bun, 1e6)).toMatchObject({ ok: false, why: "the server answered 503" });
     const w = web({});
-    w.fetch = async () => Promise.reject(new Error("EOF"));
+    w.get = async () => Promise.reject(new Error("EOF"));
     expect(await fetchBlob(w, store(), bun, 1e6)).toMatchObject({ ok: false, why: expect.stringContaining("EOF") });
+  });
+  test("each hop connects to the address its check passed, so a second lookup can't move it", async () => {
+    let n = 0;
+    const w = web({ [bun.url]: () => new Response(BUN) });
+    // A resolver that answers a public address once, and the LAN after: the fetch asks it once.
+    w.resolve = async () => (n++ ? ["192.168.1.20"] : ["140.82.112.3"]);
+    expect(await fetchBlob(w, store(), bun, 1e6)).toEqual({ ok: true, bytes: BUN.length });
+    expect(w.gets.map((g) => g.address)).toEqual(["140.82.112.3"]);
+    expect(n).toBe(1);
+  });
+  test("a server that stops sending is cut off once the stall timer fires, and its part goes", async () => {
+    const s = store();
+    let w: ReturnType<typeof web>;
+    const slow = () =>
+      new Response(
+        new ReadableStream({
+          start: (c) => {
+            c.enqueue(new TextEncoder().encode("bun"));
+            // Nothing more comes: the test fires the stall timer the fetch set after this chunk.
+            queueMicrotask(() => {
+              const t = w.timers.filter((x) => x.live && x.ms === STALL_MS).at(-1)!;
+              t.f();
+              c.enqueue(new TextEncoder().encode(" zip bytes"));
+            });
+          },
+        }),
+      );
+    w = web({ [bun.url]: slow });
+    expect(await fetchBlob(w, s, bun, 1e6)).toEqual({ ok: false, why: "the download was cut off: nothing came for 60 s" });
+    expect(readdirSync(s.staging)).toEqual([]);
+    expect(readdirSync(s.blobs)).toEqual([]);
+    expect(w.timers.every((t) => !t.live)).toBe(true);
+  });
+  test("a fetch past its ceiling is cut off with its time in the reason", async () => {
+    let w: ReturnType<typeof web>;
+    const slow = () => new Response(new ReadableStream({ start: (c) => queueMicrotask(() => (w.timers.find((x) => x.ms === 120_000)!.f(), c.enqueue(new TextEncoder().encode(BUN)), c.close())) }));
+    w = web({ [bun.url]: slow });
+    expect(await fetchBlob(w, store(), bun, 1e6, () => {}, 120_000)).toEqual({ ok: false, why: "the download was cut off: it took longer than 2 minutes" });
   });
   test("a link planted in staging under the next name is never written through", async () => {
     const s = store();

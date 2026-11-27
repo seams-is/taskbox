@@ -1,5 +1,6 @@
-// The pinned tool cache's settings: the tools jobs would download, each pinned by URL and SHA-256 by
-// the owner. A new pin is a guarded key: it is what every job starts with.
+// The pinned tool cache's settings: the tools jobs would download, each pinned by URL and SHA-256 in
+// the settings. A pin is what every job starts with, so until the settings op guards tools.entries it
+// changes only with a signed update (the release's taskbox.json).
 export type ToolOs = "macos" | "linux";
 export const TOOL_OS: readonly ToolOs[] = ["macos", "linux"];
 
@@ -31,11 +32,11 @@ export const MAX_REDIRECTS = 5;
 export const MAX_GB = 50;
 export const DEFAULT_MAX_GB = 5;
 export const MAX_ENTRIES = 100;
-const NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$/;
+export const NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$/;
 const HEX = /^[0-9a-f]{64}$/;
-const TOOL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
-const ARCH = /^[a-z0-9_]{1,16}$/;
+export const TOOL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
+export const ARCH = /^[a-z0-9_]{1,16}$/;
 const KEYS = ["enabled", "maxGB", "entries"];
 const ENTRY_KEYS = ["name", "os", "url", "sha256", "toolcache"];
 const CACHE_KEYS = ["tool", "version", "arch", "strip"];

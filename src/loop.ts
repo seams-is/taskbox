@@ -1140,7 +1140,8 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     const copy = await t.exec(vm, ["/bin/sh", "-c", `mkdir -p ${RUNNER_DIR} && tar -xzf - -C ${RUNNER_DIR}`], tarball);
     if (copy.code !== 0) throw new Error("copying the runner into the VM failed");
     // The runner's .env names the tools a base VM carries, read from the guest's own files.
-    if (from.base && (await t.exec(vm, ["/bin/sh", "-s"], runnerEnvScript(RUNNER_DIR))).code !== 0) throw new Error("telling the runner about the tools failed");
+    // A failure is logged and the job runs: the tools are on its disk, and only the names are missing.
+    if (from.base && (await t.exec(vm, ["/bin/sh", "-s"], runnerEnvScript(RUNNER_DIR)).catch(() => ({ code: -1 }))).code !== 0) d.log.write(`the runner wasn't told about the tools in ${from.source}; its job runs without TASKBOX_TOOLS`);
 
     if (d.box?.halt !== undefined) {
       outcome = "halted";

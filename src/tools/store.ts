@@ -12,7 +12,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, createReadStream, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type ToolCacheSpec, type ToolEntry, type ToolOs } from "./settings.ts";
+import { NAME, type ToolCacheSpec, type ToolEntry, type ToolOs } from "./settings.ts";
 
 export interface Store {
   root: string;
@@ -225,6 +225,8 @@ export async function buildGeneration(s: Store, os: ToolOs, entries: ToolEntry[]
   const held: ManifestEntry[] = [];
   const missing: string[] = [];
   for (const e of entries.filter((x) => x.os === os)) {
+    // Checked again here: the name becomes a path in by-name.
+    if (!NAME.test(e.name) || e.name.includes("..")) throw new Error(`not a pin's name: ${e.name.replace(/[^\x20-\x7e]/g, "").slice(0, 40)}`);
     const p = blobPath(s, e.sha256);
     let st;
     try {
@@ -298,5 +300,37 @@ export function blobBytes(s: Store): number {
       if (st.isFile()) n += st.size;
     } catch {}
   }
+  return n;
+}
+
+// What the store takes on disk: each file in blobs and in every generation once by inode, so a
+// generation that still holds a blob no pin names is counted.
+export function storeBytes(s: Store): number {
+  const seen = new Set<number>();
+  let n = 0;
+  const walk = (dir: string) => {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const p = join(dir, name);
+      let st;
+      try {
+        st = lstatSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) walk(p);
+      else if (st.isFile() && !seen.has(st.ino)) {
+        seen.add(st.ino);
+        n += st.size;
+      }
+    }
+  };
+  walk(s.blobs);
+  walk(s.gen);
   return n;
 }

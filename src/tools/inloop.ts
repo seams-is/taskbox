@@ -10,12 +10,12 @@ import { guestOf, GUEST_USER } from "../guest.ts";
 import { beatFor } from "../beat.ts";
 import { engineOf, kindDeps, type LoopDeps, type Slots, writeLoopState } from "../loop.ts";
 import { rows } from "../rows/index.ts";
-import { type CloneSource, cloneSourceOf, readBases } from "./base.ts";
-import { type FetchDeps, realResolve, type Resolve } from "./fetch.ts";
+import { type CloneSource, cloneSourceOf, pinKey, readBases } from "./base.ts";
+import { type Get, realGet, realResolve, type Resolve } from "./fetch.ts";
 import { newRun, toolsDue as toolsDueNow, type ToolsLoop, toolsPass, type ToolsRun } from "./pass.ts";
 import { readRefresh, refreshCancelled, refreshSteps } from "./refresh.ts";
 import { toolsOf } from "./settings.ts";
-import { blobBytes, shortGen, type Store, storeOf } from "./store.ts";
+import { type Generation, shortGen, type Store, storeBytes, storeOf } from "./store.ts";
 
 // The slot's word while it bakes, and its beat: the gate (46 min), the clone (15), the guest (5),
 // the bake step (30), the shutdown (3) and the disk's hash, with room.
@@ -24,8 +24,24 @@ export const BAKE_BEAT_MS = 2 * 3600_000;
 
 // Tests replace the network.
 export interface ToolsDeps {
-  fetch?: FetchDeps["fetch"];
+  get?: Get;
   resolve?: Resolve;
+}
+
+// What a fetch may take: the disk's free GB over the floor for each VM (this one and those running),
+// and maxGB less what the store holds. undefined when the disk can't be read.
+export function roomFor(o: { freeGB: number | undefined; floorGB: number; running: number; maxGB: number; heldBytes: number }): number | undefined {
+  if (o.freeGB === undefined) return undefined;
+  return Math.floor(Math.min((o.freeGB - o.floorGB * (1 + o.running)) * 1e9, o.maxGB * 1e9 - o.heldBytes));
+}
+
+// What a bake writes beyond its clone, as room it needs over the floor: the tools copied in and
+// unpacked, at most four times their size, and the boot's own writes.
+export const BAKE_MARGIN_GB = 5;
+export function bakeRoomWhy(o: { freeGB: number | undefined; floorGB: number; running: number; genBytes: number }): string | undefined {
+  if (o.freeGB === undefined) return "the free disk can't be read";
+  const need = o.floorGB * (1 + o.running) + Math.ceil((o.genBytes * 4) / 1e9) + BAKE_MARGIN_GB;
+  return o.freeGB < need ? `${o.freeGB} GB free, ${need} GB needed` : undefined;
 }
 
 export const storeFor = (d: Pick<LoopDeps, "paths">): Store => storeOf(join(d.paths.state, "tools"));
@@ -45,10 +61,16 @@ export function toolsOn(cfg: LoopDeps["cfg"], kind?: Kind): boolean {
 }
 
 // The loop's own pass: true when this slot held a VM for a bake, so it looks again from the top.
-export async function toolsStep(d: LoopDeps & { tools?: ToolsDeps }, c: { box: Slots; held: Set<Kind>; updated: () => boolean }): Promise<boolean> {
+export async function toolsStep(d: LoopDeps, c: { box: Slots; held: Set<Kind>; updated: () => boolean }): Promise<boolean> {
   const view = toolsOf(d.cfg);
   const store = storeFor(d);
   const run = runOf(c.box);
+  const kinds = () => kindsOf(d.cfg).filter((k) => c.held.has(k));
+  // A kind the box doesn't serve has no image, so cleanup keeps none of its bases.
+  const imageOf = (k: Kind) => (kindsOf(d.cfg).includes(k) ? forKind(d.cfg, k).image : "");
+  const gateFree = () => !c.box.gateHeld();
+  // Asked first, with nothing built, so an idle slot costs a few file reads.
+  if (!toolsDueNow({ sys: d.sys, view, store, kinds, imageOf, gateFree }, run)) return false;
   const ops = { dir: loopState(d.paths.state).ops, owner: process.getuid?.() ?? 0 };
   const events = eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys);
   const asked = readRefresh(store);
@@ -57,27 +79,23 @@ export async function toolsStep(d: LoopDeps & { tools?: ToolsDeps }, c: { box: S
     engine: engineOf(d),
     store,
     view,
-    fetch: { fetch: d.tools?.fetch ?? ((u, i) => d.sys.fetch(u, i)), resolve: d.tools?.resolve ?? realResolve, timeout: (ms) => d.sys.timeout(ms) },
+    fetch: { get: d.tools?.get ?? realGet, resolve: d.tools?.resolve ?? realResolve, after: (ms, f) => d.sys.after(ms, f) },
     log: (l) => d.log.write(l),
     event: (type, text, data) => {
       try {
         events.write({ type, actor: "taskbox", text, ...(data ? { data } : {}) } as Parameters<typeof events.write>[0]);
       } catch {}
     },
-    kinds: () => kindsOf(d.cfg).filter((k) => c.held.has(k)),
-    // A kind the box doesn't serve has no image, so cleanup keeps none of its bases.
-    imageOf: (k) => (kindsOf(d.cfg).includes(k) ? forKind(d.cfg, k).image : ""),
+    kinds,
+    imageOf,
     roomBytes: async () => {
-      const free = await freeGB(d.sys);
-      if (free === undefined) return 0;
-      const running = c.box.othersUp(d.slot).length;
-      const disk = (free - d.cfg.minFreeDiskGB * (1 + running)) * 1e9;
       let held = 0;
       try {
-        held = blobBytes(store);
+        held = storeBytes(store);
       } catch {}
-      return Math.floor(Math.min(disk, view.maxGB * 1e9 - held));
+      return roomFor({ freeGB: await freeGB(d.sys), floorGB: d.cfg.minFreeDiskGB, running: c.box.othersUp(d.slot).length, maxGB: view.maxGB, heldBytes: held });
     },
+    bakeRoom: async (gen: Generation) => bakeRoomWhy({ freeGB: await freeGB(d.sys), floorGB: d.cfg.minFreeDiskGB, running: c.box.othersUp(d.slot).length, genBytes: gen.manifest.entries.reduce((n, e) => n + e.bytes, 0) }),
     claim: async (kind) => {
       const others = c.box.others(d.slot);
       if (kind === "macos" && others.filter((o) => o.kind === "macos").length >= MACOS_MAX) return `${MACOS_MAX} macOS VMs run already`;
@@ -101,12 +119,12 @@ export async function toolsStep(d: LoopDeps & { tools?: ToolsDeps }, c: { box: S
       };
     },
     gate: () => c.box.enter(d.slot, d.sys, () => c.box.halt !== undefined),
-    gateFree: () => !c.box.gateHeld(),
+    gateFree,
     guestOf: (k) => ({ user: GUEST_USER, loginShell: guestOf(k).loginShell }),
     stopIf: () => (c.updated() ? "an update was installed" : c.box.halt !== undefined ? "the loop is stopping" : (asked && refreshCancelled(ops, asked.op) && "the refresh was cancelled") || (existsSync(d.paths.drain) && "a drain began") || false),
     write: (s) => writeLoopState(d.paths, { tools: s }),
   };
-  if (asked && toolsDueNow(t, run)) {
+  if (asked) {
     const steps = refreshSteps(ops, store, asked.op, () => d.sys.now());
     if (steps) t.refresh = steps;
   }
@@ -126,7 +144,7 @@ export async function cloneSource(d: LoopDeps, kind: Kind): Promise<CloneSource 
     // Before this loop run's first pass the current generation isn't known: then only a base whose
     // every pin is still pinned is taken.
     const current = run?.gens[kind]?.id ?? "unknown";
-    const src = cloneSourceOf({ enabled: true, kind, image, current, pinned: new Set(view.entries.map((e) => `${e.name}@${e.sha256}`)), bases, vms: await engineOf(d).list() });
+    const src = cloneSourceOf({ enabled: true, kind, image, current, pinned: new Set(view.entries.map(pinKey)), bases, vms: await engineOf(d).list() });
     return src.base ? { ...src, gen: shortGen(src.base.gen) } : src;
   } catch (e) {
     d.log.write(`the ${KIND_WORD[kind]} base VM couldn't be read, so the VM clones the image: ${(e as Error).message}`);

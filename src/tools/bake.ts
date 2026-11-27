@@ -5,8 +5,9 @@
 import type { Kind } from "../settings/kinds.ts";
 import type { Sys } from "../sys.ts";
 import type { NetPolicy, VmEngine } from "../vm.ts";
-import { type BaseRecord, baseNameFor, writeBase } from "./base.ts";
-import { bakeScript, SHARE_TAG, SHUTDOWN, TOOL_CACHE_PROBE, toolCacheOf } from "./guest.ts";
+import { type BaseRecord, baseNameFor, pinKey, writeBase } from "./base.ts";
+import { statSync } from "node:fs";
+import { bakeScript, sealScript, SHARE_TAG, SHUTDOWN, TOOL_CACHE_PROBE, toolCacheOf } from "./guest.ts";
 import { type Generation, hashFile, type Store } from "./store.ts";
 
 // The bake's network: everything blocked, the box too, and DNS to the box let through, as a job
@@ -61,7 +62,7 @@ export async function bake(d: BakeDeps, s: Store, kind: Kind, image: string, gen
     if ((await e.size(name, d.size.cpus, d.size.memoryMB)).code !== 0) throw new Error("tart set failed");
     d.step?.(`starting the ${kind} VM`);
     proc = e.startBake(name, BAKE_NET, { path: gen.dir, tag: SHARE_TAG });
-    void proc.exited.then(() => (exited = true));
+    void proc.exited.then(() => (exited = true)).catch(() => (exited = true));
     let up = false;
     for (let i = 0; i < GUEST_TRIES && !exited; i++) {
       const r = await e.exec(name, ["/usr/bin/true"], undefined, 20_000).catch(() => ({ code: -1 }));
@@ -75,6 +76,9 @@ export async function bake(d: BakeDeps, s: Store, kind: Kind, image: string, gen
     leave = undefined;
     if (!up) throw new Error(`the ${kind} guest never answered`);
     check();
+    // SSH off and IPv6 off first, before anything is copied in: the image's sshd takes its known password.
+    const sealed = await e.exec(name, ["/usr/bin/sudo", "-n", "/bin/sh", "-s"], sealScript(kind), 120_000).catch((x: Error) => ({ code: -1, stdout: "", stderr: x.message }));
+    if (sealed.code !== 0 || !/(^|\n)sealed\s*$/.test(sealed.stdout)) throw new Error(`SSH couldn't be turned off in the ${kind} guest: ${(sealed.stderr || sealed.stdout).trim().split("\n").pop()?.slice(0, 160) || `exit ${sealed.code}`}`);
     const said = await e.exec(name, [...d.guest.loginShell, TOOL_CACHE_PROBE], undefined, 30_000).catch(() => ({ code: -1, stdout: "" }));
     const toolCache = toolCacheOf(said.code === 0 ? said.stdout : "");
     d.step?.(`baking ${kind}`);
@@ -86,9 +90,16 @@ export async function bake(d: BakeDeps, s: Store, kind: Kind, image: string, gen
     while (!exited && d.sys.now() < until) await Promise.race([proc.exited, d.sys.sleep(2_000)]);
     if (!exited) throw new Error(`the ${kind} guest didn't shut down`);
     proc = undefined;
+    // The disk's hash is the base's identity, shown in tool list and image list. It isn't checked
+    // again: the base is never booted again, and whatever could change it already runs as the
+    // service account, which could change the record too.
     const disk = await hashFile(e.diskPath(name));
     if (!disk) throw new Error("the base VM's disk can't be read");
-    const base: BaseRecord = { v: 1, name, kind, image, gen: gen.id, entries: gen.manifest.entries.map((x) => `${x.name}@${x.sha256}`), diskSha256: disk.hex, bakedAt: d.sys.now() };
+    let diskBytes: number | undefined;
+    try {
+      diskBytes = statSync(e.diskPath(name)).blocks * 512;
+    } catch {}
+    const base: BaseRecord = { v: 1, name, kind, image, gen: gen.id, entries: gen.manifest.entries.map(pinKey), diskSha256: disk.hex, ...(diskBytes !== undefined ? { diskBytes } : {}), bakedAt: d.sys.now() };
     writeBase(s, base);
     d.log(`baked ${name} with ${gen.manifest.entries.length} tools`);
     return { ok: true, base };

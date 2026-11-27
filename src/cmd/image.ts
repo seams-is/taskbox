@@ -24,7 +24,7 @@ async function list(c: BoxCtx, json: boolean): Promise<{ v3?: Record<string, unk
     const pull = readPull(c.p === c.own ? own : pathsForKind(sharedPaths(c.own), k).pull);
     const mine = pull && (pull.ref === undefined || pull.ref === image);
     const state = mine ? pull!.state : "not held";
-    return { kind: k, image: image.split("@")[0]!, digest: image.split("@")[1]!, state, ...(mine && pull!.totalGB ? { gb: pull!.totalGB } : {}), base: tools?.sources[k] && tools.sources[k] !== image ? tools.sources[k] : null, baseLine: baseColumn(tools, k), word: KIND_WORD[k] };
+    return { kind: k, image: image.split("@")[0]!, digest: image.split("@")[1]!, state, ...(mine && pull!.totalGB ? { gb: pull!.totalGB } : {}), base: tools?.sources[k] && tools.sources[k] !== image ? tools.sources[k] : null, baseDisk: tools?.bases.find((b) => b.name === tools.sources[k])?.diskSha256 ?? null, baseLine: baseColumn(tools, k), word: KIND_WORD[k] };
   });
   if (json) return { v3: { answers: 3, kind: "images", images: rows.map(({ word: _w, baseLine: _b, ...r }) => r) }, exit: 0 };
   for (const r of rows) c.say(`${r.word.padEnd(6)}  ${r.image}  ${r.digest.slice(0, 19)}  ${r.state}${"gb" in r ? `, ${r.gb} GB` : ""}  base VM: ${r.baseLine}`);

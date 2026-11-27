@@ -13,13 +13,22 @@ export interface BaseRecord {
   kind: Kind;
   image: string; // the pinned image it was cloned from, by digest
   gen: string; // the generation baked in
-  entries: string[]; // name@sha256 of each pin in it
-  diskSha256: string;
+  entries: string[]; // each pin in it, as pinKey spells it
+  diskSha256: string; // its identity: the disk as the bake left it (bake.ts says why it isn't checked again)
+  diskBytes?: number; // what the disk takes on disk, in blocks
   bakedAt: number;
 }
 
 const HEX = /^[0-9a-f]{64}$/;
 export const BASE_NAME = /^base-(macos|linux)-[0-9a-f]{12}-[0-9a-f]{12}$/;
+// One pin as a base records it: its name, its hash, and where the bake unpacked it, so a base whose
+// toolcache mapping changed is never served by the fallback, even with the same bytes.
+export function pinKey(e: { name: string; sha256: string; toolcache?: { tool: string; version: string; arch: string; strip?: number } }): string {
+  const t = e.toolcache;
+  return `${e.name}@${e.sha256}#${t ? `${t.tool}/${t.version}/${t.arch}/${t.strip ?? 0}` : ""}`;
+}
+const PIN_KEY = /^[A-Za-z0-9._+-]{1,100}@[0-9a-f]{64}#([A-Za-z0-9._+-]{1,64}\/[A-Za-z0-9._+-]{1,64}\/[a-z0-9_]{1,16}\/[0-3])?$/;
+
 export const isBaseVm = (vm: { name: string; image?: unknown }) => !vm.image && vm.name.startsWith("base-");
 
 // The base VM's name: its kind, its generation and its image, so each pair has its own.
@@ -43,7 +52,8 @@ function validRecord(v: unknown): v is BaseRecord {
     (r.kind === "macos" || r.kind === "linux") &&
     typeof r.image === "string" && /@sha256:[0-9a-f]{64}$/.test(r.image) &&
     typeof r.gen === "string" && HEX.test(r.gen) &&
-    Array.isArray(r.entries) && r.entries.every((e) => typeof e === "string" && /^[A-Za-z0-9._+-]{1,100}@[0-9a-f]{64}$/.test(e)) &&
+    Array.isArray(r.entries) && r.entries.every((e) => typeof e === "string" && PIN_KEY.test(e)) &&
+    (r.diskBytes === undefined || (typeof r.diskBytes === "number" && Number.isFinite(r.diskBytes))) &&
     typeof r.diskSha256 === "string" && HEX.test(r.diskSha256) &&
     typeof r.bakedAt === "number" && Number.isFinite(r.bakedAt)
   );
@@ -101,8 +111,9 @@ export interface CloneSource {
 // The VM a job of this kind clones:
 // - the pinned image when the cache is off, or when the settings pin nothing for its os;
 // - the base for the current generation and image, when it is baked;
-// - else the newest base of this image whose every pin is still pinned, so a pin taken away is never
-//   served again by an older base, and a failed or waiting bake leaves jobs on the last good one;
+// - else the newest base of this image whose every pin, with its toolcache mapping, is still pinned,
+//   so a pin taken away or changed is never served again by an older base (jobs then run with no
+//   baked tools, never stale ones), and a failed or waiting bake leaves jobs on the last good one;
 // - else the pinned image. A base the engine no longer lists is no base.
 export function cloneSourceOf(o: { enabled: boolean; kind: Kind; image: string; current?: string; pinned: Set<string>; bases: BaseRecord[]; vms: VmInfo[] }): CloneSource {
   if (!o.enabled || o.current === undefined) return { source: o.image };

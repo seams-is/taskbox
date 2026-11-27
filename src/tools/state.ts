@@ -19,6 +19,8 @@ export interface BaseView {
   gen: string;
   image: string;
   bakedAt: number;
+  diskSha256?: string; // the base's identity: its disk as the bake left it
+  diskBytes?: number;
 }
 export interface ToolsState {
   enabled: boolean;
@@ -32,6 +34,9 @@ export interface ToolsState {
   sources: Partial<Record<Kind, string>>;
   why?: string; // the last failure that isn't one pin's: room, a bake
   bakeWhy?: Partial<Record<Kind, string>>;
+  bakeFails?: Partial<Record<Kind, number>>; // failed bakes in a row
+  cleanupWhy?: string;
+  cleanupFails?: number; // passes in a row whose cleanup left something
   // The step in progress: fetching node-24.22.3 40%, baking linux.
   doing?: string;
 }
@@ -48,13 +53,18 @@ export function toolsStateOf(v: unknown): ToolsState | undefined {
   return t as ToolsState;
 }
 
+// The base VM a kind's jobs clone now, if they clone one.
+const baseOf = (t: ToolsState | undefined, kind: Kind): BaseView | undefined => {
+  const src = t?.sources[kind];
+  return src ? t!.bases.find((x) => x.name === src) : undefined;
+};
+
 // The pins each kind's job VMs start with now: those in the base VM it clones.
 function inUse(t: ToolsState): { total: number; byKind: Partial<Record<Kind, number>> } {
   const byKind: Partial<Record<Kind, number>> = {};
   let total = 0;
-  for (const [k, src] of Object.entries(t.sources) as [Kind, string][]) {
-    const b = t.bases.find((x) => x.name === src);
-    if (!b) continue;
+  for (const k of Object.keys(t.sources) as Kind[]) {
+    if (!baseOf(t, k)) continue;
     const n = t.pins.filter((p) => p.os === k && p.state === "held").length;
     byKind[k] = n;
     total += n;
@@ -76,13 +86,17 @@ export function toolsLine(t: ToolsState): string {
 
 // The "Tool cache" row: OK while every pin is in use; WARN while one is missing or a bake failed, with why.
 // Jobs run either way: a pin that isn't baked in is downloaded as before.
-export function toolsRow(t: ToolsState | undefined): { status: "OK" | "WARN" | "SKIP"; detail: string } {
+// FAIL once a bake has failed 3 times in a row, or a cleanup left disk behind 3 passes in a row:
+// then someone looks.
+export function toolsRow(t: ToolsState | undefined): { status: "OK" | "WARN" | "FAIL" | "SKIP"; detail: string } {
   if (!t) return { status: "SKIP", detail: "the loop hasn't read the tool cache yet" };
   const line = toolsLine(t);
   if (!t.enabled || !t.pins.length) return { status: "OK", detail: line };
   const bad = t.pins.filter((p) => p.state !== "held").map((p) => `${p.name} ${p.why ?? "isn't fetched yet"}`);
   const bakes = (Object.entries(t.bakeWhy ?? {}) as [Kind, string][]).map(([k, w]) => `the ${KIND_WORD[k]} bake: ${w}`);
-  const why = [...bad, ...bakes, ...(t.why ? [t.why] : [])];
+  const why = [...bad, ...bakes, ...(t.cleanupWhy ? [`cleanup ${t.cleanupWhy}`] : []), ...(t.why ? [t.why] : [])];
+  const alarm = Object.values(t.bakeFails ?? {}).some((n) => (n ?? 0) >= 3) || (t.cleanupFails ?? 0) >= 3;
+  if (alarm) return { status: "FAIL", detail: `${line}. ${why.join("; ")}. Jobs download what isn't baked in. Fix: read taskbox logs for the tool cache, then taskbox tool refresh as the service account` };
   if (!why.length && inUse(t).total === t.pins.filter((p) => p.state === "held").length) return { status: "OK", detail: line };
   return { status: "WARN", detail: `${line}. ${why.join("; ") || "a bake is waiting for a free slot"}. Jobs download what isn't baked in. Nothing to do: the loop tries again` };
 }
@@ -93,16 +107,15 @@ export function toolsScreen(t: ToolsState | undefined): string[] {
   const out = [`Tool cache: ${toolsLine(t)}.`];
   if (!t.enabled) return out;
   for (const p of t.pins) out.push(`  ${p.os.padEnd(5)}  ${p.name.padEnd(28)}  ${p.state.padEnd(7)}  ${p.bytes !== undefined ? mb(p.bytes).padStart(7) : "      -"}  ${p.sha256.slice(0, 12)}${p.why ? `  ${p.why}` : ""}`);
-  for (const [k, src] of Object.entries(t.sources) as [Kind, string][]) {
-    const b = t.bases.find((x) => x.name === src);
-    out.push(b ? `${KIND_WORD[k]} job VMs clone ${b.name}: gen ${short(b.gen)}, baked ${time(b.bakedAt)}.` : `${KIND_WORD[k]} job VMs clone the pinned image: no base VM is baked yet.`);
+  for (const k of Object.keys(t.sources) as Kind[]) {
+    const b = baseOf(t, k);
+    out.push(b ? `${KIND_WORD[k]} job VMs clone ${b.name}: gen ${short(b.gen)}, baked ${time(b.bakedAt)}${b.diskSha256 ? `, disk ${b.diskSha256.slice(0, 12)}` : ""}${b.diskBytes ? `, ${mb(b.diskBytes)}` : ""}.` : `${KIND_WORD[k]} job VMs clone the pinned image: no base VM is baked yet.`);
   }
   return out;
 }
 
 // image list's column for one kind: the base VM its jobs clone, or none.
 export function baseColumn(t: ToolsState | undefined, kind: Kind): string {
-  const src = t?.sources[kind];
-  const b = src ? t!.bases.find((x) => x.name === src) : undefined;
-  return b ? `${b.name} (gen ${short(b.gen)}, baked ${time(b.bakedAt)})` : "none";
+  const b = baseOf(t, kind);
+  return b ? `${b.name} (gen ${short(b.gen)}, baked ${time(b.bakedAt)}${b.diskSha256 ? `, disk ${b.diskSha256.slice(0, 12)}` : ""})` : "none";
 }
