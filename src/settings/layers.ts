@@ -2,11 +2,13 @@
 // then box.json for its local keys (classes.ts). A key outside that class is passed over alone. A
 // box.json that fails over the product file is set aside with its reason, so it never stops the
 // loop, check, update or rollback.
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type BoxFile, readBoxFile } from "../boxsettings.ts";
 import { readJson } from "../config.ts";
 import { within } from "./classes.ts";
 import { checkConfig, type Config } from "./core.ts";
+import { readInForce, settingsFilesForApp } from "./inforce.ts";
 
 type Warn = (line: string) => void;
 const check = (s: Record<string, unknown>, warn: Warn) => checkConfig(structuredClone(s) as unknown as Config, warn);
@@ -28,10 +30,22 @@ export function layeredConfig(product: Record<string, unknown>, box?: BoxFile, w
   return Object.assign(check(layered, warn), said, { boxKeys: kept.map(([k]) => k) });
 }
 
-// The release's taskbox.json, with the box's own box.json over it when boxFile is given.
-// warn hears each setting taskbox passes over: from v2.6.1 an unknown key inside away or timings is
-// read past with a warning, so a later release's taskbox.json can add one.
+// The settings in force: the settings repo's, as root's guard validated them (inforce.ts), when the
+// install at dir has them beside it; else the install's own taskbox.json, as v2 read it. With the box's
+// own box.json over either when boxFile is given. warn hears each setting taskbox passes over: from
+// v2.6.1 an unknown key inside away or timings is read past with a warning, so a later release's
+// taskbox.json can add one.
 export function loadConfig(dir: string, boxFile?: string, rootUid = 0, warn: Warn = () => {}): Config {
+  const f = readInForce(settingsFilesForApp(dir), rootUid);
+  if (f.kind === "ok") {
+    try {
+      const { sha, held, overlayKeys, overlayProblem, unknown } = f.value;
+      return Object.assign(loadConfigFrom(f.value.doc, boxFile, rootUid, warn), { settingsIn: { sha, held, overlayKeys, unknown, ...(overlayProblem ? { overlayProblem } : {}) } });
+    } catch {
+      // A commit this release can't read (a rollback to one before it): the install's own file, if any.
+      if (!existsSync(join(dir, "taskbox.json"))) throw new Error(`the settings in force (${f.value.sha.slice(0, 12)}) don't pass this release's checks`);
+    }
+  }
   return loadConfigFrom(readJson<Record<string, unknown>>(join(dir, "taskbox.json")), boxFile, rootUid, warn);
 }
 

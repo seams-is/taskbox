@@ -7,6 +7,7 @@ import * as availability from "./availability.ts";
 import * as connect from "./connect.ts";
 import * as op from "./op.ts";
 import * as poll from "./poll.ts";
+import * as settings from "./settings.ts";
 import * as workspace from "./workspace.ts";
 
 export const handlerFiles: readonly HandlerFile[] = [
@@ -14,5 +15,6 @@ export const handlerFiles: readonly HandlerFile[] = [
   { file: "connect.ts", handlers: connect.handlers },
   { file: "op.ts", handlers: op.handlers },
   { file: "poll.ts", handlers: poll.handlers },
+  { file: "settings.ts", handlers: settings.handlers },
   { file: "workspace.ts", handlers: workspace.handlers },
 ];

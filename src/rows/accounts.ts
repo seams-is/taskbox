@@ -1,5 +1,6 @@
 // The access model's rows: "Accounts", the accounts as taskbox placed them, and "Tailnet policy",
 // the SSH rules the tailnet sent this box beside what the settings give now.
+import { openWindow } from "../settings/adminssh.ts";
 import { poolOf, SYSTEM_USERS } from "../access.ts";
 import { idsShared, otherTaskboxShells, ownAccess, readRecord, systemProblem, uidOf } from "../accounts.ts";
 import { trustedKey } from "../approver.ts";
@@ -114,7 +115,8 @@ export async function tailnetPolicyRow(c: CheckContext): Promise<Out> {
   if ("refuse" in own) return fail(`${own.refuse}. As your admin user, type taskbox update`);
   const accounts = { ...c.cfg.accounts };
   if (own.agent === undefined) delete accounts.agent;
-  const want = policyFor(accounts, { tag: tagOf(c.cfg) }, own.pool).ssh;
+  const temp = openWindow(c.cfg.adminSsh, c.sys.now());
+  const want = policyFor(accounts, { tag: tagOf(c.cfg), ...(temp ? { adminSsh: temp } : {}) }, own.pool).ssh;
   const users = (action: string) => want.filter((x) => x.action === action).flatMap((x) => x.users as string[]);
   const diff = policyDiff(live, { accept: users("accept"), check: users("check") });
   if (diff.length) return fail(`the tailnet's rules for this box differ from the settings (${diff.slice(0, 4).join("; ")}): on the controller, type taskbox policy show --box all, then paste it`);

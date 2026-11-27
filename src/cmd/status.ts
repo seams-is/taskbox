@@ -24,14 +24,18 @@ export const commands: CommandSpec[] = [
       const name = c.deps.user();
       let who: { remote: boolean; admin: boolean } | undefined;
       let logins: string | undefined;
+      const extra: string[] = [];
       try {
         const cfg = loadConfig(c.p.app, c.p.boxSettings);
+        const { openWindow, windowLine } = await import("../settings/adminssh.ts");
+        const temp = openWindow(cfg.adminSsh, c.ops.sys.now());
+        if (temp) extra.push(`Admin SSH: ${windowLine(temp, false)}.`);
         who = { remote: cfg.accounts.agent !== undefined && name === cfg.accounts.agent, admin: await isAdmin(c.ops.sys, name) };
         logins = recentLine(readSeen(c.own), c.ops.sys.now());
       } catch {
         who = undefined;
       }
-      return status(c.ops, who, logins);
+      return status(c.ops, who, logins, extra);
     },
     answer: async (c) => {
       const { statusJson } = await import("../ops.ts");

@@ -31,6 +31,7 @@ import * as prune from "./prune.ts";
 import * as remove from "./remove.ts";
 import * as resume from "./resume.ts";
 import * as rollback from "./rollback.ts";
+import * as settings from "./settings.ts";
 import * as size from "./size.ts";
 import * as source from "./source.ts";
 import * as start from "./start.ts";
@@ -67,6 +68,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "remove.ts", module: remove },
   { file: "resume.ts", module: resume },
   { file: "rollback.ts", module: rollback },
+  { file: "settings.ts", module: settings },
   { file: "size.ts", module: size },
   { file: "source.ts", module: source },
   { file: "start.ts", module: start },

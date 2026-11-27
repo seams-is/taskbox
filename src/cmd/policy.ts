@@ -62,7 +62,9 @@ export const commands: CommandSpec[] = [
       }
       let pol;
       try {
-        pol = policyFor(accounts, { ...(owner !== undefined ? { owner } : {}), admins: [...admins], tag: tagOf(cfg) }, pool);
+        const { openWindow } = await import("../settings/adminssh.ts");
+        const temp = openWindow(cfg.adminSsh, c.ops.sys.now());
+        pol = policyFor(accounts, { ...(owner !== undefined ? { owner } : {}), admins: [...admins], tag: tagOf(cfg), ...(temp ? { adminSsh: temp } : {}) }, pool);
       } catch (e) {
         c.say(`${(e as Error).message}. Nothing printed.`);
         return 1;

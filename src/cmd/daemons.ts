@@ -311,7 +311,9 @@ export const commands: CommandSpec[] = [
         const relabeled = relabelDue({ paths: p, log }, await underOldLabel({ sys, cfg }, uid, process.pid));
         // The box's own settings or either App's key changed (taskbox connect github, or a new key taken
         // by the update): the loop restarts as for an update, once no job runs, and reads them at its start.
-        const stamp = () => [p.boxSettings, sourceKeyPath(p, sourceAppId(cfg)), p.key].map((f) => fileStamp(lstatSync, f)).join("|");
+        // The settings in force from the settings repo count too (settings/inforce.ts).
+        const { settingsFilesForApp } = await import("../settings/inforce.ts");
+        const stamp = () => [p.boxSettings, settingsFilesForApp(p.app).inForce, sourceKeyPath(p, sourceAppId(cfg)), p.key].map((f) => fileStamp(lstatSync, f)).join("|");
         const settingsAt = stamp();
         let saidSettings = false;
         const relabel = () => {
@@ -319,7 +321,7 @@ export const commands: CommandSpec[] = [
           if (relabeled?.()) return true;
           if (stamp() === settingsAt) return false;
           // Said once, so taskbox logs shows why the loop restarts (Tart run of #34).
-          if (!saidSettings) log.write("This box's own settings or an App's key changed: the loop restarts once no job runs, and reads them.");
+          if (!saidSettings) log.write("This box's own settings, its settings commit or an App's key changed: the loop restarts once no job runs, and reads them.");
           saidSettings = true;
           return true;
         };

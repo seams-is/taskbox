@@ -4,6 +4,7 @@ import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, re
 import { dirname, join } from "node:path";
 import { POOL_USER, validateAccounts } from "./access.ts";
 import { LABEL_PREFIX, LABEL_PREFIX_SHAPE, PROJECT_NAME } from "./settings/core.ts";
+import { readInForce, settingsFilesForApp } from "./settings/inforce.ts";
 
 export { type AwaySettings, awayOf, checkAway, CRON_INTERVALS, DEFAULT_AWAY, PUBLIC_ADDRESS_SOURCES, type PublicAddressSource, RESTART_PLANS, type RestartPlan } from "./settings/away.ts";
 export { DEFAULT_WORKSPACES, type WorkspaceSettings, workspacesOf } from "./settings/workspaces.ts";
@@ -101,12 +102,17 @@ export function readJson<T>(path: string): T {
 // for the paths every command needs before anything else is read.
 export type BoxNames = { project: string; service: string; agent?: string; previousLabelPrefix?: string };
 
-export function boxNames(dir: string): BoxNames {
+export function boxNames(dir: string, rootUid = 0): BoxNames {
   let c: unknown;
-  try {
-    c = readJson<unknown>(join(dir, "taskbox.json"));
-  } catch {
-    throw new Error("taskbox.json can't be read");
+  // The settings in force from the settings repo first (settings/inforce.ts), then the install's own.
+  const f = readInForce(settingsFilesForApp(dir), rootUid);
+  if (f.kind === "ok") c = f.value.doc;
+  else {
+    try {
+      c = readJson<unknown>(join(dir, "taskbox.json"));
+    } catch {
+      throw new Error("taskbox.json can't be read");
+    }
   }
   const o = c && typeof c === "object" ? (c as { project?: unknown; previousLabelPrefix?: unknown; accounts?: unknown }) : {};
   if (typeof o.project !== "string" || !PROJECT_NAME.test(o.project)) throw new Error("taskbox.json has no project");
