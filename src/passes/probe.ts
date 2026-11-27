@@ -31,7 +31,7 @@ export function probeOf(code: number, stdout: string): Probe {
   }
   const state = typeof st.BackendState === "string" && /^[A-Za-z]{1,20}$/.test(st.BackendState) ? st.BackendState : "not known";
   if (state === "Starting" || state === "NoState") return { is: "stuck", why: `its state is ${state}` };
-  if (state !== "Running") return { is: "unwell", why: state === "NeedsLogin" || state === "NeedsMachineAuth" ? `it needs a login (${state}). From away: type taskbox key rotate tailscale` : `its state is ${state}` };
+  if (state !== "Running") return { is: "unwell", why: state === "NeedsLogin" || state === "NeedsMachineAuth" ? `it needs a login (${state}), so it can't be reached from away. An admin at the box: taskbox update there signs it in` : `its state is ${state}` };
   if (st.Self?.Online !== true) return { is: "unwell", why: "Tailscale's control server doesn't see the box online, which a restart can't change" };
   return { is: "fine" };
 }

@@ -8,7 +8,7 @@ import { fingerprint } from "../approver.ts";
 import { argsOf, signedWord, statementFor, statementText } from "../core/statement.ts";
 import { parseAsk } from "../connectflow.ts";
 import { keyOf } from "../approverkeys.ts";
-import { openSealed, SEALED_LINE, sealPair } from "../tsrotate.ts";
+import { LOGIN, openSealed, sealPair } from "../tsrotate.ts";
 
 export type Signed = { ok: true; signature: string } | { ok: false; why: string };
 export type Signer = (message: Uint8Array) => Promise<Signed>;
@@ -128,18 +128,31 @@ export async function approveSecond(d: Deps & { box: BoxLink }): Promise<boolean
 
 // ---- key rotate tailscale ----
 // The box seals its sign-in link to a key made here for this request; only this process opens it.
-export async function rotateTailscale(d: Deps & { box: BoxLink; open(url: string): void }): Promise<Answer | { why: string }> {
+// The box answers at once with the op, then drains and signs in again; the sealed link comes back
+// through op show once it has one.
+export async function rotateTailscale(d: Deps & { box: BoxLink; open(url: string): void; waitMs?: number }): Promise<Answer | { why: string }> {
   const k = sealPair();
   const a = await signedRun(d, d.box, ["key", "rotate"], ["tailscale"], { seal: k.pub });
   if ("why" in a) return a;
   const op = a.result?.op;
-  const said = typeof a.result?.said === "string" ? SEALED_LINE.exec(a.result.said) : null;
-  if (a.exit !== 0 || typeof op !== "string" || !said) return { why: a.error?.message ?? "the box gave no sign-in link" };
-  const url = openSealed(k.priv, op, said[1]!);
-  if (!url) return { why: "the box's sealed link doesn't open with this request's key" };
-  d.say(`Your browser opens Tailscale's page for ${d.box.name}: approve it there. Its op is ${op}; taskbox op show ${op} -w --box ${d.box.name} follows it.`);
-  d.open(url);
-  return a;
+  if (a.exit !== 0 || typeof op !== "string") return { why: a.error?.message ?? "the box started no rotation" };
+  d.say(`${d.box.name} drains and stops its job VMs, then signs in to Tailscale again. Its op is ${op}; taskbox op show ${op} -w --box ${d.box.name} follows it.`);
+  const until = d.now() + (d.waitMs ?? 20 * 60_000);
+  while (d.now() < until) {
+    const s = await d.box.run(["op", "show", op, "--json"]);
+    const rec = s?.result?.op as Record<string, unknown> | undefined;
+    if (rec && rec.state !== "running") return { why: `the rotation ${rec.state}${typeof rec.why === "string" ? `: ${rec.why}` : ""}` };
+    const sealed = s?.result?.sealed;
+    if (typeof sealed === "string" && /^[A-Za-z0-9_-]{80,300}$/.test(sealed)) {
+      const url = openSealed(k.priv, op, sealed);
+      if (!url || !LOGIN.test(url)) return { why: "the box's sealed link doesn't open with this request's key" };
+      d.say(`Your browser opens Tailscale's page for ${d.box.name}: approve it there.`);
+      d.open(url);
+      return a;
+    }
+    await d.sleep(3_000);
+  }
+  return { why: `no sign-in link came within 20 minutes. The rotation carries on: taskbox op show ${op} -w --box ${d.box.name}` };
 }
 
 // ---- key rotate runner and source ----

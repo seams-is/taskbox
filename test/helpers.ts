@@ -403,6 +403,14 @@ export function socketDirOk(c: { sys: FakeSys; paths: { tailscaleSocketDir: stri
   c.sys.responders.unshift((cmd, args) => (cmd === "/bin/ls" && args[1] === c.paths.tailscaleSocketDir ? { code: 0, stdout: `drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:${c.paths.service} allow search\n`, stderr: "" } : undefined));
 }
 
+// The tailnet pinned, as the install's Tailscale step leaves it (tsrotate.ts pinTailnet).
+export function tailnetPinned(p: { installId: string }, tailnet = "example.ts.net"): void {
+  const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const { dirname, join } = require("node:path") as typeof import("node:path");
+  mkdirSync(dirname(p.installId), { recursive: true });
+  writeFileSync(join(dirname(p.installId), "tailnet.json"), JSON.stringify({ v: 1, tailnet }));
+}
+
 // The guard's record of VM starts, on trial, as its first pass leaves it (pfstarts.ts): without one
 // the loop reads the box as closed while Screen Sharing is on.
 export function pfOpen(p: { installId: string; guardState: string }): void {

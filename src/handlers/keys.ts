@@ -2,7 +2,6 @@
 // through the agent spool: a new App's code (keyrotate.ts) and a controller's offered approver key
 // (approverkeys.ts). The signed one names the box as its subject, and its actor is the key that signed.
 import { OFFER_HANDLER, newKeyProblem, raiseApproverAdd, raiseApproverRotate } from "../approverkeys.ts";
-import { tagOf } from "../config.ts";
 import type { SignedHandler } from "../core/dispatch.ts";
 import { rotateArgsProblem, startAppRotation, startTsRotation } from "../keyops.ts";
 import { KEY_CODE_HANDLER } from "../keyrotate.ts";
@@ -15,7 +14,7 @@ const rotate: SignedHandler = {
     const a = r.statement.args;
     const which = (a.words as string[])[0];
     if (which === "approver") return raiseApproverRotate(c, a.new as string, r.by.actor);
-    if (which === "tailscale") return startTsRotation(c, a.seal as string, r.by.actor, { ts: { tailscale: c.p.tailscale, socket: c.p.tailscaleSocket, tag: tagOf(c.cfg), hostname: c.cfg.runnerNamePrefix } });
+    if (which === "tailscale") return startTsRotation(c, a.seal as string, r.by.actor);
     return startAppRotation(c, which === "runner" ? "runner" : "source", a.state as string, r.by.actor);
   },
 };

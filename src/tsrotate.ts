@@ -1,16 +1,24 @@
-// key rotate tailscale: the box signs in to Tailscale again, with the flags and tag the
-// install signs in with, and so gets a new node key.
-// - drafting: `tailscale up --force-reauth` with a short --timeout, so nothing long-lived is left
-//   running; tailscaled then holds the sign-in link (status --json's AuthURL). That link is a bearer
-//   secret until approved: whoever opens it first, signed in to their own Tailscale, takes the box into
-//   their tailnet. So it never goes in an event, a log, an op record or a file. At the box it is said
-//   on the admin's own terminal; from the controller it goes back sealed to a key the controller made
-//   for this request (seal below), so the outcome, which the agent account reads, holds only ciphertext.
-// - authorising: the owner approves it in a browser; the box waits for Tailscale to run again.
-// - reconnecting: the box waits to be online.
-// - checking: the box's tailnet must be the one pinned before (tailnet.json, pinned at the first
-//   rotation from the tailnet the box was on). On another, the box logs out at once, and the op fails.
+// key rotate tailscale: the box signs in to Tailscale again, with the flags and tag the install
+// signs in with, and so gets a new node key. The sign-in link is a bearer secret until approved:
+// whoever opens it first, signed in to their own Tailscale, takes the box into their tailnet. So:
+// - drafting: the job VMs are drained and stopped; tailscaled's socket is locked against the
+//   service account (tssocket.ts lockSocket), and tailscaled restarted so no connection made before
+//   the lock stays open; tailscaled's state is copied aside, root's alone; then `tailscale up
+//   --force-reauth` with Tailscale SSH off and shields up, and the link read from status as root.
+//   It never goes in an event, a log, an op record or a plain file. At the box it is said on the
+//   admin's own terminal; from the controller it goes back sealed to a key the controller made for
+//   this request (seal below).
+// - authorising: the owner approves it in a browser; the box waits for Tailscale to run again,
+//   checking the tailnet at every poll.
+// - reconnecting: the box waits to be online, still checking the tailnet.
+// - checking: the box's tailnet must be the one pinned at install (tailnet.json). Only then is
+//   Tailscale SSH turned on again.
+// Anything short of that puts the old sign-in back: tailscaled stopped, its state copied back,
+// started again, so a rotation that fails or is slow leaves the box on its own tailnet with its old
+// key. On another tailnet the box logs out of it first. The socket is unlocked and the box resumed
+// in every case.
 import { createCipheriv, createDecipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, type KeyObject } from "node:crypto";
+import { chmodSync, copyFileSync, lstatSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { isObj, readOwnedJson, writeOwnedText, type WriteRules } from "./core/rootfile.ts";
 import type { Sys } from "./sys.ts";
@@ -21,7 +29,8 @@ export const TAILSCALE_OFF = ["--accept-routes=false", "--exit-node=", "--advert
 export const LOGIN = /^https:\/\/login\.tailscale\.com\/a\/[A-Za-z0-9]{6,40}$/;
 export const WAIT_MS = 10 * 60_000;
 export const POLL_MS = 5_000;
-export const TS_ROTATE_MS = 30 * 60_000;
+// Ten minutes each to drain, to approve and to come online, and a rollback's few: within its lock.
+export const TS_ROTATE_MS = 45 * 60_000;
 const TAILNET = /^[A-Za-z0-9][A-Za-z0-9.@_-]{0,252}$/;
 export type TsPhase = "drafting" | "authorising" | "reconnecting" | "checking";
 
@@ -40,8 +49,30 @@ export interface TsDeps {
   live?(): boolean;
 }
 
+// What the rotation needs of the box beyond tailscale itself. Each is root's, and the tests' fakes.
+export interface TsBox {
+  // The job VMs: drained, with what is left stopped; then gone; and the box resumed after.
+  drain(): Promise<string | undefined>;
+  vmsGone(): Promise<boolean>;
+  resume(): Promise<void>;
+  // tailscaled's socket closed to every account but root, and opened again (tssocket.ts).
+  lock(): Promise<string | undefined>;
+  unlock(): Promise<void>;
+  // tailscaled: restarted, so no connection from before the lock is left; stopped and started.
+  restart(): Promise<string | undefined>;
+  stop(): Promise<string | undefined>;
+  start(): Promise<string | undefined>;
+  stateFile: string; // tailscaled's state, in its root-only state folder
+}
+export const STATE_FILE = "tailscaled.state";
+export const BACKUP_FILE = "tailscaled.state.before-rotation";
+export const DRAIN_MS = 10 * 60_000;
+
 export const tailnetPinPath = (stateDir: string) => join(stateDir, "tailnet.json");
-export const upArgs = (tag: string, hostname: string) => ["up", "--force-reauth", "--ssh", "--accept-dns=false", ...TAILSCALE_OFF, `--advertise-tags=${tag}`, `--hostname=${hostname}`, "--timeout=5s"];
+// The re-auth: Tailscale SSH off and shields up until the tailnet is proved the pinned one, so a box
+// that joined someone else's tailnet takes no connection there.
+export const upArgs = (tag: string, hostname: string) => ["up", "--force-reauth", "--ssh=false", "--shields-up", "--accept-dns=false", ...TAILSCALE_OFF, `--advertise-tags=${tag}`, `--hostname=${hostname}`, "--timeout=5s"];
+export const SSH_ON = ["set", "--ssh", "--shields-up=false"];
 
 type Status = { state: string; url?: string; tailnet?: string; node?: string; online: boolean };
 // tailscaled's status, cut to what the rotation reads. The whole answer never leaves this function.
@@ -72,57 +103,144 @@ export function readTailnetPin(path: string, rootUid = 0): string | undefined {
   return r.kind === "ok" ? r.value.tailnet : undefined;
 }
 
-// drafting. The link and the node key it replaces, or why there is none. The link is the caller's
-// to hand to one person, and nowhere else.
-export async function draftTailscale(d: TsDeps): Promise<{ url: string; node: string } | { why: string }> {
-  d.phase("drafting");
+// The tailnet the box is on, pinned when none is: at install's Tailscale step, the one place it is
+// pinned. A rotation never pins one.
+export async function pinTailnet(d: Pick<TsDeps, "sys" | "tailscale" | "socket" | "pinFile" | "rootUid" | "chown">): Promise<string | undefined> {
+  const have = readTailnetPin(d.pinFile, d.rootUid);
+  if (have) return have;
   const st = await tsStatus(d);
-  if (!st) return { why: "Tailscale's status can't be read on the box. taskbox check's Tailscale row says why" };
-  if (st.state !== "Running" || !st.tailnet || !st.node) return { why: `Tailscale isn't running on the box (${st.state}), so there is no key to rotate. At the box, as your admin user: taskbox update signs it in` };
-  const pin = readTailnetPin(d.pinFile, d.rootUid);
-  if (pin === undefined) writeOwnedText(d.pinFile, `${JSON.stringify({ v: 1, tailnet: st.tailnet })}\n`, { mode: 0o644, owner: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}) });
-  else if (pin !== st.tailnet) return { why: `the box is on the tailnet ${st.tailnet}, and it was pinned to ${pin}. Nothing changed. At the box: check the Tailscale row in taskbox check` };
-  // Its output names the link: it is read from status instead, and never kept.
-  await d.sys.run(d.tailscale, [`--socket=${d.socket}`, ...upArgs(d.tag, d.hostname)], { timeoutMs: 20_000 }).catch(() => undefined);
-  for (let i = 0; i < 6; i++) {
-    const s = await tsStatus(d);
-    if (s?.url) return { url: s.url, node: st.node };
-    await d.sys.sleep(1000);
-  }
-  return { why: "Tailscale gave no sign-in link. The box keeps its key; taskbox check's Tailscale row says whether it is still signed in" };
+  if (st?.state !== "Running" || !st.tailnet) return undefined;
+  writeOwnedText(d.pinFile, `${JSON.stringify({ v: 1, tailnet: st.tailnet })}\n`, { mode: 0o644, owner: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}) });
+  return st.tailnet;
 }
 
-// authorising, reconnecting, checking. 0 when the box is back on its own tailnet with a new sign-in.
-export async function followTailscale(d: TsDeps, node: string): Promise<number> {
-  const until = (ms: number) => d.sys.now() + ms;
+const AT_BOX = "An admin at the box is needed: there, as your admin user, type taskbox update, which signs the box in to Tailscale again.";
+
+// The whole rotation. give: hands the link to the one person who approves it. 0 when the box is back
+// on its own tailnet with a new sign-in; 1 otherwise, with the old sign-in put back when it can be.
+export async function rotateTailscale(d: TsDeps & TsBox, give: (url: string) => Promise<void> | void): Promise<number> {
   const ended = () => d.live !== undefined && !d.live();
-  d.phase("authorising");
-  let st: Status | undefined;
-  for (const stop = until(WAIT_MS); ; ) {
-    if (ended()) return (d.say("The rotation ended before the sign-in was approved."), 1);
-    st = await tsStatus(d);
-    if (st?.state === "Running" && !st.url) break;
-    if (d.sys.now() >= stop) return (d.say("The sign-in wasn't approved within 10 minutes. The link lapses; type taskbox key rotate tailscale again. Until then the box may be off the tailnet: the Tailscale row in taskbox check says so."), 1);
-    await d.sys.sleep(POLL_MS);
-  }
-  d.phase("reconnecting");
-  for (const stop = until(WAIT_MS); !st?.online; ) {
-    if (d.sys.now() >= stop) return (d.say("The box signed in, and isn't online after 10 minutes. The Tailscale row in taskbox check says why."), 1);
-    await d.sys.sleep(POLL_MS);
-    st = await tsStatus(d);
-  }
-  d.phase("checking");
+  d.phase("drafting");
+  const st = await tsStatus(d);
+  if (!st) return (d.say("Not rotated: Tailscale's status can't be read on the box. taskbox check's Tailscale row says why."), 1);
+  if (st.state !== "Running" || !st.tailnet || !st.node) return (d.say(`Not rotated: Tailscale isn't running on the box (${st.state}), so there is no key to rotate. ${AT_BOX}`), 1);
   const pin = readTailnetPin(d.pinFile, d.rootUid);
-  if (!st?.tailnet || !pin || st.tailnet !== pin) {
-    await d.sys.run(d.tailscale, [`--socket=${d.socket}`, "logout"], { timeoutMs: 20_000 }).catch(() => undefined);
-    d.event("key.refused", "The box joined another tailnet after its re-auth, so it logged out of Tailscale.", { key: "tailscale" });
-    d.say("The box joined another tailnet; it has logged out. At the box, as your admin user: taskbox update signs it in to yours.");
-    return 1;
+  if (pin === undefined) return (d.say("Not rotated: the box's tailnet isn't pinned, so a sign-in to another tailnet couldn't be told apart. At the box, as your admin user, taskbox update pins it."), 1);
+  if (pin !== st.tailnet) return (d.say(`Not rotated: the box is on the tailnet ${st.tailnet}, and it was pinned to ${pin}. Nothing changed. At the box: check the Tailscale row in taskbox check.`), 1);
+  let drained = false;
+  let locked = false;
+  let reauthed = false;
+  let done = 1;
+  try {
+    // The job VMs first, so none runs while the link exists.
+    const dw = await d.drain();
+    if (dw) return (d.say(`Not rotated: the box couldn't drain (${dw}). Nothing changed.`), 1);
+    drained = true;
+    d.phase("drafting", "stopping the job VMs");
+    for (const stop = d.sys.now() + DRAIN_MS; !(await d.vmsGone()); ) {
+      if (ended()) return (d.say("The rotation ended before the job VMs stopped. Nothing changed."), 1);
+      if (d.sys.now() >= stop) return (d.say("Not rotated: the job VMs didn't stop within 10 minutes. Nothing changed."), 1);
+      await d.sys.sleep(POLL_MS);
+    }
+    // The socket closed to the service account, and every connection made before cut.
+    const lw = await d.lock();
+    if (lw) return (d.say(`Not rotated: tailscaled's socket couldn't be locked (${lw}). Nothing changed.`), 1);
+    locked = true;
+    const rw = await d.restart();
+    if (rw) return (d.say(`Not rotated: tailscaled couldn't be restarted (${rw}). ${AT_BOX}`), 1);
+    if (!(await back(d, pin, 60_000))) return (d.say(`Not rotated: Tailscale didn't come back after its restart. ${AT_BOX}`), 1);
+    try {
+      copyFileSync(d.stateFile, join(d.stateFile, "..", BACKUP_FILE));
+      chmodSync(join(d.stateFile, "..", BACKUP_FILE), 0o600);
+    } catch (e) {
+      return (d.say(`Not rotated: tailscaled's state couldn't be copied aside (${String((e as Error)?.message ?? e).slice(0, 80)}). Nothing changed.`), 1);
+    }
+    if (ended()) return (d.say("The rotation ended. Nothing changed."), 1);
+    reauthed = true;
+    // Its output names the link: it is read from status instead, and never kept.
+    await d.sys.run(d.tailscale, [`--socket=${d.socket}`, ...upArgs(d.tag, d.hostname)], { timeoutMs: 20_000 }).catch(() => undefined);
+    let url: string | undefined;
+    for (let i = 0; i < 10 && !url; i++) {
+      url = (await tsStatus(d))?.url;
+      if (!url) await d.sys.sleep(1000);
+    }
+    if (!url) return (d.say("Not rotated: Tailscale gave no sign-in link."), 1);
+    await give(url);
+    d.phase("authorising");
+    let now: Status | undefined;
+    for (const stop = d.sys.now() + WAIT_MS; ; ) {
+      if (ended()) return (d.say("The rotation ended before the sign-in was approved."), 1);
+      now = await tsStatus(d);
+      if (now?.state === "Running" && now.tailnet && now.tailnet !== pin) return await elsewhere(d);
+      if (now?.state === "Running" && !now.url) break;
+      if (d.sys.now() >= stop) return (d.say("The sign-in wasn't approved within 10 minutes, and the link lapses."), 1);
+      await d.sys.sleep(POLL_MS);
+    }
+    d.phase("reconnecting");
+    for (const stop = d.sys.now() + WAIT_MS; !now?.online; ) {
+      if (d.sys.now() >= stop) return (d.say("The box signed in, and wasn't online after 10 minutes."), 1);
+      await d.sys.sleep(POLL_MS);
+      now = await tsStatus(d);
+      if (now?.tailnet && now.tailnet !== pin) return await elsewhere(d);
+    }
+    d.phase("checking");
+    if (!now?.tailnet || now.tailnet !== pin) return await elsewhere(d);
+    const on = await d.sys.run(d.tailscale, [`--socket=${d.socket}`, ...SSH_ON], { timeoutMs: 20_000 }).catch(() => undefined);
+    if (on?.code !== 0) return (d.say("The box signed in on its tailnet, and Tailscale SSH couldn't be turned on again."), 1);
+    const changed = now.node !== undefined && now.node !== st.node;
+    d.event("key.rotated", `The box signed in to Tailscale again, on its own tailnet${changed ? ", with a new node key" : ""}.`, { key: "tailscale", newNodeKey: changed });
+    d.say(changed ? "Rotated: the box is back on its tailnet with a new node key." : "The box is back on its tailnet. Tailscale kept its node key: the admin console's Machines page can expire the old one.");
+    done = 0;
+    return 0;
+  } finally {
+    if (done !== 0 && reauthed) await rollBack(d, pin);
+    rmSync(join(d.stateFile, "..", BACKUP_FILE), { force: true });
+    if (locked) await d.unlock();
+    if (drained) await d.resume();
   }
-  const changed = st.node !== undefined && st.node !== node;
-  d.event("key.rotated", `The box signed in to Tailscale again, on its own tailnet${changed ? ", with a new node key" : ""}.`, { key: "tailscale", newNodeKey: changed });
-  d.say(changed ? "Rotated: the box is back on its tailnet with a new node key." : "The box is back on its tailnet. Tailscale kept its node key: the admin console's Machines page can expire the old one.");
-  return 0;
+}
+
+// Running, online and on the pinned tailnet within ms.
+async function back(d: TsDeps, pin: string, ms: number): Promise<boolean> {
+  for (const stop = d.sys.now() + ms; ; ) {
+    const s = await tsStatus(d);
+    if (s?.state === "Running" && s.online && s.tailnet === pin) return true;
+    if (d.sys.now() >= stop) return false;
+    await d.sys.sleep(POLL_MS);
+  }
+}
+
+// On another tailnet: logged out of it at once, before anything there reaches the box.
+async function elsewhere(d: TsDeps): Promise<number> {
+  await d.sys.run(d.tailscale, [`--socket=${d.socket}`, "logout"], { timeoutMs: 20_000 }).catch(() => undefined);
+  d.event("key.refused", "The box joined another tailnet after its re-auth, so it logged out of Tailscale.", { key: "tailscale" });
+  d.say("The box joined another tailnet; it has logged out of it.");
+  return 1;
+}
+
+// The sign-in from before the re-auth, put back: tailscaled stopped, its state copied back from the
+// copy taken before, and started again.
+async function rollBack(d: TsDeps & TsBox, pin: string): Promise<void> {
+  const copy = join(d.stateFile, "..", BACKUP_FILE);
+  let have = false;
+  try {
+    have = lstatSync(copy).isFile();
+  } catch {}
+  const stopped = have ? await d.stop() : "there was no copy of its state";
+  if (!stopped) {
+    try {
+      copyFileSync(copy, d.stateFile);
+      chmodSync(d.stateFile, 0o600);
+    } catch {}
+  }
+  const started = await d.start();
+  if (!stopped && !started && (await back(d, pin, 2 * 60_000))) {
+    d.event("key.kept", "The rotation didn't finish, so the box signed in again with its old key, on its own tailnet.", { key: "tailscale" });
+    d.say("The box is back on its tailnet with its old key. Type taskbox key rotate tailscale again when you're ready.");
+    return;
+  }
+  d.event("key.failed", "The rotation didn't finish, and the box's old sign-in couldn't be put back: it is off the tailnet.", { key: "tailscale" });
+  d.say(`The box's old sign-in couldn't be put back, so it is off the tailnet and can't be reached from away. ${AT_BOX}`);
 }
 
 // ---- The sealed link ----
@@ -161,5 +279,3 @@ export function openSealed(priv: KeyObject, salt: string, sealed: string): strin
     return undefined;
   }
 }
-export const SEALED_LINE = /^Approve the box's sign-in on the controller: ([A-Za-z0-9_-]{80,300})$/;
-export const sealedLine = (sealed: string) => `Approve the box's sign-in on the controller: ${sealed}`;

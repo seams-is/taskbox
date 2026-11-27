@@ -19,7 +19,8 @@ import { Log } from "./log.ts";
 import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
 import { SCREEN_SHARING_ANCHOR } from "./workspace/fence.ts";
 import { fencePass, newWsMemory, type WsDeps, workspacePass } from "./workspace/pass.ts";
-import { keepSocket, newSocketMemory } from "./tssocket.ts";
+import { keepSocket, lockPath, newSocketMemory, readLock } from "./tssocket.ts";
+import { settleTsRotation } from "./tsbox.ts";
 
 export const PFCTL = "/sbin/pfctl";
 // A child of the com.apple anchor, which macOS's own /etc/pf.conf evaluates, so no system file changes.
@@ -338,7 +339,12 @@ export function workspaceRunner(d: WsDeps, log: Pick<Log, "write">): () => Promi
   const sock = newSocketMemory();
   let said = "";
   return async () => {
-    const why = await keepSocket(d.sys, d.p, sock, d.rootUid ?? 0).catch((e: Error) => String(e.message ?? e).slice(0, 120));
+    // A key rotate tailscale that ended while it held the lock is settled; while one holds it, the
+    // service's entries stay off.
+    const settled = await settleTsRotation({ sys: d.sys, p: d.p, state: rootStateOf(d.p), rootUid: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}), events: d.events!, log: (l) => log.write(`tailscale: ${l}`) }).catch((e: Error) => `the Tailscale rotation couldn't be settled: ${String(e?.message ?? e).slice(0, 120)}`);
+    if (settled) log.write(`tailscale: ${settled}`);
+    const locked = readLock(lockPath(rootStateOf(d.p).dir), d.rootUid ?? 0, d.sys.now()) !== undefined;
+    const why = await keepSocket(d.sys, d.p, sock, d.rootUid ?? 0, locked).catch((e: Error) => String(e.message ?? e).slice(0, 120));
     const r = await workspacePass(d, mem);
     if (why) r.problems.unshift(`tailscaled's socket: ${why}`);
     for (const l of r.did) log.write(`workspaces: ${l}`);

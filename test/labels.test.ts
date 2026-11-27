@@ -14,7 +14,7 @@ import { Log } from "../src/log.ts";
 import { reloadToken, remove, restartServices } from "../src/ops.ts";
 import { startHere as start, stopHere as stop } from "../src/availability.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, quietBox, servicesObey, socketDirOk, tempRoot, testBox } from "./helpers.ts";
+import { CFG, quietBox, servicesObey, socketDirOk, tailnetPinned, tempRoot, testBox } from "./helpers.ts";
 
 const OLD = "org.example.taskbox";
 const old = previousLabels(OLD);
@@ -671,6 +671,7 @@ describe("between the two updates that move the names: what the owner is told", 
     mkdirSync(dirname(c.paths.tailscaledLog), { recursive: true });
     writeFileSync(c.paths.tailscaledLog, "", { mode: 0o640 });
     socketDirOk({ sys, paths: c.paths });
+    tailnetPinned(c.paths);
     const r = await tailscaleRow(c);
     expect([r.status, r.detail]).toEqual(["OK", "signed in as tag:taskbox, with Tailscale SSH, under its old name"]);
     // A different old-named plist from the install's own copy still fails.

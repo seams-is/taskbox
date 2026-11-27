@@ -3,7 +3,7 @@
 {"file": "away.ts", "reads": 2, "why": "days until a date and recent logins: display"}
 {"file": "awaychecks.ts", "reads": 7, "why": "how long ago the loop's last request and beat were: rows that say OK with a time; the power log's last 30 days, a WARN only; when a lasting change lapses, with mono and the boot beside it"}
 {"file": "broker.ts", "reads": 3, "why": "the hour the GitHub key keeper's counts are kept under, and GitHub's Date against the box's for the clock guard: display and a reason"}
-{"file": "checks.ts", "reads": 5, "why": "the guard's and the workspaces state's freshness (a stale read FAILs, so a step fails closed) and how recent a loss or a moved log is: display"}
+{"file": "checks.ts", "reads": 6, "why": "the guard's and the workspaces state's freshness (a stale read FAILs, so a step fails closed) and how recent a loss or a moved log is: display and whether a key rotate tailscale's lock is still live (past its time it is the guard's to settle)"}
 {"file": "cli.ts", "reads": 4, "why": "the answers envelope's at, for a usage error, a rename and every answer: a label; a streamed line's at: a label"}
 {"file": "clock.ts", "reads": 1, "why": "the real Clock itself: every other read goes through it or Sys"}
 {"file": "cmd/confirm.ts", "reads": 2, "why": "the id of the declined event, made before the admin's entry that names it: a label; and the moment the waiting changes are judged at, by the box's boot and monotonic clock as well, so a step either way lapses an item, never keeps one"}
@@ -19,7 +19,7 @@
 {"file": "connectflow.ts", "reads": 9, "why": "when a connect began, and the waits for GitHub, a code and the keeping phase: a step only ends a wait, which changes nothing and says so"}
 {"file": "controller/forward.ts", "reads": 6, "why": "the time on an envelope the controller makes, a signed statement's time (the box judges its 5 minutes), a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter, and when a status was read: display"}
 {"file": "controller/home.ts", "reads": 1, "why": "a temp file's unique name"}
-{"file": "controller/keys.ts", "reads": 5, "why": "a statement's time, which the box judges within 5 minutes, and the controller's own waits: a step only ends a wait"}
+{"file": "controller/keys.ts", "reads": 7, "why": "a statement's time, which the box judges within 5 minutes, and the controller's own waits: a step only ends a wait; the wait for a Tailscale rotation's sealed link only ends watching"}
 {"file": "controller/main.ts", "reads": 4, "why": "the controller's Clock, and the time on its own envelopes and events: labels"}
 {"file": "controller/notify.ts", "reads": 2, "why": "when a box was first not reached, when each note was last said, and the hold lease's times: a step only moves when a note is said again"}
 {"file": "controller/pair.ts", "reads": 4, "why": "when a box was paired, and the time on the controller's events: labels"}
@@ -31,14 +31,14 @@
 {"file": "core/spool.ts", "reads": 4, "why": "a stale temp name in a spool (removing it early costs a resend) and the spool pass's time budget (a step leaves requests for the next pass)"}
 {"file": "gate.ts", "reads": 2, "why": "the workspaces gate's now: the state must be within 3 minutes either way, so a step fails closed"}
 {"file": "github.ts", "reads": 5, "why": "a GitHub App JWT's iat, for the loop and connect, the offset GitHub reports, and a failure's time for a status line"}
-{"file": "guard.ts", "reads": 7, "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too"}
+{"file": "guard.ts", "reads": 8, "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too; a Tailscale rotation's lock past its time, which only makes the guard settle it and open the socket again"}
 {"file": "guardwatch.ts", "reads": 2, "why": "a beat's wall time and a log line's time, for people to read only: every age is judged on mono"}
 {"file": "hooks/net.ts", "reads": 4, "why": "network diagnostics: the netwatch record's age, a job's window end and the detail files' age; nothing but a diagnostics file past keepDays is removed on it"}
 {"file": "install.ts", "reads": 6, "why": "installedAt labels, the lock's time, and the wait for Tailscale to start: a step only waits less or more"}
 {"file": "jobs.ts", "reads": 1, "why": "when a stop was asked: a label in the stop's file"}
 {"file": "keychild.ts", "reads": 1, "why": "a rotation's deadline when its record has none: the guard ends the child on mono time"}
 {"file": "keycmd.ts", "reads": 3, "why": "when an op began, a listener's minutes and a key's age: labels, and a wait the op's mono deadline bounds"}
-{"file": "keyops.ts", "reads": 3, "why": "an op's start, its deadline and a refused op's end: the child's limit runs on mono time (child.ts)"}
+{"file": "keyops.ts", "reads": 2, "why": "an op's start, its deadline and a refused op's end: the child's limit runs on mono time (child.ts)"}
 {"file": "keyrotate.ts", "reads": 2, "why": "when an App was retired, a label, and the code wait: a step only ends a wait"}
 {"file": "keys.ts", "reads": 3, "why": "a GitHub App JWT's iat and the clock offset GitHub reports: GitHub judges the JWT"}
 {"file": "kinds.ts", "reads": 8, "why": "the scheduler's now: when slots became ready or busy, an idle VM's turn, and when a VM was told to give way: a step only reorders a choice, gives an idle VM's turn away or ends a wait for a VM to go; no running job is ended"}
@@ -73,7 +73,8 @@
 {"file": "tools/bake.ts", "reads": 3, "why": "the bake's wait for its guest to shut down, and the base record's time: a step only ends a wait sooner or later, and the time is a label"}
 {"file": "tools/inloop.ts", "reads": 6, "why": "a baking slot's beat and times, as every slot's are written, and a refresh op's end time: labels and beats"}
 {"file": "tools/pass.ts", "reads": 3, "why": "when the store's hashes were last checked and when a failed fetch or bake is tried again: a step only checks sooner or later"}
-{"file": "tsrotate.ts", "reads": 3, "why": "the waits for the sign-in and for the box to be online: a step only ends a wait sooner or later"}
+{"file": "tsbox.ts", "reads": 3, "why": "the socket lock's time, written and judged on the wall clock: a step only makes the lock end sooner (the guard opens the socket again) or later (bounded by the op's mono limit, then settled)"}
+{"file": "tsrotate.ts", "reads": 8, "why": "the waits for the job VMs, tailscaled's restart, the sign-in, the box online and the old sign-in put back: a step only ends a wait sooner or later, and the op's limit and the guard's settling run on mono"}
 {"file": "update/box.ts", "reads": 13, "why": "labels in the install record, a workspace hold's bound (a clock step only ends it sooner, so an update goes ahead), the marks and the watch file (whose placedAt and deadline v2.6.1's watcher reads; v3's counts mono), the deadline put on the monotonic clock's scale and moved later within the watch's cap, and whether a job or a proof came after the swap"}
 {"file": "update/cmd.ts", "reads": 1, "why": "the 7-day line about the release check, for display"}
 {"file": "update/gate.ts", "reads": 2, "why": "the update window for a settings commit is the box's own wall time: a step moves the window, never a limit"}

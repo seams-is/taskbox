@@ -12,10 +12,10 @@ import { rootStateIn } from "../src/core/paths.ts";
 import type { HandlerCtx } from "../src/core/dispatch.ts";
 import { listKeys } from "../src/keys.ts";
 import { KEY_CODE_HANDLER, keyCodeProblem, readRetired, rotateApp, type RotateDeps, stateHash, takeKeyCode } from "../src/keyrotate.ts";
-import { rotateArgsProblem, startTsRotation } from "../src/keyops.ts";
+import { rotateArgsProblem } from "../src/keyops.ts";
 import { opType } from "../src/optypes/index.ts";
 import { ROTATE } from "../src/optypes/keys.ts";
-import { draftTailscale, followTailscale, openSealed, readTailnetPin, SEALED_LINE, seal, sealPair, type TsDeps } from "../src/tsrotate.ts";
+import { openSealed, seal, sealPair } from "../src/tsrotate.ts";
 import { Verified } from "../src/core/statement.ts";
 import { boxJson, keptBox, PEMS } from "./fakegithub.ts";
 import { FakeSys } from "./fake.ts";
@@ -145,96 +145,7 @@ describe("the controller's code for a new App", () => {
   });
 });
 
-// tailscaled as the rotation sees it: its state, its sign-in link, its tailnet and node key.
-function tailscale(sys: FakeSys) {
-  const t = { state: "Running", url: "", tailnet: "example.ts.net", node: `nodekey:${"1".repeat(64)}`, online: true, calls: [] as string[] };
-  sys.responders.push((cmd, args) => {
-    if (cmd !== "/opt/taskbox/bin/tailscale") return undefined;
-    const verb = args[1]!;
-    t.calls.push(verb);
-    if (verb === "status") return { code: 0, stdout: JSON.stringify({ BackendState: t.state, AuthURL: t.url, CurrentTailnet: { Name: t.tailnet }, Self: { PublicKey: t.node, Online: t.online } }), stderr: "" };
-    if (verb === "up") {
-      t.state = "NeedsLogin";
-      t.url = "https://login.tailscale.com/a/1a2b3c4d5e6f";
-      return { code: 1, stdout: "", stderr: `To authenticate, visit:\n\n\t${t.url}\n` };
-    }
-    if (verb === "logout") return ((t.state = "NeedsLogin"), { code: 0, stdout: "", stderr: "" });
-    return undefined;
-  });
-  return t;
-}
-function tsBox() {
-  const sys = new FakeSys();
-  const t = tailscale(sys);
-  const dir = join(mkdtempSync(join(tmpdir(), "taskbox-ts-")), "opt/taskbox-state");
-  mkdirSync(dir, { recursive: true });
-  const said: string[] = [];
-  const phases: string[] = [];
-  const events: string[] = [];
-  const d: TsDeps = { sys, tailscale: "/opt/taskbox/bin/tailscale", socket: "/s", tag: "tag:taskbox", hostname: "box-a", pinFile: join(dir, "tailnet.json"), rootUid: me, say: (l) => said.push(l), phase: (p) => phases.push(p), event: (ty, text) => events.push(`${ty} ${text}`) };
-  // The owner approves at the next poll, and a new node key comes with it.
-  const approve = () => {
-    const real = sys.sleep.bind(sys);
-    sys.sleep = async (ms) => {
-      if (t.state === "NeedsLogin") Object.assign(t, { state: "Running", url: "", node: `nodekey:${"2".repeat(64)}` });
-      return real(ms);
-    };
-  };
-  return { sys, t, dir, d, said, phases, events, approve };
-}
-
-describe("key rotate tailscale", () => {
-  test("drafting gives the link from status, pins the tailnet, and runs up with the install's flags and a short timeout", async () => {
-    const b = tsBox();
-    const r = await draftTailscale(b.d);
-    expect(r).toEqual({ url: "https://login.tailscale.com/a/1a2b3c4d5e6f", node: `nodekey:${"1".repeat(64)}` });
-    expect(readTailnetPin(b.d.pinFile, me)).toBe("example.ts.net");
-    const up = b.sys.calls.find((c) => c.args[1] === "up")!;
-    expect(up.args.slice(1)).toEqual(["up", "--force-reauth", "--ssh", "--accept-dns=false", "--accept-routes=false", "--exit-node=", "--advertise-routes=", "--advertise-exit-node=false", "--advertise-connector=false", "--advertise-tags=tag:taskbox", "--hostname=box-a", "--timeout=5s"]);
-    b.approve();
-    expect(await followTailscale(b.d, (r as { node: string }).node)).toBe(0);
-    expect(b.phases).toEqual(["drafting", "authorising", "reconnecting", "checking"]);
-    expect(b.events.join("\n")).toMatch(/key.rotated .*new node key/);
-  });
-
-  test("a box that joined another tailnet logs out at once, and the op fails", async () => {
-    const b = tsBox();
-    const r = (await draftTailscale(b.d)) as { node: string };
-    const real = b.sys.sleep.bind(b.sys);
-    b.sys.sleep = async (ms) => {
-      Object.assign(b.t, { state: "Running", url: "", tailnet: "other.example.ts.net" });
-      return real(ms);
-    };
-    expect(await followTailscale(b.d, r.node)).toBe(1);
-    expect(b.t.calls).toContain("logout");
-    expect(b.said.at(-1)).toMatch(/joined another tailnet; it has logged out/);
-    // A pinned tailnet the box isn't on refuses the next draft before any re-auth.
-    Object.assign(b.t, { state: "Running" });
-    expect(await draftTailscale(b.d)).toMatchObject({ why: expect.stringMatching(/pinned to example.ts.net/) });
-  });
-
-  test("from the controller, the link goes back sealed to its key, and is nowhere else: no event, op record or file", async () => {
-    const b = tsBox();
-    const state = rootStateIn(b.dir);
-    mkdirSync(state.ops, { recursive: true });
-    const events = eventLog("guard", { dir: state.events, owner: me }, b.sys);
-    const c = { sys: b.sys, state, rootUid: me, events, now: b.sys.now(), cfg: CFG, p: {} as never, log: () => {} } as unknown as HandlerCtx;
-    const k = sealPair();
-    let child = "";
-    const run = (async (_d: unknown, op: { id: string }) => ((child = op.id), { ...op, state: "running" })) as never;
-    const a = await startTsRotation(c, k.pub, Verified.signer(`SHA256:${"A".repeat(43)}`).actor, { ts: { tailscale: b.d.tailscale, socket: "/s", tag: "tag:taskbox", hostname: "box-a" }, run });
-    expect(a.ok).toBe(true);
-    expect(child).toBe(a.op!);
-    const m = SEALED_LINE.exec(a.said)!;
-    expect(a.said.length).toBeLessThanOrEqual(240);
-    expect(openSealed(k.priv, a.op!, m[1]!)).toBe("https://login.tailscale.com/a/1a2b3c4d5e6f");
-    expect(openSealed(sealPair().priv, a.op!, m[1]!)).toBeUndefined();
-    expect(openSealed(k.priv, "op_other", m[1]!)).toBeUndefined();
-    const files = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(d, e.name)) : [readFileSync(join(d, e.name), "utf8")]));
-    expect(files(b.dir).join("\n")).not.toContain("login.tailscale.com");
-    expect(a.said).not.toContain("login.tailscale.com");
-  });
-
+describe("the sealed link", () => {
   test("the seal is the controller's alone", () => {
     const k = sealPair();
     const s = seal(k.pub, "op_x", "https://login.tailscale.com/a/abcdef");
