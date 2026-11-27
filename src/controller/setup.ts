@@ -11,7 +11,7 @@ import type { Runner } from "./run.ts";
 export const AGENTS = "taskbox-agents";
 export const GROUP = "taskbox-projects";
 export const PROJECTS = "/Users/Shared/taskbox-projects";
-export const SUDOERS = "/etc/sudoers.d/taskbox-agents";
+export const AGENT_RULE = "/etc/sudoers.d/taskbox-agents";
 export const SUDO = "/usr/bin/sudo";
 export const DSCL = "/usr/bin/dscl";
 const DSEDITGROUP = "/usr/sbin/dseditgroup";
@@ -134,7 +134,7 @@ export const STEPS: Step[] = [
   },
   {
     name: "The agent shell's permission",
-    done: async (d) => d.exists(SUDOERS),
+    done: async (d) => d.exists(AGENT_RULE),
     async run(d) {
       // One line: the owner may run anything as the agents user, which holds less than the owner.
       // visudo checks it before it goes in, at 0440 root.
@@ -142,7 +142,7 @@ export const STEPS: Step[] = [
       const f = join(tmp, "taskbox-agents");
       try {
         writeFileSync(f, `${d.user} ALL=(${AGENTS}) NOPASSWD: ALL\n`, { mode: 0o600, flag: "wx" });
-        return (await asAdmin(d, ["/usr/sbin/visudo", "-cf", f])) ?? (await asAdmin(d, ["/usr/bin/install", "-m", "0440", "-o", "root", "-g", "wheel", f, SUDOERS]));
+        return (await asAdmin(d, ["/usr/sbin/visudo", "-cf", f])) ?? (await asAdmin(d, ["/usr/bin/install", "-m", "0440", "-o", "root", "-g", "wheel", f, AGENT_RULE]));
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }

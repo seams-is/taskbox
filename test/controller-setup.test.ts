@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { writeConfig } from "../src/controller/home.ts";
 import type { RunOptions } from "../src/controller/run.ts";
-import { ACL, AGENTS, agentShellArgv, denyRules, PROJECTS, setup, STEPS, SUDO, SUDOERS, type SetupDeps } from "../src/controller/setup.ts";
+import { ACL, AGENTS, agentShellArgv, denyRules, PROJECTS, setup, STEPS, SUDO, AGENT_RULE, type SetupDeps } from "../src/controller/setup.ts";
 import { CEILING, controllerConfig, deps, fail, ok, pairing, runLine, World } from "./controller-fake.ts";
 
 // A Mac where nothing is set up yet; each sudo the owner answers makes its step true.
@@ -37,12 +37,12 @@ function mac() {
     if (a.includes("createhomedir")) made.user = true;
     if (a.includes(`-a ${AGENTS}`)) made.group = true;
     if (a.includes("chmod +a")) made.folder = true;
-    if (a.includes(SUDOERS)) made.sudoers = true;
+    if (a.includes(AGENT_RULE)) made.sudoers = true;
     if (a.includes("auth login")) made.gh = true;
     if (argv.at(-1)?.endsWith("/claude")) made.claude = true;
     return 0;
   };
-  const sd: SetupDeps = { run, home: d.home, user: "owner", uid: process.getuid!(), userHome: d.userHome, term, exists: (p) => (p === SUDOERS ? made.sudoers : p === "/opt/homebrew/bin/gh" || p === "/opt/homebrew/bin/claude"), say: d.out, stat: (p) => (p === PROJECTS && made.folder ? { dir: true, uid: process.getuid!(), mode: 0o2770 } : undefined) };
+  const sd: SetupDeps = { run, home: d.home, user: "owner", uid: process.getuid!(), userHome: d.userHome, term, exists: (p) => (p === AGENT_RULE ? made.sudoers : p === "/opt/homebrew/bin/gh" || p === "/opt/homebrew/bin/claude"), say: d.out, stat: (p) => (p === PROJECTS && made.folder ? { dir: true, uid: process.getuid!(), mode: 0o2770 } : undefined) };
   return { d, sd, made, ran, termed };
 }
 
@@ -62,7 +62,7 @@ describe("self setup", () => {
     // The sudoers line is checked by visudo before it goes in at 0440 root.
     const at = m.termed.findIndex((a) => a.includes("/usr/sbin/visudo"));
     expect(m.termed[at + 1]!.slice(0, 8)).toEqual([SUDO, "/usr/bin/install", "-m", "0440", "-o", "root", "-g", "wheel"]);
-    expect(m.termed[at + 1]!.at(-1)).toBe(SUDOERS);
+    expect(m.termed[at + 1]!.at(-1)).toBe(AGENT_RULE);
     // The sign-ins run as the agents user, never as the owner.
     expect(m.termed).toContainEqual([SUDO, "-u", AGENTS, "-H", "/opt/homebrew/bin/gh", "auth", "login", "--web", "--git-protocol", "https", "--hostname", "github.com"]);
     // The deny rules name each paired box's agent account, in the agents user's own settings.
