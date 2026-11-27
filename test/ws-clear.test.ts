@@ -66,8 +66,9 @@ function clearBox(o: { state?: WsState | string | null; procs?: string; pgrepCod
 }
 
 describe("taskbox workspace clear", () => {
-  test("is an admin's command at the box, and takes one agent's name", () => {
-    expect(rootPaths()).toContain("workspace clear");
+  test("is an admin's command at the box or the owner's signed one, and takes one agent's name", () => {
+    // Signed through the agent shell, so not root's; cli.ts sends an admin's unsigned run through sudo.
+    expect(rootPaths()).not.toContain("workspace clear");
     expect(parseLine(["workspace", "clear", "nova"]).ok).toBe(true);
     for (const a of [[], ["nova", "rex"], ["../x"], ["Nova"], ["taskbox-ws1"]]) expect({ a, ok: parseLine(["workspace", "clear", ...a]).ok }).toEqual({ a, ok: false });
     expect(elevation("workspace clear", ["nova"], false).argv).toBeUndefined();

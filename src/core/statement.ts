@@ -27,7 +27,8 @@ export const SIGNED_FOR_MS = 5 * 60_000;
 export const STATEMENT_MAX = 2048;
 export const SIGNATURE_MAX = 2000;
 export const ARGS_MAX = 1024;
-export const ACTION = /^[a-z][a-z0-9-]{0,31}(\.[a-z][a-z0-9-]{0,31})?$/;
+// A command path joined by dots: one to three words, such as drain, job.cancel or workspace.rule.add.
+export const ACTION = /^[a-z][a-z0-9-]{0,31}(\.[a-z][a-z0-9-]{0,31}){0,2}$/;
 const BOX = /^[0-9a-f]{32}$/;
 const AT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{3})?Z$/;
 const FIELDS = ["v", "ns", "box", "action", "args", "subject", "nonce", "at"];

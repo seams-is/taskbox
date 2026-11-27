@@ -27,7 +27,7 @@ export function workspacesNow(r: StateRead, now: number, last?: WorkspacesNow): 
 // One workspace as the loop sees it, with the owner's last OK in words.
 function viewOf(w: Workspace, now: number): WorkspaceView {
   const ok = w.approvedAt === null ? "approved" : `approved ${day(w.approvedAt, now)}`;
-  return { size: w.size, state: w.state, name: w.name, approvedAt: w.approvedAt, ok, hold: w.hold };
+  return { size: w.size, state: w.state, name: w.name, approvedAt: w.approvedAt, ok, hold: w.hold, ...(w.rush?.force ? { force: true } : {}) };
 }
 
 // A read is good, and kept for a stale state, when it is fresh or there is no state.

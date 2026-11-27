@@ -25,7 +25,7 @@ import { beatFor, RESTARTS_WINDOW_MS, staleBeat } from "./beat.ts";
 import { holdsLine } from "./sizes.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
 import { readLoop } from "./watch.ts";
-import { heldOf, holdReason, isHeld, lessHeld, roomHeld, type WorkspacesNow } from "./held.ts";
+import { forcingView, heldOf, holdReason, isHeld, lessHeld, roomHeld, type WorkspacesNow } from "./held.ts";
 import { readKick } from "./loopwatch.ts";
 import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
@@ -740,6 +740,23 @@ function roomWait(d: LoopDeps): { key: string; text: string } | undefined {
   return { key: "workspace", text: `workspaces hold ${(room.memoryMB / 1024).toFixed(1)} GB of the VM budget, so this waiting VM gives them room` };
 }
 
+// A workspace rushed with --force (workspace/flows.ts) stops this slot's running job when the job is
+// in its way: every job for a Whole; for a Light or Heavy, while the VMs and the holds pass the budget.
+export function rushForcing(d: LoopDeps): string | undefined {
+  const w = d.workspaces?.() ?? NONE;
+  const v = forcingView(w);
+  if (!v) return undefined;
+  const by = `workspace rush --force for ${v.name}`;
+  if (v.size === "whole") return by;
+  if (!d.box) return undefined;
+  const b = budgetOf(d.cfg, d.box.totalGB, d.box.logicalCpus);
+  if (b.memoryMB === undefined) return by;
+  const me = d.box.held.get(d.slot);
+  const mine = me ? (me.memoryMB ?? sizeOf(d.cfg, me.kind, me.size).vmMemoryMB) : 0;
+  const room = roomHeld(w).memoryMB;
+  return othersMB(d) + mine + room > b.memoryMB ? by : undefined;
+}
+
 // The box's availability, from root's control.json (availability.ts): read on every turn, inside the
 // start gate, and every few seconds while a job runs.
 // A break-glass start at the box (startHere) runs past the gen it was asked over, while its note counts:
@@ -1241,7 +1258,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
       // A forced drain or stop at its deadline: the job's VM stops, as job cancel stops it, and the
       // job ends as stopped by it.
       if (started !== undefined && !forced) {
-        const by = gateOf(d).forcing;
+        const by = gateOf(d).forcing ?? rushForcing(d);
         if (by) {
           forced = true;
           const id = jobOfVm(vm);

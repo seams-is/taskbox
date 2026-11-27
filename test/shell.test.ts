@@ -104,7 +104,7 @@ describe("the shell", () => {
 
   // Nit: the usage of a command the shell doesn't run, or a noun's other verbs, isn't shown here.
   test("a line naming a command the shell doesn't run gets the shell's own list", () => {
-    for (const line of ["load start --x", "workspace", "workspace clear nova"]) {
+    for (const line of ["load start --x", "workspace", "workspace rule"]) {
       const c = commandFor(line);
       expect({ line, no: "no" in c ? c.no : "" }).toEqual({ line, no: expect.stringMatching(/^Here you can type: /) });
     }

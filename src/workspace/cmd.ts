@@ -7,7 +7,10 @@ import { duration, EXIT } from "../command.ts";
 import { loadConfig } from "../config.ts";
 import { ask, askDeps } from "../core/asker.ts";
 import { onInterrupt, type Interrupt } from "../opcmd.ts";
+import { claimFor, nextProof, proofWord } from "./claim.ts";
+import { boxHold } from "./flows.ts";
 import { agentOf, type Do, doFor, find, isFinal, type Workspace, type WsState } from "./model.ts";
+import { ruleLines } from "./standing.ts";
 import { readStateFile } from "./read.ts";
 import { rulesOf } from "./rules.ts";
 import { expiry, listLines, problem, stateOf, statusLines, workspaceJson } from "./show.ts";
@@ -43,16 +46,42 @@ async function send(c: BoxCtx, kind: string, body: Record<string, unknown>): Pro
 export function duties(name: string, progressMinutes: number): string[] {
   return [
     `Report with taskbox workspace progress ${name} "<words>" at least every ${progressMinutes} minutes.`,
-    `When progress answers save, save, then type taskbox workspace progress ${name} "<what you saved>" --saved.`,
+    `When progress answers save, save, then type taskbox workspace progress ${name} "<what you saved>" --saved; when it answers downsize, drop to Light work, then add --downsized.`,
     `Type taskbox workspace end ${name} when you're done, and CI has its room back.`,
     "Files move through workspace connect or git: SFTP is off.",
   ];
 }
 
+// The claim key's store when an agent asks at the box itself: its own account's home. From the
+// controller, the controller keeps the key and sends --claim and --proof.
+export const HERE = "here";
+const homeOf = (c: BoxCtx) => (typeof c.env.HOME === "string" && c.env.HOME.startsWith("/") ? c.env.HOME : undefined);
+function claimHere(c: BoxCtx, agent: string): string | undefined {
+  const home = homeOf(c);
+  if (!home) return undefined;
+  try {
+    return claimFor(home, HERE, agent).pub;
+  } catch {
+    return undefined;
+  }
+}
+function proofHere(c: BoxCtx, id: string): string | undefined {
+  if (typeof c.opts.proof === "string") return c.opts.proof;
+  const home = homeOf(c);
+  if (!home) return undefined;
+  try {
+    const p = nextProof(home, HERE, id, c.ops.sys.now());
+    return p ? proofWord(p) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function requestRun(c: BoxCtx): Promise<Outcome> {
   const agent = c.opts.as as string;
   const size = (c.opts.size as string | undefined) ?? "light";
-  const r = await send(c, "workspace-request", { agent, size, why: c.opts.why as string });
+  const claim = typeof c.opts.claim === "string" ? c.opts.claim : claimHere(c, agent);
+  const r = await send(c, "workspace-request", { agent, size, why: c.opts.why as string, ...(claim ? { claim } : {}) });
   if (!r.ok) return r.out;
   const st = stateOf(read(c));
   const w = st?.workspaces.find((x) => x.rq === r.id);
@@ -81,7 +110,9 @@ export async function listRun(c: BoxCtx): Promise<Outcome> {
   const s = stateOf(first.r);
   const rules = rulesFor(c);
   const list = s ? s.workspaces.filter((w) => (state ? w.state === state : true)) : [];
-  return { exit: EXIT.ok, result: { workspaces: s ? list.map((w) => workspaceJson(s, w, c.ops.sys.now(), rules)) : [] } };
+  // hold and requestWaiting: what the controller's notifier mirrors to the hold lease (hold.ts BoxView).
+  const h = boxHold(s);
+  return { exit: EXIT.ok, result: { workspaces: s ? list.map((w) => workspaceJson(s, w, c.ops.sys.now(), rules)) : [], hold: h.hold ? { since: new Date(h.hold.since).toISOString(), why: h.hold.why } : null, requestWaiting: h.requestWaiting } };
 }
 
 export async function statusRun(c: BoxCtx): Promise<Outcome> {
@@ -167,7 +198,8 @@ export async function progressRun(c: BoxCtx): Promise<Outcome> {
   const text = c.args[1]!;
   const stepOpt = typeof c.opts.step === "string" ? /^(\d{1,10})\/(\d{1,10})$/.exec(c.opts.step) : null;
   const step = stepOpt ? { n: Number(stepOpt[1]), m: Number(stepOpt[2]) } : null;
-  const r = await send(c, "workspace-progress", { name: id, agent: agentOf(id), text, step, saved: c.opts.saved === true });
+  const proof = proofHere(c, id);
+  const r = await send(c, "workspace-progress", { name: id, agent: agentOf(id), text, step, saved: c.opts.saved === true, ...(c.opts.downsized === true ? { downsized: true } : {}), ...(proof ? { proof } : {}) });
   const s = stateOf(read(c));
   const w = s ? find(s, id) : undefined;
   const d: Do = r.ok ? doFor(w) : "save";
@@ -179,7 +211,8 @@ export async function progressRun(c: BoxCtx): Promise<Outcome> {
 // end: the agent's own, unsigned. The owner's comes signed, through the --signed hook.
 export async function endRun(c: BoxCtx): Promise<Outcome> {
   const id = c.args[0]!;
-  const r = await send(c, "workspace-end", { name: id, agent: agentOf(id) });
+  const proof = proofHere(c, id);
+  const r = await send(c, "workspace-end", { name: id, agent: agentOf(id), ...(proof ? { proof } : {}) });
   if (!r.ok) return r.out;
   c.say(r.said);
   return { exit: EXIT.ok, changed: true, result: { id } };
@@ -204,4 +237,15 @@ export async function connectRun(c: BoxCtx): Promise<Outcome> {
   if (w.state !== "ready" && w.state !== "saving") return failed(c, `${id} is ${w.state}: connect works while it is ready or saving.`);
   c.say(`${id} runs as ${w.user}. From the controller, taskbox workspace connect ${id} opens a shell there over Tailscale SSH.`);
   return { exit: EXIT.ok, result: { id, account: w.user, state: w.state } };
+}
+
+// rule list: the standing rules root's state holds.
+export async function ruleListRun(c: BoxCtx): Promise<Outcome> {
+  const r = read(c);
+  const p = problem(r);
+  if (p) return failed(c, p);
+  const s = stateOf(r);
+  const now = c.ops.sys.now();
+  for (const l of ruleLines(s, now)) c.say(l);
+  return { exit: EXIT.ok, result: { rules: (s?.rules ?? []).map((x) => ({ id: x.id, agent: x.agent, key: x.key, size: x.size, window: x.window, expires: new Date(x.expiresAt).toISOString(), signed: new Date(x.signedAt).toISOString(), by: x.by, uses: x.uses, live: x.expiresAt > now })) } };
 }

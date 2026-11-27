@@ -101,6 +101,14 @@ export interface Workspace {
   boot: string | null; // the boot it went ready in: the gate opens only in that boot
   word: Word | null;
   rq: string | null; // the agent spool request it came in by, so its asker finds it
+  // The workspace flows' own fields (flows.ts), absent on a record that never used them.
+  to?: "light" | null; // while saving: the owner asked it to drop to Light (pause --to light)
+  frozen?: { at: number; text: string } | null; // paused for memory: every process stopped at once, kept for resume
+  rush?: { force: boolean; at: number } | null; // the owner rushed it: what stands in its way steps aside
+  rushFor?: string | null; // asked to save and pause for this rushed workspace
+  claim?: { key: string; n: number } | null; // its agent's claim key, and the last counter taken
+  rule?: string | null; // the standing rule that approved it
+  usage?: { memoryMB: number; cpu: number; at: number } | null; // its account's last sample (caps.ts)
 }
 
 // What the guard last found of the fence (fence.ts), and its last proof before ready (probe.ts),
@@ -125,6 +133,7 @@ export const NOTE_MAX = 200;
 export interface AccountUse {
   agent: string;
   usedAt: number;
+  key?: string; // the claim key its files are bound to, so another agent claiming the name gets none
 }
 
 export interface WsState {
@@ -138,6 +147,22 @@ export interface WsState {
   fence?: FenceNote;
   proof?: ProofNote;
   notes?: WsNotes;
+  rules?: StandingRule[]; // standing rules, confirmed at the box (standing.ts)
+  ruleSeq?: number; // the last rule number given
+  clearing?: string[]; // agents whose pool files the owner asked cleared (a signed clear)
+}
+
+// A standing rule: the owner signed it, an admin confirmed it at the box (standing.ts).
+export interface StandingRule {
+  id: string; // r_4k2
+  agent: string;
+  key: string; // the claim key's fingerprint, SHA256:...
+  size: "light" | "heavy";
+  window: { from: number; to: number }; // minutes of the box's day
+  expiresAt: number;
+  signedAt: number;
+  by: string;
+  uses: number;
 }
 
 export const STATE_V = 1;
@@ -166,7 +191,7 @@ export interface Step {
   text: string;
 }
 
-export type Code = "not-found" | "busy" | "expired" | "usage";
+export type Code = "not-found" | "busy" | "expired" | "usage" | "denied";
 export type Result = { ok: true; state: WsState; name: string; said: string; steps: Step[] } | { ok: false; why: string; code?: Code };
 const no = (why: string, code?: Code): Result => ({ ok: false, why, ...(code ? { code } : {}) });
 const yes = (state: WsState, name: string, said: string, steps: Step[]): Result => ({ ok: true, state, name, said, steps });
@@ -175,10 +200,10 @@ export const find = (s: WsState, name: string) => s.workspaces.find((w) => w.nam
 export const isFinal = (w: Pick<Workspace, "state">) => FINAL.includes(w.state);
 
 // Unknown keys on the state and on each workspace survive every step: the spreads keep them.
-function put(s: WsState, w: Workspace): WsState {
+export function put(s: WsState, w: Workspace): WsState {
   return { ...s, workspaces: s.workspaces.map((x) => (x.name === w.name ? w : x)) };
 }
-function move(w: Workspace, state: State, now: number, more: Partial<Workspace> = {}): Workspace {
+export function move(w: Workspace, state: State, now: number, more: Partial<Workspace> = {}): Workspace {
   return { ...w, ...more, state, changedAt: now };
 }
 
@@ -230,7 +255,8 @@ export function approve(s: WsState, o: { name: string; size: Size; by: string; p
   const smaller = o.size !== w.asked ? ` as ${SIZE_WORD[o.size]} (${w.agent} asked for ${SIZE_WORD[w.asked]})` : "";
   const st = assign(put({ ...s, orderSeq: s.orderSeq + 1 }, next), o.pool, now);
   const got = find(st.state, w.name)!;
-  const where = got.user ? ` in ${got.user}${got.clear ? ", whose last agent's files are cleared first" : ""}` : ": every pool account is in use, so it waits for one";
+  const last = got.user ? own(s.accounts, got.user)?.agent : undefined;
+  const where = got.user ? ` in ${got.user}${got.clear ? `; clears ${last ?? "its last agent"}'s files in ${got.user} first` : ""}` : ": every pool account is in use, so it waits for one";
   return yes(st.state, w.name, `${w.name} approved${smaller}${where}. It starts when its room is free.`, [{ name: w.name, type: "approved", text: `${w.name} approved${smaller} by ${o.by}`.slice(0, 240) }, ...st.steps]);
 }
 
@@ -280,8 +306,8 @@ export function pause(s: WsState, o: { name: string }, r: Rules, now: number): R
   return no(`${w.name} is ${w.state}, so there is nothing to pause.`);
 }
 
-function pausedNow(s: WsState, w: Workspace, by: PausedBy, now: number, saved: boolean | null = null): Result {
-  const st = put(s, move(w, "paused", now, { pausedBy: by, order: null, hold: null, saved, saveAskedAt: null }));
+export function pausedNow(s: WsState, w: Workspace, by: PausedBy, now: number, saved: boolean | null = null): Result {
+  const st = put(s, move(w, "paused", now, { pausedBy: by, order: null, hold: null, saved, saveAskedAt: null, ...(w.to ? { to: null } : {}) }));
   return yes(st, w.name, `${w.name} paused ${PAUSED_WORD[by]}.`, [{ name: w.name, type: "paused", text: `${w.name} paused ${PAUSED_WORD[by]}${saved === false ? ", unsaved" : ""}` }]);
 }
 
@@ -310,7 +336,7 @@ export function resume(s: WsState, o: { name: string; by: string; pool: readonly
 export type Do = "continue" | "save" | "downsize" | "stop";
 export function doFor(w: Workspace | undefined): Do {
   if (!w) return "stop";
-  if (w.state === "saving") return "save";
+  if (w.state === "saving") return w.to ? "downsize" : "save";
   if (w.state === "ready" || w.state === "requested" || w.state === "approved" || w.state === "starting") return "continue";
   return "stop";
 }
@@ -326,7 +352,7 @@ export function progress(s: WsState, o: { name: string; agent: string; text: str
   if (isFinal(w)) return yes(s, w.name, `${w.name} is ${w.state}: stop.`, []);
   const st = put(s, { ...w, word: { at: now, text, step: o.step } });
   const d = doFor(w);
-  return yes(st, w.name, d === "save" ? `Save ${w.name}, then report with --saved.` : d === "stop" ? `${w.name} is ${w.state}: stop.` : `Noted for ${w.name}. Carry on.`, []);
+  return yes(st, w.name, d === "save" ? `Save ${w.name}, then report with --saved.` : d === "downsize" ? `Drop ${w.name} to Light work, then report with --saved --downsized.` : d === "stop" ? `${w.name} is ${w.state}: stop.` : `Noted for ${w.name}. Carry on.`, []);
 }
 
 // Accounts. A pool account is free when no workspace keeps it. Each approved workspace with no
@@ -339,14 +365,16 @@ export function assign(s: WsState, pool: readonly string[], now: number): { stat
     const kept = new Set(st.workspaces.filter((x) => x.user !== null && KEEPS.includes(x.state)).map((x) => x.user!));
     const free = pool.filter((u) => !kept.has(u));
     if (!free.length) break;
-    const mine = free.find((u) => own(st.accounts, u)?.agent === w.agent);
+    // Its own agent's account only under the same claim key, when either has one: a name is a label.
+    const same = (a: AccountUse | undefined) => a !== undefined && a.agent === w.agent && (a.key ?? null) === (w.claim?.key ?? null);
+    const mine = free.find((u) => same(own(st.accounts, u)));
     const unused = free.find((u) => own(st.accounts, u) === undefined);
     const oldest = [...free].sort((a, b) => (own(st.accounts, a)?.usedAt ?? 0) - (own(st.accounts, b)?.usedAt ?? 0) || pool.indexOf(a) - pool.indexOf(b))[0]!;
     const user = mine ?? unused ?? oldest;
     const prev = own(st.accounts, user);
-    const clear = prev !== undefined && prev.agent !== w.agent;
-    st = put({ ...st, accounts: { ...st.accounts, [user]: { agent: w.agent, usedAt: now } } }, { ...w, user, clear });
-    steps.push({ name: w.name, type: "account", text: `${w.name} given ${user}${clear ? `; ${prev!.agent}'s files there are cleared before it opens` : ""}` });
+    const clear = prev !== undefined && !same(prev);
+    st = put({ ...st, accounts: { ...st.accounts, [user]: { agent: w.agent, usedAt: now, ...(w.claim ? { key: w.claim.key } : {}) } } }, { ...w, user, clear });
+    steps.push({ name: w.name, type: "account", text: `${w.name} given ${user}${clear ? `; clears ${prev!.agent}'s files in ${user} before it opens` : ""}` });
   }
   return { state: st, steps };
 }
@@ -365,7 +393,8 @@ export function held(s: WsState): { memoryMB: number; cpus: number; whole: boole
   let memoryMB = 0;
   let cpus = 0;
   let whole = false;
-  for (const w of s.workspaces.filter((x) => HOLDS.includes(x.state))) {
+  // A workspace stopped at once for its memory still holds its pages, so it holds its room.
+  for (const w of s.workspaces.filter((x) => HOLDS.includes(x.state) || (x.state === "paused" && x.frozen))) {
     if (w.size === "whole") whole = true;
     memoryMB += w.hold?.memoryMB ?? 0;
     cpus += w.hold?.cpus ?? 0;
@@ -493,6 +522,10 @@ export function onBoot(s: WsState, boot: string, now: number): { state: WsState;
     if (w.state === "starting" || OPEN.includes(w.state)) {
       st = put(st, move(w, "paused", now, { pausedBy: "restart", order: null, hold: null, saved: null, saveAskedAt: null }));
       steps.push({ name: w.name, type: "paused", text: `${w.name} paused by a restart at ${clockOf(now)}` });
+    } else if (w.state === "paused" && w.frozen) {
+      // Stopped at once for memory: the restart ended its processes, so it holds nothing now.
+      st = put(st, move(w, "paused", now, { pausedBy: "restart", frozen: null, hold: null }));
+      steps.push({ name: w.name, type: "paused", text: `${w.name} paused by a restart at ${clockOf(now)}` });
     } else if (w.state === "ending") {
       const e = ended(st, w.name, now);
       st = e.state;
@@ -555,8 +588,9 @@ export function parseBoot(out: string): string | undefined {
 
 // One line for a workspace's state, such as "paused by a restart" or "denied: after 6pm".
 export function stateLine(w: Workspace): string {
+  if (w.state === "paused" && w.frozen) return `paused: stopped at once, ${w.frozen.text}`;
   if (w.state === "paused" && w.pausedBy) return `paused ${PAUSED_WORD[w.pausedBy]}${w.saved === false ? ", unsaved" : ""}`;
-  if (w.state === "saving") return w.pausedBy === "quiet" ? "saving: no word from its agent" : "saving: the owner asked";
+  if (w.state === "saving") return w.to ? "saving: asked to drop to Light" : w.pausedBy === "quiet" ? "saving: no word from its agent" : w.pausedBy === "memory" ? "saving: over its memory" : w.rushFor ? `saving: making room for ${w.rushFor}` : "saving: the owner asked";
   if ((w.state === "denied" || w.state === "expired" || w.state === "failed") && w.reason) return `${w.state}: ${w.reason}`;
   if (w.state === "ended" || w.state === "withdrawn") return `${w.state} by ${w.endedBy === "owner" ? "the owner" : w.agent}`;
   if (w.state === "approved" && w.size !== w.asked) return `approved as ${w.size} (asked for ${w.asked})`;

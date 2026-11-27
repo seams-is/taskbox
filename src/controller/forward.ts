@@ -13,6 +13,8 @@ import { ask as boxAsk, chooseBoxes, configOrStop, connectBox, type Connected, t
 import { readAnswer } from "./schema.ts";
 import { boxChecksBody, footer, header, jobsBody, logBody, nextFor, nowLine, statusBody } from "./screens.ts";
 import { boxCall, remoteLine, sendable } from "./ssh.ts";
+import { dirname } from "node:path";
+import { claimFor, nextProof, proofWord } from "../workspace/claim.ts";
 import { controllerStatus as statusFile, save } from "./statusline.ts";
 
 export const ANSWER_MS = 90_000;
@@ -163,12 +165,30 @@ async function oldBox(d: Deps, c: Connected, a: Ask): Promise<One> {
   return back({ stop: `${c.box.name} runs ${c.hello.release ?? "an older taskbox"}, which has no taskbox ${a.spec.path.join(" ")}${a.parsed.opts.away ? " --away" : ""}.`, next: "Nothing to do: the box updates itself within a day." });
 }
 
+// The agent's claim key for a box lives here, on the controller, in the agents user's home: a
+// request sends its public half, and progress and end a proof by it (workspace/claim.ts). The box
+// binds the workspace and its files to the key, so another agent can't end it or claim its files.
+export function withClaim(d: Pick<Deps, "home">, box: string, a: Pick<Ask, "spec" | "parsed" | "words">, now: number): string[] {
+  const verb = a.spec.path.join(" ");
+  const userHome = dirname(dirname(dirname(d.home.dir)));
+  const dir = lower(box);
+  try {
+    if (verb === "workspace request" && a.parsed.opts.claim === undefined && typeof a.parsed.opts.as === "string") return [...a.words, "--claim", claimFor(userHome, dir, a.parsed.opts.as).pub];
+    if ((verb === "workspace progress" || verb === "workspace end") && a.parsed.opts.proof === undefined && a.parsed.flags.signed === undefined) {
+      const id = a.parsed.args[0] ?? "";
+      const p = nextProof(userHome, dir, id, now);
+      if (p) return [...a.words, "--proof", proofWord(p)];
+    }
+  } catch {}
+  return a.words;
+}
+
 async function onBox(d: Deps, c: Connected, a: Ask): Promise<One> {
   if (c.hello.answers === 3) return oldBox(d, c, a);
   const name = c.box.name;
   let r: Awaited<ReturnType<typeof boxCall>>;
   try {
-    r = await boxCall(sshDeps(d), c.target, lineFor(a.spec, a.words, c.hello.answers), ANSWER_MS);
+    r = await boxCall(sshDeps(d), c.target, lineFor(a.spec, withClaim(d, c.box.name, a, d.now()), c.hello.answers), ANSWER_MS);
   } catch {
     return { box: c.box, stop: { stop: `${name} can't be asked taskbox ${a.spec.path.join(" ")} over ssh.`, next: "Run it at the box." }, exit: EXIT.failed };
   }

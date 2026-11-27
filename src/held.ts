@@ -14,6 +14,7 @@ export interface WorkspaceView {
   approvedAt: number | null; // the owner's last OK: the approve, or the last resume
   ok: string; // that OK in words: "approved 14:02", "resumed Nov 19 14:02"
   hold: Hold | null; // what it holds of the budget, from starting
+  force?: boolean; // rushed with --force: CI's running jobs in its way stop (workspace/flows.ts)
 }
 
 // What the loop knows of the workspaces now, from root's state (workspace/hold.ts).
@@ -80,3 +81,6 @@ export function heldSlotsEmpty(loop: { slots?: Record<string, { heldEmpty?: unkn
   for (let s = n - Math.min(h, n) + 1; s <= n; s++) if (loop.slots?.[String(s)]?.heldEmpty !== true) return false;
   return true;
 }
+
+// The rushed workspace, starting with --force, whose way CI's running jobs leave at once, or undefined.
+export const forcingView = (w: WorkspacesNow): WorkspaceView | undefined => w.views.find((v) => v.state === "starting" && v.force === true);

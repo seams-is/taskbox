@@ -70,11 +70,11 @@ async function box(o: { pin?: boolean; pool?: boolean } = {}) {
 }
 
 describe("the handlers", () => {
-  test("fit the dispatcher's registry: four unsigned kinds and four signed actions", () => {
+  test("fit the dispatcher's registry: four unsigned kinds and the owner's signed actions", () => {
     const h = handlersFor({ state: "/x", rootUid: 0 });
     expect(handlersProblem(h)).toBeUndefined();
     expect(h.unsigned.map((u) => u.kind)).toEqual(["workspace-request", "workspace-progress", "workspace-end", "workspace-deny"]);
-    expect(h.signed.map((s) => s.action)).toEqual(["workspace.approve", "workspace.pause", "workspace.resume", "workspace.end"]);
+    expect(h.signed.map((s) => s.action)).toEqual(["workspace.approve", "workspace.pause", "workspace.resume", "workspace.end", "workspace.jump", "workspace.rush", "workspace.clear", "workspace.rule.add", "workspace.rule.delete"]);
   });
 });
 

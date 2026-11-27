@@ -11,6 +11,10 @@
 // never as files of their own.
 import { AGENT, BOOT, FINAL, isSize, isState, KEEPS, MAX_WORKSPACES, NAME, NAME_SEQ_MAX, NOTE_MAX, OPEN, PAUSED_BY, POOL_USER, RQ, STATE_V, STEP_MAX, WORDS_RE, type Workspace, type WsState } from "./model.ts";
 
+import { CLAIM } from "./claim.ts";
+import { CLEARING_MAX } from "./signedclear.ts";
+import { MAX_RULES, RULE_ID, ruleProblem } from "./standing.ts";
+
 export const STATE_MAX = 512 * 1024;
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -61,6 +65,8 @@ export function workspaceProblem(w: unknown): string | undefined {
     ] as const
   ).find(([, ok]) => !ok);
   if (bad) return `a workspace's ${bad[0]} isn't one taskbox reads`;
+  const flows = flowsProblem(w);
+  if (flows) return `a workspace's ${flows} isn't one taskbox reads`;
   const st = w.state as Workspace["state"];
   // What each state carries: an account from approval on (approved may wait for one), none in a
   // request; a hold only while it holds room; an order only in the queue; a boot while open.
@@ -70,6 +76,22 @@ export function workspaceProblem(w: unknown): string | undefined {
   if ((["starting", "ready", "saving"] as const).some((x) => x === st) && w.hold === null) return `${w.name} holds room without a hold`;
   if (OPEN.includes(st) && w.boot === null) return `${w.name} is open with no boot`;
   if ((st === "saving") !== (w.saveAskedAt !== null)) return `${w.name}'s save doesn't match its state`;
+  return undefined;
+}
+
+// The workspace flows' own fields (flows.ts, claim.ts, caps.ts): each may be absent, and when there
+// it has its shape. The name of the first that doesn't, or undefined.
+const FLOW_FIELDS: [string, (v: unknown) => boolean][] = [
+  ["to", (v) => v === "light"],
+  ["frozen", (v) => isObj(v) && time(v.at) && line(v.text, 100)],
+  ["rush", (v) => isObj(v) && typeof v.force === "boolean" && time(v.at)],
+  ["rushFor", (v) => str(v, NAME)],
+  ["claim", (v) => isObj(v) && str(v.key, CLAIM) && count(v.n, Number.MAX_SAFE_INTEGER)],
+  ["rule", (v) => str(v, RULE_ID)],
+  ["usage", (v) => isObj(v) && count(v.memoryMB, 64 * 1024 * 1024) && typeof v.cpu === "number" && Number.isFinite(v.cpu) && v.cpu >= 0 && v.cpu <= 4096 && time(v.at)],
+];
+function flowsProblem(w: Record<string, unknown>): string | undefined {
+  for (const [k, ok] of FLOW_FIELDS) if (Object.hasOwn(w, k) && w[k] !== null && !ok(w[k])) return k;
   return undefined;
 }
 
@@ -99,6 +121,10 @@ function stateProblem(v: Record<string, unknown>): string | undefined {
   if (Object.hasOwn(v, "fence") && !(isObj(v.fence) && typeof v.fence.ok === "boolean" && line(v.fence.why, 240))) return "the state's fence note isn't one taskbox reads";
   if (Object.hasOwn(v, "proof") && !(isObj(v.proof) && str(v.proof.user, POOL_USER) && time(v.proof.at) && typeof v.proof.ok === "boolean" && line(v.proof.why, 240))) return "the state's proof note isn't one taskbox reads";
   if (Object.hasOwn(v, "notes") && !notesOk(v.notes)) return "the state's notes aren't ones taskbox reads";
+  if (!Object.values(v.accounts as Record<string, Record<string, unknown>>).every((a) => !Object.hasOwn(a, "key") || str(a.key, CLAIM))) return "an account's claim key isn't one taskbox reads";
+  if (Object.hasOwn(v, "rules") && !(Array.isArray(v.rules) && v.rules.length <= MAX_RULES && v.rules.every((x) => ruleProblem(x) === undefined) && new Set(v.rules.map((x) => (x as { id: string }).id)).size === v.rules.length)) return "the state's standing rules aren't ones taskbox reads";
+  if (Object.hasOwn(v, "ruleSeq") && !count(v.ruleSeq, 1_000_000)) return "the state's rule counter isn't one taskbox reads";
+  if (Object.hasOwn(v, "clearing") && !(Array.isArray(v.clearing) && v.clearing.length <= CLEARING_MAX && v.clearing.every((a) => str(a, AGENT)))) return "the state's clears aren't ones taskbox reads";
   return undefined;
 }
 

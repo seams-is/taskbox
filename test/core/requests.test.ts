@@ -876,7 +876,8 @@ describe("--signed through the box's command line", () => {
   test("a command whose path a statement can't name, or with a --words flag, can't take --signed", () => {
     const base: CommandSpec = { path: ["connect", "github"], summary: "x", who: ["owner"], flags: ["signed"], shell: true, run: async () => 0 };
     expect(registryProblem([base])).toBeUndefined();
-    expect(registryProblem([{ ...base, path: ["workspace", "pause", "now"] }])).toContain("a statement can't name workspace.pause.now");
+    expect(registryProblem([{ ...base, path: ["workspace", "rule", "add"] }])).toBeUndefined();
+    expect(registryProblem([{ ...base, path: ["workspace", "rule", "add", "now"] }])).toContain("a statement can't name workspace.rule.add.now");
     expect(registryProblem([{ ...base, options: [{ name: "--words", value: "W" }] }])).toContain("--words");
   });
 });

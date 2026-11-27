@@ -40,7 +40,10 @@ import { type PoolAccount, poolAccounts, workspacesOn } from "./box.ts";
 import { anchorsInOrder, bootOut, bridgesAbove, BRIDGES, fenceExpected, fenceMatches, fenceRules, killAllAs, killVMs, lanAddresses, ownPrefixes, PFCTL, PGREP, PREFIX_MAX, removeCrontab, SCREEN_SHARING_ANCHOR, stopAll, vmsOf, WS_ANCHOR } from "./fence.ts";
 import { deleteMoved, type HandoverDeps, moveAside } from "./handover.ts";
 import { assign, boxPause, cleared, emptyState, ended, failed, held, NOTE_MAX, onBoot, OPEN, parseBoot, ready, type Rules, start, type Step, tick, whyNotStart, type Workspace, type WsNotes, type WsState } from "./model.ts";
+import { flowsTick } from "./flows.ts";
 import { type ProbeDeps, proveFence, realListen } from "./probe.ts";
+import { clearAsked } from "./signedclear.ts";
+import { expireRules } from "./standing.ts";
 import { readStateFile } from "./read.ts";
 import { rulesOf } from "./rules.ts";
 import { failMode, type StateRead } from "./store.ts";
@@ -375,7 +378,13 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
     const s = snap();
     for (const a of pool.list) {
       const open = s.workspaces.some((w) => w.user === a.name && OPEN.includes(w.state));
-      if (!open || !holds) emptyNow.set(a.name, await closeAccount(d, mem, a, r));
+      // Stopped at once for memory (flows.ts freeze): its processes stay stopped, for resume to
+      // continue them; the caps pass keeps them stopped. Its VMs still go.
+      const frozen = holds && s.workspaces.some((w) => w.user === a.name && w.state === "paused" && w.frozen);
+      if (frozen) {
+        emptyNow.set(a.name, false);
+        await killVMs(sys, a.uid);
+      } else if (!open || !holds) emptyNow.set(a.name, await closeAccount(d, mem, a, r));
       else {
         mem.cleared.delete(a.uid);
         await killVMs(sys, a.uid);
@@ -389,7 +398,10 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
   const budget = needsBudget ? await budgetNow(d).catch(() => ({}) as Budget) : {};
   const rules: Rules = rulesOf(cfg, budget);
   await apply((s) => {
-    const t = tick(s, rules, now);
+    const f = flowsTick(s, rules, now);
+    const e = expireRules(f.state, now);
+    const t0 = tick(e.state, rules, now);
+    const t = { state: t0.state, steps: [...f.steps, ...e.steps, ...t0.steps] };
     const a = assign(t.state, on.pool, now);
     const st = low ? { state: a.state, steps: [] } : start(a.state, rules, now);
     return { state: st.state, steps: [...t.steps, ...a.steps, ...st.steps] };
@@ -402,6 +414,7 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
 
   // 8. Accounts handed to another agent: the old files moved aside, then deleted, as an op.
   await clearHanded(d, mem, pool.list, emptyNow, apply, r, now);
+  await clearAsked({ h: handoverDeps(d, now), poolRecord: p.poolRecord, pool: pool.list, emptyNow, state: snap(), apply, problems: r.problems });
 
   // 9. Starting to ready.
   const notes: WsNotes = { waiting: [] };

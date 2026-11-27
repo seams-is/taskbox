@@ -16,8 +16,20 @@
     "why": "the watch screen's now: display"
   },
   "controller/forward.ts": {
-    "reads": 4,
-    "why": "the time on an envelope the controller makes, and when a status was read: display"
+    "reads": 5,
+    "why": "the time on an envelope the controller makes, and when a status was read: display; a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter"
+  },
+  "cmd/confirm.ts": {
+    "reads": 1,
+    "why": "confirm's list of waiting changes, judged by the box's boot and monotonic clock as well, so a step either way lapses an item, never keeps one"
+  },
+  "confirmapply.ts": {
+    "reads": 1,
+    "why": "the guard's answer to a confirm: pending.ts judges each item by wall, boot and monotonic clock together, so a step either way lapses it"
+  },
+  "workspace/caps.ts": {
+    "reads": 1,
+    "why": "the memory caps' 60 s over the size, on the guard's 2 s tick: a step forward asks a save or warns a minute early, a step back late; the stop at 150% reads no clock"
   },
   "controller/home.ts": {
     "reads": 1,

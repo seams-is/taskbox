@@ -27,6 +27,7 @@ import { readOwnedJson } from "../loopwatch.ts";
 import { cancelOp, cancelProblem, opIdOf } from "../opcancel.ts";
 import type { Starter } from "../optypes/decl.ts";
 import { placeSpool } from "./requests.ts";
+import { applyConfirm, CONFIRM, confirmProblem } from "../confirmapply.ts";
 
 export const REFRESH = 30; // passes between lookups of the service account's uid
 export const PER_PASS = 10; // the service account asks one at a time; a few more is plenty
@@ -85,7 +86,7 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
           log(`the outcome of ${id} couldn't be written: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
         }
       };
-      const kinds = Object.fromEntries(spool.kinds.map((k) => [k, (b: Record<string, unknown>) => (k === OP_CANCEL ? cancelProblem(b, spool.role === "admin") : argsProblem(k as Action, b))]));
+      const kinds = Object.fromEntries(spool.kinds.map((k) => [k, (b: Record<string, unknown>) => (k === OP_CANCEL ? cancelProblem(b, spool.role === "admin") : k === CONFIRM ? confirmProblem(b) : argsProblem(k as Action, b))]));
       await drainSpool(
         {
           dir: spool.dir,
@@ -120,6 +121,11 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
               const r = await cancelOp(hctx(), id, spool.role, spool.role === "admin" ? "an admin" : "service");
               return answer(n.id, r.ok, r.said, r.ok ? undefined : r.code, r.op);
             }
+            // An admin's answer at the box to a lasting change (confirmapply.ts): root's admin spool only.
+            if (n.kind === CONFIRM && spool.role === "admin") {
+              const r = await applyConfirm({ sys: c.sys, p: c.p, rootUid: root, ...own, events }, body as { id: string; yes: boolean; admin: string });
+              return answer(n.id, r.ok, r.said, r.code);
+            }
             const r = await changeControl(deps(), requestOf(n.kind as Action, body, "service"), at, { kick: !kicked });
             if (n.kind === "start") kicked = true;
             answer(n.id, r.ok, r.said, r.code, r.op);
@@ -141,7 +147,7 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
     };
     placeSpool(s.adminSpool, root, root, d.chown ?? lchownSync);
     const adminReport: SpoolReport = { did: [], problems: [] };
-    await take({ dir: s.adminSpool, owner: root, whose: "root", role: "admin", outcomes: s.outcomes("admin"), kinds: [OP_CANCEL] }, adminReport);
+    await take({ dir: s.adminSpool, owner: root, whose: "root", role: "admin", outcomes: s.outcomes("admin"), kinds: [OP_CANCEL, CONFIRM] }, adminReport);
     for (const l of adminReport.did) log(`admin spool: ${l}`);
     report.problems.push(...adminReport.problems.map((p) => `admin spool: ${p}`));
     if (adminReport.closed) throw new Error(`the admin spool: ${adminReport.closed}, so the spool is closed`);

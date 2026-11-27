@@ -43,6 +43,12 @@ export function workspaceJson(s: WsState, w: Workspace, now: number, r?: Pick<Ru
     hold: w.hold,
     word: w.word ? { at: new Date(w.word.at).toISOString(), text: w.word.text, step: w.word.step } : null,
     quietMs: quietFor(w, now),
+    usage: w.usage ? { memoryMB: w.usage.memoryMB, cpus: w.usage.cpu, at: new Date(w.usage.at).toISOString() } : null,
+    rule: w.rule ?? null,
+    downsizing: w.to === "light",
+    stopped: w.frozen ? { at: new Date(w.frozen.at).toISOString(), why: w.frozen.text } : null,
+    rushed: w.rush ? { force: w.rush.force } : null,
+    makingRoomFor: w.rushFor ?? null,
   };
 }
 
@@ -76,6 +82,7 @@ export function statusLines(s: WsState, w: Workspace, now: number): string[] {
   if (wait) out.push(`Waiting for: ${wait}.`);
   if (w.hold && w.size !== "whole") out.push(`Holds ${gib(w.hold.memoryMB)} and ${w.hold.cpus} CPUs of the VM budget.`);
   if (w.size === "whole" && w.hold) out.push("Holds the whole box: CI is paused for it.");
+  if (w.usage && (w.state === "ready" || w.state === "saving")) out.push(`Uses ${gib(w.usage.memoryMB)} and ${w.usage.cpu.toFixed(1)} CPUs${w.size === "whole" ? "" : ` of ${SIZE_WORD[w.size]}'s ${gib(w.hold?.memoryMB ?? 0)} and ${w.hold?.cpus ?? 0}`}, at ${clock(w.usage.at)} UTC.`);
   if (w.by) out.push(`Approved ${day(w.approvedAt ?? w.at, now)} UTC by ${w.by}.`);
   if (w.word) out.push(`Last word, ${day(w.word.at, now)} UTC: ${w.word.text}${w.word.step ? ` (${w.word.step.n}/${w.word.step.m})` : ""}`);
   const q = quietFor(w, now);
@@ -89,7 +96,8 @@ export function statusBlock(s: WsState | undefined, now: number): string[] {
   if (!s) return [];
   const live = s.workspaces.filter((w) => !FINAL.includes(w.state));
   if (!live.length) return [];
-  return ["Workspaces:", ...live.map((w) => `  ${w.name} (${SIZE_WORD[w.size]}, ${w.agent}): ${stateLine(w)}${waitingWhy(s, w) ? `, waiting for ${waitingWhy(s, w)}` : ""}`.slice(0, 120))];
+  const use = (w: Workspace) => (w.usage && (w.state === "ready" || w.state === "saving") ? `, using ${gib(w.usage.memoryMB)} and ${w.usage.cpu.toFixed(1)} CPUs` : "");
+  return ["Workspaces:", ...live.map((w) => `  ${w.name} (${SIZE_WORD[w.size]}, ${w.agent}): ${stateLine(w)}${use(w)}${waitingWhy(s, w) ? `, waiting for ${waitingWhy(s, w)}` : ""}`.slice(0, 120))];
 }
 
 // The status block from root's state file, or one line saying it can't be read.
