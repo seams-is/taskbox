@@ -107,7 +107,7 @@ describe("a request", () => {
   });
   test("a deny keeps its reason, unsigned", () => {
     const d = ok(deny(asked(emptyState()), { name: "nova-1", reason: "after 6pm" }, T));
-    expect(stateLine(find(d, "nova-1")!)).toBe("denied: after 6pm");
+    expect(stateLine(find(d, "nova-1")!)).toBe("denied (unsigned): after 6pm");
   });
 });
 

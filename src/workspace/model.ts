@@ -269,7 +269,7 @@ export function deny(s: WsState, o: { name: string; reason: string }, now: numbe
   const reason = o.reason === "" ? "" : cleanWords(o.reason);
   if (reason === undefined) return no(`A reason takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`, "usage");
   const st = put(s, move(w, "denied", now, { reason }));
-  return yes(st, w.name, `${w.name} denied${reason ? `: ${reason}` : ""}.`, [{ name: w.name, type: "denied", text: `${w.name} denied, unsigned${reason ? `: ${reason}` : ""}` }]);
+  return yes(st, w.name, `${w.name} denied (unsigned)${reason ? `: ${reason}` : ""}.`, [{ name: w.name, type: "denied", text: `${w.name} denied, unsigned${reason ? `: ${reason}` : ""}` }]);
 }
 
 // An end, by the agent (its own, by name) or the owner (signed). Before ready it is withdrawn. While
@@ -592,7 +592,9 @@ export function stateLine(w: Workspace): string {
   if (w.state === "paused" && w.frozen) return `paused: stopped at once, ${w.frozen.text}`;
   if (w.state === "paused" && w.pausedBy) return `paused ${PAUSED_WORD[w.pausedBy]}${w.saved === false ? ", unsaved" : ""}`;
   if (w.state === "saving") return w.to ? "saving: asked to drop to Light" : w.pausedBy === "quiet" ? "saving: no word from its agent" : w.pausedBy === "memory" ? "saving: over its memory" : w.rushFor ? `saving: making room for ${w.rushFor}` : "saving: an approver asked";
-  if ((w.state === "denied" || w.state === "expired" || w.state === "failed") && w.reason) return `${w.state}: ${w.reason}`;
+  // A denial is unsigned (anyone in the agent account can send one), so its words say so.
+  if (w.state === "denied") return `denied (unsigned)${w.reason ? `: ${w.reason}` : ""}`;
+  if ((w.state === "expired" || w.state === "failed") && w.reason) return `${w.state}: ${w.reason}`;
   if (w.state === "ended" || w.state === "withdrawn") return `${w.state} by ${w.endedBy === "owner" ? "an approver" : w.agent}`;
   if (w.state === "approved" && w.size !== w.asked) return `approved as ${w.size} (asked for ${w.asked})`;
   return w.state;
