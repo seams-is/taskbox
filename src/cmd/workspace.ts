@@ -4,7 +4,7 @@
 import type { BoxCtx, CommandSpec, Outcome } from "../command.ts";
 import { EXIT } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
-import { CLAIM, FINGERPRINT, PROOF } from "../workspace/claim.ts";
+import { CLAIM, FINGERPRINT, PROOF, REQUEST_PROOF } from "../workspace/claim.ts";
 import { AGENT, cleanWords, isSize, isState, NAME } from "../workspace/model.ts";
 import { parseWindow, RULE_ID } from "../workspace/standing.ts";
 
@@ -31,6 +31,8 @@ export const commands: CommandSpec[] = [
       { name: "--why", value: "TEXT", check: words },
       // The claim key's public half, which the controller makes and keeps; at the box, the request makes one.
       { name: "--claim", value: "KEY", check: (v) => CLAIM.test(v) },
+      // A proof by that key over the box's claims nonce, which the controller signs.
+      { name: "--proof", value: "PROOF", check: (v) => REQUEST_PROOF.test(v) },
     ],
     check: (p) => (p.opts.as === undefined || p.opts.why === undefined ? "workspace request needs --as AGENT and --why TEXT" : undefined),
     shell: true,

@@ -18,7 +18,7 @@ import { handlersFor } from "../src/handlers/workspace.ts";
 import { requestsJob } from "../src/passes/requests.ts";
 import { writePoolRecord } from "../src/pin.ts";
 import { registry } from "../src/registry.ts";
-import { fingerprint, makeClaim, proofWord, signProof } from "../src/workspace/claim.ts";
+import { fingerprint, makeClaim, proofWord, signProof, signRequest } from "../src/workspace/claim.ts";
 import { freeze, REACH_MS, reachWhy } from "../src/workspace/flows.ts";
 import { assign, find, ready, start, type WsState } from "../src/workspace/model.ts";
 import { readStateFile } from "../src/workspace/read.ts";
@@ -26,7 +26,7 @@ import { writeStateFile } from "../src/workspace/write.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, tempRoot, testBox } from "./helpers.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
-import { BOOT1, INSTALL_ID, N, POOL, RULES, T, verifyDeps } from "./ws-helpers.ts";
+import { BOOT1, claimKeys, INSTALL_ID, N, POOL, RULES, T, verifyDeps } from "./ws-helpers.ts";
 
 const me = process.getuid!();
 const owner = keyPair();
@@ -64,7 +64,13 @@ async function box() {
   };
   const put = (st: WsState) => writeStateFile({ rootUid: me }, p.workspaces, st);
   const events = () => readEvents([{ dir: s.events, owner: me, writer: "guard" }]).events;
-  const send = async (kind: string, body: Record<string, unknown>) => {
+  // A request carries its claim key and a proof over the claims nonce, as the requesting side sends it.
+  const claims = claimKeys();
+  const send = async (kind: string, body0: Record<string, unknown>) => {
+    let body = kind === "workspace-request" ? await claims.request(async () => ((await nonceOf(d, "claims")) as { ok: true; nonce: string }).nonce, body0, sys.clock) : body0;
+    // The agent's steps carry a proof by its key, unless the test names its own (proof: undefined is none).
+    const action = ({ "workspace-progress": "progress", "workspace-end": "end", "workspace-connect": "connect" } as const)[kind];
+    if (action && !("proof" in body) && typeof body.name === "string" && typeof body.agent === "string") body = { ...body, proof: claims.proof(action, body.name, sys.clock, claims.keyOf(body.agent)) };
     const r = await ask(d, kind, body);
     if ("no" in r || !r.outcome) throw new Error(`no outcome: ${JSON.stringify(r)}`);
     return r.outcome;
@@ -83,7 +89,7 @@ async function box() {
     if (!r.ok) throw new Error(r.why);
     put({ ...r.state, boot: BOOT1, beat: sys.clock });
   };
-  return { root, p, sys, d, state, put, events, send, signed, toReady, handlers };
+  return { root, p, sys, d, state, put, events, send, signed, toReady, handlers, claims };
 }
 
 describe("the statement bytes match on both sides", () => {
@@ -178,30 +184,58 @@ describe("clear, signed", () => {
 });
 
 describe("claim keys and standing rules", () => {
-  test("a request with a claim key binds it; progress and end need a proof by it, once each", async () => {
+  test("a request with a claim key binds it; progress and end need a proof by it, for that step, once each", async () => {
     const b = await box();
     const k = makeClaim();
-    await b.send("workspace-request", { agent: "nova", size: "light", why: "Render", claim: k.pub });
+    await b.send("workspace-request", { agent: "nova", size: "light", why: "Render", claimKey: k });
     expect(find(b.state(), "nova-1")!.claim).toEqual({ key: k.pub, n: 0 });
     // No proof, another key's, then a good one, then the same again.
-    expect(await b.send("workspace-progress", { name: "nova-1", agent: "nova", text: "x", step: null, saved: false })).toMatchObject({ ok: false, code: "denied" });
-    const bad = proofWord(signProof(makeClaim().pem, "nova-1", 1, T));
+    expect(await b.send("workspace-progress", { name: "nova-1", agent: "nova", text: "x", step: null, saved: false, proof: undefined })).toMatchObject({ ok: false, code: "denied" });
+    const bad = proofWord(signProof(makeClaim().pem, "end", "nova-1", 1, T));
     expect(await b.send("workspace-end", { name: "nova-1", agent: "nova", proof: bad })).toMatchObject({ ok: false, code: "denied" });
-    const good = proofWord(signProof(k.pem, "nova-1", 5, T));
+    // An unused progress proof doesn't stand in for end: the step is in what it signs.
+    expect(await b.send("workspace-end", { name: "nova-1", agent: "nova", proof: proofWord(signProof(k.pem, "progress", "nova-1", 4, T)) })).toMatchObject({ ok: false, said: expect.stringContaining("for end") });
+    const good = proofWord(signProof(k.pem, "progress", "nova-1", 5, T));
     expect(await b.send("workspace-progress", { name: "nova-1", agent: "nova", text: "x", step: null, saved: false, proof: good })).toMatchObject({ ok: true });
     expect(find(b.state(), "nova-1")!.claim!.n).toBe(5);
-    expect(await b.send("workspace-end", { name: "nova-1", agent: "nova", proof: good })).toMatchObject({ ok: false, said: expect.stringContaining("used before") });
-    expect(await b.send("workspace-end", { name: "nova-1", agent: "nova", proof: proofWord(signProof(k.pem, "nova-1", 6, T)) })).toMatchObject({ ok: true });
+    expect(await b.send("workspace-progress", { name: "nova-1", agent: "nova", text: "x", step: null, saved: false, proof: good })).toMatchObject({ ok: false, said: expect.stringContaining("used before") });
+    expect(await b.send("workspace-end", { name: "nova-1", agent: "nova", proof: proofWord(signProof(k.pem, "end", "nova-1", 6, T)) })).toMatchObject({ ok: true });
+  });
+  test("a request needs its claim key and a proof by its private half over the box's nonce, once", async () => {
+    const b = await box();
+    const k = makeClaim();
+    const nonce = async () => ((await nonceOf(b.d, "claims")) as { ok: true; nonce: string }).nonce;
+    // No claim, or a claim with no proof: refused before anything applies.
+    expect(await b.send("workspace-request", { agent: "nova", size: "light", why: "x", proof: "x" })).toMatchObject({ ok: false, code: "usage" });
+    // Someone who saw nova's public key, with a proof by their own key: refused.
+    const thief = makeClaim();
+    expect(await b.send("workspace-request", { agent: "nova", size: "light", why: "x", claim: k.pub, proof: signRequest(thief.pem, "nova", "light", await nonce(), T) })).toMatchObject({ ok: false, code: "denied" });
+    // A proof for another size or agent is no proof for this one.
+    expect(await b.send("workspace-request", { agent: "nova", size: "light", why: "x", claim: k.pub, proof: signRequest(k.pem, "nova", "heavy", await nonce(), T) })).toMatchObject({ ok: false, code: "denied" });
+    const n1 = await nonce();
+    const good = signRequest(k.pem, "nova", "light", n1, T);
+    expect(await b.send("workspace-request", { agent: "nova", size: "light", why: "x", claim: k.pub, proof: good })).toMatchObject({ ok: true });
+    // The nonce moved on, so the same proof again is stale.
+    expect(await nonce()).not.toBe(n1);
+    expect(await b.send("workspace-request", { agent: "nova", size: "light", why: "x", claim: k.pub, proof: good })).toMatchObject({ ok: false, code: "stale-state" });
+    expect(b.state().workspaces.length).toBe(1);
+  });
+  test("a workspace with no claim key takes no unsigned agent step", async () => {
+    const b = await box();
+    await b.send("workspace-request", { agent: "nova", size: "light", why: "x" });
+    const st = b.state();
+    b.put({ ...st, workspaces: st.workspaces.map((w) => ({ ...w, claim: null })) });
+    expect(await b.send("workspace-end", { name: "nova-1", agent: "nova", proof: undefined })).toMatchObject({ ok: false, code: "denied", said: expect.stringContaining("isn't bound") });
   });
   test("connect proves the claim key, and only then does the gate's minute open", async () => {
     const b = await box();
     const k = makeClaim();
-    await b.send("workspace-request", { agent: "nova", size: "light", why: "Render", claim: k.pub });
+    await b.send("workspace-request", { agent: "nova", size: "light", why: "Render", claimKey: k });
     await b.signed("workspace.approve", { words: ["nova-1"] });
     b.toReady("nova-1");
     expect(reachWhy(find(b.state(), "nova-1")!, T)).toContain("bound to its agent's claim key");
-    expect(await b.send("workspace-connect", { name: "nova-1", agent: "nova", proof: proofWord(signProof(makeClaim().pem, "nova-1", 1, T)) })).toMatchObject({ ok: false, code: "denied" });
-    expect(await b.send("workspace-connect", { name: "nova-1", agent: "nova", proof: proofWord(signProof(k.pem, "nova-1", 2, T)) })).toMatchObject({ ok: true });
+    expect(await b.send("workspace-connect", { name: "nova-1", agent: "nova", proof: proofWord(signProof(makeClaim().pem, "connect", "nova-1", 1, T)) })).toMatchObject({ ok: false, code: "denied" });
+    expect(await b.send("workspace-connect", { name: "nova-1", agent: "nova", proof: proofWord(signProof(k.pem, "connect", "nova-1", 2, T)) })).toMatchObject({ ok: true });
     const w = find(b.state(), "nova-1")!;
     expect(w.reach).toEqual({ at: T });
     expect(reachWhy(w, T + 30_000)).toBeUndefined();
@@ -212,7 +246,7 @@ describe("claim keys and standing rules", () => {
   test("rule add waits for confirm; the yes adds it; a matching request from that key then approves itself", async () => {
     const b = await box();
     const k = makeClaim();
-    await b.send("workspace-request", { agent: "nova", size: "light", why: "First", claim: k.pub });
+    await b.send("workspace-request", { agent: "nova", size: "light", why: "First", claimKey: k });
     // A window the whole day long but a minute, so the test runs at any hour.
     const r = await b.signed("workspace.rule.add", { agent: "nova", size: "light", window: "00:00-23:59", expires: "30d" }, "rules");
     expect(r).toMatchObject({ ok: false, code: "needs-confirm", said: expect.stringContaining("taskbox confirm") });
@@ -228,17 +262,24 @@ describe("claim keys and standing rules", () => {
     // The same yes twice applies nothing.
     expect(await applyConfirm({ sys: b.sys, p: b.p, rootUid: me, events }, { id: item.id, yes: true, admin: "admin" })).toMatchObject({ ok: false });
     // Now a request by that key approves itself; one with another key, or a Whole, waits.
-    const o = await b.send("workspace-request", { agent: "nova", size: "light", why: "Second", claim: k.pub });
+    const o = await b.send("workspace-request", { agent: "nova", size: "light", why: "Second", claimKey: k });
     expect(o.said).toContain("approved by rule r_001");
     expect(find(b.state(), "nova-2")).toMatchObject({ state: "approved", rule: "r_001" });
-    await b.send("workspace-request", { agent: "nova", size: "light", why: "Third", claim: makeClaim().pub });
+    await b.send("workspace-request", { agent: "nova", size: "light", why: "Third", claimKey: makeClaim() });
     expect(find(b.state(), "nova-3")!.state).toBe("requested");
-    await b.send("workspace-request", { agent: "nova", size: "whole", why: "Fourth", claim: k.pub });
+    await b.send("workspace-request", { agent: "nova", size: "whole", why: "Fourth", claimKey: k });
     expect(find(b.state(), "nova-4")!.state).toBe("requested");
     expect(b.events().some((e) => e.type === "workspace.rule-matched" && e.subject === "nova-2")).toBe(true);
     // Delete applies at once.
     expect(await b.signed("workspace.rule.delete", { words: ["r_001"] }, "rules")).toMatchObject({ ok: true });
     expect(b.state().rules).toEqual([]);
+  });
+  test("rule add with no --key is refused when two claim keys have asked under the agent's name", async () => {
+    const b = await box();
+    await b.send("workspace-request", { agent: "nova", size: "light", why: "Mine", claimKey: makeClaim() });
+    await b.send("workspace-request", { agent: "nova", size: "light", why: "A lost device's", claimKey: makeClaim() });
+    expect(await b.signed("workspace.rule.add", { agent: "nova", size: "light", window: "22:00-07:00", expires: "30d" }, "rules")).toMatchObject({ ok: false, code: "usage", said: expect.stringContaining("2 different claim keys have asked as nova") });
+    expect(readPending(rootStateOf(b.p).pending, me)).toMatchObject({ kind: "missing" });
   });
   test("a no at the box leaves nothing; a rule for a Whole, or with no claim key known, is refused", async () => {
     const b = await box();

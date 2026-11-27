@@ -5,9 +5,9 @@
 import type { BoxCtx, ErrorBody, Outcome } from "../command.ts";
 import { duration, EXIT } from "../command.ts";
 import { loadConfig } from "../config.ts";
-import { ask, askDeps } from "../core/asker.ts";
+import { ask, askDeps, nonceOf } from "../core/asker.ts";
 import { onInterrupt, type Interrupt } from "../opcmd.ts";
-import { claimFor, nextProof, proofWord } from "./claim.ts";
+import { CLAIMS_SUBJECT, type ClaimAction, claimFor, nextProof, proofWord, signRequest } from "./claim.ts";
 import { boxHold } from "./flows.ts";
 import { agentOf, type Do, doFor, find, isFinal, type Workspace, type WsState } from "./model.ts";
 import { ruleLines } from "./standing.ts";
@@ -65,23 +65,50 @@ function claimHere(c: BoxCtx, agent: string): string | undefined {
     return undefined;
   }
 }
-function proofHere(c: BoxCtx, id: string): string | undefined {
+function proofHere(c: BoxCtx, action: ClaimAction, id: string): string | undefined {
   if (typeof c.opts.proof === "string") return c.opts.proof;
   const home = homeOf(c);
   if (!home) return undefined;
   try {
-    const p = nextProof(home, HERE, id, c.ops.sys.now());
+    const p = nextProof(home, HERE, action, id, c.ops.sys.now());
     return p ? proofWord(p) : undefined;
   } catch {
     return undefined;
   }
 }
 
+// The request's claim key and its proof over the box's claims nonce: the controller's, sent with
+// --claim and --proof, else this account's own kept at the box. With neither it is refused: every
+// workspace is bound to a key its asker holds.
+async function claimAndProof(c: BoxCtx, agent: string, size: string): Promise<{ claim: string; proof: string } | { why: string }> {
+  if (typeof c.opts.claim === "string" || typeof c.opts.proof === "string") {
+    return typeof c.opts.claim === "string" && typeof c.opts.proof === "string" ? { claim: c.opts.claim, proof: c.opts.proof } : { why: "--claim and --proof go together." };
+  }
+  const home = homeOf(c);
+  let k: { pub: string; pem: string };
+  try {
+    if (!home) throw new Error("no home");
+    k = claimFor(home, HERE, agent);
+  } catch {
+    return { why: "A workspace request needs its agent's claim key, and this account can't keep one. Ask from the controller, which keeps it: taskbox workspace request --box NAME." };
+  }
+  const n = await nonceOf(askDeps(c.root, c.uid, c.ops.sys, c.deps.rootUid), CLAIMS_SUBJECT);
+  if (!n.ok) return { why: n.why };
+  return { claim: k.pub, proof: signRequest(k.pem, agent, size, n.nonce, c.ops.sys.now()) };
+}
+
 export async function requestRun(c: BoxCtx): Promise<Outcome> {
   const agent = c.opts.as as string;
   const size = (c.opts.size as string | undefined) ?? "light";
-  const claim = typeof c.opts.claim === "string" ? c.opts.claim : claimHere(c, agent);
-  const r = await send(c, "workspace-request", { agent, size, why: c.opts.why as string, ...(claim ? { claim } : {}) });
+  let r: Awaited<ReturnType<typeof send>> | undefined;
+  // A nonce that moved on (another request applied first) is fetched and signed again, once.
+  for (let i = 0; i < 2; i++) {
+    const cp = await claimAndProof(c, agent, size);
+    if ("why" in cp) return failed(c, cp.why, "denied");
+    r = await send(c, "workspace-request", { agent, size, why: c.opts.why as string, ...cp });
+    if (r.ok || typeof c.opts.proof === "string" || (r.out as { error?: ErrorBody }).error?.code !== "stale-state") break;
+  }
+  if (!r) return failed(c, "The request wasn't sent.");
   if (!r.ok) return r.out;
   const st = stateOf(read(c));
   const w = st?.workspaces.find((x) => x.rq === r.id);
@@ -198,7 +225,7 @@ export async function progressRun(c: BoxCtx): Promise<Outcome> {
   const text = c.args[1]!;
   const stepOpt = typeof c.opts.step === "string" ? /^(\d{1,10})\/(\d{1,10})$/.exec(c.opts.step) : null;
   const step = stepOpt ? { n: Number(stepOpt[1]), m: Number(stepOpt[2]) } : null;
-  const proof = proofHere(c, id);
+  const proof = proofHere(c, "progress", id);
   const r = await send(c, "workspace-progress", { name: id, agent: agentOf(id), text, step, saved: c.opts.saved === true, ...(c.opts.downsized === true ? { downsized: true } : {}), ...(proof ? { proof } : {}) });
   const s = stateOf(read(c));
   const w = s ? find(s, id) : undefined;
@@ -211,7 +238,7 @@ export async function progressRun(c: BoxCtx): Promise<Outcome> {
 // end: the agent's own, unsigned. The owner's comes signed, through the --signed hook.
 export async function endRun(c: BoxCtx): Promise<Outcome> {
   const id = c.args[0]!;
-  const proof = proofHere(c, id);
+  const proof = proofHere(c, "end", id);
   const r = await send(c, "workspace-end", { name: id, agent: agentOf(id), ...(proof ? { proof } : {}) });
   if (!r.ok) return r.out;
   c.say(r.said);
@@ -235,13 +262,12 @@ export async function connectRun(c: BoxCtx): Promise<Outcome> {
   const w = s ? find(s, id) : undefined;
   if (!w) return failed(c, `No workspace ${id} on this box.`, "not-found");
   if (w.state !== "ready" && w.state !== "saving") return failed(c, `${id} is ${w.state}: connect works while it is ready or saving.`);
-  // A workspace bound to a claim key opens its gate only after a proof by that key.
-  if (w.claim) {
-    const proof = proofHere(c, id);
-    if (!proof) return failed(c, `${id} is bound to its agent's claim key, and none is kept here. Connect from where the request was made.`, "denied");
-    const r = await send(c, "workspace-connect", { name: id, agent: agentOf(id), proof });
-    if (!r.ok) return r.out;
-  }
+  // The gate opens only after a proof by the workspace's claim key.
+  if (!w.claim) return failed(c, `${id} isn't bound to an agent's claim key, so nobody connects to it this way.`, "denied");
+  const proof = proofHere(c, "connect", id);
+  if (!proof) return failed(c, `${id} is bound to its agent's claim key, and none is kept here. Connect from where the request was made.`, "denied");
+  const sent = await send(c, "workspace-connect", { name: id, agent: agentOf(id), proof });
+  if (!sent.ok) return sent.out;
   c.say(`${id} runs as ${w.user}. From the controller, taskbox workspace connect ${id} opens a shell there over Tailscale SSH.`);
   return { exit: EXIT.ok, result: { id, account: w.user, state: w.state } };
 }

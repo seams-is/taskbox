@@ -8,12 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "../src/command.ts";
 import { home } from "../src/controller/home.ts";
-import { withClaim } from "../src/controller/forward.ts";
+import { withClaim, withRuleKey } from "../src/controller/forward.ts";
 import { forcingView } from "../src/held.ts";
 import { rushForcing } from "../src/loop.ts";
 import { writePoolRecord } from "../src/pin.ts";
 import { registry } from "../src/registry.ts";
-import { checkProof, claimKept, parseProof } from "../src/workspace/claim.ts";
+import { checkProof, checkRequest, claimFor, claimKept, fingerprint, parseProof } from "../src/workspace/claim.ts";
 import { rush } from "../src/workspace/flows.ts";
 import { CLEARED, type HandoverDeps } from "../src/workspace/handover.ts";
 import { workspacesNow } from "../src/workspace/hold.ts";
@@ -113,20 +113,46 @@ describe("the controller's claim words", () => {
     if (!p.ok) throw new Error(p.line);
     return { spec: p.spec, parsed: p, words: line.split(" ") };
   };
-  test("request sends the key's public half; progress and end a proof; other verbs nothing", () => {
+  test("request sends the key's public half and a proof over the box's nonce; progress, end and connect a proof for that step; other verbs nothing", async () => {
     const userHome = mkdtempSync(join(tmpdir(), "ctl-"));
     const d = { home: home(userHome) };
-    const req = withClaim(d, "taskbox-1", ask("workspace request --as nova --why Render"), T);
-    expect(req.slice(-2, -1)).toEqual(["--claim"]);
+    const NONCE_1 = "a".repeat(32);
+    const nonce = async () => NONCE_1;
+    const req = (await withClaim(d, "taskbox-1", ask("workspace request --as nova --why Render"), T, nonce)) as string[];
+    expect(req.slice(-4, -3)).toEqual(["--claim"]);
     const k = claimKept(userHome, "taskbox-1", "nova")!;
-    expect(req.at(-1)).toBe(k.pub);
-    const prog = withClaim(d, "taskbox-1", ask("workspace progress nova-3 Frames"), T);
+    expect(req.at(-3)).toBe(k.pub);
+    expect(req.at(-2)).toBe("--proof");
+    expect(checkRequest(k.pub, "nova", "light", NONCE_1, req.at(-1), T)).toEqual({ ok: true });
+    const prog = (await withClaim(d, "taskbox-1", ask("workspace progress nova-3 Frames"), T, nonce)) as string[];
     expect(prog.slice(-2, -1)).toEqual(["--proof"]);
-    expect(checkProof({ key: k.pub, n: 0 }, "nova-3", parseProof(prog.at(-1)), T).ok).toBe(true);
-    expect(withClaim(d, "taskbox-1", ask("workspace end nova-3"), T).slice(-2, -1)).toEqual(["--proof"]);
-    expect(withClaim(d, "taskbox-1", ask("workspace connect nova-3"), T).slice(-2, -1)).toEqual(["--proof"]);
-    // An agent with no key kept, and the owner's signed end, add nothing.
-    expect(withClaim(d, "taskbox-1", ask("workspace end orion-4"), T)).toEqual(["workspace", "end", "orion-4"]);
-    expect(withClaim(d, "taskbox-1", ask("workspace list"), T)).toEqual(["workspace", "list"]);
+    expect(checkProof({ key: k.pub, n: 0 }, "progress", "nova-3", parseProof(prog.at(-1)), T).ok).toBe(true);
+    expect(((await withClaim(d, "taskbox-1", ask("workspace end nova-3"), T, nonce)) as string[]).slice(-2, -1)).toEqual(["--proof"]);
+    expect(((await withClaim(d, "taskbox-1", ask("workspace connect nova-3"), T, nonce)) as string[]).slice(-2, -1)).toEqual(["--proof"]);
+    // An agent with no key kept, and other verbs, add nothing; the box refuses an unproved step.
+    expect(await withClaim(d, "taskbox-1", ask("workspace end orion-4"), T, nonce)).toEqual(["workspace", "end", "orion-4"]);
+    expect(await withClaim(d, "taskbox-1", ask("workspace list"), T, nonce)).toEqual(["workspace", "list"]);
+    // A nonce the box can't give stops the request: nothing goes unbound.
+    expect(await withClaim(d, "taskbox-1", ask("workspace request --as nova --why Render"), T, async () => ({ stop: "no nonce", next: "x" }))).toEqual({ stop: "no nonce", next: "x" });
+  });
+  test("a claims folder that isn't the agents user's own stops the request", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "ctl-"));
+    const d = { home: home(userHome) };
+    mkdirSync(join(userHome, ".taskbox", "claims"), { recursive: true });
+    writeFileSync(join(userHome, ".taskbox", "claims", "taskbox-1"), "not a folder");
+    const r = await withClaim(d, "taskbox-1", ask("workspace request --as nova --why Render"), T, async () => "a".repeat(32));
+    expect(r).toMatchObject({ stop: expect.stringContaining("nothing was sent") });
+  });
+  test("rule add with no --key names the key this controller keeps, and prints its fingerprint", () => {
+    const userHome = mkdtempSync(join(tmpdir(), "ctl-"));
+    const out: string[] = [];
+    const d = { home: home(userHome), out: (l: string) => void out.push(l) };
+    const a = ask("workspace rule add --agent nova --size light --window 22:00-07:00 --expires 30d");
+    expect(withRuleKey(d as never, "taskbox-1", a as never)).toBe(a as never);
+    const k = claimFor(userHome, "taskbox-1", "nova");
+    const b = withRuleKey(d as never, "taskbox-1", a as never);
+    expect(b.parsed.opts.key).toBe(fingerprint(k.pub));
+    expect(b.words.slice(-2)).toEqual(["--key", fingerprint(k.pub)]);
+    expect(out[0]).toContain(fingerprint(k.pub));
   });
 });

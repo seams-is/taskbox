@@ -20,6 +20,10 @@ import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
 import { keyPair } from "./sshsig.ts";
 import { HOUR, INSTALL_ID, ok, readyState, RULES, T, verifyDeps } from "./ws-helpers.ts";
 import { pause } from "../src/workspace/model.ts";
+import { claimFor } from "../src/workspace/claim.ts";
+import { HERE } from "../src/workspace/cmd.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const me = process.getuid!();
 const SLOW = 30_000;
@@ -49,14 +53,17 @@ async function box() {
     sys.clock += ms;
     await job();
   };
-  const cli = async (argv: string[], o: { uid?: number } = {}) => {
+  // The agent account's own home, where a request at the box keeps its claim key.
+  const home = mkdtempSync(join(tmpdir(), "agent-home-"));
+  const cli = async (argv: string[], o: { uid?: number; home?: string } = {}) => {
     const said: string[] = [];
-    const deps: CliDeps = { sys: () => sys, uid: o.uid ?? me, serviceUid: async () => me + 1, env: { HOME: "/var/empty" }, tty: () => 0, user: () => "taskbox-agent", ask: async () => "", say: (l) => void said.push(l), err: () => {}, terminal: () => false, hostname: () => "taskbox-1.local", root, chown: () => {}, rootUid: me };
+    const deps: CliDeps = { sys: () => sys, uid: o.uid ?? me, serviceUid: async () => me + 1, env: { HOME: o.home ?? home }, tty: () => 0, user: () => "taskbox-agent", ask: async () => "", say: (l) => void said.push(l), err: () => {}, terminal: () => false, hostname: () => "taskbox-1.local", root, chown: () => {}, rootUid: me };
     const code = await main(argv, deps);
     return { code, said, env: () => JSON.parse(said.at(-1)!) };
   };
   const state = (): WsState => (readStateFile(p.workspaces, me) as { state: WsState }).state;
-  const put = (st: WsState) => writeStateFile({ rootUid: me }, p.workspaces, { ...st, beat: T });
+  // A state put in place binds each workspace to its agent's key kept here, as a request at the box would.
+  const put = (st: WsState) => writeStateFile({ rootUid: me }, p.workspaces, { ...st, beat: T, workspaces: st.workspaces.map((w) => (w.claim ? w : { ...w, claim: { key: claimFor(home, HERE, w.agent).pub, n: 0 } })) });
   return { p, sys, cli, state, put };
 }
 
@@ -75,6 +82,17 @@ describe("the workspace commands at the box", () => {
       expect(l.env().result.workspaces.map((w: { id: string; state: string }) => [w.id, w.state])).toEqual([["nova-1", "requested"]]);
       const s = await b.cli(["workspace", "status", "nova-1"]);
       expect(s.said[0]).toBe("nova-1: requested.");
+    },
+    SLOW,
+  );
+  test(
+    "a request where no claim key can be kept is refused: nothing goes to the box unbound",
+    async () => {
+      const b = await box();
+      const r = await b.cli(["workspace", "request", "--as", "nova", "--why", "x"], { home: "/var/empty" });
+      expect(r.code).toBe(4);
+      expect(r.said[0]).toMatch(/^A workspace request needs its agent's claim key/);
+      expect(b.state()?.workspaces ?? []).toEqual([]);
     },
     SLOW,
   );

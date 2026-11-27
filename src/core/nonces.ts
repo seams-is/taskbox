@@ -1,12 +1,13 @@
 // One nonce per subject, in root's nonces.json, 644, the guard its one writer. A
 // signed statement names the subject's current nonce; once a signed request for that subject
 // applies, the guard makes a new one, so a statement works once. Subjects: "box" (availability,
-// updates, keys, connect), "rules" (standing rules), and a workspace's name.
+// updates, keys, connect), "rules" (standing rules), "claims" (a workspace request's claim-key proof,
+// workspace/claim.ts), and a workspace's name.
 import { randomBytes } from "node:crypto";
 import { isObj, readOwnedJson, type Read, time, updateOwnedJson, type WriteRules } from "./rootfile.ts";
 
 export const NONCE = /^[0-9a-f]{32}$/;
-export const SUBJECT = /^(box|rules|[a-z][a-z0-9]{0,15}-[1-9][0-9]{0,8})$/;
+export const SUBJECT = /^(box|rules|claims|[a-z][a-z0-9]{0,15}-[1-9][0-9]{0,8})$/;
 export const NONCES_V = 1;
 export const NONCES_MAX_BYTES = 64 * 1024;
 // Past this many subjects, the oldest workspace subjects go; box and rules always stay.
@@ -41,7 +42,7 @@ export const currentNonce = (s: Nonces, subject: string): string | undefined => 
 // The subject's nonce, made when it has none. Only for a subject that exists: box and rules always, a
 // workspace while exists() says it is there, so nobody can push live subjects out by asking for
 // made-up ones.
-export const always = (subject: string) => subject === "box" || subject === "rules";
+export const always = (subject: string) => subject === "box" || subject === "rules" || subject === "claims";
 export function withNonce(s: Nonces, subject: string, now: number, rand: NonceRand = realNonce, exists: (subject: string) => boolean = always): { state: Nonces; nonce: string; changed: boolean } {
   if (!SUBJECT.test(subject)) throw new Error("not a subject for a nonce");
   if (!always(subject) && !exists(subject)) throw new Error(`${subject} isn't one this box has, so it has no nonce`);
@@ -72,7 +73,7 @@ function trim(subjects: Nonces["subjects"]): Nonces["subjects"] {
   const keys = Object.keys(subjects);
   if (keys.length <= SUBJECTS_MAX) return subjects;
   const drop = keys
-    .filter((k) => k !== "box" && k !== "rules")
+    .filter((k) => !always(k))
     .sort((a, b) => subjects[a]!.at - subjects[b]!.at)
     .slice(0, keys.length - SUBJECTS_MAX);
   const out = { ...subjects };
