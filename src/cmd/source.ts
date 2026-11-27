@@ -7,6 +7,8 @@ export const commands: CommandSpec[] = [
     summary: "Both GitHub Apps, their keys' ages, and an unfinished connect.",
     who: ["anyone"],
     flags: ["json"],
+    // The agent account's shell runs it, so the controller reads it (box add's connecting phase).
+    shell: true,
     did: "Showed the GitHub Apps.",
     async run(c) {
       const { dirname, join } = await import("node:path");

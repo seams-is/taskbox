@@ -126,12 +126,6 @@ async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknow
   let exit = 0;
   let ran = 0;
   for (const step of AFTER) {
-    // A later release adds these commands; until the box runs them, the phase is skipped and says so.
-    const known = parse(registry(), step.argv);
-    if (!known.ok || !known.spec.shell) {
-      io.out(`${step.phase}: skipped: this release has no taskbox ${step.argv.join(" ")}.`);
-      continue;
-    }
     io.out(`${step.phase}: taskbox ${step.argv.join(" ")} --box ${p.box.name}`);
     ran++;
     if ((await forward(d, [...step.argv, "--box", p.box.name], io)) !== 0) exit = 1;
@@ -143,6 +137,7 @@ async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknow
 export interface Io {
   out: (line: string) => void;
   draw: (lines: string[]) => void;
+  err?: (line: string) => void; // human text in --json mode: stderr
   rounds?: number;
   keys?: AsyncIterator<string>; // key presses, at a terminal: the owner's screen reads them
 }
@@ -152,6 +147,33 @@ export interface More {
   user: string;
   term(argv: string[]): Promise<number>;
   exists(path: string): boolean;
+}
+
+// A controller flow run with --json: its own lines go to stderr, the box's envelopes it read are kept,
+// and one envelope of the controller's making goes to stdout at the end, with the box's last result.
+export async function asOneEnvelope(d: Deps, command: string, io: Io, flow: (jio: Io) => Promise<number>): Promise<number> {
+  const lines: string[] = [];
+  let fromBox: Record<string, unknown> | null = null;
+  const err = io.err ?? (() => {});
+  const jio: Io = {
+    out: (l) => {
+      if (l.startsWith('{"answers":')) {
+        try {
+          const e = JSON.parse(l) as { result?: unknown };
+          fromBox = e.result && typeof e.result === "object" ? (e.result as Record<string, unknown>) : null;
+          return;
+        } catch {}
+      }
+      lines.push(l);
+      err(l);
+    },
+    draw: (ls) => ls.forEach(err),
+    ...(io.rounds !== undefined ? { rounds: io.rounds } : {}),
+  };
+  const code = await flow(jio);
+  const last = lines.findLast((l) => l.trim() !== "" && !l.startsWith("Next: ")) ?? "";
+  io.out(asciiJson(envelope({ command, box: null, at: d.now(), exit: code, lines, result: { box: fromBox }, error: code ? { code: code === EXIT.usage ? "usage" : code === EXIT.denied ? "denied" : "failed", message: last.slice(0, 120) || "It stopped.", fix: lines.find((l) => l.startsWith("Next: "))?.slice(6) ?? null, who: null } : null })));
+  return code;
 }
 
 // The controller's own answer as an envelope, for --json.
@@ -175,11 +197,15 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     for (const l of help(d.version)) io.out(l);
     return EXIT.ok;
   }
-  // The load test's start and stop do more on the controller than the box's own commands.
-  if (argv[0] === "load" && (argv[1] === "start" || argv[1] === "stop") && !argv.includes("--help") && !argv.includes("--json")) {
+  // The load test's start and stop do more on the controller than the box's own commands: the
+  // dispatch and the cancels go through the owner's GitHub session, with --json too.
+  if (argv[0] === "load" && (argv[1] === "start" || argv[1] === "stop") && !argv.includes("--help")) {
     const { loadStart, loadStop, ownerGh } = await import("./load.ts");
     const gh = (d as { gh?: import("../hold.ts").Gh }).gh ?? ownerGh(d);
-    return (argv[1] === "start" ? loadStart : loadStop)({ ...d, ...(gh ? { gh } : {}) }, argv, io);
+    const run = argv[1] === "start" ? loadStart : loadStop;
+    const ld = { ...d, ...(gh ? { gh } : {}) };
+    if (!argv.includes("--json")) return run(ld, argv, io);
+    return asOneEnvelope(d, `load.${argv[1]}`, io, (jio) => run(ld, argv, jio));
   }
   const mine = CONTROLLER.some((s) => s.path[0] === argv[0]);
   if (!mine) return forward(d, argv, io);
@@ -359,7 +385,7 @@ export async function controllerMain(argv: string[]): Promise<number> {
   };
   // The owner's screen reads key presses at a terminal.
   const keys = !argv.length && process.stdin.isTTY ? rawKeys() : undefined;
-  const code = await dispatch({ ...d, ...more }, argv, { out: (l) => console.log(l), draw, ...(keys ? { keys } : {}) });
+  const code = await dispatch({ ...d, ...more }, argv, { out: (l) => console.log(l), draw, err: (l) => console.error(l), ...(keys ? { keys } : {}) });
   const n = await note;
   if (n) console.log(n);
   return code;
