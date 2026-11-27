@@ -1,6 +1,6 @@
 # Fixtures
 
-Output of real commands on a box, with anything random or private replaced, kept for tests of the code that reads it.
+Output of real commands, with anything random or private replaced, for the code that reads it.
 
 - `launchctl-print-running.txt`, `ps-softnet.txt`: captured on macOS 27.2.
 - `tailscaled-ssh.log`, `last-libxo.json`: made up, in the shape the real tools print (for `src/logins.ts`).
