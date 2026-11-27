@@ -217,7 +217,14 @@ export async function statusJson(d: OpsDeps, me: string): Promise<number> {
   const view = readLoopState(d.paths.loopState);
   const jobs = runningJobs(view).map((j) => ({ name: j.job, kind: j.vmKind, since: j.slotAt }));
   const slots = { total: view.slotCount ?? 1, busy: view.slots ? Object.values(view.slots).filter((v) => ["starting a VM", "waiting for a job", "running a job", "proving Linux"].includes(v.slot ?? "")).length : 0 };
-  d.say(JSON.stringify(statusAnswer({ state: s, installed, othersLoggedIn: others, job: str(loop.job), lastJob: str(loop.lastJob), lastJobResult: str(loop.lastJobResult), jobs, slots })));
+  // Temporary admin SSH while its window is open (settings/adminssh.ts), or null.
+  let adminSsh: { user: string; until: string } | null = null;
+  try {
+    const { loadConfig } = await import("./config.ts");
+    const { windowJson } = await import("./settings/adminssh.ts");
+    adminSsh = windowJson(loadConfig(d.paths.app, d.paths.boxSettings).adminSsh, d.sys.now());
+  } catch {}
+  d.say(JSON.stringify({ ...statusAnswer({ state: s, installed, othersLoggedIn: others, job: str(loop.job), lastJob: str(loop.lastJob), lastJobResult: str(loop.lastJobResult), jobs, slots }), adminSsh }));
   return 0;
 }
 

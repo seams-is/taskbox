@@ -72,8 +72,8 @@
     "why": "the answers envelope's at, for a usage error, a rename and every answer: a label"
   },
   "ops.ts": {
-    "reads": 21,
-    "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h. Remove's op record takes its start, end and phase times from it, for people to read; no deadline or lapse rests on them. A stale or stopped remove's end time, and the update lock's note of when remove took it, too."
+    "reads": 22,
+    "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h. Remove's op record takes its start, end and phase times from it, for people to read; no deadline or lapse rests on them. A stale or stopped remove's end time, and the update lock's note of when remove took it, too.; whether the temporary admin SSH window is open, for status --json: display"
   },
   "install.ts": {
     "reads": 6,
@@ -254,5 +254,9 @@
   "rows/accounts.ts": {
     "reads": 1,
     "why": "whether the temporary admin SSH window is open, for the rules compared: display"
+  },
+  "settings/check.ts": {
+    "reads": 1,
+    "why": "when update --check asked for the read, so only a problem from that read is said: display"
   }
 }

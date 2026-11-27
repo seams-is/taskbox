@@ -88,7 +88,7 @@ describe("the root commands", () => {
 
   test("a root command given words it doesn't take is refused before the gate", async () => {
     const r = await run(["update", "main"], CALLERS.admin);
-    expect([r.code, r.said, r.ttys]).toEqual([2, ["taskbox update doesn't take main.\nUsage: taskbox update [VERSION] [--to VERSION]"], []]);
+    expect([r.code, r.said, r.ttys]).toEqual([2, ["taskbox update doesn't take main.\nUsage: taskbox update [VERSION] [--to VERSION] [--check]"], []]);
   });
 
   test("root through sudo reaches the command itself", async () => {

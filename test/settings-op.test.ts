@@ -411,3 +411,32 @@ describe("temporary admin SSH", () => {
     expect(await adminSshRow(ctx(ended, { SSHPolicy: { rules: [] } }))).toMatchObject({ status: "OK", detail: expect.stringMatching(/no longer let it in/) });
   });
 });
+
+describe("update --check's settings read", () => {
+  test("it asks the guard to read now, and says what the read found", async () => {
+    const { settingsReadNow } = await import("../src/settings/check.ts");
+    const b = box({ v2: BASE });
+    await readHead(b.d);
+    b.commit(2, { ...BASE, tools: { entries: [PIN] } });
+    const sys = { now: () => b.t.now, sleep: async () => void (readState(b.files, me).kind === "ok" && readState(b.files, me).kind === "ok" && (await readHead(b.d))) };
+    const r = await settingsReadNow(sys, b.files, { rootUid: me });
+    expect(r).toEqual({ read: true, lines: [`Settings: commit ${sha(2).slice(0, 12)} waits for taskbox settings apply ${sha(2)} from the controller.`] });
+  });
+
+  test("with the guard down it says so, and a box with no settings repo says how to name one", async () => {
+    const { settingsReadNow } = await import("../src/settings/check.ts");
+    const b = box({ v2: BASE });
+    expect((await settingsReadNow({ now: () => 1, sleep: async () => {} }, b.files, { rootUid: me })).lines[0]).toMatch(/reads no settings repo yet/);
+    await readHead(b.d);
+    expect(await settingsReadNow({ now: () => 1, sleep: async () => {} }, b.files, { rootUid: me })).toMatchObject({ read: false, lines: [expect.stringMatching(/hasn't read/)] });
+    expect(b.st().readNow).toBe(true);
+  });
+
+  test("status --json carries the admin SSH window's user and end, never the login", async () => {
+    const { windowJson } = await import("../src/settings/adminssh.ts");
+    const v = { login: "person1@example.com", user: "pat-admin", until: new Date(2_000_000_000_000).toISOString() };
+    expect(windowJson(v, 1_900_000_000_000)).toEqual({ user: "pat-admin", until: v.until });
+    expect(windowJson(v, 2_000_000_000_000)).toBeNull();
+    expect(windowJson(undefined, 1)).toBeNull();
+  });
+});

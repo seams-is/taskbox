@@ -29,7 +29,7 @@ export const commands: CommandSpec[] = [
         const cfg = loadConfig(c.p.app, c.p.boxSettings);
         const { openWindow, windowLine } = await import("../settings/adminssh.ts");
         const temp = openWindow(cfg.adminSsh, c.ops.sys.now());
-        if (temp) extra.push(`Admin SSH: ${windowLine(temp)}.`);
+        if (temp) extra.push(`Admin SSH: ${windowLine(temp, false)}.`);
         who = { remote: cfg.accounts.agent !== undefined && name === cfg.accounts.agent, admin: await isAdmin(c.ops.sys, name) };
         logins = recentLine(readSeen(c.own), c.ops.sys.now());
       } catch {

@@ -45,4 +45,10 @@ export function openWindow(v: AdminSsh | undefined, now: number): AdminSsh | und
 }
 
 // One line for status and check.
-export const windowLine = (v: AdminSsh) => `${v.login} may reach admin user ${v.user} by Tailscale SSH until ${v.until}`;
+// Every account reads status, so it names the admin user and the end, and the login only where asked.
+export const windowLine = (v: AdminSsh, login = true) => `${login ? `${v.login} may reach` : "open to"} admin user ${v.user} by Tailscale SSH until ${v.until}`;
+// The window for status --json: the admin user and the end, never the person's login.
+export const windowJson = (v: AdminSsh | undefined, now: number) => {
+  const o = openWindow(v, now);
+  return o ? { user: o.user, until: o.until } : null;
+};
