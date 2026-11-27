@@ -152,7 +152,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     return EXIT.usage;
   }
 
-  const parsed = parseLine(words);
+  const parsed = parseLine(words, deps.specs);
   if (!parsed.ok) {
     const lines = [parsed.line, parsed.usage ?? commandList()];
     say(json ? JSON.stringify(envelope({ command: parsed.path ? parsed.path.join(".") : "error", box: null, at: now(), exit: EXIT.usage, lines, error: { code: "usage", message: parsed.line, fix: parsed.usage ?? null, who: null } })) : lines.join("\n"));
@@ -246,6 +246,24 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
     const line = `This is ${name ?? "this box"}: --box ${cleanLine(c.flags.box).slice(0, 63)} names another box.`;
     say(c.json ? errorJson(c, spec.path.join("."), EXIT.usage, { code: "usage", message: line, fix: null, who: null }, "usage") : line);
     return EXIT.usage;
+  }
+
+  // The owner's signed step: the agent account's shell carries it to the guard through the agent
+  // spool, and the guard's handler for this action applies it (core/asker.ts, core/dispatch.ts).
+  // The command's own run never runs then, and the Touch ID was the confirmation. A command that
+  // takes --signed, run without it, runs only for the service account and root.
+  if ((spec.flags ?? []).includes("signed")) {
+    if (typeof c.flags.signed === "string") {
+      const { signedRun } = await import("./core/asker.ts");
+      const s: CommandSpec = { path: spec.path, summary: spec.summary, who: spec.who, ...(spec.flags ? { flags: spec.flags } : {}), shell: true, run: signedRun, did: "Sent the owner's signed request." };
+      const sc: BoxCtx = { ...c, spec: s };
+      return sc.json ? answer(sc, name) : text(sc, say);
+    }
+    if (uid !== cu && uid !== 0) {
+      const line = `taskbox ${pathOf(spec)} from here needs the owner's signature: run it from the controller.`;
+      say(c.json ? errorJson(c, spec.path.join("."), EXIT.failed, { code: "denied", message: line, fix: null, who: null }, "usage") : line);
+      return EXIT.failed;
+    }
   }
 
   if (spec.root) {
@@ -355,7 +373,7 @@ async function answer(c: BoxCtx, name: string | null): Promise<number> {
   } catch {}
   const box: BoxId = { name, installId: readInstallId(c.own.installId) ?? null, release };
   const known = (w: string[]) => {
-    const r = parseLine(w);
+    const r = parseLine(w, c.deps.specs);
     return r.ok && !r.spec.internal ? pathOf(r.spec) : undefined;
   };
   c.say(JSON.stringify(envelope({ command, box, at: c.ops.sys.now(), exit, changed, result, lines, error, next: nextOf(lines, known) })));

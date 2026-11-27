@@ -19,6 +19,8 @@ import type { Sys } from "./sys.ts";
 // box: never deleted, only given its shell back.
 export type MadeRole = "service" | "agent" | "pool" | "person" | "net" | "gh" | "placed";
 const RECORD_ROLES: readonly MadeRole[] = ["service", "agent", "person", "net", "gh", "placed"];
+// The roles an agent account is recorded under: made by taskbox, or a v2 agent taskbox took (placed).
+export const isAgentRole = (role: unknown): boolean => role === "agent" || role === "placed";
 export type Made = { role: MadeRole; uid: number; guid?: string };
 export type AccountsRecord = {
   // The service whose state is on this box: the install refuses another while that state exists.
@@ -249,7 +251,7 @@ export async function planAgent(sys: Sys, name: string, rec: AccountsRecord, she
   const m = rec.made[name];
   let line: string | undefined;
   let claim = false;
-  if (m?.role === "agent" || m?.role === "placed") {
+  if (m && isAgentRole(m.role)) {
     if (!(await stillMade(sys, name, m))) return stop(`${name} isn't the account taskbox ${m.role === "agent" ? "made" : "took"} for agents: its ID changed. Nothing was installed. ${NEW_AGENT}`);
   } else if ((await userKey(sys, name, "UserShell")) === shell && (await userKey(sys, name, "NFSHomeDirectory")) === OLD_AGENT_HOME) {
     line = `${name} is the agent an earlier taskbox set up in an account it didn't make. If you type its name at the box, its password goes and it leaves the login window, since agents reach it over Tailscale SSH. taskbox never deletes it: remove gives its shell back. Its old folder /Users/${name} stays.`;

@@ -9,3 +9,4 @@ Output of real commands on a box, with anything random or private replaced, kept
 - `v2.6.1/`: v2.6.1's hop() and the code it runs, from c7d2414, for the hop contract test. log.ts, the plists and the signers file are whole. Each other file is cut to what hop() runs, its parts unchanged; its imports and any part marked New are not v2.6.1's.
 - `policy/`: the policy files `taskbox policy show --whole` must give for each set of settings.
 - `release-key-trial.txt` and its `.sig`: a statement signed with a trial key, for the release check.
+- `se-signature/`: a real Secure Enclave signature (Touch ID, 24 Nov 2026, namespace taskbox-release) over `message.txt`, with its own public key, for the in-process signature check against ssh-keygen.
