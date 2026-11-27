@@ -32,6 +32,7 @@ As the service account:
 - `taskbox check` lists every check with its fix. `--away` adds the checks for leaving the box.
 - `taskbox job list` and `taskbox job timings` show past jobs and their timings.
 - `taskbox size list` shows the VM sizes, what fits, and which jobs suit another size. A job picks a size by its label, such as `runs-on: [self-hosted, taskbox-linux-small]`.
+- `taskbox tool list` shows the pinned tools and the base VM each kind's jobs clone, with the tools baked in. `taskbox image list` shows the images.
 - `taskbox logs` shows the last day.
 - `taskbox stop`, `taskbox start` and `taskbox drain` pause and resume jobs.
 - `taskbox template show test-job` prints a working job for your repo.

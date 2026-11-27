@@ -39,6 +39,7 @@ import { mirrorJson } from "./shared.ts";
 import { clearStopped, markStopped } from "./stopstart.ts";
 import type { Sys } from "./sys.ts";
 import { engineFor, IMAGE_GONE, type NetPolicy, type VmEngine } from "./vm.ts";
+import { cloneSource, runnerEnvScript, type ToolsDeps, toolsOn, toolsStep } from "./tools/inloop.ts";
 
 // Exit code that tells launchd to start the loop again, after an update.
 export const RESTART = 75;
@@ -85,6 +86,8 @@ export interface LoopDeps {
   hooks?: JobHook[];
   // Short-lived GitHub tokens for the hooks (core/hooks.ts). Absent: no hook reads GitHub.
   tokens?: TokenSource;
+  // The tool cache's network (tools/inloop.ts). Absent: the box's own.
+  tools?: ToolsDeps;
 }
 
 // A start or stop of a VM: from when its engine was asked, to when it was done. Open until then.
@@ -286,6 +289,11 @@ export class Slots {
       out = true;
       if (this.gate === me) this.gate = undefined;
     };
+  }
+
+  // Whether a VM start holds the gate now: the tool cache removes no base VM while one does.
+  gateHeld(): boolean {
+    return this.gate !== undefined;
   }
 
   // Records a start or a stop; the returned function closes it. Only the last 50 are kept.
@@ -991,6 +999,8 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   let startDone: ((now: number) => void) | undefined;
   // From the clone on, an error is this VM's failure, so the turn passes to the other kind.
   let cloned = false;
+  // What the VM was cloned from: a base VM with the tools in it, or the pinned image.
+  let from: Awaited<ReturnType<typeof cloneSource>> = { source: d.cfg.image };
   // Set once every hook let this start through, so each hook hears of its end (core/hooks.ts).
   const hooks = d.hooks ?? jobHooks();
   const hookJob = { slot: d.slot, kind, vm, labels, ...(turn.role ? { role: turn.role } : {}), ...(turn.className ? { className: turn.className } : {}) };
@@ -1008,7 +1018,14 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // up from the clone, for memory and disk. vm once its guest answers, below, so the Linux proof
     // never tries an address that isn't there yet.
     if (me) me.up = true;
-    const clone = await t.clone(d.cfg.image, vm);
+    // The kind's base VM, with the pinned tools baked in, or the image (tools/inloop.ts).
+    if (toolsOn(d.cfg, kind)) from = await cloneSource(d, kind);
+    let clone = await t.clone(from.source, vm);
+    if (clone.code !== 0 && from.base) {
+      d.log.write(`could not clone ${from.source}, so the VM clones the image`);
+      from = { source: d.cfg.image };
+      clone = await t.clone(d.cfg.image, vm);
+    }
     mark("cloned");
     writeState(d, { beat: beatFor("starting a VM", d.sys.now()) });
     if (clone.code !== 0) {
@@ -1122,6 +1139,9 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     const tarball = new Uint8Array(readFileSync(d.paths.runnerTarball));
     const copy = await t.exec(vm, ["/bin/sh", "-c", `mkdir -p ${RUNNER_DIR} && tar -xzf - -C ${RUNNER_DIR}`], tarball);
     if (copy.code !== 0) throw new Error("copying the runner into the VM failed");
+    // The runner's .env names the tools a base VM carries, read from the guest's own files.
+    // A failure is logged and the job runs: the tools are on its disk, and only the names are missing.
+    if (from.base && (await t.exec(vm, ["/bin/sh", "-s"], runnerEnvScript(RUNNER_DIR)).catch(() => ({ code: -1 }))).code !== 0) d.log.write(`the runner wasn't told about the tools in ${from.source}; its job runs without TASKBOX_TOOLS`);
 
     if (d.box?.halt !== undefined) {
       outcome = "halted";
@@ -1378,6 +1398,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
             className: turn.className,
             labels,
             usage: summarise(samples),
+            tools: from.gen,
           }
         : undefined;
     // Each hook hears of the end, once the VM is gone, and may add fields to the job's line (core/hooks.ts).
@@ -1797,6 +1818,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       }
     }
     if (stoppedToWait) continue;
+    // The tool cache: fetch, build and bake between VMs (tools/inloop.ts). A bake holds this slot.
+    if (toolsOn(d.cfg) && (await toolsStep(d, c))) continue;
     // The Linux proof takes this slot, one proof at a time.
     if (c.proofDue() && !c.proving) {
       c.proving = true;
