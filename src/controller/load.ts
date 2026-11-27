@@ -52,7 +52,7 @@ export function ownerGh(d: Deps): Gh | undefined {
 }
 
 // One box read: the last envelope's result, from the box named (or the default).
-async function boxResult(d: Deps, argv: string[]): Promise<Record<string, unknown> | Stop> {
+export async function boxResult(d: Deps, argv: string[]): Promise<Record<string, unknown> | Stop> {
   const a = readLine(d, argv);
   if ("shown" in a) return { stop: a.shown.lines.join(" ").slice(0, 200) || "That can't be asked.", next: "Type taskbox help." };
   const list = await answers(d, a);
@@ -65,7 +65,7 @@ async function boxResult(d: Deps, argv: string[]): Promise<Record<string, unknow
   return e.result;
 }
 
-const sel = (box?: string) => (box ? ["--box", box] : []);
+export const sel = (box?: string) => (box ? ["--box", box] : []);
 
 // A session as the box's load status gives it.
 interface Seen {

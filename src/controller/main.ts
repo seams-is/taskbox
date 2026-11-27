@@ -18,6 +18,10 @@ import { asciiJson, forward } from "./forward.ts";
 import { agentProblem, findBox, GITHUB_NAME, home, NAME, ownVersion, readConfig, REPO } from "./home.ts";
 import { readLines, serve } from "./mcp.ts";
 import { AFTER, boxRemove, boxUse, pair } from "./pair.ts";
+import { boxInstall, HOST } from "./boxinstall.ts";
+import { connectScreen } from "./screenshare.ts";
+import { templateApply } from "./templates.ts";
+import { selfTrials } from "./trials.ts";
 import { configOrStop, connectBox, type Deps, isStop, tailnetOrStop } from "./reach.ts";
 import { ENV, realRun } from "./run.ts";
 import { footer, header, type Screen } from "./screens.ts";
@@ -44,10 +48,13 @@ export const CONTROLLER: CommandSpec[] = [
   spec(["box", "show"], "One pairing, and its last status.", { args: NAME_WORD, flags: ["json"] }),
   spec(["box", "use"], "Sets the box a command goes to when it names none.", { args: NAME_WORD }),
   spec(["box", "remove"], "Forgets a pairing, after its name is typed. Nothing changes on the box.", { args: NAME_WORD }),
+  spec(["box", "install"], "Sets up a fresh Mac over LAN SSH, in this terminal: ADMIN@HOST. Run it again to finish an interrupted one.", { args: { name: "ADMIN@HOST", min: 1, max: 1, check: (v) => HOST.test(v) }, options: [{ name: "--settings", value: "REPO", check: (v) => REPO.test(v) }], flags: ["json"] }),
+  spec(["template", "apply"], "Opens one pull request in the jobs repo, through your GitHub session, that brings the box's workflows up to date.", { flags: ["json"] }),
   spec(["self", "update"], "Updates this controller's taskbox from signed releases on its channel.", { options: [{ name: "--check" }, { name: "--to", value: "VERSION" }, { name: "--auto" }], flags: ["json"] }),
   spec(["self", "rollback"], "Back to the release kept beside the one in use."),
   spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing. --fix puts right what it can, after one yes.", { flags: ["json"], options: [{ name: "--fix" }] }),
   spec(["self", "events"], "This controller's own event log: pairings, defaults, self updates.", { flags: ["since", "json"] }),
+  spec(["self", "trials"], "The trials before rc.1, one after another, each recording its result. Re-run, it goes on from the first not passed.", { flags: ["json"] }),
   spec(["sign"], "Signs a draft release with this Mac's release key and publishes it, through your GitHub session. --fingerprint shows the pinned keys; --revoke a release's signer change.", { args: { name: "VERSION", min: 0, max: 1, check: (v) => /^v?\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.[1-9]\d{0,3})?$/.test(v) }, options: [{ name: "--fingerprint" }, { name: "--revoke" }, { name: "--key", value: "FILE" }, { name: "--repo", value: "OWNER/NAME", check: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(v) }] }),
   spec(["self", "setup"], "Sets up the agents user, the projects folder, their sign-ins and notifications. Re-run, it resumes."),
   spec(["agent", "shell"], "A terminal as the agents user, in the projects folder. With -- COMMAND, that command."),
@@ -207,7 +214,16 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     if (!argv.includes("--json")) return run(ld, argv, io);
     return asOneEnvelope(d, `load.${argv[1]}`, io, (jio) => run(ld, argv, jio));
   }
-  const mine = CONTROLLER.some((s) => s.path[0] === argv[0]);
+  // workspace connect --screen opens Screen Sharing here, from the account the box names.
+  if (argv[0] === "workspace" && argv[1] === "connect" && argv.includes("--screen") && !argv.includes("--help")) {
+    const p = parse(registry(), argv);
+    if (!p.ok) return io.out(p.line), io.out(p.usage ?? "Type taskbox help."), EXIT.usage;
+    const box = typeof p.flags.box === "string" ? p.flags.box : undefined;
+    if (!argv.includes("--json")) return connectScreen(d, p.args[0]!, box, io.out);
+    return asOneEnvelope(d, "workspace.connect", io, (jio) => connectScreen(d, p.args[0]!, box, jio.out));
+  }
+  // The controller's own: a command it names whole, or a word only it has (box, self).
+  const mine = CONTROLLER.some((s) => s.path.every((w, i) => argv[i] === w)) || (CONTROLLER.some((s) => s.path[0] === argv[0]) && !registry().some((s) => s.path[0] === argv[0]));
   if (!mine) return forward(d, argv, io);
   const p = parse(CONTROLLER, argv);
   const json = argv.includes("--json");
@@ -220,7 +236,8 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     io.out(usage(p.spec));
     return EXIT.ok;
   }
-  if (p.flags.box !== undefined) {
+  // template apply reads one box's values; the rest are this controller's alone.
+  if (p.flags.box !== undefined && p.path.join(" ") !== "template apply") {
     io.out(`taskbox ${p.spec.path.join(" ")} runs on this controller, and takes no --box.`);
     return EXIT.usage;
   }
@@ -238,6 +255,22 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
       return print(boxUse(d, p.args[0]!));
     case "box remove":
       return print(await boxRemove(d, p.args[0]!));
+    case "box install": {
+      const settings = typeof p.opts.settings === "string" ? p.opts.settings : undefined;
+      if (!json) return boxInstall(d, p.args[0]!, settings, io.out);
+      return asOneEnvelope(d, "box.install", io, (jio) => boxInstall(d, p.args[0]!, settings, jio.out));
+    }
+    case "template apply":
+    {
+      const box = typeof f("box") === "string" ? (f("box") as string) : undefined;
+      if (!json) return templateApply(d, box, io.out);
+      return asOneEnvelope(d, "template.apply", io, (jio) => templateApply(d, box, jio.out));
+    }
+    case "self trials": {
+      const t = await selfTrials(d, json, io.out);
+      if (json) io.out(own(d, "self.trials", { lines: t.lines, code: t.code, result: t.result }));
+      return t.code;
+    }
     case "self update":
       return answer(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true, auto: p.opts.auto === true }));
     case "self rollback":
