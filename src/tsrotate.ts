@@ -65,8 +65,9 @@ export async function tsStatus(d: Pick<TsDeps, "sys" | "tailscale" | "socket">):
 }
 
 export function readTailnetPin(path: string, rootUid = 0): string | undefined {
-  const r = readOwnedJson(path, { owner: rootUid, max: 1024 }, (v) => (isObj(v) && v.v === 1 && typeof v.tailnet === "string" && TAILNET.test(v.tailnet) ? v.tailnet : "not a tailnet pin"));
-  return r.kind === "ok" ? r.value : undefined;
+  // The parser's string is a why, so the name comes back inside an object.
+  const r = readOwnedJson(path, { owner: rootUid, max: 1024 }, (v) => (isObj(v) && v.v === 1 && typeof v.tailnet === "string" && TAILNET.test(v.tailnet) ? { tailnet: v.tailnet } : "not a tailnet pin"));
+  return r.kind === "ok" ? r.value.tailnet : undefined;
 }
 
 // drafting. The link and the node key it replaces, or why there is none. The link is the caller's
