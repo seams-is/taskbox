@@ -72,6 +72,7 @@ export const commands: CommandSpec[] = [
     who: ["agent"],
     flags: ["json"],
     args: { name: "ID", min: 1, max: 1, check: ID },
+    options: [{ name: "--proof", value: "PROOF", check: (v) => PROOF.test(v) }],
     shell: true,
     run: run("connectRun"),
   },

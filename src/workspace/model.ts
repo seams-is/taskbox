@@ -109,6 +109,7 @@ export interface Workspace {
   claim?: { key: string; n: number } | null; // its agent's claim key, and the last counter taken
   rule?: string | null; // the standing rule that approved it
   usage?: { memoryMB: number; cpu: number; at: number } | null; // its account's last sample (caps.ts)
+  reach?: { at: number } | null; // its agent's last connect with a claim proof: the gate opens within REACH_MS of it
 }
 
 // What the guard last found of the fence (fence.ts), and its last proof before ready (probe.ts),

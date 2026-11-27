@@ -124,6 +124,7 @@ describe("the controller's claim words", () => {
     expect(prog.slice(-2, -1)).toEqual(["--proof"]);
     expect(checkProof({ key: k.pub, n: 0 }, "nova-3", parseProof(prog.at(-1)), T).ok).toBe(true);
     expect(withClaim(d, "taskbox-1", ask("workspace end nova-3"), T).slice(-2, -1)).toEqual(["--proof"]);
+    expect(withClaim(d, "taskbox-1", ask("workspace connect nova-3"), T).slice(-2, -1)).toEqual(["--proof"]);
     // An agent with no key kept, and the owner's signed end, add nothing.
     expect(withClaim(d, "taskbox-1", ask("workspace end orion-4"), T)).toEqual(["workspace", "end", "orion-4"]);
     expect(withClaim(d, "taskbox-1", ask("workspace list"), T)).toEqual(["workspace", "list"]);

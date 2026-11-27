@@ -159,6 +159,25 @@ export function thaw(s: WsState, o: { name: string; by: string }, boot: string |
   return { ok: true, state: put(s, next), name: w.name, said: `${w.name} continues where it stopped.`, steps: [{ name: w.name, type: "resumed", text: `${w.name} continued by ${o.by}`.slice(0, 240) }] };
 }
 
+// connect with a claim proof: the gate of a workspace bound to a claim key opens a session only within
+// REACH_MS of its agent's last proved connect, so another agent that reaches the pool account over
+// Tailscale SSH, with no proof by the key, gets no shell.
+export const REACH_MS = 60_000;
+export function reach(s: WsState, o: { name: string; agent: string }, now: number): Result {
+  const w = find(s, o.name);
+  if (!w) return no(`No workspace ${o.name}.`, "not-found");
+  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (w.state !== "ready" && w.state !== "saving") return no(`${w.name} is ${w.state}: connect works while it is ready or saving.`);
+  return { ok: true, state: put(s, { ...w, reach: { at: now } }), name: w.name, said: `${w.name} runs as ${w.user}: its gate opens a session within a minute.`, steps: [] };
+}
+// Why the gate stays shut for a bound workspace with no proved connect in time, or undefined.
+export function reachWhy(w: Workspace, now: number): string | undefined {
+  if (!w.claim) return undefined;
+  const at = w.reach?.at;
+  if (at !== undefined && now >= at && now - at <= REACH_MS) return undefined;
+  return `${w.name} is bound to its agent's claim key: type taskbox workspace connect ${w.name} from where that key lives, then connect within a minute.`;
+}
+
 // What the box reports for the hold lease (hold.ts BoxView): a Whole holding room, since its owner's
 // last OK, and whether a request waits for the owner.
 export function boxHold(s: WsState | undefined): { hold?: { since: number; why: string }; requestWaiting: boolean } {

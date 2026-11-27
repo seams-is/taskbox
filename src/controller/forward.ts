@@ -174,7 +174,7 @@ export function withClaim(d: Pick<Deps, "home">, box: string, a: Pick<Ask, "spec
   const dir = lower(box);
   try {
     if (verb === "workspace request" && a.parsed.opts.claim === undefined && typeof a.parsed.opts.as === "string") return [...a.words, "--claim", claimFor(userHome, dir, a.parsed.opts.as).pub];
-    if ((verb === "workspace progress" || verb === "workspace end") && a.parsed.opts.proof === undefined && a.parsed.flags.signed === undefined) {
+    if ((verb === "workspace progress" || verb === "workspace end" || verb === "workspace connect") && a.parsed.opts.proof === undefined && a.parsed.flags.signed === undefined) {
       const id = a.parsed.args[0] ?? "";
       const p = nextProof(userHome, dir, id, now);
       if (p) return [...a.words, "--proof", proofWord(p)];

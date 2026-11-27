@@ -22,6 +22,7 @@ import { loadConfig } from "./config.ts";
 import { FIRST_HIDDEN_ID, LAST_HIDDEN_ID, type PoolRecord, readPoolRecord } from "./pin.ts";
 import { pinnedKeys, readApprovers } from "./core/approvers.ts";
 import { floorWhy, NO_KEY, openFor, parseBoot, POOL_USER, type Workspace } from "./workspace/model.ts";
+import { reachWhy } from "./workspace/flows.ts";
 import { freeBytesAt, readStateFile } from "./workspace/read.ts";
 import type { StateRead } from "./workspace/store.ts";
 
@@ -78,6 +79,8 @@ export function gateFor(i: GateInputs): GateDecision {
   if (i.boot === undefined) return no(`The box's boot can't be read, ${shut}`);
   const o = openFor(i.read.state, user, i.boot, i.now);
   if ("why" in o) return no(o.why);
+  const unproved = reachWhy(o.ws, i.now);
+  if (unproved) return no(unproved);
   const low = floorWhy(i.freeBytes, i.floorGB, o.ws.name);
   if (low) return no(low);
   return { open: true, user, ws: o.ws };

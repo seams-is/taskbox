@@ -19,7 +19,7 @@ import { requestsJob } from "../src/passes/requests.ts";
 import { writePoolRecord } from "../src/pin.ts";
 import { registry } from "../src/registry.ts";
 import { fingerprint, makeClaim, proofWord, signProof } from "../src/workspace/claim.ts";
-import { freeze } from "../src/workspace/flows.ts";
+import { freeze, REACH_MS, reachWhy } from "../src/workspace/flows.ts";
 import { assign, find, ready, start, type WsState } from "../src/workspace/model.ts";
 import { readStateFile } from "../src/workspace/read.ts";
 import { writeStateFile } from "../src/workspace/write.ts";
@@ -192,6 +192,22 @@ describe("claim keys and standing rules", () => {
     expect(find(b.state(), "nova-1")!.claim!.n).toBe(5);
     expect(await b.send("workspace-end", { name: "nova-1", agent: "nova", proof: good })).toMatchObject({ ok: false, said: expect.stringContaining("used before") });
     expect(await b.send("workspace-end", { name: "nova-1", agent: "nova", proof: proofWord(signProof(k.pem, "nova-1", 6, T)) })).toMatchObject({ ok: true });
+  });
+  test("connect proves the claim key, and only then does the gate's minute open", async () => {
+    const b = await box();
+    const k = makeClaim();
+    await b.send("workspace-request", { agent: "nova", size: "light", why: "Render", claim: k.pub });
+    await b.signed("workspace.approve", { words: ["nova-1"] });
+    b.toReady("nova-1");
+    expect(reachWhy(find(b.state(), "nova-1")!, T)).toContain("bound to its agent's claim key");
+    expect(await b.send("workspace-connect", { name: "nova-1", agent: "nova", proof: proofWord(signProof(makeClaim().pem, "nova-1", 1, T)) })).toMatchObject({ ok: false, code: "denied" });
+    expect(await b.send("workspace-connect", { name: "nova-1", agent: "nova", proof: proofWord(signProof(k.pem, "nova-1", 2, T)) })).toMatchObject({ ok: true });
+    const w = find(b.state(), "nova-1")!;
+    expect(w.reach).toEqual({ at: T });
+    expect(reachWhy(w, T + 30_000)).toBeUndefined();
+    expect(reachWhy(w, T + REACH_MS + 1)).toBeDefined();
+    // An unbound workspace needs no proof at its gate.
+    expect(reachWhy({ ...w, claim: null }, T + 10 * REACH_MS)).toBeUndefined();
   });
   test("rule add waits for confirm; the yes adds it; a matching request from that key then approves itself", async () => {
     const b = await box();

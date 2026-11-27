@@ -22,7 +22,7 @@ import { budgetOf } from "../config.ts";
 import { readLogicalCpus, readMemory } from "../memory.ts";
 import { onNow } from "../workspace/box.ts";
 import { CLAIM, checkProof, fingerprint, FINGERPRINT, parseProof } from "../workspace/claim.ts";
-import { downsize, downsized, jump, pauseNow, rush, thaw } from "../workspace/flows.ts";
+import { downsize, downsized, jump, pauseNow, reach, rush, thaw } from "../workspace/flows.ts";
 import { askClear } from "../workspace/signedclear.ts";
 import { approveByRule, askRule, deleteRule, matchRule, minuteOf, RULE_ID } from "../workspace/standing.ts";
 import { AGENT, approve, cleanWords, end, find, isFinal, isSize, NAME, pause, progress, put, request, resume, type Result, type Size, saved, STEP_MAX, deny as denyStep, type WsState, type Step } from "../workspace/model.ts";
@@ -142,6 +142,20 @@ const endKind: UnsignedHandler = {
   },
 };
 
+// connect: the agent proves its claim key, and the gate of a bound workspace opens a session for a minute.
+const connectKind: UnsignedHandler = {
+  kind: "workspace-connect",
+  check: (b) => (keysIn(b, ["name", "agent", "proof"], []) && typeof b.name === "string" && NAME.test(b.name) && typeof b.agent === "string" && AGENT.test(b.agent) && parseProof(b.proof) !== undefined ? undefined : "a connect names its workspace, its agent and a proof"),
+  async apply(c, r) {
+    const b = r.body as { name: string; agent: string; proof: string };
+    return step(c, agentActor(b.agent), (s0) => {
+      const cl = claimed(s0, b.name, b.proof, c.now);
+      if (!cl.ok) return { ok: false, why: cl.why, code: "denied" as const };
+      return reach(cl.state, b, c.now);
+    });
+  },
+};
+
 const denyKind: UnsignedHandler = {
   kind: "workspace-deny",
   check: (b) => (keysAre(b, ["name", "reason"]) && typeof b.name === "string" && NAME.test(b.name) && (b.reason === "" || words(b.reason)) ? undefined : "a deny names its workspace and a reason, or none"),
@@ -178,7 +192,7 @@ function signed(action: string, more: string[], why: string, apply: (c: HandlerC
 export function handlersFor(o: { state: string; rootUid: number }) {
   const at = { path: o.state, rootUid: o.rootUid };
   return {
-    unsigned: [requestKind, progressKind, endKind, denyKind],
+    unsigned: [requestKind, progressKind, endKind, denyKind, connectKind],
     signed: [
       signed(
         "workspace.approve",

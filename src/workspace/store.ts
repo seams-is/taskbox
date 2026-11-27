@@ -88,6 +88,7 @@ const FLOW_FIELDS: [string, (v: unknown) => boolean][] = [
   ["rushFor", (v) => str(v, NAME)],
   ["claim", (v) => isObj(v) && str(v.key, CLAIM) && count(v.n, Number.MAX_SAFE_INTEGER)],
   ["rule", (v) => str(v, RULE_ID)],
+  ["reach", (v) => isObj(v) && time(v.at)],
   ["usage", (v) => isObj(v) && count(v.memoryMB, 64 * 1024 * 1024) && typeof v.cpu === "number" && Number.isFinite(v.cpu) && v.cpu >= 0 && v.cpu <= 4096 && time(v.at)],
 ];
 function flowsProblem(w: Record<string, unknown>): string | undefined {
