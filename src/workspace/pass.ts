@@ -38,7 +38,7 @@ import type { Sys } from "../sys.ts";
 import { loopFrom, runningJobs, type SlotView } from "../watch.ts";
 import { type PoolAccount, poolAccounts, workspacesOn } from "./box.ts";
 import { anchorsInOrder, bootOut, bridgesAbove, BRIDGES, fenceExpected, fenceMatches, fenceRules, killAllAs, killVMs, lanAddresses, ownPrefixes, PFCTL, PGREP, PREFIX_MAX, removeCrontab, SCREEN_SHARING_ANCHOR, stopAll, vmsOf, WS_ANCHOR } from "./fence.ts";
-import { deleteMoved, type HandoverDeps, moveAside } from "./handover.ts";
+import { deleteMoved, type HandoverDeps, launchAgentsPlaceholder, moveAside } from "./handover.ts";
 import { assign, boxPause, cleared, emptyState, ended, failed, held, NOTE_MAX, onBoot, OPEN, parseBoot, ready, type Rules, start, type Step, tick, whyNotStart, type Workspace, type WsNotes, type WsState } from "./model.ts";
 import { flowsTick } from "./flows.ts";
 import { type ProbeDeps, proveFence, realListen } from "./probe.ts";
@@ -482,6 +482,13 @@ async function clearHanded(d: WsDeps, mem: WsMemory, pool: readonly PoolAccount[
   try {
     running = listOps(ops).ops.filter((o) => o.state === "running" && o.type === "workspace-clear");
   } catch {}
+  // Every starting account's home keeps its LaunchAgents placeholder, a home made at install too.
+  for (const w of s.state.workspaces.filter((x) => x.state === "starting" && !x.clear && x.user)) {
+    const a = pool.find((x) => x.name === w.user);
+    const gid = rec !== "bad" ? rec.groups[w.user!]?.gid : undefined;
+    if (!a || gid === undefined) continue;
+    if (!launchAgentsPlaceholder(h, { user: a.name, uid: a.uid, gid }, join(h.usersDir, a.name))) r.problems.push(`${a.name}'s ~/Library/LaunchAgents placeholder couldn't be made`);
+  }
   for (const w of s.state.workspaces.filter((x) => x.state === "starting" && x.clear && x.user)) {
     const a = pool.find((x) => x.name === w.user);
     const gid = rec !== "bad" ? rec.groups[w.user!]?.gid : undefined;
