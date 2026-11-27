@@ -244,3 +244,26 @@ describe("key rotate tailscale", () => {
     expect(openSealed(k.priv, "op_x", bad.toString("base64url"))).toBeUndefined();
   });
 });
+
+describe("keys.maxAgeDays and the Keys row", () => {
+  test("0 to 3650, 0 off; past it the row fails and names the rotation", async () => {
+    const { checkKeys, maxAgeDaysOf } = await import("../src/settings/keys.ts");
+    const { keysRow } = await import("../src/rows/keys.ts");
+    const { trustFirst, updateApprovers } = await import("../src/core/approvers.ts");
+    const { keyPair } = await import("./sshsig.ts");
+    expect(() => checkKeys({ keys: { maxAgeDays: 365 } })).not.toThrow();
+    for (const bad of [{ maxAgeDays: -1 }, { maxAgeDays: 1.5 }, { maxAgeDays: 4000 }, { maxAgeDays: 1, x: 1 }, []]) expect(() => checkKeys({ keys: bad })).toThrow(/maxAgeDays/);
+    expect(maxAgeDaysOf({})).toBe(0);
+    const sys = new FakeSys();
+    const dir = join(mkdtempSync(join(tmpdir(), "taskbox-keyage-")), "opt/taskbox-state");
+    mkdirSync(dir, { recursive: true });
+    const paths = { installId: join(dir, "install-id"), keys: "/nonexistent" } as never;
+    const c = (max?: number) => ({ sys, cfg: { ...CFG, ...(max !== undefined ? { keys: { maxAgeDays: max } } : {}) }, paths, uid: me, serviceUid: undefined, rootUid: me }) as never;
+    expect((await keysRow(c())).status).toBe("SKIP");
+    await updateApprovers(rootStateIn(dir).approvers, { rootUid: me }, (s) => trustFirst(s, keyPair().key, sys.now(), "screen"));
+    sys.clock += 40 * 86_400_000;
+    expect(await keysRow(c())).toMatchObject({ status: "OK", detail: expect.stringMatching(/approver .* 40 days$/) });
+    expect(await keysRow(c(30))).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/past keys.maxAgeDays, 30.*taskbox key rotate approver/) });
+    expect((await keysRow(c(60))).status).toBe("OK");
+  });
+});

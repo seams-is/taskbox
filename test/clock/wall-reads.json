@@ -256,8 +256,8 @@
     "why": "a statement's time, which the box judges within 5 minutes, and the controller's own waits: a step only ends a wait"
   },
   "rows/keys.ts": {
-    "reads": 1,
-    "why": "how long a retired App is listed: a step only shows it a little longer or shorter"
+    "reads": 2,
+    "why": "how long a retired App is listed, and each key's age for the Keys row: a step only shows it a little longer or shorter"
   },
   "cmd/confirm.ts": {
     "reads": 1,
