@@ -201,8 +201,9 @@ describe("an install run to the end", () => {
     // No service account yet: the guest makes it with a password nobody types.
     sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args.at(-1) === "taskbox" && !sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl") ? { code: 1, stdout: "", stderr: "no such user" } : undefined));
     sys.responders.unshift((cmd, args) => (cmd === "/usr/sbin/sysadminctl" && args[0] === "-addUser" ? { code: 0, stdout: "", stderr: "" } : cmd === "/usr/bin/dscl" && args[1] === "-authonly" ? { code: 1, stdout: "", stderr: "" } : undefined));
-    // The guest's own Remote Login is on: it is how the guest is reached.
+    // The guest's own Remote Login is on: it is how the guest is reached. macOS says it is a VM.
     sys.probe = "open";
+    sys.responders.unshift((cmd, args) => (cmd === "/usr/sbin/sysctl" && args.join(" ") === "-n kern.hv_vmm_present" ? { code: 0, stdout: "1\n", stderr: "" } : undefined));
     const { d, said } = installDeps(sys, "no");
     d.guestTest = true;
     const asked: string[] = [];
@@ -221,6 +222,14 @@ describe("an install run to the end", () => {
     expect(sys.calls.some((c) => c.cmd === "/usr/bin/fdesetup" && c.args[0] === "add")).toBe(false);
     expect(out).toBe("installed");
     expect(said.at(-1)).toBe(`Installed ${RELEASE_VERSION} as a guest test. the GitHub Apps (connect github) is the controller's next step on a real box.`);
+  });
+
+  test.serial("a guest test on a Mac that isn't a VM installs nothing", async () => {
+    const { sys, d } = box();
+    sys.responders.unshift((cmd, args) => (cmd === "/usr/sbin/sysctl" && args.join(" ") === "-n kern.hv_vmm_present" ? { code: 0, stdout: "0\n", stderr: "" } : undefined));
+    d.guestTest = true;
+    expect(await outcome(d)).toBe("install.sh --guest-test runs only in a VM: this Mac isn't one. Nothing was installed. On a box, run install.sh without it.");
+    expect(sys.requests).toEqual([]);
   });
 
   // The install run again over one, as after a stop: the one before is kept for undo.

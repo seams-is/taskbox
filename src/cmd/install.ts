@@ -2,7 +2,7 @@
 // taskbox update's (src/update/).
 import type { BoxCtx, CommandSpec } from "../command.ts";
 
-export const REPO_SHAPE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
+export const REPO_SHAPE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
 
 export async function install(c: BoxCtx): Promise<number> {
   const { join } = await import("node:path");

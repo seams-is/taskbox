@@ -272,6 +272,10 @@ export async function install(d: InstallDeps): Promise<void> {
 async function installUnlocked(d: InstallDeps): Promise<void> {
   const root = d.rootUid ?? 0;
   const guest = d.guestTest === true;
+  // A guest test skips FileVault, Tailscale and rows a box must pass, so it runs only in a VM.
+  if (guest && (await d.sys.run("/usr/sbin/sysctl", ["-n", "kern.hv_vmm_present"], { timeoutMs: 10_000 })).stdout.trim() !== "1") {
+    throw new Stop("install.sh --guest-test runs only in a VM: this Mac isn't one. Nothing was installed. On a box, run install.sh without it.", true);
+  }
   // The settings first: they name the accounts and the box's own facts the preflight reads.
   const set = settingsIn(d.release, d.settingsRepo);
   let raw: Record<string, unknown>;

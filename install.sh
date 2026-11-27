@@ -21,7 +21,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --settings)
       case "${2:-}" in
-        */*/*|*[!A-Za-z0-9._/-]*|/*|*/|-*|.*|"") echo "--settings takes the settings repo, as ORG/REPO."; exit 2 ;;
+        */*/*|*[!A-Za-z0-9._/-]*|/*|*/|-*|.*|*/.|*/..|"") echo "--settings takes the settings repo, as ORG/REPO."; exit 2 ;;
         */*) settings=$2 ;;
         *) echo "--settings takes the settings repo, as ORG/REPO."; exit 2 ;;
       esac
