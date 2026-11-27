@@ -68,6 +68,9 @@ export const RULES: readonly Rule[] = [
   { path: "publicRepo", tier: 1, why: "where the box's code comes from" },
   { path: "approverKey", tier: 1, why: "whose signature the box trusts" },
   { path: "approverKeyChange", tier: 1, why: "whose signature the box trusts" },
+  // It lifts the closure of VM starts while Screen Sharing is on, which the box otherwise lifts only
+  // by its own 100 clean starts or an admin's confirm. Taking it away narrows.
+  { path: "vmnetPfProven", tier: 1, why: "lets VMs start with Screen Sharing on whatever the guard's rules did", narrows: (_f, t) => t !== true },
   { path: "update.channel", tier: 1, why: "what installs by itself", narrows: (_f, t) => t === undefined || t === "stable" },
   // Second tier: more of the box, or less evidence.
   { path: "workspaces", tier: 2, why: "gives workspaces more of the box" },

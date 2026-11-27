@@ -131,6 +131,20 @@ describe("the guarded keys", () => {
     expect(RULES.filter((r) => r.path === "tailnetTag")[0]?.tier).toBe(1);
   });
 
+  test("vmnetPfProven is first tier: set waits for settings apply and confirm at the box; taken away narrows", async () => {
+    expect(guardedChanges(BASE, { ...BASE, vmnetPfProven: true })).toMatchObject([{ path: "vmnetPfProven", tier: 1, narrows: false }]);
+    expect(guardedChanges({ ...BASE, vmnetPfProven: true }, BASE)).toMatchObject([{ path: "vmnetPfProven", narrows: true }]);
+    const b = box({ v2: BASE });
+    await readHead(b.d);
+    b.commit(2, { ...BASE, vmnetPfProven: true });
+    expect(await readHead(b.d)).toMatch(/waits for settings apply$/);
+    expect(b.inForce().doc.vmnetPfProven).toBeUndefined();
+    expect(await applySigned(b.d, sha(2), "owner")).toMatchObject({ code: "needs-confirm" });
+    expect(b.inForce().doc.vmnetPfProven).toBeUndefined();
+    await b.confirmYes();
+    expect(b.inForce().doc.vmnetPfProven).toBe(true);
+  });
+
   test("a person added widens and is first tier; one taken away narrows", () => {
     const one = { ...BASE, accounts: { ...CFG.accounts, people: ["person1"] } };
     const two = { ...BASE, accounts: { ...CFG.accounts, people: ["person1", "person2"] } };
