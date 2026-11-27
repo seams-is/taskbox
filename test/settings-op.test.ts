@@ -372,12 +372,12 @@ describe("temporary admin SSH", () => {
   const NOW = 1_800_000_000_000;
   const open = { login: "person1@example.com", user: "pat-admin", until: until(NOW + 4 * 3600_000) };
 
-  test("while open, the policy accepts that login to that admin user, with its sshTests line, and no deny for it", async () => {
+  test("while open, the policy lets that login reach that admin user in check mode, with its sshTests line, and no deny for it", async () => {
     const { policyFor } = await import("../src/policy.ts");
     const { openWindow } = await import("../src/settings/adminssh.ts");
     const p = policyFor(CFG.accounts, { owner: "owner@example.com", admins: ["pat-admin", "other"], adminSsh: openWindow(open, NOW)! });
-    expect(p.ssh).toContainEqual({ action: "accept", src: ["person1@example.com"], dst: ["tag:taskbox"], users: ["pat-admin"] });
-    expect(p.sshTests).toContainEqual({ src: "person1@example.com", dst: ["tag:taskbox"], accept: ["pat-admin"] });
+    expect(p.ssh).toContainEqual({ action: "check", src: ["person1@example.com"], dst: ["tag:taskbox"], users: ["pat-admin"] });
+    expect(p.sshTests).toContainEqual({ src: "person1@example.com", dst: ["tag:taskbox"], check: ["pat-admin"] });
     expect(JSON.stringify(p.sshTests)).not.toMatch(/"deny":\[[^\]]*"pat-admin"/);
     expect(p.grants).toContainEqual({ src: ["person1@example.com"], dst: ["tag:taskbox"], ip: ["tcp:22"] });
   });
@@ -402,6 +402,8 @@ describe("temporary admin SSH", () => {
     expect(adminSshProblem({ ...open, user: "root" }, CFG.accounts)).toMatch(/admin user/);
     expect(adminSshProblem(open, CFG.accounts)).toBeUndefined();
     expect(() => policyFor(CFG.accounts, { adminSsh: { login: "a@example.com", user: "taskbox-agent" } })).toThrow(/taskbox role/);
+    // The owner's own login is every owner device, the controller's agents among them.
+    expect(() => policyFor(CFG.accounts, { owner: "owner@example.com", adminSsh: { login: "Owner@example.com", user: "pat-admin" } })).toThrow(/your own login/);
   });
 
   test("it is a first-tier guarded key: a past expiry is refused, a new window waits for apply and confirm, ending it applies at once", async () => {

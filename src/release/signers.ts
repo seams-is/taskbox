@@ -2,7 +2,8 @@
 // starts as the installed release's signers file. A later release that pins another set carries a
 // transition statement, signed by a key the box pins already: { v, type: "signers", old, new,
 // fromVersion }. The box never takes the new set from the release itself:
-// - a key added waits 7 days, during which a revoke signed by a key the transition keeps cancels it;
+// - a key added waits 7 days, during which a revoke signed by a key the transition keeps cancels it,
+//   and then for a read of the revoke list past those days that finds none (release/revokes.ts);
 // - a key removed waits for confirm at the box, never for time alone;
 // - no change may leave no key pinned.
 // Everything here is pure, over the file's state and a clock; update/box.ts reads and writes it.
@@ -90,6 +91,7 @@ export interface Pending {
   seenAt: number; // when the box first verified it: an add waits ADD_WAIT_MS from here
   version?: string; // the release that carries it, where a revoke is published
   confirmed?: number; // when an admin at the box confirmed its removals
+  revokeReadAt?: number; // the last read of the revoke list that found no revoke of this change
   addsDone?: true;
   removesDone?: true;
 }
@@ -97,7 +99,8 @@ export interface SignerState {
   v: 1;
   pinned: string; // the signers file's text this box verifies with
   pending?: Pending;
-  revoked?: string[]; // transitions revoked, by sha, so none is taken again
+  revoked?: string[]; // transitions revoked, by sha, so none is taken again: every one is kept
+  revokeProblem?: string; // why the last revoke list couldn't be read, for status, until a good read
 }
 
 export function parseSignerState(v: unknown): SignerState | undefined {
@@ -105,9 +108,11 @@ export function parseSignerState(v: unknown): SignerState | undefined {
   const s = v as SignerState;
   if (s.v !== 1 || typeof s.pinned !== "string" || signersProblem(s.pinned)) return undefined;
   if (s.revoked !== undefined && !(Array.isArray(s.revoked) && s.revoked.every((x) => typeof x === "string"))) return undefined;
+  if (s.revokeProblem !== undefined && typeof s.revokeProblem !== "string") return undefined;
   if (s.pending !== undefined) {
     const p = s.pending;
     if (!p || typeof p.sha !== "string" || typeof p.text !== "string" || typeof p.newText !== "string" || !Number.isSafeInteger(p.seenAt) || !Array.isArray(p.adds) || !Array.isArray(p.removes) || !Array.isArray(p.kept)) return undefined;
+    if (p.revokeReadAt !== undefined && !Number.isSafeInteger(p.revokeReadAt)) return undefined;
   }
   return s;
 }
@@ -128,7 +133,7 @@ export function meet(s: SignerState, text: string, version: string, now: number)
 
 // The line check and the owner's screen show while a change waits.
 export function changeLine(p: Pending): string {
-  const parts = [...(p.adds.length && !p.addsDone ? [`adds ${p.adds.join(", ")} (waits 7 days)`] : []), ...(p.removes.length && !p.removesDone ? [`removes ${p.removes.join(", ")} (waits for taskbox confirm at the box)`] : [])];
+  const parts = [...(p.adds.length && !p.addsDone ? [`adds ${p.adds.join(", ")} (waits 7 days, then for a read of the revoke list)`] : []), ...(p.removes.length && !p.removesDone ? [`removes ${p.removes.join(", ")} (waits for taskbox confirm at the box)`] : [])];
   return `release signers change: ${parts.join("; ")}`;
 }
 
@@ -140,7 +145,7 @@ export function revoke(s: SignerState, r: Revoke, by: string): { state: SignerSt
   if (!p.kept.includes(by)) return { why: "the revoke isn't signed by a key the change keeps" };
   if (p.addsDone || p.confirmed !== undefined) return { why: "the change applied already" };
   const { pending: _, ...rest } = s;
-  return { state: { ...rest, revoked: [...(s.revoked ?? []), p.sha].slice(-20) }, said: "the signer change was revoked" };
+  return { state: { ...rest, revoked: [...new Set([...(s.revoked ?? []), p.sha])] }, said: "the signer change was revoked" };
 }
 
 // confirm at the box: the removals may apply.
@@ -149,7 +154,8 @@ export function confirm(s: SignerState, sha: string, now: number): SignerState |
   return { ...s, pending: { ...s.pending, confirmed: now } };
 }
 
-// Each pass: an add past its 7 days applies; confirmed removals apply, but never to leave no key.
+// Each pass: an add past its 7 days applies once a read of the revoke list after them found no revoke
+// and no read since has failed; confirmed removals apply, but never to leave no key.
 // The pin then moves one step at a time toward the transition's set.
 export function settle(s: SignerState, now: number): { state: SignerState; said: string[] } {
   const p = s.pending;
@@ -158,7 +164,7 @@ export function settle(s: SignerState, now: number): { state: SignerState; said:
   const target = signerLines(p.newText);
   const said: string[] = [];
   let next: Pending = { ...p };
-  const addReady = !p.addsDone && now - p.seenAt >= ADD_WAIT_MS;
+  const addReady = !p.addsDone && now - p.seenAt >= ADD_WAIT_MS && (p.revokeReadAt ?? -Infinity) >= p.seenAt + ADD_WAIT_MS && s.revokeProblem === undefined;
   // Removals first, once confirmed, and only when a key is left or the add is ready to take its place.
   if (!p.removesDone && p.confirmed !== undefined) {
     const left = lines.filter((l) => !p.removes.includes(signerFingerprint(l)!));

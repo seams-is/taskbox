@@ -1,5 +1,6 @@
-// Temporary admin SSH: one person's Tailscale login may reach one admin user on this box, in accept
-// mode, until a set time. It is this box's own key (the overlay), and a first-tier guarded key: it
+// Temporary admin SSH: one person's Tailscale login may reach one admin user on this box, in check
+// mode (each session approved in the browser), until a set time. Never the owner's own login, which
+// every device the owner signs in shares (policy.ts refuses it). It is this box's own key (the overlay), and a first-tier guarded key: it
 // opens only by the owner's settings apply and an admin's confirm at the box. taskbox policy writes
 // the rule while the window is open and drops it after; check warns while it is open, and once the
 // pasted policy has dropped it, says the access has gone. No agent identity is ever allowed: no tag,

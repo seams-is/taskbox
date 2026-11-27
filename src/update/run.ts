@@ -32,6 +32,7 @@ export interface UpdateParams {
   auto?: boolean;
 }
 export interface RollbackParams {
+  signed?: boolean; // the owner's signed request: no hold is set
   to?: string; // a kept version; else the install before
   force?: boolean;
   timeout?: string;
@@ -45,6 +46,7 @@ export interface Downloaded {
   tarball: string;
   tarballSha256: string;
   assets: Record<string, { path: string; sha256: string }>;
+  revokes?: Uint8Array; // the release's revoke list (release/revokes.ts), when it could be read
 }
 
 export interface Running {
@@ -266,14 +268,16 @@ export async function runRollback(e: RollbackEnv, p: RollbackParams): Promise<En
       await e.resume();
       fail(`going back to ${t.version} failed: ${back}`);
     }
-    e.saveMarks(holdAfterRollback(e.marks(), cur.version));
+    // An admin's rollback at the box holds auto-update below the release left; a signed one doesn't,
+    // so the next window goes forward again.
+    if (!p.signed) e.saveMarks(holdAfterRollback(e.marks(), cur.version));
     if (cur.record) e.ended(cur.dir, "rolled-back", `rolled back to ${t.version}`);
     phase(e, "proving", `waiting for ${t.version}'s guard and loop to beat`);
     const swappedAt = e.clock();
     const proof = await provePhase(e, { swappedAt, before: {}, proveMs: 0 });
     phase(e, "rolled-back", proof.kind === "pass" ? `${t.version} runs` : `${t.version} runs, but ${(proof as { why: string }).why}`);
     await e.resume();
-    event(e, "update.rolled-back", `The box went back from ${cur.version} to ${t.version}. Auto-update holds it until a release newer than ${cur.version}.`, { from: cur.version, to: t.version });
+    event(e, "update.rolled-back", `The box went back from ${cur.version} to ${t.version}. ${p.signed ? "Auto-update takes the newest release again in its next window." : `Auto-update holds it until a release newer than ${cur.version}.`}`, { from: cur.version, to: t.version });
     return { state: proof.kind === "pass" ? "succeeded" : "failed", ...(proof.kind === "pass" ? {} : { why: `back on ${t.version}, but ${(proof as { why: string }).why}` }), result: { installed: t.version, from: cur.version } };
   } catch (x) {
     if (x instanceof Stop) return x.end;

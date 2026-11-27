@@ -171,6 +171,12 @@ describe("the rollback op", () => {
     expect(x.did).toEqual(["drain", "settings of 3.0.0", "go back to /opt/taskbox-3.0.0-aaaaaa: taskbox rollback to 3.0.0", 'marks {"bad":[],"held":"3.0.1"}', "resume"]);
   });
 
+  test("the owner's signed rollback sets no hold, so the next window goes forward again", async () => {
+    const x = env({ installed: "3.0.1", kept: [{ version: "3.0.0", dir: "/opt/taskbox-3.0.0-aaaaaa", record: rec }] });
+    expect(await runRollback(x.e, { signed: true })).toMatchObject({ state: "succeeded", result: { installed: "3.0.0" } });
+    expect(x.did.some((l) => l.startsWith("marks"))).toBe(false);
+  });
+
   test("--to a kept version; one that isn't kept is refused before anything moves", async () => {
     let x = env({ installed: "3.0.1", kept: [{ version: "3.0.0", dir: "/a" }, { version: "2.6.1", dir: "/b" }] });
     expect(await runRollback(x.e, { to: "2.6.1" })).toMatchObject({ state: "succeeded", result: { installed: "2.6.1" } });

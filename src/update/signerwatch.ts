@@ -1,5 +1,6 @@
-// The guard's hourly look at a signer change that waits (release/signers.ts): a revoke published on
-// the release that carries it, verified against the pin as nobody, cancels it; a removal is raised
+// The guard's hourly look at a signer change that waits (release/signers.ts): the revoke list and a
+// revoke published on the release that carries it, verified against the pin as nobody, cancel it,
+// and a read that fails keeps the add waiting; a removal is raised
 // for confirm at the box, and an admin's yes there (confirm writes signers-yes.json) lets it apply.
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +9,8 @@ import type { RootState } from "../core/paths.ts";
 import { readOwnedJson, writeOwnedText, type WriteRules } from "../core/rootfile.ts";
 import { SUDO } from "../elevate.ts";
 import { publicRelease } from "../hop.ts";
-import { tagOf, verifySigned } from "../release.ts";
+import { parseStatement, tagOf, verifySigned } from "../release.ts";
+import { listOf, listProblem, REVOKES, REVOKES_MAX, takeList } from "../release/revokes.ts";
 import { confirm, parseRevoke, parseSignerState, REVOKE, removalShows, revoke, type SignerState } from "../release/signers.ts";
 import type { Sys } from "../sys.ts";
 
@@ -56,32 +58,51 @@ export async function raiseRemoval(d: WatchDeps): Promise<void> {
   });
 }
 
-// A revoke on the release that carries the change: verified against the pin, as nobody.
+// The release that carries a waiting add, read hourly: its signed statement, its revoke list (named
+// in that statement), and a revoke signed on its own if one is published, each verified against the
+// pin as nobody. Anything that can't be read fails closed: the problem is kept for status, and the
+// add doesn't apply until a later read finds no revoke (release/signers.ts settle).
 export async function readRevoke(d: WatchDeps): Promise<string | undefined> {
   const s = read(d);
   const p = s?.pending;
-  if (!s || !p?.version || !d.repo || p.addsDone || p.confirmed !== undefined) return undefined;
+  if (!s || !p?.version || p.addsDone || p.confirmed !== undefined) return undefined;
+  const tag = tagOf(p.version);
+  const fail = (why: string) => (save(d, listProblem(s, why)), `FAIL ${why}, so the release key add waits`);
+  if (!d.repo) return fail("taskbox.json names no publicRepo, so the revoke list can't be read");
+  const nobody = { readable: true, run: (cmd: string, args: string[], o?: { stdin?: string | Uint8Array; timeoutMs?: number }) => d.sys.run(SUDO, ["-n", "-u", "nobody", "--", "/usr/bin/env", "-i", "HOME=/var/empty", "PATH=/usr/bin:/bin", cmd, ...args], o) };
+  const work = signerFiles(d.state).work;
   let rel;
   try {
-    rel = await publicRelease(d.sys, d.repo, tagOf(p.version));
+    rel = await publicRelease(d.sys, d.repo, tag);
   } catch {
-    return undefined;
+    return fail(`the release ${tag} that carries the signer change can't be read`);
   }
-  let text: Uint8Array;
-  let sig: Uint8Array;
+  const sv = await verifySigned(nobody, { message: rel.statement, signature: rel.signature, pinned: s.pinned, workRoot: work }).catch(() => undefined);
+  const st = parseStatement(new TextDecoder().decode(rel.statement));
+  if (!sv?.ok || !st || st.tag !== tag) return fail(`${tag}'s statement isn't signed by a pinned key`);
+  const bytes = await rel.asset(REVOKES, REVOKES_MAX).catch(() => undefined);
+  const list = listOf(st, bytes);
+  if (typeof list === "string") return fail(list);
+  // A revoke signed on its own, uploaded after the release: none is the usual case.
+  let one: { text: Uint8Array; sig: Uint8Array } | undefined;
   try {
-    text = await rel.asset(REVOKE, 4096);
-    sig = await rel.asset(`${REVOKE}.sig`, 16_384);
+    one = { text: await rel.asset(REVOKE, 4096), sig: await rel.asset(`${REVOKE}.sig`, 16_384) };
   } catch {
-    return undefined; // no revoke published
+    one = undefined;
   }
-  const r = parseRevoke(new TextDecoder().decode(text));
-  if (!r) return "a revoke on that release isn't one taskbox reads";
-  const nobody = { readable: true, run: (cmd: string, args: string[], o?: { stdin?: string | Uint8Array; timeoutMs?: number }) => d.sys.run(SUDO, ["-n", "-u", "nobody", "--", "/usr/bin/env", "-i", "HOME=/var/empty", "PATH=/usr/bin:/bin", cmd, ...args], o) };
-  const v = await verifySigned(nobody, { message: text, signature: sig, pinned: s.pinned, workRoot: signerFiles(d.state).work });
-  if (!v.ok || !v.signer) return `a revoke on that release isn't signed by a pinned key: ${v.ok ? "no signer named" : v.why}`;
-  const done = revoke(s, r, v.signer);
-  if ("why" in done) return done.why;
-  save(d, done.state);
-  return done.said;
+  if (one) {
+    const r = parseRevoke(new TextDecoder().decode(one.text));
+    if (!r) return fail(`a revoke on ${tag} isn't one taskbox reads`);
+    const v = await verifySigned(nobody, { message: one.text, signature: one.sig, pinned: s.pinned, workRoot: work });
+    if (!v.ok || !v.signer) return fail(`a revoke on ${tag} isn't signed by a pinned key`);
+    const done = revoke(s, r, v.signer);
+    if (!("why" in done)) {
+      const { revokeProblem: _, ...clean } = done.state;
+      save(d, clean);
+      return done.said;
+    }
+  }
+  const t = takeList(s, list, sv.signer, d.sys.now());
+  save(d, t.state);
+  return t.said;
 }

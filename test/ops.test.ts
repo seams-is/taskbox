@@ -198,6 +198,7 @@ describe("taskbox status", () => {
       "nonce",
       "op",
       "pause",
+      "policy",
       "poll",
       "release",
       "resume",

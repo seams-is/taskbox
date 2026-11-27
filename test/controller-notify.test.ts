@@ -215,7 +215,7 @@ describe("workspace cards on the screen", () => {
     await ownerScreen(d, { out: () => {}, draw: (l) => drawn.push(l), keys: keys(["\x1b[B", "a", "d", "q"]) });
     expect(drawn[0]!.some((l) => l === '    [nova-3] requested, Heavy, agent nova: "a build"')).toBe(true);
     expect(drawn.some((f) => f.includes('>   [nova-3] requested, Heavy, agent nova: "a build"'))).toBe(true);
-    expect(JSON.parse(signed[0]!)).toMatchObject({ action: "workspace.approve", subject: "nova-3" });
+    expect(JSON.parse(signed[0]!)).toMatchObject({ action: "workspace.approve", subject: "nova-3", args: { size: "heavy" } });
     expect(box.sent).toContain("workspace deny nova-3 --json --answers 4");
     expect(drawn.at(-1)!.at(-2)).toBe(HELP);
   }, CEILING);

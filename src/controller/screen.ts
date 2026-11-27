@@ -9,6 +9,7 @@ import { answers, forward, type ForwardIo, type One, readLine, show, WATCH_MS } 
 import { type Deps, isStop } from "./reach.ts";
 
 // A box takes p pause, x drain, r resume. A card takes a approve, d deny, p pause, r resume, e end.
+// Approve names the card's size, so the statement signed and its words carry the size shown.
 export const BOX_KEYS: Record<string, string[]> = { p: ["pause"], x: ["drain"], r: ["resume"] };
 export const CARD_KEYS: Record<string, string[]> = { a: ["workspace", "approve"], d: ["workspace", "deny"], p: ["workspace", "pause"], r: ["workspace", "resume"], e: ["workspace", "end"] };
 export const KEYS = BOX_KEYS;
@@ -109,7 +110,7 @@ async function screen(d: Deps, io: ScreenIo, keys: AsyncIterator<string>): Promi
     else if (k.value === DOWN) pick = Math.min(items.length - 1, pick + 1);
     else {
       const it = items[pick];
-      const argv = !it ? undefined : it.kind === "box" ? (BOX_KEYS[k.value] ? [...BOX_KEYS[k.value]!, "--box", it.box] : undefined) : CARD_KEYS[k.value] ? [...CARD_KEYS[k.value]!, it.card.id, "--box", it.card.box] : undefined;
+      const argv = !it ? undefined : it.kind === "box" ? (BOX_KEYS[k.value] ? [...BOX_KEYS[k.value]!, "--box", it.box] : undefined) : CARD_KEYS[k.value] ? [...CARD_KEYS[k.value]!, it.card.id, ...(k.value === "a" ? ["--size", it.card.size] : []), "--box", it.card.box] : undefined;
       if (!argv) continue;
       const out: string[] = [];
       // What the signer says (the statement in words, then Touch ID) stays on the screen while it waits.

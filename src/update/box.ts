@@ -32,6 +32,7 @@ import { linkTarget, relink, withUpdateLock } from "../layout.ts";
 import { installedCommit, readProof } from "../proof.ts";
 import { undo } from "../ops.ts";
 import { bare, NAMESPACE, PRINCIPAL, signerLines, SSH_KEYGEN, type Statement, signersProblem, verifyRelease, type VerifyDeps, verifySigned } from "../release.ts";
+import { listOf, listProblem, REVOKES, REVOKES_MAX, takeList } from "../release/revokes.ts";
 import { meet, parseSignerState, type SignerState, TRANSITION, TRANSITION_SIG } from "../release/signers.ts";
 import { readInForce, settingsFiles } from "../settings/inforce.ts";
 import { updateOf } from "../settings/update.ts";
@@ -91,6 +92,7 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
   const events = eventLog("guard", { dir: d.state.events, owner: root, ...own }, d.sys);
   const ctl = { sys: d.sys, state: d.state, rootUid: root, ...own, events, log: d.log };
   let before: string | undefined; // the availability before the update's drain
+  let verifiedBy: string | undefined; // the pinned key that signed the statement verified
   let beatsBefore: Record<string, number | undefined> = {};
   const runningNow = () => runningOf(d.p, root);
   const pinFallback = () => readFileSync(join(runningNow().dir, "app/signers/allowed_signers"), "utf8");
@@ -136,11 +138,15 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
       progress(0);
       const tarballSha256 = await rel.assetToFile(`taskbox-v${version}.tar.gz`, TARBALL_LIMIT, tarball);
       progress(lstatSync(tarball).size);
-      return { statement: rel.statement, signature: rel.signature, tarball, tarballSha256, assets: {} };
+      // The revoke list its statement names: one that can't be read is refused at the stage.
+      const revokes = await rel.asset(REVOKES, REVOKES_MAX).catch(() => undefined);
+      return { statement: rel.statement, signature: rel.signature, tarball, tarballSha256, assets: {}, ...(revokes ? { revokes } : {}) };
     },
     async verify(dl, o) {
       const cur = runningNow();
-      return verifyRelease(nobody(d.sys), { statement: dl.statement, signature: dl.signature, pinned: signers().pinned, workRoot: f.dir, installed: { version: cur.version, ...(cur.record ? { sha256: cur.record.sha256 } : {}) }, repair: o.repair, want: o.want, channel: u.channel, tarballSha256: dl.tarballSha256 });
+      const v = await verifyRelease(nobody(d.sys), { statement: dl.statement, signature: dl.signature, pinned: signers().pinned, workRoot: f.dir, installed: { version: cur.version, ...(cur.record ? { sha256: cur.record.sha256 } : {}) }, repair: o.repair, want: o.want, channel: u.channel, tarballSha256: dl.tarballSha256 });
+      verifiedBy = v.ok ? v.signer : undefined;
+      return v;
     },
     async stage(dl, s) {
       const listing = await d.sys.run("/usr/bin/tar", ["-tvzf", dl.tarball], { timeoutMs: 120_000 });
@@ -159,6 +165,13 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
         return { why: (e as Error).message.slice(0, 120) };
       }
       if (tree !== s.tree) return { why: "the unpacked tree isn't the one its statement names" };
+      // The revoke list: a release whose list can't be read isn't installed, and status says why.
+      const list = listOf(s, dl.revokes);
+      if (typeof list === "string") {
+        saveSigners(listProblem(signers(), list));
+        return { why: list };
+      }
+      saveSigners(takeList(signers(), list, verifiedBy, d.sys.now()).state);
       // The release keys: the same as ours, or a change ours signed, which waits as signers.ts says.
       const st = signers();
       const carried = readFileSync(join(dir, "signers/allowed_signers"), "utf8");

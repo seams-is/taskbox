@@ -2,10 +2,13 @@
 // anything is unpacked; the owner says yes; then releases/<tag>/ is filled, bun placed by its pin, and
 // `current` moves in one step. bin/taskbox runs current/app/src/controller/main.ts.
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { relink } from "../layout.ts";
-import { describeStatement, type Statement, type Verdict, verifyRelease } from "../release.ts";
+import { compareVersions, describeStatement, parseStatement, signerLines, signerPrints as releaseSignerPrints, signersProblem, type Statement, type Verdict, verifyRelease } from "../release.ts";
+import { listOf, listProblem, REVOKES, REVOKES_MAX, takeList } from "../release/revokes.ts";
+import { changeLine, confirm, meet, removalShows, type SignerState, TRANSITION, TRANSITION_SIG } from "../release/signers.ts";
+import { pinFile, readCarrying, readPin, savePin, type SignedCheck, settled } from "./signers.ts";
 import type { Deps } from "./reach.ts";
 import { appendEvent } from "./events.ts";
 import { type Home, readConfig, readSmall, setUpController, type Source, writePrivateFile } from "./home.ts";
@@ -21,6 +24,7 @@ export type { Statement, Verdict };
 export interface UpdateDeps extends Deps {
   fetch: Fetch;
   verify: Verify;
+  signed: SignedCheck; // a transition or a revoke, signed by a pinned key
   arch: string;
 }
 
@@ -28,8 +32,9 @@ export const BUN_URL = /^https:\/\/github\.com\/oven-sh\/bun\/releases\/download
 const DITTO = "/usr/bin/ditto";
 
 export const signersIn = (app: string) => join(app, "signers", "allowed_signers");
-// The release keys this controller pins, copied from the folder the owner checked at its first install.
-export const pinFile = (h: Home) => join(h.dir, "allowed_signers");
+// The release keys this controller pins: signers.json, made from the folder the owner checked at its
+// first install, and moved only by a signed transition (./signers.ts).
+export { pinFile };
 
 // Each pinned release key's fingerprint, as ssh-keygen -l shows it.
 export function signerPrints(file: string): string[] {
@@ -152,7 +157,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
   // release is checked against the signers file in the folder the owner downloaded.
   const typed = "It asks you to type yes, so it runs only in your own terminal.";
   let source: Source;
-  let signers: string;
+  let pin: SignerState;
   let channel: "stable" | "beta" = "stable";
   if (a.first) {
     if (existsSync(d.home.current) || isLink(d.home.current)) return screen("taskbox is installed on this controller already.", "Type taskbox self update.");
@@ -163,7 +168,12 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
       return screen((e as Error).message.replace(/[^\x20-\x7e]/g, "").slice(0, 200), "Nothing to do: agents look.");
     }
     source = a.first.from;
-    signers = signersIn(a.first.bootstrap);
+    let text = "";
+    try {
+      text = readFileSync(signersIn(a.first.bootstrap), "utf8");
+    } catch {}
+    if (signersProblem(text)) return screen("The folder you downloaded has no signers file taskbox reads, so no release can be checked.", "Download the release again, from its release page.");
+    pin = { v: 1, pinned: text };
   } else {
     const c = readConfig(d.home);
     if (!c.ok) return screen("taskbox isn't installed for a controller on this Mac.", "Install taskbox for a controller, from its release page.");
@@ -171,10 +181,10 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     source = c.config.source;
     channel = c.config.channel;
     if (a.auto && c.config.auto === false) return screen("This controller updates itself only when self.auto is on.", "Type taskbox self update.", "Nothing installed.", 0);
-    // The pin is this controller's own copy, made at its first install; a release never moves it
-    // (a signer change is settled at a box). Before that copy, the release in use's file.
-    signers = existsSync(pinFile(d.home)) ? pinFile(d.home) : signersIn(join(d.home.current, "app"));
-    if (!existsSync(signers)) return screen("This controller's taskbox has no signers file, so no release can be checked.", "Install taskbox for a controller again, from its release page.");
+    // The pin is this controller's own; only a transition its keys signed moves it, as at a box.
+    const r = readPin(d.home);
+    if (typeof r === "string") return screen(r, "Install taskbox for a controller again, from its release page.");
+    pin = await signerSteps(d, a, source, r);
   }
 
   const found = await findRelease(d.fetch, source, a.tag, 15_000, channel);
@@ -199,16 +209,25 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
       if (!g.ok) return screen(releaseProblem(g.why, source, tag), "Try again later.");
       files[name] = g.value;
     }
-    const v = await d.verify({ statement: files[STATEMENT]!, signature: files[SIGNATURE]!, tarball: files[tarballName(tag)]!, workRoot: work, installed: a.first ? null : { version: inUse! }, signers, want: tag, channel });
+    const v = await d.verify({ statement: files[STATEMENT]!, signature: files[SIGNATURE]!, tarball: files[tarballName(tag)]!, workRoot: work, installed: a.first ? null : { version: inUse! }, pinned: pin.pinned, want: tag, channel });
     if (!v.ok) return screen(`Not installed: ${v.why.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}.`, "Nothing to do: agents look. Don't install a release by hand.");
+    // The revoke list its statement names: a release whose list can't be read isn't installed.
+    const listUrl = found.value.assets[REVOKES];
+    const got = listUrl ? await get(d.fetch, listUrl, REVOKES_MAX, 30_000) : undefined;
+    const list = listOf(v.statement, got?.ok ? got.value : undefined);
+    if (typeof list === "string") {
+      if (!a.first) savePin(d.home, listProblem(pin, list));
+      return screen(`Not installed: ${list}.`, "Try again later. If it stays, agents look.");
+    }
+    pin = takeList(pin, list, v.signer, d.now()).state;
 
     d.out(top);
     d.out(a.first ? `This installs taskbox ${tag} on this controller:` : `This updates this controller from taskbox ${d.version} to ${tag}:`);
     for (const l of describe(v.statement)) d.out(l);
     if (a.first) {
-      d.out(`It is checked against the release key in the folder you downloaded. Later updates are checked against the key ${tag} carries.`);
+      d.out(`It is checked against the release key in the folder you downloaded. Later updates are checked against that key, and a change to it waits as it does at a box.`);
       // Trust on first use: the owner compares these with taskbox sign --fingerprint on the signing Mac.
-      for (const f of signerPrints(signers)) d.out(`  Release key: ${f}`);
+      for (const f of releaseSignerPrints(pin.pinned)) d.out(`  Release key: ${f}`);
     }
     if (!a.auto) {
       const yes = (await d.ask("Type yes to install it: ")).trim().toLowerCase();
@@ -219,6 +238,9 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     try {
       mkdirSync(stage, { mode: 0o755 });
       unpack(files[tarballName(tag)]!, join(stage, "app"));
+      // The signed statement, kept for self rollback's floor.
+      writeFileSync(join(stage, STATEMENT), files[STATEMENT]!, { mode: 0o644 });
+      pin = await carriedKeys(d, join(stage, "app"), pin, v.statement.version, work);
       await placeBun(d, join(stage, "app"), stage, work);
       refuseOdd(stage);
     } catch (e) {
@@ -242,13 +264,66 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     relink(d.home.current, join("releases", tag));
     prune(d.home, [tag, ...(inUse ? [inUse] : [])]);
     writePrivateFile(d.home.updateCheck, JSON.stringify({ checkedAt: d.now(), latest: tag }));
-    if (a.first) writePrivateFile(pinFile(d.home), readFileSync(signers, "utf8"));
+    savePin(d.home, pin);
     const did = `Installed taskbox ${tag}, from #${v.statement.pr}, commit ${v.statement.commit.slice(0, 7)}.`;
     appendEvent(d.home, d.now(), "self.updated", did, { tag, from: inUse ?? null });
     return { lines: [header(null, tag), did, ...footer(`taskbox ${tag} on this controller.`, did, a.first ? "Type taskbox box add." : "Nothing to do.")], code: 0 };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+// Before a release is looked for: a waiting add's carrying release read for a revoke; a waiting
+// removal confirmed by the owner's typed yes at this terminal; then the pin moves as settle says.
+async function signerSteps(d: UpdateDeps, a: UpdateAsk, source: Source, s0: SignerState): Promise<SignerState> {
+  let s = s0;
+  if (s.pending) {
+    const work = mkdtempSync(join(d.home.dir, "signers-"));
+    try {
+      const r = await readCarrying(d, source, s, work, d.now());
+      s = r.state;
+      if (r.said && !r.state.revokeProblem) d.out(`Release signers: ${r.said}.`);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  }
+  const p = s.pending;
+  if (p && p.removes.length && !p.removesDone && p.confirmed === undefined && d.tty && !a.auto) {
+    for (const l of removalShows(p)) d.out(l);
+    if ((await d.ask("Type yes to confirm the removal on this controller: ")).trim().toLowerCase() === "yes") {
+      const c = confirm(s, p.sha, d.now());
+      if (typeof c !== "string") s = c;
+    } else d.out("The removal still waits. taskbox self update asks again.");
+  }
+  const st = settled(s, d.now());
+  for (const l of st.said) d.out(`Release signers: this controller ${l}.`);
+  const here = (l: string) => l.replace("taskbox confirm at the box", "your yes at taskbox self update");
+  if (st.state.pending) d.out(`Release signers: ${here(changeLine(st.state.pending))}.`);
+  if (st.state.revokeProblem) d.out(`Release signers: FAIL ${st.state.revokeProblem}. No key is added until it can be read.`);
+  savePin(d.home, st.state);
+  return st.state;
+}
+
+// The release's own signers file: the pin's, the waiting change's, or a transition the pin signed,
+// which then waits as at a box. Anything else is refused before the release is used.
+async function carriedKeys(d: UpdateDeps, app: string, s: SignerState, version: string, work: string): Promise<SignerState> {
+  let carried = "";
+  try {
+    carried = readFileSync(signersIn(app), "utf8");
+  } catch {}
+  if (signersProblem(carried)) throw new Refused("its signers file isn't one taskbox reads");
+  const same = (x: string, y: string) => signerLines(x).sort().join("\n") === signerLines(y).sort().join("\n");
+  if (same(carried, s.pinned) || (s.pending && same(carried, s.pending.newText))) return s;
+  const t = join(app, TRANSITION);
+  const sig = join(app, TRANSITION_SIG);
+  if (!existsSync(t) || !existsSync(sig)) throw new Refused("it pins other release keys and carries no signed transition");
+  const text = readFileSync(t, "utf8");
+  const ok = await d.signed({ message: new TextEncoder().encode(text), signature: new Uint8Array(readFileSync(sig)), pinned: s.pinned, workRoot: work }).catch(() => undefined);
+  if (!ok?.ok) throw new Refused("its signer transition isn't signed by a pinned release key");
+  const m = meet(s, text, version, d.now());
+  if ("why" in m) throw new Refused(m.why);
+  if (m.said) d.out(`Release signers: ${m.said.replace("taskbox confirm at the box", "your yes at taskbox self update")}.`);
+  return m.state;
 }
 
 function isLink(p: string): boolean {
@@ -286,18 +361,27 @@ export async function updateNote(d: UpdateDeps): Promise<string | undefined> {
 }
 
 // taskbox self rollback: back to the release kept beside the one in use. It was verified when it was
-// installed, so nothing is downloaded; current moves in one step.
-export function rollback(d: Deps): Screen {
+// installed, so nothing is downloaded; current moves in one step. It asks for a typed yes at a
+// terminal, and never goes below the minFrom of the release in use, read from its signed statement
+// kept at its install: a release older than that lacks what the one in use needs.
+export async function rollback(d: Deps): Promise<Screen> {
   const inUse = currentTag(d.home);
   const top = header(null, d.version);
   const screen = (stop: string, next: string, code = 1): Screen => ({ lines: [top, stop, ...footer(`taskbox ${inUse ?? d.version} on this controller.`, code ? "Nothing changed." : stop, next)], code });
   if (!inUse) return screen("This controller's taskbox has no release in use taskbox can read.", "Install taskbox for a controller again, from its release page.");
+  if (!d.tty) return screen("taskbox self rollback asks you to type yes, so it runs only in your own terminal.", "Type taskbox self rollback in Terminal.");
   let kept: string[] = [];
   try {
     kept = readdirSync(d.home.releases).filter((n) => RELEASE_TAG.test(n) && n !== inUse && existsSync(join(d.home.releases, n, "bun")) && existsSync(join(d.home.releases, n, "app", "src", "controller", "main.ts")));
   } catch {}
   const back = kept.sort((x, y) => (newer(x, y) ? -1 : newer(y, x) ? 1 : 0))[0];
   if (!back) return screen("No other release is kept on this controller.", "Nothing to do.");
+  const rec = readSmall(join(d.home.releases, inUse, STATEMENT), MAX[STATEMENT]);
+  const st = "text" in rec ? parseStatement(rec.text) : undefined;
+  if (!st) return screen(`${inUse} has no signed statement kept, so taskbox can't tell how far back is safe.`, "Type taskbox self update.");
+  if (compareVersions(back.replace(/^v/, ""), st.minFrom) < 0) return screen(`${back} is older than ${st.minFrom}, the oldest release ${inUse} may come from, so taskbox won't go back to it.`, "Type taskbox self update.");
+  d.out(`This moves this controller from taskbox ${inUse} back to ${back}. ${inUse} is kept.`);
+  if ((await d.ask("Type yes to roll back: ")).trim().toLowerCase() !== "yes") return screen("Not rolled back: you didn't type yes.", "Nothing to do.");
   relink(d.home.current, join("releases", back));
   appendEvent(d.home, d.now(), "self.rolled-back", `Rolled back from ${inUse} to ${back}.`, { tag: back, from: inUse });
   return screen(`Rolled back from taskbox ${inUse} to ${back}. ${inUse} is kept, and taskbox self update takes the newest again.`, "Nothing to do.", 0);

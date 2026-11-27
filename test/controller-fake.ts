@@ -129,6 +129,7 @@ export interface TestDeps extends UpdateDeps {
   fetched: string[];
   verified: Parameters<Verify>[0][];
   verdict: Verdict;
+  signedVerdict: Awaited<ReturnType<UpdateDeps["signed"]>>;
 }
 
 export function deps(w: World, answers: string[] = []): TestDeps {
@@ -174,6 +175,8 @@ export function deps(w: World, answers: string[] = []): TestDeps {
       verified.push(o);
       return t.verdict;
     },
+    signedVerdict: { ok: false, why: "no verdict set" },
+    signed: async () => t.signedVerdict,
     arch: "arm64",
   };
   return t;
@@ -182,7 +185,7 @@ export function deps(w: World, answers: string[] = []): TestDeps {
 // One pairing, as box add writes it.
 export const pairing = (o: { name?: string; node?: string; installId?: string; hostKey?: string; agent?: string } = {}) => ({ name: o.name ?? "taskbox-1", node: o.node ?? NODE, installId: o.installId ?? INSTALL_ID, hostKey: o.hostKey ?? KEY, agent: o.agent ?? "taskbox-agent", pairedAt: 1 });
 // The controller's config with these pairings.
-export const controllerConfig = (boxes: (ReturnType<typeof pairing> & { jobsRepo?: string })[], o: { default?: string | null } = {}) => ({ role: "controller" as const, source: null, boxes, default: o.default ?? null, channel: "stable" as const });
+export const controllerConfig = (boxes: (ReturnType<typeof pairing> & { jobsRepo?: string; loadRepo?: string })[], o: { default?: string | null } = {}) => ({ role: "controller" as const, source: null, boxes, default: o.default ?? null, channel: "stable" as const });
 
 export { errorAnswer, StandIn };
 
