@@ -30,6 +30,10 @@ export const realClock: Clock = {
   timeout: (ms) => AbortSignal.timeout(ms),
 };
 
+// This process's own monotonic clock in ms, which no wall clock step moves: for limits within one
+// process, such as an update's drain and proof in its op's child (update/box.ts).
+export const monotonicMs = (): number => performance.now();
+
 // Waits ms without returning to the event loop: for a few milliseconds in code that must stay
 // synchronous, such as a child taking its lease (core/child.ts).
 export function waitSync(ms: number): void {

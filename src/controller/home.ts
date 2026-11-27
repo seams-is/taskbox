@@ -30,6 +30,8 @@ export interface Config {
   source: Source | null;
   default: string | null; // the StableNodeID box use set
   channel: Channel;
+  // self.auto: the controller installs newer releases on its channel by itself, once a day.
+  auto?: boolean;
 }
 
 export const MAX_BOXES = 32;
@@ -138,7 +140,9 @@ export function readConfig(h: Home): ConfigRead {
     if (def !== null && (typeof def !== "string" || !ok.some((b) => b.node === def))) return { ok: false, why: "unreadable" };
     const channel = v.channel ?? "stable";
     if (channel !== "stable" && channel !== "beta") return { ok: false, why: "unreadable" };
-    return { ok: true, config: { role: "controller", boxes: ok, source: src, default: def as string | null, channel }, mode: f.mode };
+    const self = (v.self ?? {}) as Record<string, unknown>;
+    if (typeof self !== "object" || Array.isArray(self) || (self.auto !== undefined && typeof self.auto !== "boolean")) return { ok: false, why: "unreadable" };
+    return { ok: true, config: { role: "controller", boxes: ok, source: src, default: def as string | null, channel, ...(self.auto === false ? { auto: false } : {}) }, mode: f.mode };
   } catch {
     return { ok: false, why: "unreadable" };
   }
@@ -178,7 +182,7 @@ export function writeConfig(h: Home, c: Config): void {
   ensureDir(h);
   // A default that names a box no longer paired goes with it.
   const def = c.default !== null && c.boxes.some((b) => b.node === c.default) ? c.default : null;
-  writePrivate(h.config, `${JSON.stringify({ role: c.role, boxes: c.boxes, source: c.source, default: def, channel: c.channel }, null, 2)}\n`);
+  writePrivate(h.config, `${JSON.stringify({ role: c.role, boxes: c.boxes, source: c.source, default: def, channel: c.channel, ...(c.auto === false ? { self: { auto: false } } : {}) }, null, 2)}\n`);
 }
 
 // The install sets the role once. It never changes a config that is already there, apart from

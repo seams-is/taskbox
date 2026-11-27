@@ -7,7 +7,7 @@ const PRODUCT = [
   "org", "repo", "releaseRepo", "publicRepo", "project", "previousLabelPrefix", "appId", "runnerGroup", "jobsFrom", "label", "mergeLabel", "labels",
   "image", "imageName", "imageGB", "slots", "jobTimeoutMinutes", "vmnetPfProven", "approverKey", "approverKeyChange", "screenSharingUsers", "linux",
   "turnIdleMinutes", "quietTurnMinutes", "actionsAppId", "classes", "timings", "away", "engine", "runnerNamePrefix", "vmsAtOnce", "vmCpus", "vmMemoryMB",
-  "minFreeDiskGB", "vmMaxHours", "tailscaleTun", "accounts", "maxAtOnce", "sizes", "warmSize", "boxKeepsGB", "vmsAtMost", "cpuBudget", "tailnetTag", "tools",
+  "minFreeDiskGB", "vmMaxHours", "tailscaleTun", "accounts", "maxAtOnce", "sizes", "warmSize", "boxKeepsGB", "vmsAtMost", "cpuBudget", "tailnetTag", "tools", "update",
 ];
 const LOCAL = ["sources", "runnerApp"];
 const CLASSES = new Map<string, KeyClass>([...PRODUCT.map((k) => [k, "product"] as const), ...LOCAL.map((k) => [k, "local"] as const)]);

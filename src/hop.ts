@@ -18,7 +18,7 @@
 // v2.6.1's own undo, so a v3 whose guard never starts is still undone. A failed undo leaves it in
 // place: it says so in taskbox check and tries again later.
 import { skFlags as readFlags } from "./core/sshsig.ts";
-import { bootOutListed } from "./core/child.ts";
+import { bootOutListed, jobLabel } from "./core/child.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { inVerifyFolder } from "./core/verifyfolder.ts";
 import { createHash } from "node:crypto";
@@ -49,57 +49,9 @@ export const SIGNERS_IN_TREE = "signers/allowed_signers";
 const LIMITS = { statement: 16_384, signature: 16_384, tarball: 256 * 1024 * 1024, asset: 128 * 1024 * 1024, unpacked: 1024 * 1024 * 1024 };
 export const UNPACKED_LIMIT = LIMITS.unpacked;
 
-export interface Statement {
-  v: 1;
-  name: "taskbox";
-  version: string;
-  channel: "stable" | "beta";
-  tag: string;
-  tarball: string;
-  sha256: string;
-  tree: string;
-  assets: Record<string, string>;
-  minFrom: string;
-  settingsSchema: [number, number];
-  answers: [number, number];
-  pr: number;
-  mergedAt: string;
-  commit: string;
-  notes: string;
-}
-
-const KEYS = "answers,assets,channel,commit,mergedAt,minFrom,name,notes,pr,settingsSchema,sha256,tag,tarball,tree,v,version";
-const VERSION = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-rc\.([1-9]\d{0,3}))?$/;
-const HEX64 = /^[0-9a-f]{64}$/;
-const range = (r: unknown) => Array.isArray(r) && r.length === 2 && r.every((n) => Number.isInteger(n) && n >= 1 && n <= 999) && r[0] <= r[1];
-
-// The statement read strictly: these fields, these shapes, nothing else, one line.
-export function parseStatement(text: string): Statement | undefined {
-  if (text.length > LIMITS.statement || !text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) return undefined;
-  let v: unknown;
-  try {
-    v = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
-  const s = v as Statement;
-  if (Object.keys(s).sort().join(",") !== KEYS) return undefined;
-  if (s.v !== 1 || s.name !== "taskbox" || typeof s.version !== "string" || !VERSION.test(s.version)) return undefined;
-  if (s.tag !== `v${s.version}` || s.tarball !== `taskbox-${s.tag}.tar.gz`) return undefined;
-  if (s.channel !== (isTrial(s.tag) ? "beta" : "stable")) return undefined;
-  if (typeof s.sha256 !== "string" || !HEX64.test(s.sha256) || typeof s.tree !== "string" || !/^[0-9a-f]{40}$/.test(s.tree)) return undefined;
-  if (!s.assets || typeof s.assets !== "object" || Array.isArray(s.assets)) return undefined;
-  const assets = Object.entries(s.assets);
-  if (assets.length > 10 || assets.some(([n, h]) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(n) || n === s.tarball || typeof h !== "string" || !HEX64.test(h))) return undefined;
-  if (typeof s.minFrom !== "string" || !VERSION.test(s.minFrom)) return undefined;
-  if (!range(s.settingsSchema) || !range(s.answers)) return undefined;
-  if (!Number.isInteger(s.pr) || s.pr < 1 || s.pr > 999_999) return undefined;
-  if (typeof s.mergedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{3})?Z$/.test(s.mergedAt)) return undefined;
-  if (typeof s.commit !== "string" || !/^[0-9a-f]{40}$/.test(s.commit)) return undefined;
-  if (typeof s.notes !== "string" || s.notes.length > 2000) return undefined;
-  return s;
-}
+// The statement: v3's own reader (release.ts), the same fields v2.6.1 reads.
+export { parseStatement, type Statement } from "./release.ts";
+import type { Statement } from "./release.ts";
 
 // Why the statement can't be installed over the release in place, or undefined.
 export function statementProblem(s: Statement, tag: string, installed: string | undefined): string | undefined {
@@ -477,9 +429,10 @@ export function laterDaemons(tag: unknown): string[] {
 // v3's op jobs (core/child.ts) have their plists in root's ops folder, outside these folders, so with
 // an ops folder there, every op job launchd lists is booted out too.
 // missed: the op jobs it couldn't end, for the caller to say.
-export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist"> & Partial<Pick<Paths, "installId">>, keep: string[] = KNOWN_DAEMONS, agentsUid?: number, missed: string[] = []): Promise<string[]> {
+// selfOp: the op whose child runs this (an update or rollback going back), whose job stays.
+export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist"> & Partial<Pick<Paths, "installId">>, keep: string[] = KNOWN_DAEMONS, agentsUid?: number, missed: string[] = [], selfOp?: string): Promise<string[]> {
   const gone: string[] = [];
-  if (p.installId && existsSync(rootStateOf({ installId: p.installId }).ops)) missed.push(...(await bootOutListed(sys).catch(() => ["launchd's list of jobs couldn't be read"])));
+  if (p.installId && existsSync(rootStateOf({ installId: p.installId }).ops)) missed.push(...(await bootOutListed(sys, selfOp ? new Set([jobLabel(selfOp)]) : undefined).catch(() => ["launchd's list of jobs couldn't be read"])));
   for (const [dir, known, domain] of [
     [dirname(p.guardPlist), keep, "system"],
     [dirname(p.agentPlist), KNOWN_AGENTS, agentsUid === undefined ? undefined : `gui/${agentsUid}`],

@@ -222,5 +222,17 @@
   "cmd/tool.ts": {
     "reads": 3,
     "why": "when a tool refresh was asked, and how long the command watches it: a step only stops watching sooner or later, and the refresh carries on"
+  },
+  "passes/update.ts": {
+    "reads": 1,
+    "why": "the update window is the box's own wall time, as the owner sets it; a step moves the window, never a limit"
+  },
+  "update/box.ts": {
+    "reads": 8,
+    "why": "labels in the install record, the marks and the watch file (whose placedAt and deadline v2.6.1's watcher reads; v3's counts mono), and the deadline put on the monotonic clock's scale"
+  },
+  "update/cmd.ts": {
+    "reads": 1,
+    "why": "the 7-day line about the release check, for display"
   }
 }

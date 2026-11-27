@@ -493,7 +493,7 @@ function readText(path: string): string | undefined {
 // o.yes: asked already, as the rollback watcher has (hop.ts). o.keep: the launchd daemons to leave.
 // o.locked: the caller holds the update lock. o.floorFrom: the app folder whose $undoFloor applies,
 // for the watcher, which goes back to the install it left whatever a newer release says.
-export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; locked?: boolean; floorFrom?: string } = {}): Promise<number> {
+export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; locked?: boolean; floorFrom?: string; selfOp?: string } = {}): Promise<number> {
   if (!o.locked) {
     return withUpdateLock(
       d.paths,
@@ -549,7 +549,7 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   // Every op job first: its child runs this release's code, which the swap takes away (core/child.ts).
   const opsDir = rootStateOf(d.paths).ops;
   if (existsSync(opsDir)) {
-    const ended = await endOpJobs({ sys: d.sys, ops: { dir: opsDir, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {} }, "undone").catch(() => ({ cancelled: [], missed: ["the op jobs couldn't be read"] }));
+    const ended = await endOpJobs({ sys: d.sys, ops: { dir: opsDir, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {} }, "undone", o.selfOp).catch(() => ({ cancelled: [], missed: ["the op jobs couldn't be read"] }));
     if (ended.cancelled.length) d.say(`  Stopped ${ended.cancelled.length} operation${ended.cancelled.length === 1 ? "" : "s"} that ${ended.cancelled.length === 1 ? "was" : "were"} running.`);
     for (const m of ended.missed) d.say(`  ${noControl(m).slice(0, 160)}`);
   }
@@ -571,7 +571,7 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   const notEnded: string[] = [];
   // The install gone back to keeps the daemons it ships itself (guardwatch, from v3 on).
   const ships = laterDaemons(readStateJson<Installed>(d.paths.installed)?.tag);
-  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? [...KNOWN_DAEMONS, ...ships], d.serviceUid, notEnded).catch(() => [] as string[]);
+  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? [...KNOWN_DAEMONS, ...ships], d.serviceUid, notEnded, o.selfOp).catch(() => [] as string[]);
   for (const m of notEnded) d.say(`  An op job couldn't be ended: ${noControl(m).slice(0, 120)}.`);
   if (gone.length) did += ` Stopped ${gone.join(", ")}, which this install doesn't run.`;
   // Back across the label move: the kept code knows only the old labels (install.ts, labelsBack).

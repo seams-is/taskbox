@@ -28,6 +28,8 @@ export const BUN_URL = /^https:\/\/github\.com\/oven-sh\/bun\/releases\/download
 const DITTO = "/usr/bin/ditto";
 
 export const signersIn = (app: string) => join(app, "signers", "allowed_signers");
+// The release keys this controller pins, copied from the folder the owner checked at its first install.
+export const pinFile = (h: Home) => join(h.dir, "allowed_signers");
 
 // Each pinned release key's fingerprint, as ssh-keygen -l shows it.
 export function signerPrints(file: string): string[] {
@@ -44,7 +46,7 @@ export function signerPrints(file: string): string[] {
 
 // What the screen shows from a signed statement, before the yes: the box's update screen's lines,
 // without the tarball's hash, which verifyRelease has checked.
-export const describe = (s: Statement): string[] => describeStatement(s).filter((l) => !l.trimStart().startsWith("Tarball:"));
+export const describe = (s: Statement): string[] => describeStatement(s).filter((l) => !/^(Tarball|Asset):/.test(l.trimStart()));
 
 // bin/taskbox: the one file outside a release. It names this controller's own folder.
 export function wrapper(h: Home): string {
@@ -134,6 +136,9 @@ const currentTag = (h: Home) => {
 export interface UpdateAsk {
   tag?: string; // a release asked for by name; else the newest
   check?: boolean; // --check: say what it would take, and install nothing
+  // --auto: the daily run, with no terminal. It installs only when self.auto is on, and the
+  // signature is the consent, as an auto-update on a box.
+  auto?: boolean;
   first?: { from: Source; bootstrap: string }; // the first install, from the folder the owner downloaded
 }
 
@@ -148,6 +153,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
   const typed = "It asks you to type yes, so it runs only in your own terminal.";
   let source: Source;
   let signers: string;
+  let channel: "stable" | "beta" = "stable";
   if (a.first) {
     if (existsSync(d.home.current) || isLink(d.home.current)) return screen("taskbox is installed on this controller already.", "Type taskbox self update.");
     if (!d.tty) return screen(`The install didn't start. ${typed}`, "Type the install line in Terminal.");
@@ -163,11 +169,15 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     if (!c.ok) return screen("taskbox isn't installed for a controller on this Mac.", "Install taskbox for a controller, from its release page.");
     if (!c.config.source) return screen("taskbox doesn't know which public repo it updates from.", "Install taskbox for a controller again, from its release page.");
     source = c.config.source;
-    signers = signersIn(join(d.home.current, "app"));
+    channel = c.config.channel;
+    if (a.auto && c.config.auto === false) return screen("This controller updates itself only when self.auto is on.", "Type taskbox self update.", "Nothing installed.", 0);
+    // The pin is this controller's own copy, made at its first install; a release never moves it
+    // (a signer change is settled at a box). Before that copy, the release in use's file.
+    signers = existsSync(pinFile(d.home)) ? pinFile(d.home) : signersIn(join(d.home.current, "app"));
     if (!existsSync(signers)) return screen("This controller's taskbox has no signers file, so no release can be checked.", "Install taskbox for a controller again, from its release page.");
   }
 
-  const found = await findRelease(d.fetch, source, a.tag);
+  const found = await findRelease(d.fetch, source, a.tag, 15_000, channel);
   if (!found.ok) return screen(releaseProblem(found.why, source, a.tag), "Try again later.");
   const tag = found.value.tag;
   const inUse = currentTag(d.home);
@@ -177,7 +187,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
   // Only a newer release installs, so an old signed release can't be put back.
   if (!a.first && inUse && !newer(tag, inUse)) return screen(`${tag} isn't newer than the installed ${inUse}, and taskbox installs newer releases only.`, "Nothing to do.");
   if (a.check) return screen(`taskbox ${tag} is out for this controller, which runs ${inUse ?? d.version}.`, "Type taskbox self update.", "Nothing installed.", 0);
-  if (!d.tty) return screen(`taskbox ${tag} is out. ${typed}`, "Type taskbox self update in Terminal.");
+  if (!d.tty && !a.auto) return screen(`taskbox ${tag} is out. ${typed}`, "Type taskbox self update in Terminal.");
 
   mkdirSync(d.home.releases, { recursive: true, mode: 0o755 });
   const work = join(d.home.releases, `.work-${randomBytes(6).toString("hex")}`);
@@ -189,7 +199,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
       if (!g.ok) return screen(releaseProblem(g.why, source, tag), "Try again later.");
       files[name] = g.value;
     }
-    const v = await d.verify({ statement: files[STATEMENT]!, signature: files[SIGNATURE]!, tarball: files[tarballName(tag)]!, workRoot: work, installed: a.first ? null : inUse!, signers, tag });
+    const v = await d.verify({ statement: files[STATEMENT]!, signature: files[SIGNATURE]!, tarball: files[tarballName(tag)]!, workRoot: work, installed: a.first ? null : { version: inUse! }, signers, want: tag, channel });
     if (!v.ok) return screen(`Not installed: ${v.why.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}.`, "Nothing to do: agents look. Don't install a release by hand.");
 
     d.out(top);
@@ -200,8 +210,10 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
       // Trust on first use: the owner compares these with taskbox sign --fingerprint on the signing Mac.
       for (const f of signerPrints(signers)) d.out(`  Release key: ${f}`);
     }
-    const yes = (await d.ask("Type yes to install it: ")).trim().toLowerCase();
-    if (yes !== "yes") return screen("Not installed: you didn't type yes.", "Nothing to do.");
+    if (!a.auto) {
+      const yes = (await d.ask("Type yes to install it: ")).trim().toLowerCase();
+      if (yes !== "yes") return screen("Not installed: you didn't type yes.", "Nothing to do.");
+    }
 
     const stage = join(d.home.releases, `.stage-${tag}-${randomBytes(4).toString("hex")}`);
     try {
@@ -230,7 +242,8 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
     relink(d.home.current, join("releases", tag));
     prune(d.home, [tag, ...(inUse ? [inUse] : [])]);
     writePrivateFile(d.home.updateCheck, JSON.stringify({ checkedAt: d.now(), latest: tag }));
-    const did = `Installed taskbox ${tag}, from #${v.statement.source.pr}, commit ${v.statement.source.commit.slice(0, 7)}.`;
+    if (a.first) writePrivateFile(pinFile(d.home), readFileSync(signers, "utf8"));
+    const did = `Installed taskbox ${tag}, from #${v.statement.pr}, commit ${v.statement.commit.slice(0, 7)}.`;
     appendEvent(d.home, d.now(), "self.updated", did, { tag, from: inUse ?? null });
     return { lines: [header(null, tag), did, ...footer(`taskbox ${tag} on this controller.`, did, a.first ? "Type taskbox box add." : "Nothing to do.")], code: 0 };
   } finally {

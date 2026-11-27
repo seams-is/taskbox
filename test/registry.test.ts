@@ -138,8 +138,8 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
   { good: ["op list", "op list --state running --type drain --since 1h --json", "op show op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ -w --timeout 5m", "op cancel op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ -y"], bad: ["op list --state ended", "op show", "op show x", "op cancel", "op cancel op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ --force"] },
   { good: ["stop", "start", "drain", "prune", "pause", "resume", "pause --reason upgrades", "drain --timeout 30m --force --detach", "stop --force -y --timeout 1h"], bad: ["stop --now", "start x", "drain --now", "prune --dry-run", "pause x", "resume --force", "pause --reason", "start --force"] },
-  { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
-  { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
+  { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1", "update --to 3.0.1", "update --check", "update --repair", "update --force --timeout 30m", "update --detach -y", "release list", "release list --all", "release show 3.0.1", "release show v3.0.0-rc.2"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main", "update --channel beta", "release show", "release show main", "release list x"] },
+  { good: ["rollback", "rollback --to 2.6.1", "rollback --to v3.0.1 --detach", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to main", "rollback 2.6.1", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
   { good: ["connect github", "connect github --jobs example-org/app", "connect status", "connect listen", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "connect github --new-key", "disconnect"] },
   { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch", "broker"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
@@ -156,8 +156,9 @@ describe("the command line", () => {
     const tabled = new Set(TABLE.flatMap((r) => r.good.map((l) => { const p = parseLine(l.split(" ")); return p.ok ? p.path.join(" ") : ""; })));
     const raw = registry().filter((s) => s.raw).map((s) => s.path.join(" "));
     expect(parseLine(["workspace", "end", "nova-1"]).ok).toBe(true);
-    // A release list registers beside everything here.
-    expect(registryProblem([...registry(), { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBeUndefined();
+    // A new noun registers beside everything here, and a second release list doesn't.
+    expect(registryProblem([...registry(), { path: ["selftest", "run"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBeUndefined();
+    expect(registryProblem([...registry(), { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBe("two commands are taskbox release list");
     for (const s of registry()) if (!raw.includes(s.path.join(" "))) expect({ cmd: s.path.join(" "), tabled: tabled.has(s.path.join(" ")) }).toEqual({ cmd: s.path.join(" "), tabled: true });
   });
 

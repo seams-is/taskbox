@@ -39,7 +39,7 @@ export const CONTROLLER: CommandSpec[] = [
   spec(["box", "show"], "One pairing, and its last status.", { args: NAME_WORD, flags: ["json"] }),
   spec(["box", "use"], "Sets the box a command goes to when it names none.", { args: NAME_WORD }),
   spec(["box", "remove"], "Forgets a pairing, after its name is typed. Nothing changes on the box.", { args: NAME_WORD }),
-  spec(["self", "update"], "Updates this controller's taskbox from signed releases.", { options: [{ name: "--check" }, { name: "--to", value: "VERSION" }], flags: ["json"] }),
+  spec(["self", "update"], "Updates this controller's taskbox from signed releases on its channel.", { options: [{ name: "--check" }, { name: "--to", value: "VERSION" }, { name: "--auto" }], flags: ["json"] }),
   spec(["self", "rollback"], "Back to the release kept beside the one in use."),
   spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing.", { flags: ["json"] }),
   spec(["self", "events"], "This controller's own event log: pairings, defaults, self updates.", { flags: ["since", "json"] }),
@@ -170,7 +170,7 @@ export async function dispatch(d: UpdateDeps, argv: string[], io: Io): Promise<n
     case "box remove":
       return print(await boxRemove(d, p.args[0]!));
     case "self update":
-      return answer(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true }));
+      return answer(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true, auto: p.opts.auto === true }));
     case "self rollback":
       return print(rollback(d));
     case "self check":

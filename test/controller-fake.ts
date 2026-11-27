@@ -166,7 +166,7 @@ export function deps(w: World, answers: string[] = []): TestDeps {
     web,
     fetched,
     verified,
-    verdict: { ok: false, why: "no verdict set" },
+    verdict: { ok: false, code: "signature", why: "no verdict set" },
     fetch,
     verify: async (o) => {
       verified.push(o);

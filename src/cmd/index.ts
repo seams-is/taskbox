@@ -26,6 +26,7 @@ import * as op from "./op.ts";
 import * as pause from "./pause.ts";
 import * as policy from "./policy.ts";
 import * as prune from "./prune.ts";
+import * as release from "./release.ts";
 import * as remove from "./remove.ts";
 import * as resume from "./resume.ts";
 import * as rollback from "./rollback.ts";
@@ -60,6 +61,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "pause.ts", module: pause },
   { file: "policy.ts", module: policy },
   { file: "prune.ts", module: prune },
+  { file: "release.ts", module: release },
   { file: "remove.ts", module: remove },
   { file: "resume.ts", module: resume },
   { file: "rollback.ts", module: rollback },

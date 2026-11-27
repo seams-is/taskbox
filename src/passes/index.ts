@@ -10,6 +10,7 @@ import { keepingPass } from "./keeping.ts";
 import { opsPass } from "./ops.ts";
 import { probePass } from "./probe.ts";
 import { requestsPass } from "./requests.ts";
+import { updatePass } from "./update.ts";
 import { v2Passes } from "./v2.ts";
 
-export const passMakers = (): PassMaker[] => [beatPass, ...v2Passes(), probePass, endingPass, keepingPass, opsPass, accountsPass, requestsPass, controlPass, connectPass];
+export const passMakers = (): PassMaker[] => [beatPass, ...v2Passes(), probePass, endingPass, keepingPass, updatePass, opsPass, accountsPass, requestsPass, controlPass, connectPass];
