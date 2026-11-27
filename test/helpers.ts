@@ -403,13 +403,14 @@ export function socketDirOk(c: { sys: FakeSys; paths: { tailscaleSocketDir: stri
   c.sys.responders.unshift((cmd, args) => (cmd === "/bin/ls" && args[1] === c.paths.tailscaleSocketDir ? { code: 0, stdout: `drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:${c.paths.service} allow search\n`, stderr: "" } : undefined));
 }
 
-// The guard's record of VM starts, open, as its first pass leaves it (pfstarts.ts): without one the
-// loop reads the box as closed while Screen Sharing is on.
-export function pfOpen(p: { installId: string }): void {
+// The guard's record of VM starts, on trial, as its first pass leaves it (pfstarts.ts): without one
+// the loop reads the box as closed while Screen Sharing is on.
+export function pfOpen(p: { installId: string; guardState: string }): void {
   const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
-  const { markFile, recordFile } = require("../src/pfstarts.ts") as typeof import("../src/pfstarts.ts");
-  const { rootStateOf } = require("../src/core/paths.ts") as typeof import("../src/core/paths.ts");
-  mkdirSync(rootStateOf(p).dir, { recursive: true });
-  writeFileSync(recordFile(p), JSON.stringify({ v: 1, seq: 1, clean: 0, judged: 0, closed: false, losses: [], v2Seen: false }), { mode: 0o644 });
+  const { dirname } = require("node:path") as typeof import("node:path");
+  const { markFile, recordFile, witnessFile } = require("../src/pfstarts.ts") as typeof import("../src/pfstarts.ts");
+  for (const f of [recordFile(p), witnessFile(p)]) mkdirSync(dirname(f), { recursive: true });
+  writeFileSync(recordFile(p), JSON.stringify({ v: 1, seq: 1, mode: "trial", clean: 0, judged: 0, losses: [], seen: [], v2Seen: false }), { mode: 0o644 });
   writeFileSync(markFile(p), JSON.stringify({ v: 1, seq: 1, firstAt: 0 }), { mode: 0o644 });
+  writeFileSync(witnessFile(p), JSON.stringify({ v: 1, seq: 1 }), { mode: 0o644 });
 }

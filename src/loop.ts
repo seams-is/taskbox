@@ -1066,7 +1066,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // Each start, for the guard to judge against its pf reads (pfstarts.ts), with Screen Sharing as it
     // started and the loop's own sighting of a loss, which closes the box too.
     try {
-      recordStart(d.paths, { at: vmStartedAt, sharing: sharingAtStart, ...(guardAtStart.rulesWentMissing ? { lost: true as const } : {}) });
+      recordStart(d.paths, { at: vmStartedAt, vm, sharing: sharingAtStart, ...(guardAtStart.rulesWentMissing ? { lost: true as const } : {}) });
     } catch (e) {
       d.log.write(`could not record the VM's start for the guard: ${(e as Error).message}`);
     }

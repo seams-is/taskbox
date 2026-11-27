@@ -306,4 +306,6 @@ export interface Installed {
   format?: number; // 2 from this PR on: the install has undo, and state under ~<service>/.taskbox/<project>
   // v2.6.1: a release installed by the hop to v3, with its statement, signature and signing key.
   release?: { repo: string; statement: string; signature: string; signer: string };
+  // v3: when the box's first v3 install was, carried by each install after it (pfstarts.ts reads it).
+  v3Since?: string;
 }
