@@ -367,7 +367,7 @@ async function answer(c: BoxCtx, name: string | null): Promise<number> {
     const said: string[] = [];
     const push = (l: string) => void said.push(l);
     // A streaming command's changes go out as they come, each its own envelope, before the final one.
-    const stream = spec.streams && c.flags.watch ? (ls: string[], r?: Record<string, unknown>) => c.say(JSON.stringify(envelope({ command, box: boxOf(c, name), at: c.ops.sys.now(), exit: 0, result: r ?? {}, lines: ls, final: false }))) : undefined;
+    const stream = spec.streams && (c.flags.watch || c.flags.follow) ? (ls: string[], r?: Record<string, unknown>) => c.say(JSON.stringify(envelope({ command, box: boxOf(c, name), at: c.ops.sys.now(), exit: 0, result: r ?? {}, lines: ls, final: false }))) : undefined;
     const t: BoxCtx = { ...quiet, say: push, err: push, ops: { ...c.ops, say: push }, ...(stream ? { stream } : {}) };
     let o: Outcome;
     if (a && spec.linesFrom) {

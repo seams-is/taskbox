@@ -34,7 +34,8 @@ import { readKick } from "./loopwatch.ts";
 import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
 import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readLogicalCpus, readMemory } from "./memory.ts";
-import { clean, mirrorPull, PullRecorder, writeReady } from "./progress.ts";
+import { clean, mirrorPull, PullRecorder, pullLine, readPull, writeReady } from "./progress.ts";
+import { type AskSteps, readAsk, takeAsk } from "./loopask.ts";
 import { clearRequests } from "./requests.ts";
 import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from "./load.ts";
 import { sourceStep } from "./sourcefail.ts";
@@ -831,6 +832,15 @@ export const PROOF_INFRA_FAST = 4;
 // infra (v2.5.0): the proof couldn't run, so it says nothing about Softnet and tries again soon.
 export type ProofRun = { ok: boolean; detail: string; notRun?: boolean; peers?: number; infra?: boolean };
 // It runs at the smallest Linux size: its network rules don't depend on size.
+// The loop's ops folder, where selftest run and image pull leave their asks (loopask.ts).
+export const loopAsks = (d: Pick<LoopDeps, "paths">) => ({ dir: loopState(d.paths.state).ops, owner: process.getuid?.() ?? 0 });
+// One selftest run's event, for selftest list and events --type selftest. Never throws.
+function selftestEvent(d: Pick<LoopDeps, "paths" | "sys">, result: "passed" | "failed" | "not-run", text: string, data: { why: string; ms: number }, op?: string): void {
+  try {
+    eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys).write({ type: `selftest.${result}`, actor: "taskbox", subject: "selftest", text: text.slice(0, 200), data, ...(op ? { op } : {}) });
+  } catch {}
+}
+
 export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
   const d = kindDeps(d0, "linux", smallestSize(d0.cfg, "linux").name);
   const t = engineOf(d);
@@ -1704,7 +1714,8 @@ export async function runLoop(d: LoopDeps): Promise<number> {
     // The proof, once Linux's image and runner are in place, and again 6 hours after a failure.
     // With more than one slot, a pass that tried no other job VM is proved again once one is up, so
     // the box shows one job VM can't reach another. Linux jobs run meanwhile: the pass still holds.
-    proofDue: () => !gateOf(d).wait && heldNow({ ...d, box }) === 0 && c.held.has("linux") && servedKinds(d).includes("linux") && d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()),
+    // An asked run (taskbox selftest run) goes in the next free slot, whatever the schedule says.
+    proofDue: () => !gateOf(d).wait && heldNow({ ...d, box }) === 0 && c.held.has("linux") && servedKinds(d).includes("linux") && (readAsk(loopAsks(d), "selftest") !== undefined || (d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()))),
     served: () => servedKinds(d).filter((k) => c.held.has(k) && (k !== "linux" || proven())),
     choose:
       d.chooseKind ??
@@ -1839,7 +1850,10 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       c.box.missing.delete(k);
       c.refetch.add(k);
     }
-    const due = kindsOf(d.cfg).filter((k) => !c.held.has(k) && (c.nextPull.get(k) ?? 0) <= d.sys.now());
+    // An asked pull (taskbox image pull) is due now; one of an image already held ends at once.
+    const askedPull = (k: Kind) => readAsk(loopAsks(d), `image-${k}`) !== undefined;
+    for (const k of kindsOf(d.cfg)) if (c.held.has(k) && askedPull(k)) takeAsk(loopAsks(d), `image-${k}`, () => d.sys.now())?.done({ text: "it was held already" });
+    const due = kindsOf(d.cfg).filter((k) => !c.held.has(k) && ((c.nextPull.get(k) ?? 0) <= d.sys.now() || askedPull(k)));
     let stoppedToWait = false;
     if (due.length && !c.pulling) {
       c.pulling = true;
@@ -1848,7 +1862,19 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const onDisk = (k: Kind) => (listed.has(forKind(d.cfg, k).image) ? 0 : 1);
         for (const k of due.sort((a, b) => onDisk(a) - onDisk(b))) {
           c.box.downloadGB = forKind(d.cfg, k).imageGB ?? 0;
-          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (gateOf(d).wait && "the box isn't active (taskbox pause, drain or stop); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after"))
+          const asked: AskSteps | undefined = takeAsk(loopAsks(d), `image-${k}`, () => d.sys.now());
+          asked?.phase("downloading", "starting");
+          let cancelled = false;
+          let said = "";
+          // The asked op's progress is the pull file's line, said again when it changes.
+          const onPull = () => {
+            if (!asked) return false;
+            if (asked.cancelled()) return (cancelled = true), "the pull was cancelled";
+            const line = pullLine(readPull(kindDeps(d, k).paths.pull), d.sys.now()).slice(0, 120);
+            if (line !== said) asked.progress((said = line));
+            return false;
+          };
+          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (gateOf(d).wait && "the box isn't active (taskbox pause, drain or stop); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after") || onPull())
             .finally(() => (c.box.downloadGB = 0))
             .catch((e: Error) => {
               const why = `the ${KIND_WORD[k]} image: ${e.message}`;
@@ -1856,6 +1882,12 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
               c.pullWhy.set(k, why);
               return "failed" as const;
             });
+          if (got === "failed") asked?.fail(c.pullWhy.get(k) ?? "the download failed");
+          // A cancelled pull keeps its bytes; the loop's own schedule takes it up again later.
+          if (got === "stopped" && cancelled) {
+            c.nextPull.set(k, d.sys.now() + 10 * 60_000);
+            continue;
+          }
           // A drain or a hold stops a download, and the slot then waits on it at the top, like the others.
           if (got === "stopped" && c.box.halt === undefined && !c.updated() && (gateOf(d).wait || slotHeld(d))) {
             stoppedToWait = true;
@@ -1877,6 +1909,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
             writeState(d, { imageBroken: undefined });
           }
           if (got === "ready") {
+            asked?.done({ text: forKind(d.cfg, k).image.split("@")[0]! });
             c.held.add(k);
             c.pullWhy.delete(k);
             await removeOldImages(d);
@@ -1892,6 +1925,11 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     // The Linux proof takes this slot, one proof at a time.
     if (c.proofDue() && !c.proving) {
       c.proving = true;
+      const asked = takeAsk(loopAsks(d), "selftest", () => d.sys.now());
+      const why = asked ? "asked" : "scheduled";
+      const began = d.sys.now();
+      const ms = () => d.sys.now() - began;
+      asked?.phase("proving", "starting a Linux VM under a job's network rules");
       const small = smallestSize(d.cfg, "linux");
       c.box.held.set(d.slot, { slot: d.slot, kind: "linux", labels: [], job: true, up: true, size: small.name, memoryMB: small.vmMemoryMB, cpus: small.vmCpus });
       try {
@@ -1901,6 +1939,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const pre = await (dl.prestart ? dl.prestart(ctx) : runChecks(rows("prestart", ctx), ctx)).catch(() => [{ name: "Pre-start check", status: "FAIL" as const, detail: "errored" }]);
         if (!allOk(pre)) {
           d.log.write(`no Linux proof: a check failed (${pre.filter((x) => x.status === "FAIL").map((x) => x.name).join(", ")})`);
+          asked?.fail(`a check failed before the VM started: ${pre.filter((x) => x.status === "FAIL").map((x) => x.name).join(", ")}`);
           // 10 minutes, so a waiting macOS VM isn't made to give way every minute (v2.1.1).
           c.nextProof = d.sys.now() + 10 * 60_000;
           await d.sys.sleep(60_000);
@@ -1911,6 +1950,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const r: ProofRun = await (d.proveLinux ?? (() => proveLinux(d)))().catch((e: Error) => ({ ok: false, detail: `the proof errored: ${e.message}`, infra: true }));
         if (r.notRun) {
           d.log.write(`no Linux proof yet: ${r.detail}`);
+          selftestEvent(d, "not-run", `The selftest didn't run: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+          asked?.fail(`it didn't run: ${r.detail}`);
           writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
           c.nextProof = d.sys.now() + 10 * 60_000;
           continue;
@@ -1922,6 +1963,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
           const wait = c.proofInfra > PROOF_INFRA_FAST ? 3600_000 : awayOf(d.cfg).proofRetryMinutes * 60_000;
           c.nextProof = d.sys.now() + wait;
           d.log.write(`the Linux proof couldn't run: ${r.detail}`);
+          selftestEvent(d, "not-run", `The selftest couldn't run: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+          asked?.fail(`it couldn't run: ${r.detail}`);
           // A pass that still holds keeps its line: Linux jobs run on it meanwhile.
           const held = proofHolds(readProof(d.paths.projectState), forKind(d.cfg, "linux").image, installedCommit(d.paths.installed));
           writeState(d, { ...infraProofLine(held, r.detail, c.nextProof), slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
@@ -1931,6 +1974,11 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const image = forKind(d.cfg, "linux").image;
         writeProof(d.paths.projectState, { v: 1, at: d.sys.now(), ok: r.ok, image, commit: installedCommit(d.paths.installed), detail: r.detail, ...(r.peers !== undefined ? { peers: r.peers } : {}) });
         d.log.write(`${r.ok ? "Linux proof passed" : "FAIL: Linux proof"}: ${r.detail}`);
+        selftestEvent(d, r.ok ? "passed" : "failed", `The selftest ${r.ok ? "passed" : "failed"}: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+        if (asked) {
+          if (r.ok) asked.done({ detail: r.detail.slice(0, 200) });
+          else asked.fail(r.detail, { detail: r.detail.slice(0, 200) });
+        }
         writeState(d, { linuxProof: `${r.ok ? "passed" : "FAIL"}: ${r.detail}`, slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
         if (!r.ok) c.nextProof = d.sys.now() + PROOF_RETRY_MS;
         // A pass that tried no other job VM, with more than one slot, is tried again at most every

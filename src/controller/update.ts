@@ -124,7 +124,7 @@ function prune(h: Home, keep: string[]): void {
   }
 }
 
-const currentTag = (h: Home) => {
+export const currentTag = (h: Home) => {
   try {
     const t = basename(readlinkSync(h.current));
     return RELEASE_TAG.test(t) ? t : undefined;

@@ -315,6 +315,19 @@ describe("taskbox load start and stop on the controller", () => {
     expect(dispatch.body).toEqual({ ref: "main", inputs: { pattern: "burst", session: "1" } });
     expect(currentSession(readLoad(t.p, false, ME), NOW + M)?.until).toBe(NOW + 60 * M);
   });
+  test("with --json, start still dispatches through the owner's session, and answers one envelope", async () => {
+    const t = paired();
+    const f = fakeGh();
+    Object.assign(t.d, { gh: f.gh, tty: true });
+    const r = await runLine(t.d, ["load", "start", "--pattern", "burst", "--for", "1h", "--detach", "--yes", "--json"]);
+    expect(r.code).toBe(0);
+    expect(t.signed[0]).toStartWith("load start --pattern burst --for 1h --detach --yes");
+    expect(f.calls.some((c) => c.args.some((a) => a.endsWith("/dispatches")))).toBe(true);
+    expect(r.lines).toHaveLength(1);
+    const e = JSON.parse(r.lines[0]!);
+    expect(e).toMatchObject({ command: "load.start", ok: true, exit: 0 });
+    expect(e.lines.join("\n")).toContain(`Started the load workflow in ${TEST.name}: burst, for session 1.`);
+  });
   test("without the owner's gh, nothing is signed; with a session on, a second start is refused", async () => {
     const t = paired();
     const r = await runLine(t.d, ["load", "start", "--pattern", "day"]);

@@ -49,7 +49,8 @@ export const commands: CommandSpec[] = [
       const values = valuesOf(cfg);
       const yaml = name === "box-check" ? boxCheckYaml(values) : testJobYaml(values);
       for (const l of yaml.replace(/\n$/, "").split("\n")) c.say(l);
-      return { exit: 0, result: { values } };
+      // The jobs repo goes beside the values: template apply opens its pull request there.
+      return { exit: 0, result: { values, repo: cfg.jobsFrom } };
     },
   },
   {

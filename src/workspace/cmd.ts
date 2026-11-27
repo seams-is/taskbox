@@ -235,12 +235,18 @@ export async function connectRun(c: BoxCtx): Promise<Outcome> {
   const w = s ? find(s, id) : undefined;
   if (!w) return failed(c, `No workspace ${id} on this box.`, "not-found");
   if (w.state !== "ready" && w.state !== "saving") return failed(c, `${id} is ${w.state}: connect works while it is ready or saving.`);
+  // --screen: the controller opens Screen Sharing to a Whole's account; the box names the account.
+  if (c.opts.screen === true && w.size !== "whole") return failed(c, `${id} is ${w.size}: --screen is for a Whole workspace, which has the box's screen.`);
   // A workspace bound to a claim key opens its gate only after a proof by that key.
   if (w.claim) {
     const proof = proofHere(c, id);
     if (!proof) return failed(c, `${id} is bound to its agent's claim key, and none is kept here. Connect from where the request was made.`, "denied");
     const r = await send(c, "workspace-connect", { name: id, agent: agentOf(id), proof });
     if (!r.ok) return r.out;
+  }
+  if (c.opts.screen === true) {
+    c.say(`${id} runs as ${w.user}. From the controller, taskbox workspace connect ${id} --screen opens Screen Sharing to it over Tailscale.`);
+    return { exit: EXIT.ok, result: { id, account: w.user, state: w.state, size: w.size, screen: true } };
   }
   c.say(`${id} runs as ${w.user}. From the controller, taskbox workspace connect ${id} opens a shell there over Tailscale SSH.`);
   return { exit: EXIT.ok, result: { id, account: w.user, state: w.state } };

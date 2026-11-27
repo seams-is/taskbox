@@ -9,20 +9,26 @@
 {"file": "cmd/confirm.ts", "reads": 2, "why": "the id of the declined event, made before the admin's entry that names it: a label; and the moment the waiting changes are judged at, by the box's boot and monotonic clock as well, so a step either way lapses an item, never keeps one"}
 {"file": "cmd/connect.ts", "reads": 2, "why": "when the connect op began, and how long the listener may live inside the op's deadline: the op's record and GitHub's created_at decide"}
 {"file": "cmd/daemons.ts", "reads": 3, "why": "moved from cli.ts: the load session's wanted read and the workspaces hold's freshness for the loop, which fails closed both ways. The guard's step-down proof reads no clock: a new guard record file. The loop gate writes the time in loop-start.json, a label: the guard tells the loops apart by pid"}
+{"file": "cmd/events.ts", "reads": 2, "why": "the window events reads when no --since is given, and when -f stops for --until: a step shows more or fewer events, and removes nothing"}
+{"file": "cmd/image.ts", "reads": 1, "why": "the start time on an image pull's op record: a label"}
 {"file": "cmd/job.ts", "reads": 6, "why": "the timings' now, --since back from now, how long a live job has run, which queued lines are fresh, and when a stop was asked: display and labels"}
 {"file": "cmd/logins.ts", "reads": 1, "why": "moved from cli.ts: the now the logins screen counts back from: display"}
 {"file": "cmd/policy.ts", "reads": 1, "why": "whether the temporary admin SSH window is open, for the policy printed: a step moves its end by the step, and the check row warns while it is open"}
+{"file": "cmd/selftest.ts", "reads": 1, "why": "the start time on a selftest run's op record: a label"}
 {"file": "cmd/status.ts", "reads": 4, "why": "moved from cli.ts: the now for status's recent-logins line: display; whether the temporary admin SSH window is open: display. The move to v3 is shown for a day once proved: a label"}
 {"file": "cmd/tool.ts", "reads": 3, "why": "when a tool refresh was asked, and how long the command watches it: a step only stops watching sooner or later, and the refresh carries on"}
 {"file": "confirmapply.ts", "reads": 2, "why": "the guard's answer to a confirm: pending.ts judges each item by wall, boot and monotonic clock together, so a step either way lapses it; and the id of the event that names the admin in root's record: a label"}
 {"file": "connectchild.ts", "reads": 1, "why": "the code wait's end when the op has no deadline: the op's record ends the wait first"}
 {"file": "connectflow.ts", "reads": 9, "why": "when a connect began, and the waits for GitHub, a code and the keeping phase: a step only ends a wait, which changes nothing and says so"}
+{"file": "controller/boxinstall.ts", "reads": 2, "why": "the time on box install's own event log lines: labels"}
+{"file": "controller/connect.ts", "reads": 2, "why": "how long the controller watches a connect it began: the op carries on at the box whatever a step does, and the polls are counted too"}
 {"file": "controller/forward.ts", "reads": 6, "why": "the time on an envelope the controller makes, a signed statement's time (the box judges its 5 minutes), a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter, and when a status was read: display"}
 {"file": "controller/home.ts", "reads": 1, "why": "a temp file's unique name"}
 {"file": "controller/keys.ts", "reads": 5, "why": "a statement's time, which the box judges within 5 minutes, and the controller's own waits: a step only ends a wait"}
-{"file": "controller/main.ts", "reads": 4, "why": "the controller's Clock, and the time on its own envelopes and events: labels"}
+{"file": "controller/main.ts", "reads": 5, "why": "the controller's Clock, and the time on its own envelopes and events: labels; the time on a flow's one --json envelope: a label"}
 {"file": "controller/notify.ts", "reads": 2, "why": "when a box was first not reached, when each note was last said, and the hold lease's times: a step only moves when a note is said again"}
 {"file": "controller/pair.ts", "reads": 4, "why": "when a box was paired, and the time on the controller's events: labels"}
+{"file": "controller/trials.ts", "reads": 1, "why": "the time a trial's result is recorded: a label"}
 {"file": "controller/update.ts", "reads": 6, "why": "when the controller last looked for an update, and the time on its events: a step only looks sooner or later"}
 {"file": "core/child.ts", "reads": 3, "why": "an op's end time and spawn time, and the 30 s a new job has to take its lease: a step only changes that grace; a free lease is the proof. Op deadlines are on mono"}
 {"file": "core/dispatch.ts", "reads": 1, "why": "a request's 2 minutes and a signed statement's 5 minutes: times another machine wrote, which only the wall clock can judge; the nonce is what makes a signature work once"}
@@ -44,7 +50,8 @@
 {"file": "kinds.ts", "reads": 8, "why": "the scheduler's now: when slots became ready or busy, an idle VM's turn, and when a VM was told to give way: a step only reorders a choice, gives an idle VM's turn away or ends a wait for a VM to go; no running job is ended"}
 {"file": "loadcmd.ts", "reads": 3, "why": "load status, load stop and load report: now for a session's labels, the source's freshness and the report's end: display only"}
 {"file": "log.ts", "reads": 1, "why": "a log line's time label"}
-{"file": "loop.ts", "reads": 102, "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label. Whether a test job's load session is still on: a step at worst ends a test job early, never a real one."}
+{"file": "loop.ts", "reads": 109, "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label. Whether a test job's load session is still on: a step at worst ends a test job early, never a real one. An asked selftest's or pull's op times and a run's length: labels."}
+{"file": "loopask.ts", "reads": 2, "why": "how long a selftest run or image pull's command watches before its --timeout: the op carries on whatever a step does"}
 {"file": "loopwatch.ts", "reads": 2, "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"}
 {"file": "migrate/box.ts", "reads": 8, "why": "the rollback watch's deadline and the proof's start: the watch file holds wall times, as v2.6.1's watcher reads them; the proof's own waits are on mono; the update lock's time, as v2.6.1 writes it"}
 {"file": "migrate/gate.ts", "reads": 1, "why": "loop-start.json's time, a label: the guard tells v3's loop from v2.6.1's by pid"}

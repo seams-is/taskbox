@@ -1,5 +1,14 @@
-// connect github's handler for the agent spool: the controller's connect-code (connectflow.ts).
+// connect github's handlers: the controller's signed connect begin (connectbegin.ts), and the
+// agent spool's connect-code, which carries the code GitHub sent the controller's browser.
+import { beginArgsProblem, startControllerConnect } from "../connectbegin.ts";
 import { CONNECT_CODE_HANDLER } from "../connectflow.ts";
-import type { UnsignedHandler } from "../core/dispatch.ts";
+import type { SignedHandler, UnsignedHandler } from "../core/dispatch.ts";
 
-export const handlers: { unsigned: UnsignedHandler[] } = { unsigned: [CONNECT_CODE_HANDLER] };
+const begin: SignedHandler = {
+  action: "connect.begin",
+  subject: () => "box",
+  check: beginArgsProblem,
+  apply: (c, r) => startControllerConnect(c, r.statement.args, r.by.actor),
+};
+
+export const handlers: { signed: SignedHandler[]; unsigned: UnsignedHandler[] } = { signed: [begin], unsigned: [CONNECT_CODE_HANDLER] };
