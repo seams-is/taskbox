@@ -18,7 +18,13 @@ export interface RunOptions {
   limitMs: number;
   maxBytes: number;
   stdin?: Uint8Array; // the program's whole input; with none it gets no input
+  // The few settings a program needs beyond PATH and TERM, from a fixed list: ssh-keygen's security
+  // key provider and HOME. Anything else is refused.
+  env?: Partial<Record<(typeof EXTRA)[number], string>>;
+  cwd?: string; // a folder of the controller's own, for a program that writes where it runs
 }
+
+export const EXTRA = ["SSH_SK_PROVIDER", "HOME"] as const;
 
 export type Runner = (argv: string[], o: RunOptions) => Promise<RunResult>;
 
@@ -44,7 +50,8 @@ async function readCapped(stream: ReadableStream<Uint8Array>, max: number, over:
 
 export const realRun: Runner = async (argv, o) => {
   if (!argv[0]?.startsWith("/")) throw new Error("a program is run by its full path");
-  const p = Bun.spawn(argv, { stdin: o.stdin ? new Blob([o.stdin]) : "ignore", stdout: "pipe", stderr: "pipe", env: { ...ENV } });
+  for (const k of Object.keys(o.env ?? {})) if (!(EXTRA as readonly string[]).includes(k)) throw new Error("a setting the controller doesn't pass on");
+  const p = Bun.spawn(argv, { stdin: o.stdin ? new Blob([o.stdin]) : "ignore", stdout: "pipe", stderr: "pipe", env: { ...ENV, ...o.env }, ...(o.cwd ? { cwd: o.cwd } : {}) });
   let timedOut = false;
   let tooBig = false;
   const kill = () => {

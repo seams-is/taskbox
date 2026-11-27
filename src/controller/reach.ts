@@ -5,6 +5,7 @@
 // ID. A mismatch stops the command and names the cause; only a person re-pairing at a terminal changes it.
 import { type Config, type ConfigRead, findBox, type Home, knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { Runner } from "./run.ts";
+import type { Signer } from "./signer.ts";
 import { type Answer, type Hello, type Kind, READS, readAnswer } from "./schema.ts";
 import { rememberAnswers } from "./versions.ts";
 import { boxCall, type SshFailure, type Target } from "./ssh.ts";
@@ -23,6 +24,8 @@ export interface Deps {
   tailscaleApp?: string; // tests: a fake app folder
   sshPath?: string; // tests: a fake ssh
   exists?: (path: string) => boolean;
+  uid?: number; // this user's uid: only its own approver key signs
+  signerFor?: (box: Paired, say: (line: string) => void) => Signer; // tests and the v4.0.0 app: another approval signer
 }
 
 // Why a command stopped: one line, and the next step.
@@ -55,7 +58,7 @@ export async function tailnetOrStop(d: Deps): Promise<{ state: TailnetState; app
 // The peer the pairing names, checked against the map. Each failure names its cause.
 export function peerOrStop(box: Paired, s: TailnetState): { peer: Peer; address: string } | Stop {
   const peer = s.peers.find((p) => p.node === box.node);
-  const repair = "This may be another machine: check the box before you pair it again.";
+  const repair = "This may be another machine: check the box yourself before pairing it again.";
   if (!peer) return { stop: `Tailscale doesn't list the paired box, ${box.name} (${box.node}).`, next: `It may have left the tailnet. ${repair}` };
   if (peer.shared) return { stop: `${box.name} is shared in from another tailnet, so taskbox won't talk to it.`, next: "Nothing to do here: taskbox only talks to boxes in your own tailnet." };
   if (!peer.tagged) return { stop: `${box.name} no longer carries tag:taskbox in Tailscale.`, next: "Check the box's tags in the Tailscale admin console." };
@@ -68,7 +71,7 @@ export function peerOrStop(box: Paired, s: TailnetState): { peer: Peer; address:
 export function sshStop(name: string, why: SshFailure, limitMs: number): Stop {
   switch (why) {
     case "host-key":
-      return { stop: `${name}'s host key doesn't match the one paired.`, next: "This may be another machine: check the box before you pair it again." };
+      return { stop: `${name}'s host key doesn't match the one paired.`, next: "This may be another machine: check the box yourself before pairing it again." };
     case "refused":
       return { stop: `Tailscale refused the agent account on ${name}.`, next: "Check the tailnet policy lets your user reach the agent account on tag:taskbox: taskbox policy show --box all." };
     case "offline":
@@ -144,7 +147,7 @@ export async function helloOf(d: Deps, t: Target, name: string): Promise<Hello |
 // hello's answer against the pairing: role box (the schema), and the same install ID.
 export function helloStop(name: string, h: Hello, installId: string | null): Stop | undefined {
   if (h.installId === null) return { stop: `${name} has no install ID, so it can't be paired.`, next: "Update taskbox on the box to v2.0.0 or later: at the box, as your admin user, type taskbox update." };
-  if (installId !== null && h.installId !== installId) return { stop: `${name}'s install ID isn't the one paired: the box was reinstalled.`, next: "This may be another machine: check the box before you pair it again." };
+  if (installId !== null && h.installId !== installId) return { stop: `${name}'s install ID isn't the one paired: the box was reinstalled.`, next: "This may be another machine: check the box yourself before pairing it again." };
   return undefined;
 }
 

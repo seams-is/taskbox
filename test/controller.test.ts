@@ -349,7 +349,7 @@ describe("taskbox self check", () => {
     const { d } = paired();
     const s = await check(d);
     const rows = s.lines.filter((l) => /^(OK|FAIL)/.test(l)).map((l) => l.split(":")[0]!.replace(/^(OK|FAIL)\s+/, ""));
-    expect(rows).toEqual(["Tailscale", "Tailscale app", "Config", "Install", "Pairing", "Pairing", "Agent account", "Box release"]);
+    expect(rows).toEqual(["Tailscale", "Tailscale app", "Config", "Install", "Pairing", "Approver key", "Pairing", "Agent account", "Box release"]);
     expect(s.lines).toContain("OK    Tailscale: on and connected");
   }, CEILING);
 

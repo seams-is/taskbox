@@ -129,6 +129,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["logins", "logins --all --json"], bad: ["logins --refused", "logins x"] },
   { good: ["hello", "hello --json --answers 4,3"], bad: ["hello x", "hello --answers"] },
   { good: ["nonce box", "nonce rules --json", "nonce nova-1"], bad: ["nonce", "nonce Box", "nonce box rules", "nonce box --signed a.b", "nonce ../x"] },
+  { good: ["poll 0123456789abcdef", "poll 0123456789abcdef --json"], bad: ["poll", "poll 0123", "poll 0123456789ABCDEF", "poll 0123456789abcdef x"] },
   { good: ["size list", "size list --json"], bad: ["size", "size list small", "size list -n 5", "size list --force"] },
   { good: ["tool list", "tool list --json", "tool refresh", "tool refresh --timeout 30m --json", "tool refresh --detach", "image list", "image list --json"], bad: ["tool", "tool list bun", "tool list -w", "tool refresh --force", "tool refresh --timeout soon", "tool add", "image", "image list macos", "image list --force"] },
   { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job list --state running --kind linux --since 2h -w", "job list --result passed --class merge --size small", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job list --state lost", "job list -w --json", "job timings --all", "job cancel"] },

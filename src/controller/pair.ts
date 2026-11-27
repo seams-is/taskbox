@@ -15,6 +15,7 @@ export interface AddAsk {
   name?: string; // the box picked by name, with no list
   agent?: string; // the box's agent account; taskbox-agent when left out
   yes?: boolean; // -y: no typed yes
+  jobsRepo?: string; // --jobs-repo: where the notifier keeps this box's hold lease
 }
 
 // What box add does after pairing, as box commands the controller runs. Each is in the registry already,
@@ -94,14 +95,14 @@ export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fres
     const bad = helloStop(peer.name, h, null);
     if (bad) return none(bad.stop, bad.next);
     // Re-run on a box paired the same way: nothing to pair, and the later phases run again.
-    if (before && before.hostKey === peer.hostKeys[0] && before.installId === h.installId && before.agent === agent) {
+    if (before && before.hostKey === peer.hostKeys[0] && before.installId === h.installId && before.agent === agent && (a.jobsRepo === undefined || a.jobsRepo === before.jobsRepo)) {
       d.out(`${peer.name} is paired already, as ${agent}.`);
       return { box: before, fresh: false };
     }
     // A changed host key or install ID may be another machine: only a person at a terminal, who reads
     // the old and new values and types the box's name, pairs it again. -y never covers it.
     if (before && (before.hostKey !== peer.hostKeys[0] || before.installId !== h.installId)) {
-      if (!d.tty) return none(`${peer.name}'s host key or install ID changed since it was paired, so it wasn't paired again.`, "Check the box, then pair it again in your own terminal.");
+      if (!d.tty) return none(`${peer.name}'s host key or install ID changed since it was paired, so it wasn't paired again.`, "Check the box, then pair it again at your own terminal.");
       d.out(`${peer.name} changed since it was paired. If you didn't reinstall it, stop here and look at the box.`);
       d.out(`  Host key:   ${keyPrint(before.hostKey)} then, ${keyPrint(peer.hostKeys[0]!)} now`);
       d.out(`  Install ID: ${before.installId} then, ${h.installId} now`);
@@ -111,7 +112,8 @@ export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fres
       const yes = (await d.ask(`${before ? "Pair this controller with" : "Add"} ${peer.name} (${peer.node})${before ? " again" : ""}, as ${agent}? Type yes: `)).trim().toLowerCase();
       if (yes !== "yes") return none("Not paired: you didn't type yes.", "Nothing to do.");
     }
-    const entry: Paired = { name: peer.name, node: peer.node, installId: h.installId!, hostKey: peer.hostKeys[0]!, agent, pairedAt: d.now() };
+    const jobsRepo = a.jobsRepo ?? before?.jobsRepo;
+    const entry: Paired = { name: peer.name, node: peer.node, installId: h.installId!, hostKey: peer.hostKeys[0]!, agent, pairedAt: d.now(), ...(jobsRepo ? { jobsRepo } : {}) };
     // The config is read again here: another box add or box remove may have changed it during the prompts.
     const now = readConfig(d.home);
     if (!now.ok) return none("taskbox's config changed during pairing and can't be read.", "Type taskbox self check.");
@@ -138,7 +140,7 @@ export async function boxRemove(d: Deps, sel: string): Promise<Screen> {
   const shown = sel.replace(/[^A-Za-z0-9-]/g, "").slice(0, 64);
   const box = findBox(c.config, sel);
   if (!box) return stopScreen(d, { stop: `No paired box is named ${shown}.`, next: "Type taskbox box list to see them." });
-  if (!d.tty) return stopScreen(d, { stop: "taskbox box remove forgets a box's pinned key, so it asks for the box's name to be typed, in your own terminal.", next: "Type it in Terminal." });
+  if (!d.tty) return stopScreen(d, { stop: "taskbox box remove forgets a box's pinned key, so it asks for the box's name to be typed, in your own terminal.", next: "Type it in Terminal yourself." });
   const typed = (await d.ask(`Forget ${box.name}? Nothing changes on the box. Type its name: `)).trim();
   if (typed.toLowerCase() !== box.name.toLowerCase()) return stopScreen(d, { stop: "Not forgotten: the name typed isn't the box's.", next: "Nothing to do." });
   const rest = c.config.boxes.filter((b) => b.node !== box.node);

@@ -46,3 +46,5 @@ As your admin user:
 - `taskbox remove` takes taskbox off the box.
 
 Type `taskbox help` for all commands, and a command with `--help` for its flags. Agents log in as the agent account. Its shell runs the read commands and the workspace requests (`queue`, `wait`, `progress`) only.
+
+On the controller, agents run as their own user, `taskbox-agents`, with a projects folder that is theirs alone. Their work reaches you as PRs; work in your own clones.
