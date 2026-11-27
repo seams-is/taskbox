@@ -178,11 +178,11 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   const choosing = choiceLine(loop, existsSync(d.paths.runnerTarballLinux) ? 2 : 1);
   if (choosing) d.say(`  Choosing:  ${choosing}`);
   // v2.6.0: the load test's session, while one is on.
-  const lf = readLoad(d.paths, !asService(d));
+  const lf = readLoad(d.paths, !asService(d), d.rootUid ?? 0);
   const ls = currentSession(lf, d.sys.now());
   const lastLoad = lf.sessions.at(-1);
   const blind = ls ? loadBlind(lf, d.sys.now()) : undefined;
-  if (ls) d.say(`  Load:      session ${ls.n}, on until ${new Date(ls.until).toISOString().slice(11, 16)} UTC, ${ls.only ? "the test repo alone" : "beside the real repo"}${blind ? `. Test jobs wait: ${blind}` : ""}`);
+  if (ls) d.say(`  Load:      session ${ls.n}${ls.pattern ? ` (${ls.pattern})` : ""}, on until ${new Date(ls.until).toISOString().slice(11, 16)} UTC, ${ls.only ? "the test repo alone" : "beside the real repo"}${blind ? `. Test jobs wait: ${blind}` : ""}`);
   // A session the box ended itself, in the last day: why, since the owner may not have seen it.
   else if (lastLoad?.why && d.sys.now() - (lastLoad.endedAt ?? lastLoad.until) < 24 * 3600_000) d.say(`  Load:      the box ended session ${lastLoad.n}: ${lastLoad.why}`);
   const shown = slotsShown(loop);

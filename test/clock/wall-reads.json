@@ -84,8 +84,8 @@
     "why": "the time label in controlNow's wall: control.json's since and the op's times, for people to read. A forced deadline is on this boot's mono (forceAt), and the break-glass stop's wait is counted"
   },
   "loadcmd.ts": {
-    "reads": 1,
-    "why": "the load command's now for its session's labels and freshness: display and a refusal to start"
+    "reads": 3,
+    "why": "load status, load stop and load report: now for a session's labels, the source's freshness and the report's end: display only"
   },
   "queue.ts": {
     "reads": 3,
@@ -144,8 +144,8 @@
     "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
   },
   "loop.ts": {
-    "reads": 100,
-    "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label."
+    "reads": 101,
+    "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label. Whether a test job's load session is still on: a step at worst ends a test job early, never a real one."
   },
   "cmd/daemons.ts": {
     "reads": 2,

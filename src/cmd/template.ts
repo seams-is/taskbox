@@ -35,8 +35,15 @@ export const commands: CommandSpec[] = [
       const name = c.args[0]!;
       const cfg = loadConfig(c.p.app, c.p.boxSettings);
       if (name === "load") {
-        const { loadCommand } = await import("../loadcmd.ts");
-        return loadCommand(c.ops, cfg, ["workflow"], false);
+        const { loadRepoOf } = await import("../config.ts");
+        const { loadValues, loadYamlFrom } = await import("../loadcmd.ts");
+        if (!loadRepoOf(cfg)) {
+          c.say("The box's settings name no test repo, so there is no load test.");
+          return 1;
+        }
+        const values = loadValues(cfg);
+        for (const l of loadYamlFrom(values).replace(/\n$/, "").split("\n")) c.say(l);
+        return { exit: 0, result: { values } };
       }
       const { boxCheckYaml, testJobYaml, valuesOf } = await import("../watchdog.ts");
       const values = valuesOf(cfg);

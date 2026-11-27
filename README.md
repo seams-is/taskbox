@@ -37,7 +37,7 @@ As the service account:
 - `taskbox pause` takes no new jobs; `taskbox drain` also waits for running ones; `taskbox resume` undoes both. `taskbox stop` drains, then stops the loop, and `taskbox start` starts it.
 - `taskbox template show test-job` prints a working job for your repo.
 - `taskbox policy show` prints the Tailscale policy entries.
-- `taskbox load start` runs a load test from a test repo of your own.
+- `taskbox load start --pattern burst|day|merge`, on the controller, runs a load test in the test repo the box's settings name.
 
 As your admin user:
 - `taskbox update [VERSION]` installs the newest release, or the one named.

@@ -32,6 +32,8 @@ export class StandIn {
   sent: string[] = [];
   // A line's answer set by hand, in place of the box's own: for a box that breaks the rules.
   over = new Map<string, { stdout: string; code: number }>();
+  // Root's uid as the box's code reads root's files: the tester's own, for a test that writes them.
+  rootUid: number | undefined;
 
   constructor(
     readonly installId: string,
@@ -74,6 +76,7 @@ export class StandIn {
       hostname: () => `${this.hostname}.local`,
       root: this.root,
       chown: () => {},
+      ...(this.rootUid !== undefined ? { rootUid: this.rootUid } : {}),
     };
     const code = await main(c.args, deps);
     return { stdout: said.length ? `${said.join("\n")}\n` : "", code };

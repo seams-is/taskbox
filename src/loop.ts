@@ -142,6 +142,13 @@ export function countRestart(p: Paths, now: number, extra: Record<string, unknow
 }
 
 // The guard's restart of a frozen loop, logged and counted once by the loop that starts after it.
+// Why a running job's VM stops now: a forced drain or stop at its deadline, or, for a test job, the
+// end of its load test session, which the box ignores test jobs outside of. undefined: it runs on.
+export const LOAD_ENDED = "the end of the load test session";
+export function stopFor(forcing: string | undefined, role: string | undefined, loadOn: () => boolean): string | undefined {
+  return forcing ?? (role === "load" && !loadOn() ? LOAD_ENDED : undefined);
+}
+
 export function noteGuardRestart(d: Pick<LoopDeps, "paths" | "log"> & { rootUid?: number }, now: number): void {
   const k = readKick(d.paths, d.rootUid ?? 0);
   if (!k || k.at <= (readLoop(d.paths.loopState).watchKickSeen ?? 0)) return;
@@ -983,7 +990,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
             // minute. Anything else, such as GitHub being down, is tried again and counted by the
             // chain. The real repo carries on either way.
             const m = (e as Error).message;
-            if (groupSetupWrong(m)) loadFailed(d.paths, d.sys.now(), `the test repo's runner group: ${m}`);
+            if (groupSetupWrong(m)) loadFailed(d.paths, d.sys.now(), `the test repo's runner group: ${m}`, d.checks.rootUid ?? 0);
             throw e;
           }
         } else group = await d.gh.runnerGroupId(runners);
@@ -1222,10 +1229,10 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     let forced = false;
     while (!exited) {
       await d.sys.sleep(5000);
-      // A forced drain or stop at its deadline: the job's VM stops, as job cancel stops it, and the
-      // job ends as stopped by it.
+      // A forced drain or stop at its deadline, or the end of the load test session a test job ran
+      // in: the job's VM stops, as job cancel stops it, and the job ends as stopped by it.
       if (started !== undefined && !forced) {
-        const by = gateOf(d).forcing;
+        const by = stopFor(gateOf(d).forcing, turn.role, () => !!loadNow(d.paths, d.sys.now(), d.checks.rootUid ?? 0));
         if (by) {
           forced = true;
           const id = jobOfVm(vm);
@@ -1650,11 +1657,11 @@ export async function runLoop(d: LoopDeps): Promise<number> {
         // The VMs' share of the box: its memory as last read, less boxKeepsGB, and its CPUs.
         budget: () => budgetOf(d.cfg, box.totalGB, box.logicalCpus),
         // v2.6.0: the load test's window, read each time a slot asks (load.ts).
-        load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now()) : undefined),
+        load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now(), d.checks.rootUid ?? 0) : undefined),
         // The slots held for workspaces, read each time a slot asks: the scheduler sees the rest.
         held: () => heldNow({ ...d, box }),
         seen: (s) => {
-          noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.());
+          noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.(), d.checks.rootUid ?? 0);
           noteSource(d, s);
         },
       }),
