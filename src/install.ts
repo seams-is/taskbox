@@ -98,6 +98,8 @@ const SMALL_MAX = 16_384;
 const SETTINGS_MAX = 512_000;
 // What a guest test skips, said on its own line each time.
 export const GUEST_SKIPS = ["FileVault's disk unlock", "the Tailscale sign-in", "the GitHub Apps (connect github)"] as const;
+// The preflight rows a guest VM can't pass, whatever the release: its SSH is how it is reached.
+export const GUEST_ROWS = ["Sharing services off", "FileVault", "SSD health", "Free disk"];
 
 // The install's check of a new approver key: the old key's signature, by ssh-keygen -Y verify as
 // nobody, in root's folder for checking signatures, made only when a key change comes. Anything that
@@ -292,7 +294,9 @@ async function installUnlocked(d: InstallDeps): Promise<void> {
   const ctx: CheckContext = { sys: d.sys, cfg, paths: d.paths, uid: 0, serviceUid: undefined };
   const version = await runChecks([["macOS version", macos]], ctx);
   if (allOk(version)) await settleBox(d, cfg);
-  const pre = allOk(version) ? await runChecks(rows("preflight", ctx), ctx) : version;
+  const checked = allOk(version) ? await runChecks(rows("preflight", ctx), ctx) : version;
+  // A guest's own Remote Login, FileVault, disk and SSD aren't a box's: its rows are said, and skipped.
+  const pre = guest ? checked.map((c) => (GUEST_ROWS.includes(c.name) && c.status === "FAIL" ? { ...c, status: "SKIP" as const, detail: `a guest test skips it: ${c.detail}` } : c)) : checked;
   printChecks(d, pre);
   if (!allOk(pre)) throw new Stop("A preflight check failed. Nothing was installed.", true);
 

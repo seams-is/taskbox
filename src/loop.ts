@@ -1,7 +1,7 @@
 // The runner loop. One fresh VM per job, deleted after it.
 // It runs as ci, in ci's login session, from the LaunchAgent.
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { within } from "./clock.ts";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
@@ -36,6 +36,13 @@ import type { Log } from "./log.ts";
 import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readLogicalCpus, readMemory } from "./memory.ts";
 import { clean, mirrorPull, PullRecorder, pullLine, readPull, writeReady } from "./progress.ts";
 import { type AskSteps, readAsk, takeAsk } from "./loopask.ts";
+import { type TrialEnv, type TrialResult, tryRelease } from "./trial.ts";
+import { publicRelease, TARBALL_LIMIT } from "./hop.ts";
+import { verifyRelease, type VerifyDeps } from "./release.ts";
+import { readInstallRecord } from "./update/records.ts";
+import { linkTarget } from "./layout.ts";
+import { readInForce, settingsFilesForApp } from "./settings/inforce.ts";
+import { updateOf } from "./settings/update.ts";
 import { clearRequests } from "./requests.ts";
 import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from "./load.ts";
 import { sourceStep } from "./sourcefail.ts";
@@ -74,6 +81,8 @@ export interface LoopDeps {
   source?: JobSource;
   // Tests replace the Linux Softnet proof.
   proveLinux?: () => Promise<{ ok: boolean; detail: string }>;
+  // A release trial (trial.ts), for tests: the version in, the result out.
+  tryRelease?: (version: string) => Promise<TrialResult>;
   // The slots this loop runs (v2.2.0): who holds each, the gate VM starts take one at a time, and
   // the times VMs started and stopped, for the guard. Absent: one slot, as before.
   box?: Slots;
@@ -835,10 +844,84 @@ export type ProofRun = { ok: boolean; detail: string; notRun?: boolean; peers?: 
 // The loop's ops folder, where selftest run and image pull leave their asks (loopask.ts).
 export const loopAsks = (d: Pick<LoopDeps, "paths">) => ({ dir: loopState(d.paths.state).ops, owner: process.getuid?.() ?? 0 });
 // One selftest run's event, for selftest list and events --type selftest. Never throws.
-function selftestEvent(d: Pick<LoopDeps, "paths" | "sys">, result: "passed" | "failed" | "not-run", text: string, data: { why: string; ms: number }, op?: string): void {
+function selftestEvent(d: Pick<LoopDeps, "paths" | "sys">, result: "passed" | "failed" | "not-run", text: string, data: { why: string; ms: number; version?: string }, op?: string): void {
   try {
     eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys).write({ type: `selftest.${result}`, actor: "taskbox", subject: "selftest", text: text.slice(0, 200), data, ...(op ? { op } : {}) });
   } catch {}
+}
+
+// One asked release trial, from its ask to its event. Never throws.
+export async function releaseTrialStep(d: LoopDeps): Promise<void> {
+  const asked = takeAsk(loopAsks(d), "release", () => d.sys.now());
+  if (!asked) return;
+  const version = typeof asked.op.params.release === "string" ? asked.op.params.release : "";
+  const began = d.sys.now();
+  asked.phase("proving", `trying ${version} in a macOS VM`);
+  writeState(d, { slot: `trying ${version}`, slotAt: d.sys.now(), vmKind: "macos" });
+  let r: TrialResult;
+  try {
+    r = await (d.tryRelease ?? ((v: string) => tryRelease(trialEnv(d, (t) => asked.progress(t), () => asked.cancelled()), v)))(version);
+  } catch (e) {
+    r = { ok: false, notRun: true, detail: `the trial errored: ${String((e as Error)?.message ?? e).slice(0, 120)}` };
+  }
+  const result = r.ok ? "passed" : r.notRun ? "not-run" : "failed";
+  d.log.write(`release trial of ${version}: ${result}: ${r.detail}`);
+  selftestEvent(d, result, `The trial of ${version} ${r.ok ? "passed" : r.notRun ? "didn't run" : "failed"}: ${r.detail}.`, { why: "release", ms: d.sys.now() - began, version }, asked.op.id);
+  if (r.ok) asked.done({ detail: r.detail.slice(0, 200), version });
+  else asked.fail(r.detail, { detail: r.detail.slice(0, 200), version });
+  writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
+}
+
+// The trial's environment on the box: the public repo with no token, ssh-keygen as this account
+// against the release keys this engine pins, the macOS kind's image under a job's network rules,
+// and the settings in force.
+function trialEnv(d: LoopDeps, progress: (t: string) => void, cancelled: () => boolean): TrialEnv {
+  const mac = forKind(d.cfg, "macos");
+  const t = engineOf(d);
+  const repo = d.cfg.publicRepo;
+  const vm = vmName(d.sys);
+  const settings = (() => {
+    const f = readInForce(settingsFilesForApp(d.paths.app));
+    if (f.kind === "ok") return { text: JSON.stringify(f.value.doc), sha: f.value.sha };
+    return { text: readFileSync(join(d.paths.app, "taskbox.json"), "utf8"), sha: "0".repeat(40) };
+  })();
+  let net: NetPolicy | undefined;
+  return {
+    engine: {
+      clone: (image, name) => t.clone(image, name),
+      size: (name, cpus, mem) => t.size(name, cpus, mem),
+      start: (name, n) => t.start(name, net ?? n),
+      exec: (name, cmd, stdin, ms) => t.exec(name, cmd, stdin, ms),
+      stop: (name, s) => t.stop(name, s),
+      delete: (name) => t.delete(name),
+    },
+    image: mac.image,
+    cpus: mac.vmCpus,
+    memoryMB: mac.vmMemoryMB,
+    get net() {
+      return net ?? netFor(d.cfg, []);
+    },
+    vm,
+    async fetch(version) {
+      if (!repo) throw new Error("taskbox.json names no publicRepo");
+      net = netFor(d.cfg, (await publicAddresses(d.sys, awayOf(d.cfg).publicAddress)).addresses);
+      const rel = await publicRelease(d.sys, repo, `v${version}`);
+      return { statement: rel.statement, signature: rel.signature, tarball: await rel.asset(`taskbox-v${version}.tar.gz`, TARBALL_LIMIT) };
+    },
+    async verify(r, version) {
+      const dir = linkTarget(d.paths.opt);
+      const rec = dir ? readInstallRecord(dir) : undefined;
+      const installed = rec?.kind === "ok" ? { version: rec.value.version, sha256: rec.value.sha256 } : null;
+      const keygen: VerifyDeps = { run: (cmd, args, o) => d.sys.run(cmd, args, o) };
+      const workRoot = join(d.paths.projectState, "trial");
+      mkdirSync(workRoot, { recursive: true, mode: 0o700 });
+      return verifyRelease(keygen, { statement: r.statement, signature: r.signature, workRoot, installed, want: version, channel: updateOf(d.cfg).channel, tarballSha256: createHash("sha256").update(r.tarball).digest("hex") });
+    },
+    settings: { ...settings, repo: d.cfg.settingsRepo ?? "example-org/settings" },
+    ready: (name, exited) => guestReady(d, name, `trying a release`, exited),
+    progress,
+    cancelled,
+  };
 }
 
 export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
@@ -1922,6 +2005,20 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     if (stoppedToWait) continue;
     // The tool cache: fetch, build and bake between VMs (tools/inloop.ts). A bake holds this slot.
     if (toolsOn(d.cfg) && (await toolsStep(d, c))) continue;
+    // A signed release tried in taskbox's own macOS VM (selftest run --release, trial.ts): asked
+    // only, in a free slot, one at a time with the Linux proof.
+    if (!c.proving && readAsk(loopAsks(d), "release") !== undefined && !gateOf(d).wait && heldNow({ ...d, box: c.box }) === 0 && c.held.has("macos")) {
+      c.proving = true;
+      const mac = forKind(d.cfg, "macos");
+      c.box.held.set(d.slot, { slot: d.slot, kind: "macos", labels: [], job: true, up: true, size: DEFAULT_SIZE, memoryMB: mac.vmMemoryMB, cpus: mac.vmCpus });
+      try {
+        await releaseTrialStep(d);
+      } finally {
+        c.box.release(d.slot, d.sys.now());
+        c.proving = false;
+      }
+      continue;
+    }
     // The Linux proof takes this slot, one proof at a time.
     if (c.proofDue() && !c.proving) {
       c.proving = true;

@@ -201,6 +201,8 @@ describe("an install run to the end", () => {
     // No service account yet: the guest makes it with a password nobody types.
     sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args.at(-1) === "taskbox" && !sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl") ? { code: 1, stdout: "", stderr: "no such user" } : undefined));
     sys.responders.unshift((cmd, args) => (cmd === "/usr/sbin/sysadminctl" && args[0] === "-addUser" ? { code: 0, stdout: "", stderr: "" } : cmd === "/usr/bin/dscl" && args[1] === "-authonly" ? { code: 1, stdout: "", stderr: "" } : undefined));
+    // The guest's own Remote Login is on: it is how the guest is reached.
+    sys.probe = "open";
     const { d, said } = installDeps(sys, "no");
     d.guestTest = true;
     const asked: string[] = [];
@@ -210,6 +212,7 @@ describe("an install run to the end", () => {
     const out = await outcome(d);
     expect(asked).toEqual([]);
     expect(said).toContain(`Guest test: yes to ${RELEASE_VERSION}, as typed.`);
+    expect(said.some((l) => /^SKIP Sharing services off: a guest test skips it: /.test(l))).toBe(true);
     for (const s of ["FileVault's disk unlock", "the Tailscale sign-in", "the GitHub Apps (connect github)"]) expect(said).toContain(`  Guest test: skips ${s}.`);
     const made = sys.calls.find((c) => c.cmd === "/usr/sbin/sysadminctl" && c.args[0] === "-addUser");
     expect(made?.args.at(-1)).not.toBe("-");
