@@ -3,10 +3,14 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkSigned, CONTROL_NS, parseStatement, splitSigned } from "../src/core/statement.ts";
+import { parse } from "../src/command.ts";
+import { handlersFrom } from "../src/core/dispatch.ts";
+import { type Args, argsOf, checkSigned, CONTROL_NS, parseStatement, splitSigned } from "../src/core/statement.ts";
+import { handlerFiles } from "../src/handlers/index.ts";
+import { registry } from "../src/registry.ts";
 import { envelope } from "../src/envelope.ts";
 import { writeConfig } from "../src/controller/home.ts";
-import { signingKey, keySigner, labelHashes, makeKey, pointHash, render, SC_AUTH, SSH_KEYGEN, type Signer } from "../src/controller/signer.ts";
+import { grouped, signingKey, keySigner, labelHashes, makeKey, pointHash, render, SC_AUTH, SSH_KEYGEN, type Signer } from "../src/controller/signer.ts";
 import type { RunOptions } from "../src/controller/run.ts";
 import { words } from "../src/shell.ts";
 import { ADDRESS, CEILING, controllerConfig, deps, INSTALL_ID, ok, pairing, runLine, StandIn, type TestDeps, World } from "./controller-fake.ts";
@@ -17,8 +21,10 @@ const NONCE1 = "a".repeat(32);
 const NONCE2 = "b".repeat(32);
 const env = (o: { command: string; exit?: number; result?: Record<string, unknown>; lines?: string[]; error?: Parameters<typeof envelope>[0]["error"] }) => `${JSON.stringify(envelope({ command: o.command, box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: o.exit ?? 0, result: o.result ?? {}, lines: o.lines ?? ["ok"], error: o.error ?? null }))}\n`;
 
-// A v3 box whose guard checks each signed word with the box's own checker, against one pinned key.
-function signedBox(o: { nonces?: string[]; stale?: number } = {}) {
+// A v3 box whose guard checks each signed word as the box does: what it wants comes from its own
+// parse of the line it was sent (the registry's parse, argsOf, the handler's subject), never from the
+// statement. ops: what op show answers, in turn, for an op the signed line starts.
+function signedBox(o: { nonces?: string[]; stale?: number; op?: string; ops?: string[]; tamper?: (ws: string[]) => string[] } = {}) {
   const w = new World();
   const box = new StandIn(INSTALL_ID);
   w.standIns[ADDRESS] = box;
@@ -28,12 +34,18 @@ function signedBox(o: { nonces?: string[]; stale?: number } = {}) {
   const nonces = [...(o.nonces ?? [NONCE1])];
   let current = nonces[0]!;
   let stale = o.stale ?? 0;
+  const ops = [...(o.ops ?? [])];
   const seen: { action: string; args: unknown; subject: string }[] = [];
+  const refused: string[] = [];
   box.hook = async (line) => {
     const ws = words(line)!;
     if (ws[0] === "nonce") {
       current = nonces.shift() ?? current;
       return { stdout: env({ command: "nonce", result: { subject: ws[1], nonce: current } }), code: 0 };
+    }
+    if (ws[0] === "op" && ws[1] === "show") {
+      const state = ops.shift() ?? "succeeded";
+      return { stdout: env({ command: "op.show", lines: [`${ws[2]} ${state}`], result: { op: { id: ws[2], state } } }), code: 0 };
     }
     const at = ws.indexOf("--signed");
     if (at < 0) return undefined;
@@ -45,19 +57,28 @@ function signedBox(o: { nonces?: string[]; stale?: number } = {}) {
       current = nonces.shift() ?? current;
       return { stdout: env({ command: s.action, exit: 1, lines: ["stale"], error: { code: "stale-state", message: "The nonce moved on.", fix: null, who: null } }), code: 0 };
     }
-    const r = await checkSigned(verifyDeps(), { word, keys: [owner.key], installId: INSTALL_ID, now: d.now(), nonce: () => current, want: { action: s.action, args: s.args, subject: "box" } });
-    return { stdout: env(r.ok ? { command: s.action, lines: ["Paused. Running jobs carry on."] } : { command: s.action, exit: 1, lines: [r.why], error: { code: r.code, message: r.why, fix: null, who: null } }), code: 0 };
+    // The box's own reading of the line: its registry's parse, argsOf, and the handler's subject.
+    const sent = o.tamper ? o.tamper(ws) : ws;
+    const p = parse(registry(), sent);
+    if (!p.ok) throw new Error(p.line);
+    const action = p.spec.path.join(".");
+    const args = argsOf(p);
+    const subject = handlersFrom(handlerFiles).signed.find((h) => h.action === action)!.subject(args)!;
+    const r = await checkSigned(verifyDeps(), { word, keys: [owner.key], installId: INSTALL_ID, now: d.now(), nonce: () => current, want: { action, args, subject } });
+    if (!r.ok) refused.push(r.why);
+    const result = o.op ? { request: "rq_1", op: o.op } : { request: "rq_1" };
+    return { stdout: env(r.ok ? { command: action, lines: ["Applied."], result } : { command: action, exit: 1, lines: [r.why], error: { code: r.code, message: r.why, fix: null, who: null } }), code: 0 };
   };
   const signer: Signer = async (m) => ({ ok: true, signature: sshsig(owner, m, { namespace: CONTROL_NS, flags: 1 }) });
   d.signerFor = () => signer;
-  return { w, d, box, owner, seen };
+  return { w, d, box, owner, seen, refused };
 }
 
 describe("--signed sending", () => {
   test("pause from the controller: the box's nonce, the statement, the signature, and the box's own checker takes it", async () => {
     const { d, box, seen } = signedBox();
     const r = await runLine(d, ["pause", "--reason", "maintenance"]);
-    expect(r.lines).toContain("Paused. Running jobs carry on.");
+    expect(r.lines).toContain("Applied.");
     expect(r.code).toBe(0);
     expect(seen).toEqual([{ action: "pause", args: { reason: "maintenance" }, subject: "box" }]);
     expect(box.sent[1]).toBe("nonce box --json --answers 4");
@@ -75,9 +96,60 @@ describe("--signed sending", () => {
     expect(twice.seen).toHaveLength(2);
   }, CEILING);
 
+  test("start, stop --force and op cancel reach the box's checker with the args its own parse gives", async () => {
+    const { d, seen, refused } = signedBox();
+    expect((await runLine(d, ["start"])).code).toBe(0);
+    expect((await runLine(d, ["stop", "--force", "--yes", "--detach"])).code).toBe(0);
+    expect((await runLine(d, ["op", "cancel", "op_01JD8Q000000000000000000AB", "--yes"])).code).toBe(0);
+    expect(seen.map((x) => [x.action, x.args, x.subject])).toEqual([["start", {}, "box"], ["stop", { force: true }, "box"], ["op.cancel", { words: ["op_01JD8Q000000000000000000AB"] }, "box"]]);
+    expect(refused).toEqual([]);
+  }, CEILING);
+
+  test("a line whose words differ from what was signed is refused by the box's checker", async () => {
+    const { d, refused } = signedBox({ tamper: (ws) => ws.map((w) => (w === "maintenance" ? "other" : w)) });
+    expect((await runLine(d, ["pause", "--reason", "maintenance"])).code).toBe(1);
+    expect(refused).toEqual(["The statement's arguments aren't this command's."]);
+  }, CEILING);
+
+  test("a declined Touch ID exits 4, and nothing is sent", async () => {
+    const { d, box } = signedBox();
+    d.signerFor = () => async () => ({ ok: false, reason: "declined", why: "The approver key didn't sign." });
+    expect((await runLine(d, ["pause"])).code).toBe(4);
+    expect(box.sent.some((l) => l.includes("--signed"))).toBe(false);
+  }, CEILING);
+
+  test("a signed drain is followed by op show until it ends; --detach returns at once", async () => {
+    const { d, box } = signedBox({ op: "op_01JD8Q000000000000000000DR", ops: ["running", "running", "succeeded"] });
+    const r = await runLine(d, ["drain"]);
+    expect(r.code).toBe(0);
+    expect(d.printed).toContain("Following op_01JD8Q000000000000000000DR. Ctrl-C stops following; the box carries on. taskbox op show op_01JD8Q000000000000000000DR -w --box taskbox-1 follows it again.");
+    expect(box.sent.filter((l) => l.startsWith("op show"))).toHaveLength(3);
+    const q = signedBox({ op: "op_01JD8Q000000000000000000DR" });
+    expect((await runLine(q.d, ["drain", "--detach"])).code).toBe(0);
+    expect(q.box.sent.some((l) => l.startsWith("op show"))).toBe(false);
+  }, CEILING);
+
+  test("--timeout running out while following exits 3, and the drain carries on", async () => {
+    const { d } = signedBox({ op: "op_01JD8Q000000000000000000DR", ops: ["running", "running", "running", "running", "running"] });
+    const r = await runLine(d, ["drain", "--timeout", "6s"]);
+    expect(r.code).toBe(3);
+    expect(r.lines.join(" ")).toContain("op_01JD8Q000000000000000000DR is still running at taskbox-1, and --timeout ran out here.");
+  }, CEILING);
+
+  test("a signed line the box hasn't answered in time exits 3 and never invites a second signature", async () => {
+    const { w, d } = signedBox();
+    const run = d.run;
+    d.run = async (argv, o) => (argv.at(-1)!.includes("--signed") ? { code: null, stdout: "", stderr: "", timedOut: true, tooBig: false } : run(argv, o));
+    void w;
+    const r = await runLine(d, ["drain"]);
+    expect(r.code).toBe(3);
+    expect(r.lines.join(" ")).toContain("It may still apply, so don't sign it again.");
+    expect(r.lines.join(" ")).not.toMatch(/try again/i);
+  }, CEILING);
+
   test("a signer that refuses sends nothing", async () => {
     const { d, box } = signedBox();
-    d.signerFor = () => async () => ({ ok: false, why: "This controller has no approver key yet." });
+    d.signerFor = () => async () => ({ ok: false, reason: "no-key", why: "This controller has no approver key yet." });
     const r = await runLine(d, ["drain"]);
     expect(r.code).toBe(1);
     expect(r.lines).toContain("This controller has no approver key yet.");
@@ -122,7 +194,10 @@ function keyed(sign: (m: Uint8Array) => string) {
   };
   return { d, owner, handle, calls };
 }
-const said = (d: TestDeps) => keySigner({ run: d.run, home: d.home, uid: process.getuid!(), say: d.out }, "taskbox-1");
+const said = (d: TestDeps) => {
+  writeConfig(d.home, controllerConfig([pairing()]));
+  return keySigner({ run: d.run, home: d.home, uid: process.getuid!(), say: d.out });
+};
 const statement = (nonce = NONCE1) => new TextEncoder().encode(JSON.stringify({ v: 1, ns: "taskbox-control", box: INSTALL_ID, action: "drain", args: { timeout: "1h" }, subject: "box", nonce, at: "2026-11-17T12:00:00Z" }));
 
 describe("the approval signer", () => {
@@ -132,7 +207,8 @@ describe("the approval signer", () => {
     k = t.owner;
     const r = await said(t.d)(statement());
     expect(r.ok).toBe(true);
-    expect(t.d.printed).toContain("Sign for taskbox-1: taskbox drain --timeout 1h. Touch ID asks next.");
+    expect(t.d.printed).toContain(`Sign for taskbox-1 (install ${INSTALL_ID}): taskbox drain with {"timeout":"1h"}, subject box, at 2026-11-17T12:00:00Z, nonce ${NONCE1}.`);
+    expect(t.d.printed).toContain("Touch ID asks next.");
     expect(t.calls[0]!.argv).toEqual([SSH_KEYGEN, "-Y", "sign", "-n", "taskbox-control", "-f", t.handle]);
     expect(t.calls[0]!.o.env).toEqual({ SSH_SK_PROVIDER: "/usr/lib/ssh-keychain.dylib" });
   }, CEILING);
@@ -144,7 +220,7 @@ describe("the approval signer", () => {
     expect(n.calls).toEqual([]);
     for (const make of [(m: Uint8Array) => sshsig(other, m, { namespace: CONTROL_NS, flags: 1 })]) {
       const t = keyed(make);
-      expect(await said(t.d)(statement())).toMatchObject({ ok: false, why: "The approver key didn't sign. Nothing was sent. Touch the sensor when macOS asks." });
+      expect(await said(t.d)(statement())).toMatchObject({ ok: false, reason: "declined" });
     }
     let k!: ReturnType<typeof keyPair>;
     for (const o of [{ namespace: "taskbox-release", flags: 1 }, { namespace: CONTROL_NS, flags: 0 }]) {
@@ -161,9 +237,24 @@ describe("the approval signer", () => {
     expect(signingKey(t.d.home, process.getuid!() + 1)).toHaveProperty("why");
   }, CEILING);
 
-  test("render says the action and its args", () => {
-    const s = parseStatement(new TextDecoder().decode(statement()))!;
-    expect(render({ ...s, args: { force: true, words: ["a", "b"] } }, "taskbox-2")).toBe("Sign for taskbox-2: taskbox drain --force a b. Touch ID asks next.");
+  test("render is one to one: words, flags and values that would read alike read apart", () => {
+    const base = parseStatement(new TextDecoder().decode(statement()))!;
+    const seen = new Set<string>();
+    for (const args of <Args[]>[{ words: ["a b"] }, { words: ["a", "b"] }, { words: ["--force"] }, { force: true }, { force: "true" }, { reason: "x" }, { reason: "x, subject rules" }]) seen.add(render({ ...base, args }, "taskbox-1"));
+    expect(seen.size).toBe(7);
+  });
+
+  test("the box is named from the bytes: a statement for a box this controller hasn't paired isn't signed, nor one too long to show whole", async () => {
+    const t = keyed(() => "x");
+    const other = new TextEncoder().encode(new TextDecoder().decode(statement()).replace(INSTALL_ID, "e".repeat(32)));
+    expect(await said(t.d)(other)).toMatchObject({ ok: false, reason: "refused" });
+    const long = new TextEncoder().encode(new TextDecoder().decode(statement()).replace('{"timeout":"1h"}', `{"reason":"${"x".repeat(700)}"}`));
+    expect(await said(t.d)(long)).toMatchObject({ ok: false, reason: "refused" });
+    expect(t.calls).toEqual([]);
+  });
+
+  test("the fingerprint in full, in groups of four", () => {
+    expect(grouped("SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG")).toBe("SHA256:abcd efgh ijkl mnop qrst uvwx yz01 2345 6789 ABCD EFG");
   });
 });
 
@@ -198,5 +289,70 @@ describe("making the approver key", () => {
     expect(labelHashes(`x ${hash} taskbox-approver\ny ${hash} other\n`)).toEqual([hash]);
     // Made once: a second run finds it.
     expect(await makeKey({ run: async () => ok("") as never, home: d.home, uid: process.getuid!(), say: () => {} })).toMatchObject({ key: owner.key });
+  }, CEILING);
+});
+
+describe("an approver identity this controller didn't make", () => {
+  // The Secure Enclave already holds a taskbox-approver identity, made by something else.
+  function stranger(answer: string, tty = true) {
+    const owner = keyPair();
+    const d = deps(new World());
+    const old = "A".repeat(40);
+    const fresh = pointHash(owner.key);
+    let ids = [old];
+    const calls: string[][] = [];
+    d.run = async (argv, o) => {
+      calls.push(argv);
+      if (argv[1] === "list-ctk-identities") return ok(ids.map((h) => `ec-256  ${h}  taskbox-approver`).join("\n"));
+      if (argv[1] === "delete-ctk-identity") return (ids = ids.filter((h) => h !== argv[3])), ok("");
+      if (argv[1] === "create-ctk-identity") return (ids = [...ids, fresh]), ok("");
+      if (argv[0] === SSH_KEYGEN) {
+        writeFileSync(join(o.cwd!, "id_ecdsa_sk_rk"), "handle\n", { mode: 0o600 });
+        writeFileSync(join(o.cwd!, "id_ecdsa_sk_rk.pub"), `${owner.key}\n`);
+      }
+      return ok("");
+    };
+    return { d, calls, old, owner, run: () => makeKey({ run: d.run, home: d.home, uid: process.getuid!(), say: d.out, ask: async () => answer, tty }) };
+  }
+
+  test("is never adopted: with no yes, or no terminal, no key is made", async () => {
+    for (const [answer, tty] of [["no", true], ["yes", false]] as const) {
+      const s = stranger(answer, tty);
+      expect(await s.run()).toMatchObject({ why: expect.stringContaining("didn't make is in the way") });
+      expect(s.calls.some((a) => a[1] === "delete-ctk-identity" || a[1] === "create-ctk-identity")).toBe(false);
+    }
+  }, CEILING);
+
+  test("after a typed yes it is deleted and the key made again with Touch ID, and its hash kept", async () => {
+    const s = stranger("yes");
+    expect(await s.run()).toMatchObject({ key: s.owner.key });
+    expect(s.calls).toContainEqual([SC_AUTH, "delete-ctk-identity", "-h", s.old]);
+    expect(s.calls).toContainEqual([SC_AUTH, "create-ctk-identity", "-l", "taskbox-approver", "-k", "p-256-ne", "-t", "bio"]);
+    expect(readFileSync(join(s.d.home.approver, "made"), "utf8").trim()).toBe(pointHash(s.owner.key));
+  }, CEILING);
+});
+
+describe("box add's key and trusting phases", () => {
+  test("the whole fingerprint, grouped as the box shows it, and a wait while it is compared", async () => {
+    const owner = keyPair();
+    const w = new World();
+    const d = deps(w, ["1", "yes", ""]);
+    let made = false;
+    const run = d.run;
+    d.run = async (argv, o) => {
+      if (argv[0] === SC_AUTH && argv[1] === "list-ctk-identities") return ok(made ? `ec  ${pointHash(owner.key)}  taskbox-approver` : "");
+      if (argv[0] === SC_AUTH) return (made = true), ok("");
+      if (argv[0] === SSH_KEYGEN) {
+        writeFileSync(join(o.cwd!, "id"), "handle\n", { mode: 0o600 });
+        writeFileSync(join(o.cwd!, "id.pub"), `${owner.key}\n`);
+        return ok("");
+      }
+      return run(argv, o);
+    };
+    d.uid = process.getuid!();
+    const r = await runLine(d, ["box", "add"]);
+    const fp = (await import("../src/approver.ts")).fingerprint(owner.key);
+    expect(r.lines).toContain(`Approver key: ${grouped(fp)}`);
+    expect(d.asked.at(-1)).toBe("Press Return once you have compared the fingerprint at the box, or now to do it later: ");
   }, CEILING);
 });

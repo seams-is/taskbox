@@ -49,7 +49,11 @@ export async function controllerChecks(d: Deps, setupDeps?: SetupDeps): Promise<
   const key = signingKey(d.home, d.uid ?? -1);
   add("Approver key", "key" in key, "key" in key ? key.fingerprint : key.why, "Type taskbox box add, which makes it.");
   // The agents user and the rest of self setup, each as its own step reads it.
-  if (setupDeps) for (const st of STEPS) add(st.name, await st.done(setupDeps), (await st.done(setupDeps)) ? "set up" : "not set up", "Type taskbox self setup.");
+  if (setupDeps)
+    for (const st of STEPS) {
+      const done = await st.done(setupDeps);
+      add(st.name, done, done ? "set up" : "not set up", st.signIn ? "Type taskbox self setup." : "Type taskbox self check --fix.");
+    }
   const state = ts.ok && ts.state.running ? ts.state : undefined;
   return { lines: out, boxes: await Promise.all(boxes.map((b) => boxLines(d, b, state))) };
 }

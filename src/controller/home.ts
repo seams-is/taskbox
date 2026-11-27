@@ -14,6 +14,7 @@ export interface Paired {
   hostKey: string; // the ed25519 key, base64, from the map at pairing
   agent: string; // the box's agent account, which every command reaches it as
   pairedAt: number;
+  jobsRepo?: string; // the jobs repo, as box add was told, where the hold lease goes
 }
 
 // The public repo the controller installs and updates from, set at install.
@@ -30,6 +31,21 @@ export interface Config {
   source: Source | null;
   default: string | null; // the StableNodeID box use set
   channel: Channel;
+  agents?: AgentsAccount; // the agents' GitHub machine account and the repos it works in
+}
+
+export interface AgentsAccount {
+  login: string;
+  repos: string[]; // org/repo, each
+}
+export const GH_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+export const REPO = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+function agentsOf(v: unknown): AgentsAccount | undefined | null {
+  if (v === undefined) return undefined;
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.login !== "string" || !GH_LOGIN.test(o.login) || !Array.isArray(o.repos) || o.repos.length > 50 || o.repos.some((r) => typeof r !== "string" || !REPO.test(r))) return null;
+  return { login: o.login, repos: o.repos as string[] };
 }
 
 export const MAX_BOXES = 32;
@@ -46,11 +62,12 @@ export interface Home {
   status: string; // the last status read of each box, for the status line
   approver: string; // the approver key's handle and public key, 0700
   notify: string; // what the notifier keeps between runs
+  controllerId: string; // this controller's id, which its polls carry
 }
 
 export function home(userHome: string): Home {
   const dir = join(userHome, "Library", "Application Support", "taskbox");
-  return { dir, config: join(dir, "config.json"), knownHostsDir: join(dir, "known_hosts.d"), releases: join(dir, "releases"), current: join(dir, "current"), bin: join(dir, "bin"), updateCheck: join(dir, "update-check.json"), events: join(dir, "events"), status: join(dir, "status.json"), approver: join(dir, "approver"), notify: join(dir, "notify.json") };
+  return { dir, config: join(dir, "config.json"), knownHostsDir: join(dir, "known_hosts.d"), releases: join(dir, "releases"), current: join(dir, "current"), bin: join(dir, "bin"), updateCheck: join(dir, "update-check.json"), events: join(dir, "events"), status: join(dir, "status.json"), approver: join(dir, "approver"), notify: join(dir, "notify.json"), controllerId: join(dir, "controller-id") };
 }
 
 // A GitHub owner or repo name.
@@ -116,8 +133,9 @@ function paired(v: unknown): Paired | null | undefined {
     typeof b.installId === "string" && INSTALL_ID.test(b.installId) &&
     typeof b.hostKey === "string" && isEd25519(b.hostKey) &&
     typeof b.agent === "string" && agentProblem(b.agent) === undefined &&
-    Number.isSafeInteger(b.pairedAt);
-  return ok ? { name: b.name as string, node: b.node as string, installId: b.installId as string, hostKey: b.hostKey as string, agent: b.agent as string, pairedAt: b.pairedAt as number } : undefined;
+    Number.isSafeInteger(b.pairedAt) &&
+    (b.jobsRepo === undefined || (typeof b.jobsRepo === "string" && REPO.test(b.jobsRepo)));
+  return ok ? { name: b.name as string, node: b.node as string, installId: b.installId as string, hostKey: b.hostKey as string, agent: b.agent as string, pairedAt: b.pairedAt as number, ...(typeof b.jobsRepo === "string" ? { jobsRepo: b.jobsRepo } : {}) } : undefined;
 }
 
 export type ConfigRead = { ok: true; config: Config; mode: number } | { ok: false; why: "missing" | "not-a-file" | "unreadable" | "not-controller" };
@@ -140,7 +158,9 @@ export function readConfig(h: Home): ConfigRead {
     if (def !== null && (typeof def !== "string" || !ok.some((b) => b.node === def))) return { ok: false, why: "unreadable" };
     const channel = v.channel ?? "stable";
     if (channel !== "stable" && channel !== "beta") return { ok: false, why: "unreadable" };
-    return { ok: true, config: { role: "controller", boxes: ok, source: src, default: def as string | null, channel }, mode: f.mode };
+    const agents = agentsOf(v.agents);
+    if (agents === null) return { ok: false, why: "unreadable" };
+    return { ok: true, config: { role: "controller", boxes: ok, source: src, default: def as string | null, channel, ...(agents ? { agents } : {}) }, mode: f.mode };
   } catch {
     return { ok: false, why: "unreadable" };
   }
@@ -180,7 +200,7 @@ export function writeConfig(h: Home, c: Config): void {
   ensureDir(h);
   // A default that names a box no longer paired goes with it.
   const def = c.default !== null && c.boxes.some((b) => b.node === c.default) ? c.default : null;
-  writePrivate(h.config, `${JSON.stringify({ role: c.role, boxes: c.boxes, source: c.source, default: def, channel: c.channel }, null, 2)}\n`);
+  writePrivate(h.config, `${JSON.stringify({ role: c.role, boxes: c.boxes, source: c.source, default: def, channel: c.channel, ...(c.agents ? { agents: c.agents } : {}) }, null, 2)}\n`);
 }
 
 // The install sets the role once. It never changes a config that is already there, apart from

@@ -28,8 +28,8 @@
     "why": "the controller's Clock, and the time on its own envelopes and events: labels"
   },
   "controller/notify.ts": {
-    "reads": 1,
-    "why": "when a box was first not reached, and the hold lease's times: a step only moves the offline note"
+    "reads": 2,
+    "why": "when a box was first not reached, when each note was last said, and the hold lease's times: a step only moves when a note is said again"
   },
   "controller/pair.ts": {
     "reads": 4,

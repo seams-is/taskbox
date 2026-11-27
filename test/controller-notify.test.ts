@@ -1,12 +1,12 @@
 // The notifier, the owner's screen, and the box's side of a controller's poll.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { envelope } from "../src/envelope.ts";
 import { writeConfig } from "../src/controller/home.ts";
 import { agentPlist, holdOf, notifyOnce, OFFLINE_MS, postArgv, readMemory } from "../src/controller/notify.ts";
-import { ownerScreen } from "../src/controller/screen.ts";
+import { KEYS, ownerScreen } from "../src/controller/screen.ts";
 import type { Signer } from "../src/controller/signer.ts";
 import { handlers, readPolls } from "../src/handlers/poll.ts";
 import { rootStateIn } from "../src/core/paths.ts";
@@ -49,11 +49,12 @@ describe("taskbox notify", () => {
     expect((await notifyOnce(d)).map((n) => n.title)).toEqual(["taskbox-1 is back"]);
   }, CEILING);
 
-  test("the hold lease is written only when the box names this controller its writer, through the owner's gh", async () => {
+  test("the hold lease is written only when the box names this controller its writer, and only in the jobs repo the pairing names", async () => {
     const { d, box } = v3();
+    writeConfig(d.home, controllerConfig([{ ...pairing(), jobsRepo: "example-org/jobs" }]));
     const calls: string[][] = [];
     const nd = { ...d, gh: async (args: string[]) => (calls.push(args), { code: 0, stdout: "", stderr: "" }) };
-    const status = (writer: string) => ({ stdout: `${JSON.stringify(envelope({ command: "status", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: 0, lines: ["x"], result: { state: "Ready", othersLoggedIn: 0, job: null, release: null, commit: null, lastJob: null, jobs: [], slots: { total: 1, busy: 0 }, hold: { since: d.now() - 60_000, why: "paused for maintenance", writer }, jobsRepo: "example-org/jobs" } }))}\n`, code: 0 });
+    const status = (writer: string) => ({ stdout: `${JSON.stringify(envelope({ command: "status", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: 0, lines: ["x"], result: { state: "Ready", othersLoggedIn: 0, job: null, release: null, commit: null, lastJob: null, jobs: [], slots: { total: 1, busy: 0 }, hold: { since: d.now() - 60_000, why: "paused for maintenance", writer }, jobsRepo: "elsewhere/other" } }))}\n`, code: 0 });
     // Seed the id first, then answer status with a hold.
     await notifyOnce(nd);
     const seeded = readMemory(d.home).id;
@@ -63,7 +64,58 @@ describe("taskbox notify", () => {
     box.over.set("status --json --answers 4", status(seeded));
     await notifyOnce(nd);
     expect(calls.some((c) => c.join(" ").includes("PATCH repos/example-org/jobs/actions/variables/TASKBOX_HOLD_TASKBOX_1"))).toBe(true);
-    expect(holdOf({ hold: { since: 1, why: "x", writer: seeded }, jobsRepo: "bad repo" }, seeded)).toMatchObject({ writer: true, repo: undefined });
+    // The box's own word for a repo is never used.
+    expect(calls.some((c) => c.join(" ").includes("elsewhere/other"))).toBe(false);
+    expect(holdOf({ hold: { since: 1, why: "x", writer: seeded } }, seeded)).toMatchObject({ writer: true });
+  }, CEILING);
+
+  test("at most one note per box and cause in 10 minutes; the next counts what was held back", async () => {
+    const { d, box, now } = v3();
+    expect((await notifyOnce(d)).map((n) => n.title)).toEqual(["taskbox-1: Needs you"]);
+    const ready = `${JSON.stringify(envelope({ command: "status", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: 0, lines: ["x"], result: { state: "Ready", othersLoggedIn: 0, job: null, release: null, commit: null, lastJob: null, jobs: [], slots: { total: 1, busy: 0 } } }))}\n`;
+    for (let i = 0; i < 3; i++) {
+      box.over.set("status --json --answers 4", { stdout: ready, code: 0 });
+      await notifyOnce(d);
+      box.over.delete("status --json --answers 4");
+      now.t += 60_000;
+      expect(await notifyOnce(d)).toEqual([]);
+    }
+    now.t += 10 * 60_000;
+    box.over.set("status --json --answers 4", { stdout: ready, code: 0 });
+    await notifyOnce(d);
+    box.over.delete("status --json --answers 4");
+    const n = await notifyOnce(d);
+    expect(n[0]!.body).toEndWith("(3 more since the last note)");
+  }, CEILING);
+
+  test("with this Mac's Tailscale off: one note for that, and no box counted offline", async () => {
+    const { w, d, now } = v3();
+    w.backend = "Stopped";
+    expect((await notifyOnce(d)).map((n) => n.title)).toEqual(["Tailscale is off on this Mac"]);
+    now.t += OFFLINE_MS * 2;
+    expect(await notifyOnce(d)).toEqual([]);
+    w.backend = "Running";
+    expect((await notifyOnce(d)).map((n) => n.title)).toEqual(["taskbox-1: Needs you"]);
+  }, CEILING);
+
+  test("a box one release behind is reached, gets no poll, and never reads as offline", async () => {
+    const w = new World();
+    const d = deps(w);
+    writeConfig(d.home, controllerConfig([pairing()]));
+    const now = { t: Date.UTC(2026, 10, 17, 12, 0) };
+    d.now = () => now.t;
+    await notifyOnce(d);
+    now.t += OFFLINE_MS * 2;
+    expect(await notifyOnce(d)).toEqual([]);
+    expect(w.sshCalls().some((l) => l.startsWith("poll "))).toBe(false);
+  }, CEILING);
+
+  test("the controller's id is kept apart: losing notify.json keeps it", async () => {
+    const { d } = v3();
+    await notifyOnce(d);
+    const id = readMemory(d.home).id;
+    rmSync(d.home.notify);
+    expect(readMemory(d.home).id).toBe(id);
   }, CEILING);
 
   test("posting passes the text as arguments, never into the script; the LaunchAgent runs notify --post every 30 s", () => {
@@ -85,16 +137,37 @@ describe("the owner's screen", () => {
   test("draws each box, p pauses the picked box signed, q quits", async () => {
     const { d, box } = v3();
     const signed: string[] = [];
-    const signer: Signer = async (m) => (signed.push(new TextDecoder().decode(m)), { ok: false, why: "no key in this test" });
+    const signer: Signer = async (m) => (signed.push(new TextDecoder().decode(m)), { ok: false, reason: "no-key", why: "no key in this test" });
     (d as TestDeps).signerFor = () => signer;
     box.hook = async (line) => (line.startsWith("nonce ") ? { stdout: `${JSON.stringify(envelope({ command: "nonce", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: 0, lines: ["x"], result: { nonce: "a".repeat(32) } }))}\n`, code: 0 } : undefined);
     const drawn: string[][] = [];
     const code = await ownerScreen(d, { out: () => {}, draw: (l) => drawn.push(l), keys: keys(["p", "q"]) });
     expect(code).toBe(0);
     expect(drawn[0]![0]).toBe("> taskbox-1");
-    expect(drawn[0]!.at(-1)).toBe("Up and down pick a box. p pause, d drain, r resume, each signed with Touch ID. q quits.");
+    expect(drawn[0]!.slice(-2)).toEqual(["Up and down pick a box. p pause, x drain, r resume, each signed with Touch ID. q quits.", "Your agents' work reaches you as PRs: review and merge them, and work in your own clones."]);
     expect(JSON.parse(signed[0]!)).toMatchObject({ action: "pause", subject: "box" });
-    expect(drawn[1]!.some((l) => l.startsWith("pause taskbox-1: not done."))).toBe(true);
+    expect(drawn.at(-1)!.some((l) => l.startsWith("pause taskbox-1: not done."))).toBe(true);
+    // x drains; d is kept for deny.
+    expect(KEYS).toEqual({ p: ["pause"], x: ["drain"], r: ["resume"] });
+  }, CEILING);
+
+  test("while the signer waits for Touch ID, its words stay on the screen; the keys end with it", async () => {
+    const { d, box } = v3();
+    box.hook = async (line) => (line.startsWith("nonce ") ? { stdout: `${JSON.stringify(envelope({ command: "nonce", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: 0, lines: ["x"], result: { nonce: "a".repeat(32) } }))}\n`, code: 0 } : undefined);
+    const drawn: string[][] = [];
+    let seen: string[] = [];
+    (d as TestDeps).signerFor = (_box, say) => async (m) => {
+      say(`Sign for taskbox-1: ${new TextDecoder().decode(m).slice(0, 20)}`);
+      seen = drawn.at(-1)!;
+      return { ok: false, reason: "declined", why: "declined" };
+    };
+    let ended = false;
+    const keys = { next: async () => ({ value: ["x", "q"].shift(), done: false }), return: async () => ((ended = true), { value: undefined, done: true }) } as unknown as AsyncIterator<string>;
+    const list = ["x", "q"];
+    (keys as { next: () => Promise<IteratorResult<string>> }).next = async () => ({ value: list.shift()!, done: false });
+    await ownerScreen(d, { out: () => {}, draw: (l) => drawn.push(l), keys });
+    expect(seen.at(-1)).toStartWith("Sign for taskbox-1:");
+    expect(ended).toBe(true);
   }, CEILING);
 
   test("with nothing paired it says so once and exits", async () => {
