@@ -18,7 +18,8 @@ import { isObj, readOwnedJson } from "../core/rootfile.ts";
 import { clientFor, wantsOf, writeBoxKeys, sourceSettings } from "../connectflow.ts";
 import { BROKER_LABEL, GUARDWATCH_LABEL, readBeat, runningPid, watchPaths } from "../guardwatch.ts";
 import { readRollbackWatch, removeRollbackWatch, writeRollbackWatch } from "../hop.ts";
-import { retirePrevious } from "../install.ts";
+import { retirePrevious, setSetuid } from "../install.ts";
+import { FETCHED, fetchTool } from "./tools.ts";
 import { BROKER_ACCOUNT, brokerFoldersProblem, brokerPathsOf, keyFileName, placePending, promoteKey, readAdoptedKey } from "../keys.ts";
 import { linkTarget, withUpdateLock } from "../layout.ts";
 import { NETWATCH_LABEL, netPaths } from "../net/paths.ts";
@@ -212,7 +213,7 @@ export function migrateEnv(d: MigrateBoxDeps): MigrateEnv {
       return "needs-you: the settings repo wasn't read yet: taskbox settings repo ORG/REPO names it";
     },
     // Step 4: the tools v3 runs on are v2.6.1's copies, each checked against v3's pins; the bin/ links
-    // must resolve into this install's app. A pin that differs is said: the next update brings it.
+    // must resolve into this install's app. A pin that differs is fetched; Tailscale's is said.
     async tools() {
       const mine = linkTarget(d.p.opt);
       for (const name of ["taskbox", "taskbox-shell"]) {
@@ -229,8 +230,15 @@ export function migrateEnv(d: MigrateBoxDeps): MigrateEnv {
       const v3 = pins(join(d.p.app, "versions.json"));
       const v2 = pins(join(keptAppOf(d.p.app), "versions.json"));
       if (!v3 || !v2) return "needs-you: the tool pins couldn't be compared; taskbox update brings v3's own";
+      // Each tool whose pin differs is fetched and moved in (migrate/tools.ts), under the update lock.
       const off = toolsDiffer(v2, v3);
-      return off.length ? `needs-you: ${off.join(", ")} differ${off.length === 1 ? "s" : ""} from v3's pin: taskbox update brings ${off.length === 1 ? "it" : "them"}` : undefined;
+      for (const name of FETCHED) {
+        if (!off.includes(name)) continue;
+        await locked(async () => (await fetchTool({ sys: d.sys, setuid: (path) => setSetuid(d.sys, path, root === 0) }, mine!, name, v3[name]!), undefined))();
+        d.log(`fetched ${name} ${v3[name]!.version ?? ""}, v3's pin`);
+      }
+      const left = off.filter((n) => !(FETCHED as readonly string[]).includes(n));
+      return left.length ? `needs-you: ${left.join(", ")} differ${left.length === 1 ? "s" : ""} from v3's pin: taskbox update brings ${left.length === 1 ? "it" : "them"}` : undefined;
     },
     // Step 5: the pool accounts and _taskboxnet, as an install makes them, non-interactive. People are
     // an install's, with a password typed at the prompt, so none is made here.

@@ -562,3 +562,67 @@ describe("the update lock around the steps that move files or launchd jobs", () 
     expect(existsSync(lock)).toBe(false);
   });
 });
+
+describe("step 4 fetches a tool whose pin differs from v2.6.1's", () => {
+  const real = (cmd: string, args: string[]) => {
+    if (!["/usr/bin/tar", "/usr/bin/ditto", "/bin/chmod"].includes(cmd)) return undefined;
+    const r = Bun.spawnSync([cmd, ...args], { env: { PATH: "/usr/bin:/bin" } });
+    return { code: r.exitCode, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
+  };
+  const sha = (b: Uint8Array) => require("node:crypto").createHash("sha256").update(b).digest("hex");
+  function archives() {
+    const src = require("node:fs").mkdtempSync(join(require("node:os").tmpdir(), "taskbox-tools-"));
+    mkdirSync(join(src, "tart.app/Contents/MacOS"), { recursive: true });
+    writeFileSync(join(src, "tart.app/Contents/MacOS/tart"), "new tart");
+    writeFileSync(join(src, "softnet"), "new softnet");
+    mkdirSync(join(src, "bun-darwin-aarch64"));
+    writeFileSync(join(src, "bun-darwin-aarch64/bun"), "new bun");
+    Bun.spawnSync(["/usr/bin/tar", "-czf", join(src, "tart.tar.gz"), "-C", src, "tart.app"]);
+    Bun.spawnSync(["/usr/bin/tar", "-czf", join(src, "softnet.tar.gz"), "-C", src, "softnet"]);
+    Bun.spawnSync(["/usr/bin/ditto", "-c", "-k", "--keepParent", join(src, "bun-darwin-aarch64"), join(src, "bun.zip")]);
+    const files = Object.fromEntries(["tart.tar.gz", "softnet.tar.gz", "bun.zip"].map((f) => [f, new Uint8Array(readFileSync(join(src, f)))]));
+    return files;
+  }
+  function install() {
+    const dir = require("node:fs").mkdtempSync(join(require("node:os").tmpdir(), "taskbox-inst-"));
+    mkdirSync(join(dir, "bin/tart.app/Contents/MacOS"), { recursive: true });
+    writeFileSync(join(dir, "bin/tart.app/Contents/MacOS/tart"), "old tart");
+    writeFileSync(join(dir, "bin/bun"), "old bun");
+    mkdirSync(join(dir, "softnet"));
+    writeFileSync(join(dir, "softnet/softnet"), "old softnet");
+    return dir;
+  }
+  const deps = (files: Record<string, Uint8Array>) => {
+    const sys = new FakeSys();
+    sys.responders.push(real);
+    sys.routes.push((_m, url) => {
+      const f = Object.keys(files).find((n) => url.endsWith(`/${n}`));
+      return f ? new Response(files[f]) : undefined;
+    });
+    return { sys, setuid: async (p: string) => void Bun.spawnSync(["/bin/chmod", "4755", p]) };
+  };
+  test("bun and Softnet are renamed over, Softnet setuid; Tart's bundle is swapped whole, the old one kept aside", async () => {
+    const { fetchTool } = await import("../src/migrate/tools.ts");
+    const files = archives();
+    const dir = install();
+    const d = deps(files);
+    await fetchTool(d, dir, "bun", { version: "9.0.0", url: "https://example.com/bun.zip", sha256: sha(files["bun.zip"]!) });
+    await fetchTool(d, dir, "softnet", { version: "9.0.0", url: "https://example.com/softnet.tar.gz", sha256: sha(files["softnet.tar.gz"]!) });
+    await fetchTool(d, dir, "tart", { version: "9.0.0", url: "https://example.com/tart.tar.gz", sha256: sha(files["tart.tar.gz"]!) });
+    expect(readFileSync(join(dir, "bin/bun"), "utf8")).toBe("new bun");
+    expect(readFileSync(join(dir, "softnet/softnet"), "utf8")).toBe("new softnet");
+    expect(require("node:fs").statSync(join(dir, "softnet/softnet")).mode & 0o7777).toBe(0o4755);
+    expect(readFileSync(join(dir, "bin/tart.app/Contents/MacOS/tart"), "utf8")).toBe("new tart");
+    expect(readFileSync(join(dir, "tools/tart-before/Contents/MacOS/tart"), "utf8")).toBe("old tart");
+    expect(existsSync(join(dir, "tools/tart-9.0.0/tart.tar.gz"))).toBe(false);
+  });
+  test("a download that isn't the pinned one, or an http URL, changes nothing", async () => {
+    const { fetchTool } = await import("../src/migrate/tools.ts");
+    const files = archives();
+    const dir = install();
+    await expect(fetchTool(deps(files), dir, "tart", { version: "9.0.0", url: "https://example.com/tart.tar.gz", sha256: "0".repeat(64) })).rejects.toThrow(/doesn't match its pin/);
+    await expect(fetchTool(deps(files), dir, "bun", { version: "9.0.0", url: "http://example.com/bun.zip", sha256: sha(files["bun.zip"]!) })).rejects.toThrow(/https/);
+    expect(readFileSync(join(dir, "bin/tart.app/Contents/MacOS/tart"), "utf8")).toBe("old tart");
+    expect(readFileSync(join(dir, "bin/bun"), "utf8")).toBe("old bun");
+  });
+});
