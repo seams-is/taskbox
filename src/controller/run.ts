@@ -15,26 +15,46 @@ export interface RunResult {
 }
 
 export interface RunOptions {
-  limitMs: number;
+  limitMs: number; // 0: no limit, for a stream ended by the box's last line or by Ctrl-C
   maxBytes: number;
   stdin?: Uint8Array; // the program's whole input; with none it gets no input
   // The few settings a program needs beyond PATH and TERM, from a fixed list: ssh-keygen's security
   // key provider and HOME. Anything else is refused.
   env?: Partial<Record<(typeof EXTRA)[number], string>>;
   cwd?: string; // a folder of the controller's own, for a program that writes where it runs
+  onLine?: (line: string) => void; // each line of stdout as it comes, for a stream; none is kept
 }
+
+// A line longer than this is dropped whole, so a stream can't fill this Mac's memory.
+export const STREAM_LINE_MAX = 1_100_000;
 
 export const EXTRA = ["SSH_SK_PROVIDER", "HOME"] as const;
 
 export type Runner = (argv: string[], o: RunOptions) => Promise<RunResult>;
 
-async function readCapped(stream: ReadableStream<Uint8Array>, max: number, over: () => void): Promise<string> {
+async function readCapped(stream: ReadableStream<Uint8Array>, max: number, over: () => void, onLine?: (line: string) => void): Promise<string> {
   const chunks: Uint8Array[] = [];
   let n = 0;
   const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let part = "";
+  let dropping = false;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    if (onLine) {
+      const lines = (part + dec.decode(value, { stream: true })).split("\n");
+      part = lines.pop() ?? "";
+      for (const l of lines) {
+        if (!dropping) onLine(l);
+        dropping = false;
+      }
+      if (part.length > STREAM_LINE_MAX) {
+        part = "";
+        dropping = true;
+      }
+      continue;
+    }
     if (n + value.length > max) {
       chunks.push(value.subarray(0, Math.max(0, max - n)));
       n = max;
@@ -45,6 +65,7 @@ async function readCapped(stream: ReadableStream<Uint8Array>, max: number, over:
     chunks.push(value);
     n += value.length;
   }
+  if (onLine && part && !dropping) onLine(part);
   return Buffer.concat(chunks).toString("utf8");
 }
 
@@ -59,21 +80,28 @@ export const realRun: Runner = async (argv, o) => {
       p.kill("SIGKILL");
     } catch {}
   };
-  const stopTimer = realClock.after(o.limitMs, () => {
-    timedOut = true;
-    kill();
-  });
+  const stopTimer = o.limitMs
+    ? realClock.after(o.limitMs, () => {
+        timedOut = true;
+        kill();
+      })
+    : () => {};
   // A program that leaves its output open after it is killed doesn't hold the controller either.
   let stopLate: (() => void) | undefined;
   const hardStop = new Promise<"late">((r) => {
-    stopLate = realClock.after(o.limitMs + 2_000, () => r("late"));
+    if (o.limitMs) stopLate = realClock.after(o.limitMs + 2_000, () => r("late"));
   });
   try {
     const out = Promise.all([
-      readCapped(p.stdout, o.maxBytes, () => {
-        tooBig = true;
-        kill();
-      }),
+      readCapped(
+        p.stdout,
+        o.maxBytes,
+        () => {
+          tooBig = true;
+          kill();
+        },
+        o.onLine,
+      ),
       readCapped(p.stderr, 64_000, () => {}),
       p.exited,
     ]);

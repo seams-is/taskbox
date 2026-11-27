@@ -35,6 +35,7 @@ function signedBox(o: { nonces?: string[]; stale?: number; op?: string; ops?: st
   let current = nonces[0]!;
   let stale = o.stale ?? 0;
   const ops = [...(o.ops ?? [])];
+  const followed: string[] = [];
   const seen: { action: string; args: unknown; subject: string }[] = [];
   const refused: string[] = [];
   box.hook = async (line) => {
@@ -44,8 +45,18 @@ function signedBox(o: { nonces?: string[]; stale?: number; op?: string; ops?: st
       return { stdout: env({ command: "nonce", result: { subject: ws[1], nonce: current } }), code: 0 };
     }
     if (ws[0] === "op" && ws[1] === "show") {
-      const state = ops.shift() ?? "succeeded";
-      return { stdout: env({ command: "op.show", lines: [`${ws[2]} ${state}`], result: { op: { id: ws[2], state } } }), code: 0 };
+      // The box's stream: one envelope a change, then the final one; or the timeout's exit 3.
+      followed.push(line);
+      const left = [...ops];
+      ops.length = 0;
+      const timeout = ws.includes("--timeout");
+      const states = timeout ? left : [...left, "succeeded"];
+      const lines = states.map((state, i) => {
+        const last = i === states.length - 1;
+        const exit = last ? (state === "succeeded" ? 0 : timeout ? 3 : 1) : 0;
+        return JSON.stringify(envelope({ command: "op.show", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit, result: { op: { id: ws[2], state } }, lines: [`${ws[2]} ${state}`], final: last }));
+      });
+      return { stdout: `${lines.join("\n")}\n`, code: 0 };
     }
     const at = ws.indexOf("--signed");
     if (at < 0) return undefined;
@@ -71,7 +82,7 @@ function signedBox(o: { nonces?: string[]; stale?: number; op?: string; ops?: st
   };
   const signer: Signer = async (m) => ({ ok: true, signature: sshsig(owner, m, { namespace: CONTROL_NS, flags: 1 }) });
   d.signerFor = () => signer;
-  return { w, d, box, owner, seen, refused };
+  return { w, d, box, owner, seen, refused, followed };
 }
 
 describe("--signed sending", () => {
@@ -118,22 +129,48 @@ describe("--signed sending", () => {
     expect(box.sent.some((l) => l.includes("--signed"))).toBe(false);
   }, CEILING);
 
-  test("a signed drain is followed by op show until it ends; --detach returns at once", async () => {
-    const { d, box } = signedBox({ op: "op_01JD8Q000000000000000000DR", ops: ["running", "running", "succeeded"] });
+  test("a signed drain is followed by the box's own op show -w stream until it ends; --detach returns at once", async () => {
+    const { d, followed } = signedBox({ op: "op_01JD8Q000000000000000000DR", ops: ["running", "running"] });
     const r = await runLine(d, ["drain"]);
     expect(r.code).toBe(0);
+    expect(followed).toEqual(["op show op_01JD8Q000000000000000000DR -w --json --answers 4"]);
     expect(d.printed).toContain("Following op_01JD8Q000000000000000000DR. Ctrl-C stops following; the box carries on. taskbox op show op_01JD8Q000000000000000000DR -w --box taskbox-1 follows it again.");
-    expect(box.sent.filter((l) => l.startsWith("op show"))).toHaveLength(3);
+    expect(d.printed.filter((l) => l.startsWith("op_01JD8Q000000000000000000DR "))).toEqual(["op_01JD8Q000000000000000000DR running", "op_01JD8Q000000000000000000DR succeeded"]);
     const q = signedBox({ op: "op_01JD8Q000000000000000000DR" });
     expect((await runLine(q.d, ["drain", "--detach"])).code).toBe(0);
-    expect(q.box.sent.some((l) => l.startsWith("op show"))).toBe(false);
+    expect(q.followed).toEqual([]);
   }, CEILING);
 
-  test("--timeout running out while following exits 3, and the drain carries on", async () => {
-    const { d } = signedBox({ op: "op_01JD8Q000000000000000000DR", ops: ["running", "running", "running", "running", "running"] });
+  test("--timeout goes to the box's op show: exit 3, and the drain carries on", async () => {
+    const { d, followed } = signedBox({ op: "op_01JD8Q000000000000000000DR", ops: ["running", "running"] });
     const r = await runLine(d, ["drain", "--timeout", "6s"]);
     expect(r.code).toBe(3);
-    expect(r.lines.join(" ")).toContain("op_01JD8Q000000000000000000DR is still running at taskbox-1, and --timeout ran out here.");
+    expect(followed[0]).toBe("op show op_01JD8Q000000000000000000DR -w --timeout 6s --json --answers 4");
+  }, CEILING);
+
+  test("--json while following prints JSON Lines: the start, each change, the end", async () => {
+    const { d } = signedBox({ op: "op_01JD8Q000000000000000000DR", ops: ["running"] });
+    await runLine(d, ["drain", "--json"]);
+    const lines = d.printed.map((l) => JSON.parse(l));
+    expect(lines.map((e) => [e.command, e.final])).toEqual([["drain", true], ["op.show", false], ["op.show", true]]);
+  }, CEILING);
+
+  test("op show -w from the controller reads the box's stream; with --box all it is refused", async () => {
+    const { d, followed } = signedBox({ ops: ["running"] });
+    expect((await runLine(d, ["op", "show", "op_01JD8Q000000000000000000DR", "-w"])).code).toBe(0);
+    expect(followed).toEqual(["op show op_01JD8Q000000000000000000DR -w --json --answers 4"]);
+    expect((await runLine(d, ["op", "show", "op_01JD8Q000000000000000000DR", "-w", "--box", "all"])).code).toBe(2);
+  }, CEILING);
+
+  test("a stream that ends with no final line, or with a line the schema refuses, stops", async () => {
+    const { d, box } = signedBox();
+    const half = JSON.stringify(envelope({ command: "op.show", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: 0, result: {}, lines: ["x"], final: false }));
+    box.hook = async (l) => (l.startsWith("op show") ? { stdout: `${half}\n`, code: 0 } : undefined);
+    const r = await runLine(d, ["op", "show", "op_01JD8Q000000000000000000DR", "-w"]);
+    expect(r.code).toBe(1);
+    expect(r.lines.join(" ")).toContain("stream ended before its last line");
+    box.hook = async (l) => (l.startsWith("op show") ? { stdout: `${half}\n{"answers":4}\n`, code: 0 } : undefined);
+    expect((await runLine(d, ["op", "show", "op_01JD8Q000000000000000000DR", "-w"])).lines.join(" ")).toContain("doesn't read");
   }, CEILING);
 
   test("a signed line the box hasn't answered in time exits 3 and never invites a second signature", async () => {

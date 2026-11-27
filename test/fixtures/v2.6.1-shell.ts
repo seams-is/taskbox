@@ -1,4 +1,4 @@
-// v2.6.1's own agent shell, verbatim from public main (1d3ba77), for the laptop's N-1 contract test.
+// v2.6.1's own agent shell, verbatim from public main (1d3ba77), for the controller's N-1 contract test.
 // The remote user's login shell. It runs taskbox's commands that read the box, and hello for a
 // controller, and nothing else. No
 // other program, no su, no dotfile, no PATH. So a program that reaches remote over Tailscale SSH

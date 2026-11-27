@@ -47,7 +47,7 @@ export function helloAnswer(installed: Installed | undefined, installId: string 
 }
 
 // The loop's outcomes for a job (loop.ts), and the other word lists: one list, in the schema module
-// the box and the laptop share (schema.ts).
+// the box and the controller share (schema.ts).
 export { KINDS, OUTCOMES, RESULTS, STATUSES, WORDS };
 
 // The state's word and plain facts. The screen's sentences are left out: they can name the box's
@@ -143,7 +143,7 @@ export function loadReportAnswer(r: LoadReport) {
   return {
     answers: ANSWERS,
     kind: "load-report",
-    session: { n: r.session.n, only: r.session.only, from: time(r.from), to: time(r.to), running: r.running },
+    session: { n: r.session.n, only: r.session.only, pattern: r.session.pattern ?? null, from: time(r.from), to: time(r.to), running: r.running },
     loadJobs: r.loadJobs,
     realJobs: r.realJobs,
     load: crit(r.load),
@@ -154,6 +154,9 @@ export function loadReportAnswer(r: LoadReport) {
     endedBy: r.session.why ? text(r.session.why, 160) : null,
     checklist: r.checklist.map((x) => text(x, 120)),
     reads: r.reads ?? null,
+    sizes: r.sizes,
+    tools: { withCache: r.tools.withCache, without: r.tools.without, generations: r.tools.generations.map((g) => text(g, 40)) },
+    network: { load: r.network.load ?? null, real: r.network.real ?? null },
   };
 }
 

@@ -7,16 +7,21 @@ import { beatPass } from "./beat.ts";
 import { connectPass } from "./connect.ts";
 import { controlPass } from "./control.ts";
 import { pfStartsPass } from "../pfstarts.ts";
+import { capsPass } from "../workspace/caps.ts";
 import { endingPass } from "./ending.ts";
 import { gpuPass } from "./gpu.ts";
 import { keepingPass } from "./keeping.ts";
+import { loadPass } from "./load.ts";
 import { opsPass } from "./ops.ts";
 import { probePass } from "./probe.ts";
 import { requestsPass } from "./requests.ts";
+import { settingsPass } from "./settings.ts";
+import { updatePass } from "./update.ts";
 import { loginsPass, loopWatchPass, tailscaledPass, workspacesPass } from "./v2.ts";
 
 const placed: readonly PlacedMaker[] = [
   pfStartsPass,
+  capsPass,
   accountsPass,
   beatPass,
   connectPass,
@@ -24,9 +29,12 @@ const placed: readonly PlacedMaker[] = [
   endingPass,
   gpuPass,
   keepingPass,
+  loadPass,
   opsPass,
   probePass,
   requestsPass,
+  settingsPass,
+  updatePass,
   loginsPass,
   loopWatchPass,
   tailscaledPass,

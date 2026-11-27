@@ -7,32 +7,42 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { folderOk, GATE_NPROC, gateArgs, gateFor, type GateInputs, lowerNproc } from "../src/gate.ts";
 import { writePoolRecord } from "../src/pin.ts";
-import { advance, end, onBoot, pause, PHASES, type Phase, type WsState } from "../src/workspace/model.ts";
+import { noApprovers, trustFirst } from "../src/core/approvers.ts";
+import { deny, emptyState, end, ended, onBoot, pause, type State, STATES, type WsState } from "../src/workspace/model.ts";
 import { stateText } from "../src/workspace/store.ts";
-import { approvedState, BOOT1, BOOT2, box, ctx, ok, T } from "./ws-helpers.ts";
+import { keyPair } from "./sshsig.ts";
+import { approved, asked, BOOT1, BOOT2, ok, readyState, RULES, started, T } from "./ws-helpers.ts";
 
 const me = process.getuid!();
 const POOL_UID = 471;
 const repo = join(import.meta.dir, "..");
 
-// nova-1 in each phase, with the guard's heartbeat now and this boot's stamp.
-function inPhase(phase: Phase): WsState {
-  const c = ctx();
-  let s = approvedState(c);
-  if (phase === "requested") s = { ...s, workspaces: s.workspaces.map((w) => ({ ...w, phase: "requested", user: null, approvedAt: null, order: null })) };
-  if (["active", "saving", "paused", "done"].includes(phase)) s = advance({ ...s, boot: BOOT1 }, box(), c.nonce);
-  if (phase === "saving") s = ok(pause(s, { name: "nova-1" }, c));
-  if (phase === "paused") s = onBoot({ ...s, boot: BOOT2 }, BOOT1, c);
-  if (phase === "done") s = ok(end(s, { name: "nova-1" }, c));
-  if (phase === "denied") s = { ...s, workspaces: s.workspaces.map((w) => ({ ...w, phase: "denied", user: null, denied: "", deniedBy: "nova" })) };
-  return { ...s, boot: BOOT1, beat: T };
+// nova-1 in each state, with the guard's heartbeat now and this boot's stamp.
+function inState(state: State): WsState | undefined {
+  const r = readyState();
+  const by: Partial<Record<State, () => WsState>> = {
+    requested: () => asked(emptyState()),
+    approved: () => approved(asked(emptyState()), "nova-1", "whole"),
+    starting: () => started(approved(asked(emptyState()), "nova-1", "whole")),
+    ready: () => r,
+    saving: () => ok(pause(r, { name: "nova-1" }, RULES, T)),
+    paused: () => onBoot({ ...r, boot: BOOT2 }, BOOT1, T).state,
+    ending: () => ok(end(r, { name: "nova-1", by: "owner" }, T)),
+    ended: () => ended(ok(end(r, { name: "nova-1", by: "owner" }, T)), "nova-1", T).state,
+    denied: () => ok(deny(asked(emptyState()), { name: "nova-1", reason: "" }, T)),
+    withdrawn: () => ok(end(asked(emptyState()), { name: "nova-1", by: "agent", agent: "nova" }, T)),
+  };
+  const s = by[state]?.();
+  return s ? { ...s, boot: BOOT1, beat: T } : undefined;
 }
+const inPhase = (state: State) => inState(state)!;
 
 const inputs = (o: Partial<GateInputs> = {}): GateInputs => ({
   uid: POOL_UID,
   pool: { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } },
   folderOk: true,
-  read: { kind: "ok", state: inPhase("active") },
+  read: { kind: "ok", state: inPhase("ready") },
+  keyPinned: true,
   boot: BOOT1,
   now: T,
   freeBytes: 500e9,
@@ -45,23 +55,27 @@ const why = (o: Partial<GateInputs>) => {
 };
 
 describe("the gate's decision", () => {
-  test("every phase: open only while Active or Saving", () => {
-    for (const ph of PHASES) {
-      const s = inPhase(ph);
-      expect({ ph, phase: s.workspaces[0]!.phase }).toEqual({ ph, phase: ph });
-      expect({ ph, open: gateFor(inputs({ read: { kind: "ok", state: s } })).open }).toEqual({ ph, open: ph === "active" || ph === "saving" });
+  test("every state: open only while ready or saving", () => {
+    for (const st of STATES) {
+      const s = inState(st);
+      if (!s) continue;
+      expect({ st, state: s.workspaces[0]!.state }).toEqual({ st, state: st });
+      expect({ st, open: gateFor(inputs({ read: { kind: "ok", state: s } })).open }).toEqual({ st, open: st === "ready" || st === "saving" });
     }
-    expect(why({ read: { kind: "ok", state: inPhase("paused") } })).toBe("nova-1 is Paused.");
+    expect(why({ read: { kind: "ok", state: inPhase("paused") } })).toBe("nova-1 is paused.");
+  });
+  test("with no approver key pinned at the box, it says how to pin one", () => {
+    expect(why({ keyPinned: false })).toBe("workspaces need an approver key on this box. An admin types taskbox key trust approver at the box.");
   });
   test("a stale state: no guard heartbeat within 3 minutes, either way", () => {
-    const s = inPhase("active");
+    const s = inPhase("ready");
     expect(why({ now: T + 3 * 60_000 })).toBe("open");
     expect(why({ now: T + 3 * 60_000 + 1 })).toMatch(/stale/);
     expect(why({ now: T - 3 * 60_000 - 1 })).toMatch(/stale/);
     expect(why({ read: { kind: "ok", state: { ...s, beat: null } } })).toMatch(/stale/);
   });
   test("the wrong boot, or no boot", () => {
-    expect(why({ boot: BOOT2 })).toBe("nova-1 went Active before the last restart.");
+    expect(why({ boot: BOOT2 })).toBe("nova-1 went ready before the last restart.");
     expect(why({ boot: undefined })).toMatch(/boot can't be read/);
   });
   test("free disk: below the floor, unread, or the floor unknown", () => {
@@ -83,8 +97,8 @@ describe("the gate's decision", () => {
     expect(why({ pool: { made: { "taskbox-agent": { uid: POOL_UID } }, groups: {} } })).toMatch(/isn't one of/);
   });
   test("another account's open workspace opens nothing here", () => {
-    const s = inPhase("active");
-    const other = { ...s, workspaces: s.workspaces.map((w) => ({ ...w, user: "taskbox-ws2" })), accounts: { nova: "taskbox-ws2" } };
+    const s = inPhase("ready");
+    const other = { ...s, workspaces: s.workspaces.map((w) => ({ ...w, user: "taskbox-ws2" })), accounts: { "taskbox-ws2": { agent: "nova", usedAt: T } } };
     expect(why({ read: { kind: "ok", state: other } })).toBe("No workspace is open for taskbox-ws1.");
   });
 });
@@ -138,7 +152,10 @@ function plantedBox(state: WsState | string | null, o: { stateMode?: number } = 
   if (state !== null) writeFileSync(stateFile, typeof state === "string" ? state : stateText(state), { mode: o.stateMode ?? 0o644 });
   if (o.stateMode !== undefined) chmodSync(stateFile, o.stateMode);
   writePoolRecord({ chown: () => {}, rootUid: me }, join(stateDir, "pool.json"), { made: { "taskbox-ws1": { uid: POOL_UID } }, groups: { "taskbox-ws1": { gid: POOL_UID } } });
-  return { dir, home, marker, evil, stateFile, poolRecord: join(stateDir, "pool.json") };
+  const pinned = trustFirst(noApprovers(), keyPair().key, T, "screen");
+  if (!pinned.ok) throw new Error(pinned.why);
+  writeFileSync(join(stateDir, "approvers.json"), JSON.stringify(pinned.state), { mode: 0o644 });
+  return { dir, home, marker, evil, stateFile, poolRecord: join(stateDir, "pool.json"), approvers: join(stateDir, "approvers.json") };
 }
 
 const gateLine = () => readFileSync(join(repo, "src/gate.ts"), "utf8").split("\n")[0]!;
@@ -147,7 +164,7 @@ const gateLine = () => readFileSync(join(repo, "src/gate.ts"), "utf8").split("\n
 // paths, the clock, the boot and the user ID are the test's: the gate's code is the box's.
 function runGate(b: ReturnType<typeof plantedBox>, args: string[], o: { line?: string; nproc?: number; body?: string } = {}) {
   const shebang = (o.line ?? gateLine()).replace("/opt/taskbox/bin/bun", process.execPath).replace("/opt/taskbox/app/bunfig.run.toml", join(repo, "bunfig.run.toml"));
-  const over = `{ uid: ${POOL_UID}, rootUid: ${me}, state: ${JSON.stringify(b.stateFile)}, poolRecord: ${JSON.stringify(b.poolRecord)}, home: () => ${JSON.stringify(b.home)}, boot: () => ${JSON.stringify(BOOT1)}, floorGB: () => 1, now: () => ${T}, nproc: ${o.nproc ?? GATE_NPROC} }`;
+  const over = `{ uid: ${POOL_UID}, rootUid: ${me}, state: ${JSON.stringify(b.stateFile)}, poolRecord: ${JSON.stringify(b.poolRecord)}, approvers: ${JSON.stringify(b.approvers)}, home: () => ${JSON.stringify(b.home)}, boot: () => ${JSON.stringify(BOOT1)}, floorGB: () => 1, now: () => ${T}, nproc: ${o.nproc ?? GATE_NPROC} }`;
   const body = o.body ?? `import { gate } from ${JSON.stringify(join(repo, "src/gate.ts"))};\nprocess.exit(await gate(process.argv.slice(2), ${over}));\n`;
   const script = join(b.dir, "gate");
   writeFileSync(script, `${shebang}\n${body}`, { mode: 0o755 });
@@ -171,9 +188,9 @@ describe("the gate, run for real", () => {
     expect(JSON.parse(out)).toEqual({ env: { HOME: "/var/empty" }, cwd: "/" });
   });
 
-  test.serial("a Paused account with a planted .bunfig.toml, .env and BUN_OPTIONS: one line, exit 1, and no planted code runs", () => {
+  test.serial("a paused account with a planted .bunfig.toml, .env and BUN_OPTIONS: one line, exit 1, and no planted code runs", () => {
     const { r, out, ran } = runGate(plantedBox(inPhase("paused")), ["-c", "id"]);
-    expect(out).toBe("taskbox: nova-1 is Paused.\n");
+    expect(out).toBe("taskbox: nova-1 is paused.\n");
     expect(r.exitCode).toBe(1);
     expect(ran).toBe(false);
   });
@@ -184,16 +201,16 @@ describe("the gate, run for real", () => {
   });
 
   test.serial("a state others can write, a state that doesn't parse, and no state: closed", () => {
-    expect(runGate(plantedBox(inPhase("active"), { stateMode: 0o666 }), ["-c", "id"]).out).toBe("taskbox: The workspaces state can't be used (others can write the state), so this account opens no shell.\n");
+    expect(runGate(plantedBox(inPhase("ready"), { stateMode: 0o666 }), ["-c", "id"]).out).toBe("taskbox: The workspaces state can't be used (others can write the state), so this account opens no shell.\n");
     expect(runGate(plantedBox("{"), ["-c", "id"]).out).toBe("taskbox: The workspaces state can't be used (the state doesn't parse), so this account opens no shell.\n");
     const none = runGate(plantedBox(null), ["-c", "id"]);
     expect(none.out).toBe("taskbox: this box has no workspaces yet, so this account opens no shell.\n");
     expect(none.r.exitCode).toBe(1);
   });
 
-  test.serial("Active: the one command runs in the account's home, with its own plain environment and the hard process limit lowered", () => {
+  test.serial("Ready: the one command runs in the account's home, with its own plain environment and the hard process limit lowered", () => {
     const want = nprocNow() - 1;
-    const b = plantedBox(inPhase("active"));
+    const b = plantedBox(inPhase("ready"));
     const { r, out, ran } = runGate(b, ["-c", 'ulimit -Hu; pwd; /usr/bin/env | /usr/bin/sort; exit 7'], { nproc: want });
     expect(r.exitCode).toBe(7);
     const [limit, cwd, ...env] = out.trim().split("\n");

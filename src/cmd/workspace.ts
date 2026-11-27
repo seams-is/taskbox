@@ -1,88 +1,220 @@
-// Workspaces. taskbox workspace clear AGENT is root's, at the box, and taskbox
-// workspace end NAME ends the agent's own workspace. The agent's other
-// verbs (queue, wait, progress, deny, signed) and workspaces are as they stand: each
-// checks every word with workspace/agent.ts's own parser, in the agent shell and again here.
-import type { BoxCtx, CommandSpec } from "../command.ts";
+// Workspaces: an agent asks for one, the owner approves, and the agent works in a pool account on
+// the box (workspace/model.ts). The agent's steps are unsigned requests; the owner's approve, pause,
+// resume and end come signed from the controller. workspace clear is an admin's, at the box.
+import type { BoxCtx, CommandSpec, Outcome } from "../command.ts";
+import { EXIT } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
+import { CLAIM, FINGERPRINT, PROOF } from "../workspace/claim.ts";
+import { AGENT, cleanWords, isSize, isState, NAME } from "../workspace/model.ts";
+import { parseWindow, RULE_ID } from "../workspace/standing.ts";
 
-async function agentCommand(c: BoxCtx): Promise<number> {
-  const { join } = await import("node:path");
-  const { loadConfig } = await import("../config.ts");
-  const { uidOf } = await import("../accounts.ts");
-  const { readInstallId } = await import("../answers.ts");
-  const { readPin } = await import("../pin.ts");
-  const { parseAgent, runAgent } = await import("../workspace/agent.ts");
-  type AgentDeps = import("../workspace/agent.ts").AgentDeps;
-  const { floorWhy, parseBoot } = await import("../workspace/model.ts");
-  const { freeBytesAt, readStateFile } = await import("../workspace/read.ts");
-  const { boxFacts, readWord, workspacesJson, workspacesLines } = await import("../workspace/show.ts");
-  const { say } = c;
-  const p = c.p;
-  const cmd = c.spec.agent ?? c.spec.path[0]!;
-  const parsed = parseAgent([cmd, ...c.args]);
-  if ("no" in parsed) {
-    say(c.args.includes("--json") ? JSON.stringify({ ok: false, said: parsed.no }) : parsed.no);
-    return 1;
-  }
-  let cfg: ReturnType<typeof loadConfig> | undefined;
-  try {
-    cfg = loadConfig(p.app);
-  } catch {}
-  const agent = cfg?.accounts.agent;
-  if (parsed.cmd === "workspaces") {
-    const agentUid = agent !== undefined ? await uidOf(c.ops.sys, agent).catch(() => undefined) : undefined;
-    const disk = new Map<string, number | undefined>();
-    const read = readStateFile(p.workspaces, 0);
-    // Disk use only as root: each workspace account's home is its own, at mode 700. du follows no link.
-    if (c.uid === 0 && read.kind === "ok") {
-      for (const u of new Set(read.state.workspaces.map((w) => w.user).filter((u): u is string => u !== null))) {
-        const r = await c.ops.sys.run("/usr/bin/du", ["-s", "-k", "-x", join("/Users", u)], { timeoutMs: 60_000 }).catch(() => ({ code: 1, stdout: "" }));
-        const m = /^(\d+)\s/.exec(r.stdout);
-        disk.set(u, r.code === 0 && m ? Number(m[1]) * 1024 : undefined);
-      }
-    }
-    const inputs = { read, now: c.ops.sys.now(), disk: (u: string) => disk.get(u), word: (n: string) => readWord(p.workspaceProgress, n, agentUid), box: boxFacts(readInstallId(c.own.installId), readPin(p.approverPin)) };
-    if (parsed.json) say(workspacesJson(inputs));
-    else for (const l of workspacesLines(inputs)) say(l);
-    return read.kind === "ok" || read.kind === "missing" ? 0 : 1;
-  }
-  const d: AgentDeps = {
-    spool: p.workspaceSpool,
-    state: p.workspaces,
-    progress: p.workspaceProgress,
-    rootUid: 0,
-    uid: c.uid,
-    now: () => c.ops.sys.now(),
-    sleep: (ms) => c.ops.sys.sleep(ms),
-    boot: () => {
-      const r = Bun.spawnSync(["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"], { env: {}, stdin: "ignore", stderr: "ignore" });
-      return r.exitCode === 0 ? parseBoot(r.stdout.toString()) : undefined;
-    },
-    // The gate reads its own home; the agent account may not be able to, so /Users, on the same volume, stands in.
-    floor: (user, n) => floorWhy(freeBytesAt(join("/Users", user)) ?? freeBytesAt("/Users"), cfg?.minFreeDiskGB, n),
-    out: say,
-  };
-  return runAgent(parsed, d);
-}
+const ID = (v: string) => NAME.test(v);
+const words = (v: string) => cleanWords(v) === v.replace(/\s+/g, " ").trim() && cleanWords(v) !== undefined;
+const run = (name: "requestRun" | "listRun" | "statusRun" | "waitRun" | "progressRun" | "endRun" | "denyRun" | "connectRun" | "ruleListRun") => async (c: BoxCtx) => (await import("../workspace/cmd.ts"))[name](c);
 
-const AGENT_VERBS: [string, string][] = [
-  ["queue", "Asks for a workspace: --as AGENT --why WORDS."],
-  ["wait", "Waits for a workspace to be ready or end."],
-  ["progress", "Says where the agent is, and hears whether to carry on, save or pause."],
-  ["deny", "Says no to a workspace, for the owner's laptop."],
-  ["signed", "Carries the owner's signed step."],
-];
+// The owner's steps run only signed: at the box there is nobody to sign for.
+const signedOnly = (verb: string) => async (c: BoxCtx): Promise<Outcome> => {
+  const line = `taskbox workspace ${verb} needs an approver key's signature: run it from the controller.`;
+  c.say(line);
+  return { exit: EXIT.failed, error: { code: "denied", message: line, fix: null, who: null } };
+};
 
 export const commands: CommandSpec[] = [
   {
+    path: ["workspace", "request"],
+    summary: "Asks for a workspace: --as AGENT, --size light, heavy or whole, and --why.",
+    who: ["agent"],
+    flags: ["json"],
+    options: [
+      { name: "--as", value: "AGENT", check: (v) => AGENT.test(v) },
+      { name: "--size", value: "SIZE", check: isSize },
+      { name: "--why", value: "TEXT", check: words },
+      // The claim key's public half, which the controller makes and keeps; at the box, the request makes one.
+      { name: "--claim", value: "KEY", check: (v) => CLAIM.test(v) },
+    ],
+    check: (p) => (p.opts.as === undefined || p.opts.why === undefined ? "workspace request needs --as AGENT and --why TEXT" : undefined),
+    shell: true,
+    run: run("requestRun"),
+  },
+  {
+    path: ["workspace", "list"],
+    summary: "Every workspace: agent, size, account, state and why.",
+    who: ["anyone"],
+    flags: ["json", "watch"],
+    options: [{ name: "--state", value: "STATE", check: isState }],
+    check: (p) => (p.flags.json && p.flags.watch ? "-w is for the text form; --json gives one answer" : undefined),
+    shell: true,
+    run: run("listRun"),
+  },
+  {
+    path: ["workspace", "status"],
+    summary: "One workspace: its state and why, the room it holds, and its agent's last words.",
+    who: ["anyone"],
+    flags: ["json", "watch"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    check: (p) => (p.flags.json && p.flags.watch ? "-w is for the text form; --json gives one answer" : undefined),
+    shell: true,
+    run: run("statusRun"),
+  },
+  {
+    path: ["workspace", "wait"],
+    summary: "Waits for a workspace to be ready, paused or ended, one line per change.",
+    who: ["agent"],
+    flags: ["json", "timeout"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    options: [{ name: "--for", value: "STATE", check: (v) => v === "ready" || v === "ended" || v === "paused" }],
+    shell: true,
+    run: run("waitRun"),
+  },
+  {
+    path: ["workspace", "connect"],
+    summary: "The account a ready workspace runs as; the controller opens the shell there.",
+    who: ["agent"],
+    flags: ["json"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    options: [{ name: "--proof", value: "PROOF", check: (v) => PROOF.test(v) }],
+    shell: true,
+    run: run("connectRun"),
+  },
+  {
+    path: ["workspace", "progress"],
+    summary: "The agent's words on its work; the answer says carry on, save or stop.",
+    who: ["agent", "pool"],
+    flags: ["json"],
+    args: { name: "ID TEXT", min: 2, max: 2 },
+    options: [
+      { name: "--step", value: "N/M", check: (v) => /^(0|[1-9]\d{0,9})\/[1-9]\d{0,9}$/.test(v) && Number(v.split("/")[0]) <= Number(v.split("/")[1]) },
+      { name: "--saved" },
+      { name: "--downsized" },
+      { name: "--can-pause" },
+      { name: "--busy" },
+      { name: "--proof", value: "PROOF", check: (v) => PROOF.test(v) },
+    ],
+    check: (p) => (!ID(p.args[0] ?? "") ? "the first word is the workspace's id, such as nova-3" : !words(p.args[1] ?? "") ? "the words take letters, digits, spaces and plain punctuation, at most 100" : p.opts.downsized && !p.opts.saved ? "--downsized goes with --saved" : p.opts["can-pause"] && p.opts.busy ? "--can-pause and --busy don't go together" : undefined),
+    shell: true,
+    run: run("progressRun"),
+  },
+  {
+    path: ["workspace", "end"],
+    summary: "Ends a workspace: the agent its own, or any, signed from the controller. Its files stay.",
+    who: ["agent", "owner"],
+    flags: ["json", "force", "signed"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    options: [{ name: "--proof", value: "PROOF", check: (v) => PROOF.test(v) }],
+    shell: true,
+    unsigned: true,
+    run: run("endRun"),
+  },
+  {
+    path: ["workspace", "approve"],
+    summary: "Approves a request, at the size asked or a smaller one. Signed from the controller.",
+    who: ["owner"],
+    flags: ["json", "signed"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    options: [{ name: "--size", value: "SIZE", check: isSize }],
+    shell: true,
+    run: signedOnly("approve"),
+  },
+  {
+    path: ["workspace", "deny"],
+    summary: "Says no to a request. Unsigned: a denial gives nobody anything.",
+    who: ["owner"],
+    flags: ["json"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    options: [{ name: "--reason", value: "TEXT", check: words }],
+    shell: true,
+    run: run("denyRun"),
+  },
+  {
+    path: ["workspace", "pause"],
+    summary: "Asks the agent to save and pause, or to drop to Light (--to light). --now stops it now. Signed.",
+    who: ["owner"],
+    flags: ["json", "signed", "yes"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    options: [
+      { name: "--to", value: "SIZE", check: (v) => v === "light" },
+      { name: "--now" },
+    ],
+    check: (p) => (p.opts.to !== undefined && p.opts.now !== undefined ? "--to light and --now don't go together" : undefined),
+    shell: true,
+    run: signedOnly("pause"),
+  },
+  {
+    path: ["workspace", "resume"],
+    summary: "Puts a paused workspace back in the queue at its size. Signed from the controller.",
+    who: ["owner"],
+    flags: ["json", "signed"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    shell: true,
+    run: signedOnly("resume"),
+  },
+  {
+    path: ["workspace", "jump"],
+    summary: "Moves an approved workspace to the front of its queue. Interrupts nothing. Signed.",
+    who: ["owner"],
+    flags: ["json", "signed"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    shell: true,
+    run: signedOnly("jump"),
+  },
+  {
+    path: ["workspace", "rush"],
+    summary: "Front of the queue, and what stands in its way saves and steps aside. --force also stops CI's jobs in its way. Signed.",
+    who: ["owner"],
+    flags: ["json", "signed", "force", "yes"],
+    args: { name: "ID", min: 1, max: 1, check: ID },
+    shell: true,
+    run: signedOnly("rush"),
+  },
+  {
+    path: ["workspace", "rule", "add"],
+    summary: "A standing rule: an agent's matching requests approve themselves. Signed, then confirm at the box.",
+    who: ["owner"],
+    flags: ["json", "signed"],
+    options: [
+      { name: "--agent", value: "AGENT", check: (v) => AGENT.test(v) },
+      { name: "--size", value: "SIZE", check: (v) => v === "light" || v === "heavy" },
+      { name: "--window", value: "HH:MM-HH:MM", check: (v) => parseWindow(v) !== undefined },
+      { name: "--expires", value: "DURATION", check: (v) => /^([1-9]|[12]\d|30)d$|^([1-9]\d{0,2})h$/.test(v) },
+      { name: "--key", value: "FINGERPRINT", check: (v) => FINGERPRINT.test(v) },
+    ],
+    check: (p) => (["agent", "size", "window", "expires"].some((k) => p.opts[k] === undefined) ? "rule add needs --agent, --size, --window and --expires (at most 30d)" : undefined),
+    shell: true,
+    run: signedOnly("rule add"),
+  },
+  {
+    path: ["workspace", "rule", "list"],
+    summary: "The standing rules: agent, size, window, expiry, uses, claim key and signer.",
+    who: ["anyone"],
+    flags: ["json"],
+    shell: true,
+    run: run("ruleListRun"),
+  },
+  {
+    path: ["workspace", "rule", "delete"],
+    summary: "Removes a standing rule at once. Signed.",
+    who: ["owner"],
+    flags: ["json", "signed"],
+    args: { name: "ID", min: 1, max: 1, check: (v) => RULE_ID.test(v) },
+    shell: true,
+    run: signedOnly("rule delete"),
+  },
+  {
     path: ["workspace", "clear"],
-    summary: "Deletes an agent's workspace files and frees its account, after a typed yes. At the box.",
-    who: ["admin"],
-    args: { name: "AGENT", min: 1, max: 1, check: (v) => /^[a-z][a-z0-9]{0,15}$/.test(v) },
-    root: true,
+    summary: "Deletes the files of an agent's pool account, after a typed yes: at the box, or signed from the controller.",
+    who: ["admin", "owner"],
+    flags: ["signed", "yes", "json"],
+    args: { name: "AGENT", min: 1, max: 1, check: (v) => AGENT.test(v) },
+    // The owner's comes signed through the agent shell; unsigned, an admin at the box runs it through
+    // sudo (cli.ts), and nobody else.
+    shell: true,
     typed: true,
     did: "Ran workspace clear.",
     async run(c) {
+      if (c.uid !== 0) {
+        c.say("taskbox workspace clear is an admin's at the box, or signed from the controller.");
+        return 1;
+      }
       const { lchownSync } = await import("node:fs");
       const { clear } = await import("../workspace/clear.ts");
       if (await overSsh(c)) {
@@ -92,8 +224,4 @@ export const commands: CommandSpec[] = [
       return clear({ sys: c.ops.sys, say: c.say, ask: c.ask, chown: (path, u, g) => lchownSync(path, u, g), state: c.p.workspaces, poolRecord: c.p.poolRecord, usersDir: "/Users" }, c.args[0]!);
     },
   },
-  // The agent's release, under the workspace noun, so release is free for the signed releases.
-  { path: ["workspace", "end"], summary: "Ends the agent's own workspace.", who: ["agent"], shell: true, raw: true, agent: "release", run: agentCommand },
-  ...AGENT_VERBS.map(([verb, summary]): CommandSpec => ({ path: [verb], summary, who: verb === "deny" || verb === "signed" ? ["owner"] : ["agent"], shell: true, raw: true, run: agentCommand })),
-  { path: ["workspaces"], summary: "Every workspace, with its agent, state and reason.", who: ["anyone"], shell: true, raw: true, run: agentCommand },
 ];

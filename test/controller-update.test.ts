@@ -14,8 +14,10 @@ import { readTar, Refused, unpack } from "../src/controller/unpack.ts";
 import { rollback, type Statement, update, updateNote, wrapper } from "../src/controller/update.ts";
 import { readEvents } from "../src/controller/events.ts";
 import { CEILING, deps, runLine, type TestDeps, World } from "./controller-fake.ts";
+import { statementFor } from "./release-fixture.ts";
 
 const SRC = { owner: "example-org", repo: "taskbox-public" };
+const LIST = `https://api.github.com/repos/${SRC.owner}/${SRC.repo}/releases?per_page=100`;
 const sha = (b: Uint8Array | string) => createHash("sha256").update(b).digest("hex");
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
@@ -84,9 +86,10 @@ function publish(d: TestDeps, tag: string, o: { tarball?: Uint8Array; draft?: bo
   const base = `https://github.com/${SRC.owner}/${SRC.repo}/releases/download/${tag}`;
   const tarball = o.tarball ?? releaseFiles(tag);
   const names = ["statement.json", "statement.json.sig", `taskbox-${tag}.tar.gz`];
-  const rel = { tag_name: tag, draft: o.draft ?? false, prerelease: false, assets: names.map((n) => ({ name: n, browser_download_url: o.link ?? `${base}/${n}` })) };
-  for (const u of [`https://api.github.com/repos/${SRC.owner}/${SRC.repo}/releases/latest`, `https://api.github.com/repos/${SRC.owner}/${SRC.repo}/releases/tags/${tag}`]) d.web.set(u, { status: 200, body: JSON.stringify(rel) });
-  const statement: Statement = { format: 1, name: "taskbox", tag, tree: "a".repeat(40), tarball: { name: `taskbox-${tag}.tar.gz`, sha256: sha(tarball) }, source: { pr: 42, mergedAt: "2026-11-17T09:30:00Z", commit: COMMIT } };
+  const rel = { tag_name: tag, draft: o.draft ?? false, prerelease: tag.includes("-rc."), assets: names.map((n) => ({ name: n, browser_download_url: o.link ?? `${base}/${n}` })) };
+  d.web.set(LIST, { status: 200, body: JSON.stringify([rel]) });
+  d.web.set(`https://api.github.com/repos/${SRC.owner}/${SRC.repo}/releases/tags/${tag}`, { status: 200, body: JSON.stringify(rel) });
+  const statement: Statement = { ...statementFor(tag.slice(1), { pr: 42, mergedAt: "2026-11-17T09:30:00Z", commit: COMMIT, minFrom: "2.0.0" }), sha256: sha(tarball) };
   d.web.set(`${base}/statement.json`, { status: 200, body: `${JSON.stringify(statement)}\n` });
   d.web.set(`${base}/statement.json.sig`, { status: 200, body: "-----BEGIN SSH SIGNATURE-----\nfake\n-----END SSH SIGNATURE-----\n" });
   d.web.set(`${base}/taskbox-${tag}.tar.gz`, { status: 200, body: tarball });
@@ -118,11 +121,11 @@ describe("taskbox update", () => {
     // verifyRelease got the three files, the signature's own file, this install's signers and the tag.
     expect(d.verified).toHaveLength(1);
     const v = d.verified[0]!;
-    expect(v.tag).toBe("v2.2.0");
-    expect(v.installed).toBe("v2.1.0");
+    expect(v.want).toBe("v2.2.0");
+    expect(v.installed).toEqual({ version: "v2.1.0" });
     expect(v.signers).toBe(join(d.home.current, "app", "signers", "allowed_signers"));
     expect(new TextDecoder().decode(v.signature)).toContain("SSH SIGNATURE");
-    expect(d.printed.slice(1)).toEqual(["This updates this controller from taskbox v2.1.0 to v2.2.0:", "  Release: v2.2.0", "  PR:      #42 on taskbox's repo", "  Merged:  2026-11-17 09:30 UTC", `  Commit:  0123456 (${COMMIT})`]);
+    expect(d.printed.slice(1)).toEqual(["This updates this controller from taskbox v2.1.0 to v2.2.0:", "  Release: 2.2.0 (stable)", "  PR:      #42 on taskbox's repo", "  Merged:  2026-11-17 09:30 UTC", `  Commit:  0123456 (${COMMIT})`]);
     expect(d.asked).toEqual(["Type yes to install it: "]);
     expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.2.0"));
     const app = join(d.home.releases, "v2.2.0", "app");
@@ -145,7 +148,7 @@ describe("taskbox update", () => {
   test("a release that fails verifyRelease is never unpacked, and nothing is asked", async () => {
     const d = installed();
     publish(d, "v2.2.0");
-    d.verdict = { ok: false, why: "the release isn't signed by the pinned key" };
+    d.verdict = { ok: false, code: "signature", why: "the release isn't signed by the pinned key" };
     const s = await update(d);
     expect(s.code).toBe(1);
     expect(s.lines[1]).toBe("Not installed: the release isn't signed by the pinned key.");
@@ -168,7 +171,7 @@ describe("taskbox update", () => {
     const s = await update(d);
     expect(s.code).toBe(0);
     expect(s.lines[1]).toBe("taskbox v2.1.0 is the newest release.");
-    expect(d.fetched).toEqual([`https://api.github.com/repos/${SRC.owner}/${SRC.repo}/releases/latest`]);
+    expect(d.fetched).toEqual([LIST]);
   }, CEILING);
 
   test("a tarball with a link, a .. path or another kind of entry is refused, and current stays", async () => {
@@ -266,7 +269,8 @@ describe("the public repo's releases", () => {
   test("drafts, other tags and asset links in another form are refused", async () => {
     let d = installed();
     publish(d, "v2.2.0", { draft: true });
-    expect(await findRelease(d.fetch, SRC)).toEqual({ ok: false, why: "odd" });
+    expect(await findRelease(d.fetch, SRC)).toEqual({ ok: false, why: "not-found" });
+    expect(await findRelease(d.fetch, SRC, "v2.2.0")).toEqual({ ok: false, why: "odd" });
     d = installed();
     publish(d, "v2.2.0", { link: "https://example.com/x" });
     expect(await findRelease(d.fetch, SRC)).toEqual({ ok: false, why: "odd" });
@@ -277,6 +281,61 @@ describe("the public repo's releases", () => {
     expect(newer("v2.1.0", "v2.1.0")).toBe(false);
   }, CEILING);
 });
+
+describe("channels and the daily run", () => {
+  // Two releases on the fake GitHub: a stable one and a trial after it.
+  function two(d: TestDeps) {
+    publish(d, "v2.2.0");
+    const stable = JSON.parse(d.web.get(LIST)!.body as string)[0];
+    publish(d, "v2.3.0-rc.1");
+    const rc = JSON.parse(d.web.get(LIST)!.body as string)[0];
+    d.web.set(LIST, { status: 200, body: JSON.stringify([stable, rc]) });
+  }
+
+  test("stable takes the newest stable release; beta takes the trial after it, by semver", async () => {
+    let d = installed();
+    two(d);
+    expect(await findRelease(d.fetch, SRC)).toMatchObject({ ok: true, value: { tag: "v2.2.0" } });
+    expect(await findRelease(d.fetch, SRC, undefined, 15_000, "beta")).toMatchObject({ ok: true, value: { tag: "v2.3.0-rc.1" } });
+    expect(await findRelease(d.fetch, SRC, "v2.3.0-rc.1")).toEqual({ ok: false, why: "off-channel" });
+    d = installed();
+    two(d);
+    writeConfig(d.home, { ...readConfigOk(d), channel: "beta" });
+    const s = await update(d, { check: true });
+    expect(s.lines[1]).toBe("taskbox v2.3.0-rc.1 is out for this controller, which runs v2.1.0.");
+    expect(newer("v2.3.0", "v2.3.0-rc.1")).toBe(true);
+  }, CEILING);
+
+  test("--auto installs with no terminal and no yes, only while self.auto is on", async () => {
+    let d = installed([]);
+    d.tty = false;
+    publish(d, "v2.2.0");
+    const s = await update(d, { auto: true });
+    expect(s.code).toBe(0);
+    expect(d.asked).toEqual([]);
+    expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.2.0"));
+    d = installed([]);
+    d.tty = false;
+    publish(d, "v2.2.0");
+    writeConfig(d.home, { ...readConfigOk(d), auto: false });
+    expect((await update(d, { auto: true })).lines[1]).toBe("This controller updates itself only when self.auto is on.");
+    expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.1.0"));
+  }, CEILING);
+
+  test("the controller's own pin, once made, is what verifies; a release never moves it", async () => {
+    const d = installed();
+    writeFileSync(join(d.home.dir, "allowed_signers"), "# the controller's own pin\n");
+    publish(d, "v2.2.0");
+    await update(d);
+    expect(d.verified[0]!.signers).toBe(join(d.home.dir, "allowed_signers"));
+  }, CEILING);
+});
+
+const readConfigOk = (d: TestDeps) => {
+  const r = readConfig(d.home);
+  if (!r.ok) throw new Error("no config");
+  return r.config;
+};
 
 describe("when taskbox starts", () => {
   test("one line when a newer release exists, looked for at most once a day; nothing installs", async () => {
@@ -357,9 +416,9 @@ describe("taskbox update with the real verifyRelease", () => {
 
   test("another key's signature, or a tarball that isn't the one signed, installs nothing", async () => {
     for (const [o, why] of [
-      [{ other: true }, "Not installed: the release isn't signed by the pinned key."],
-      [{ tamper: true }, "Not installed: the tarball isn't the one the owner signed."],
-      [{ flags: 0 }, "Not installed: the signature doesn't show the owner was present."],
+      [{ other: true }, "Not installed: the release isn't signed by a pinned release key."],
+      [{ tamper: true }, "Not installed: the tarball isn't the one that was signed."],
+      [{ flags: 0 }, "Not installed: the signature doesn't show its signer was present."],
     ] as const) {
       const d = signed(o);
       const s = await update(d);

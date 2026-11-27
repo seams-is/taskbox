@@ -65,7 +65,7 @@ describe("versions: N and N-1", () => {
   test("agree takes the highest both read; a gap of two names who updates", () => {
     expect([agree([4, 3]), agree([5, 4]), agree([3]), agree([6, 5]), agree([2, 1])]).toEqual([4, 4, 3, undefined, undefined]);
     expect(gapError([6, 5]).fix).toBe("update the box");
-    expect(gapError([2, 1]).fix).toBe("update the laptop");
+    expect(gapError([2, 1]).fix).toBe("update the controller");
     expect([versionsOf("4,3"), versionsOf("4"), versionsOf("x"), versionsOf("4,"), versionsOf("0")]).toEqual([[4, 3], [4], undefined, undefined, undefined]);
   });
 

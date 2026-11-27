@@ -1,358 +1,339 @@
-// The workspace rules with no I/O: every move between states and every refusal, the queue, held
-// slots, a restart, a full disk, and the gate's and the guard's readings.
+// The workspace rules with no I/O, on a fixed clock: every move between states and each refusal,
+// expiry and the approval lapse, quiet agents and saves, the queue by size, maxAtOnce from the
+// budget, a Whole never beside another, the free-account rule, held(), a restart and the box's own
+// pauses, and the settings that feed the rules.
 import { describe, expect, test } from "bun:test";
-import { advance, approve, closedUsers, type Ctx, deny, diskPause, emptyState, end, find, held, holdsFor, MAX_AGENTS, MAX_REQUESTS, PHASE_WORD, stateLine, onBoot, openFor, parseBoot, pause, pauseNow, type Phase, progressExit, queue, QUIET_MS, quietFor, release, type Result, resume, saved, whyWaiting, type WsState } from "../src/workspace/model.ts";
-import { approvedState, BOOT1, BOOT2, box, ctx, N, ok, POOL, T } from "./ws-helpers.ts";
+import { CFG } from "./helpers.ts";
+import { checkWorkspaces } from "../src/settings/workspaces.ts";
+import { approve, assign, boxPause, cleared, closedUsers, deny, doFor, emptyState, end, ended, find, held, MAX_WORKSPACES, onBoot, openFor, pause, progress, request, resume, saved, type State, start, stateLine, tick, whyNotStart, type WsState } from "../src/workspace/model.ts";
+import { fitsAtOnce, overSet, rulesOf } from "../src/workspace/rules.ts";
+import { approved, asked, BOOT1, BOOT2, HOUR, MIN, ok, OWNER, POOL, readyIn, readyState, RULES, started, T } from "./ws-helpers.ts";
 
-// nova-1 in each phase, made by the steps that reach it.
-function at(phase: Phase, c = ctx()): WsState {
-  const q = ok(queue(emptyState(), { agent: "nova", size: "whole", why: "Render the launch video" }, c));
-  if (phase === "requested") return q;
-  if (phase === "denied") return ok(deny(q, { name: "nova-1", by: "juno", reason: "after 6pm" }, c));
-  if (phase === "done") return ok(end(q, { name: "nova-1" }, c));
-  const waiting = approvedState(c);
-  if (phase === "waiting") return waiting;
-  const active = advance(waiting, box(), c.nonce);
-  if (phase === "active") return active;
-  if (phase === "saving") return ok(pause(active, { name: "nova-1" }, c));
-  return ok(pauseNow(active, { name: "nova-1" }, c));
+const stateOf = (s: WsState, name = "nova-1") => find(s, name)!.state;
+
+// nova-1 (Whole) in each state the steps reach.
+function at(state: State): WsState {
+  const q = asked(emptyState());
+  if (state === "requested") return q;
+  if (state === "denied") return ok(deny(q, { name: "nova-1", reason: "after 6pm" }, T));
+  if (state === "withdrawn") return ok(end(q, { name: "nova-1", by: "agent", agent: "nova" }, T));
+  if (state === "expired") return tick(q, RULES, T + RULES.requestMs + 1).state;
+  const a = approved(q, "nova-1", "whole");
+  if (state === "approved") return a;
+  const s = started(a);
+  if (state === "starting") return s;
+  const r = readyIn(s, "nova-1");
+  if (state === "ready") return r;
+  if (state === "saving") return ok(pause(r, { name: "nova-1" }, RULES, T));
+  if (state === "paused") return ok(saved(ok(pause(r, { name: "nova-1" }, RULES, T)), { name: "nova-1", agent: "nova" }, T));
+  if (state === "ending") return ok(end(r, { name: "nova-1", by: "owner" }, T));
+  if (state === "ended") return ended(ok(end(r, { name: "nova-1", by: "owner" }, T)), "nova-1", T).state;
+  throw new Error(state);
 }
 
-const STEPS: Record<string, (s: WsState, c: Ctx) => Result> = {
-  approve: (s, c) => approve(s, { name: "nova-1", size: "whole", pool: POOL }, c),
-  deny: (s, c) => deny(s, { name: "nova-1", by: "juno", reason: "" }, c),
-  pause: (s, c) => pause(s, { name: "nova-1" }, c),
-  "pause-now": (s, c) => pauseNow(s, { name: "nova-1" }, c),
-  saved: (s, c) => saved(s, { name: "nova-1", agent: "nova", words: "Saved after frame 1800" }, c),
-  resume: (s, c) => resume(s, { name: "nova-1" }, c),
-  end: (s, c) => end(s, { name: "nova-1" }, c),
-  release: (s, c) => release(s, { name: "nova-1", agent: "nova" }, c),
+type Step = "approve" | "deny" | "pause" | "saved" | "resume" | "agent-end" | "owner-end";
+const STEPS: Record<Step, (s: WsState) => ReturnType<typeof pause>> = {
+  approve: (s) => approve(s, { name: "nova-1", size: "whole", by: OWNER, pool: POOL }, RULES, T),
+  deny: (s) => deny(s, { name: "nova-1", reason: "" }, T),
+  pause: (s) => pause(s, { name: "nova-1" }, RULES, T),
+  saved: (s) => saved(s, { name: "nova-1", agent: "nova" }, T),
+  resume: (s) => resume(s, { name: "nova-1", by: OWNER, pool: POOL }, T),
+  "agent-end": (s) => end(s, { name: "nova-1", by: "agent", agent: "nova" }, T),
+  "owner-end": (s) => end(s, { name: "nova-1", by: "owner" }, T),
 };
 
-// Where each step takes nova-1 from each phase. Missing: refused.
-const MOVES: Record<Phase, Partial<Record<keyof typeof STEPS, Phase>>> = {
-  requested: { approve: "waiting", deny: "denied", end: "done", release: "done" },
-  waiting: { pause: "paused", "pause-now": "paused", end: "done", release: "done" },
-  active: { pause: "saving", "pause-now": "paused", end: "done", release: "done" },
-  saving: { "pause-now": "paused", saved: "paused", end: "done", release: "done" },
-  paused: { resume: "waiting", end: "done", release: "done" },
-  done: {},
+// Where each step takes nova-1 from each state. Missing: refused.
+const MOVES: Record<Exclude<State, "failed">, Partial<Record<Step, State>>> = {
+  requested: { approve: "approved", deny: "denied", "agent-end": "withdrawn", "owner-end": "withdrawn" },
+  approved: { pause: "paused", "agent-end": "withdrawn", "owner-end": "withdrawn" },
+  starting: { pause: "paused", "agent-end": "withdrawn", "owner-end": "withdrawn" },
+  ready: { pause: "saving", "agent-end": "ending", "owner-end": "ending" },
+  saving: { saved: "paused", "agent-end": "ending", "owner-end": "ending" },
+  paused: { resume: "approved", "agent-end": "ended", "owner-end": "ended" },
+  ending: {},
+  ended: {},
   denied: {},
+  expired: {},
+  withdrawn: {},
 };
 
-describe("every move between states", () => {
-  for (const from of Object.keys(MOVES) as Phase[]) {
-    for (const step of Object.keys(STEPS)) {
-      const to = MOVES[from][step];
-      test(`${from}, ${step}: ${to ?? "refused"}`, () => {
-        const s = at(from);
-        const before = find(s, "nova-1")!;
-        const c = ctx(T + 1000, 900);
-        const r = STEPS[step]!(s, c);
-        if (to === undefined) {
-          expect(r.ok).toBe(false);
-          return;
+describe("every step from every state", () => {
+  for (const [from, moves] of Object.entries(MOVES) as [Exclude<State, "failed">, Partial<Record<Step, State>>][]) {
+    for (const step of Object.keys(STEPS) as Step[]) {
+      const to = moves[step];
+      test(`${step} from ${from}: ${to ?? "refused"}`, () => {
+        const r = STEPS[step](at(from));
+        if (to === undefined) expect(r.ok).toBe(false);
+        else {
+          expect(r.ok).toBe(true);
+          expect(stateOf((r as { state: WsState }).state)).toBe(to);
         }
-        if (!r.ok) throw new Error(r.why);
-        const w = find(r.state, "nova-1")!;
-        expect(w.phase).toBe(to);
-        // A change of phase always makes a new nonce, from the context.
-        expect(w.nonce).not.toBe(before.nonce);
-        expect(w.nonce).toBe(N(901));
-        expect(w.changedAt).toBe(T + 1000);
       });
     }
   }
 });
 
-describe("refusals", () => {
-  test("names, sizes and words taskbox doesn't take are refused, and a missing size is never Whole", () => {
-    const s = emptyState();
-    const c = ctx();
-    expect(queue(s, { agent: "Nova", size: "whole", why: "x" }, c).ok).toBe(false);
-    expect(queue(s, { agent: "nova", size: "light" as never, why: "x" }, c).ok).toBe(false);
-    expect(queue(s, { agent: "nova", size: undefined as never, why: "x" }, c).ok).toBe(false);
-    expect(queue(s, { agent: "nova", why: "x" } as never, c).ok).toBe(false);
-    expect(queue(s, { agent: "nova", size: "whole", why: "rm -rf $HOME; `x`" }, c).ok).toBe(false);
-    expect(queue(s, { agent: "nova", size: "whole", why: "x".repeat(101) }, c).ok).toBe(false);
-  });
-
-  test(`at most ${MAX_REQUESTS} requests wait; a withdrawn one makes room`, () => {
-    let s = emptyState();
-    const c = ctx();
-    for (let i = 0; i < MAX_REQUESTS; i++) s = ok(queue(s, { agent: `a${i}`, size: "whole", why: "Render" }, c));
-    const r = queue(s, { agent: "nova", size: "whole", why: "Render" }, c);
-    expect(r.ok ? "" : r.why).toContain("20 requests already wait");
-    s = ok(release(s, { name: "a0-1", agent: "a0" }, c));
-    expect(queue(s, { agent: "nova", size: "whole", why: "Render" }, c).ok).toBe(true);
-  });
-
-  test("saved and release refuse another agent's workspace", () => {
-    const c = ctx();
-    expect(saved(at("saving"), { name: "nova-1", agent: "juno", words: "Saved" }, c)).toEqual({ ok: false, why: "nova-1 is nova's, not juno's." });
-    expect(release(at("active"), { name: "nova-1", agent: "juno" }, c)).toEqual({ ok: false, why: "nova-1 is nova's, not juno's." });
-  });
-
-  test("an approval names the size asked", () => {
-    expect(approve(at("requested"), { name: "nova-1", size: "light" as never, pool: POOL }, ctx()).ok).toBe(false);
-  });
-
-  test("no step names a workspace the box doesn't have", () => {
-    for (const f of Object.values(STEPS)) expect(f(emptyState(), ctx()).ok).toBe(false);
-  });
-
-  test("a refusal changes nothing, its nonce included", () => {
-    const s = at("active");
-    const r = resume(s, { name: "nova-1" }, ctx());
-    expect(r.ok).toBe(false);
-    expect(find(s, "nova-1")!.nonce).toBe(find(at("active"), "nova-1")!.nonce);
-  });
-
-  test("with no pool account, nothing can be approved", () => {
-    const r = approve(at("requested"), { name: "nova-1", size: "whole", pool: [] }, ctx());
-    expect(r.ok ? "" : r.why).toContain("no pool account");
-  });
-
-  test("an account kept by a paused workspace isn't given to another", () => {
-    const c = ctx();
-    let s = at("paused", c);
-    s = ok(queue(s, { agent: "juno", size: "whole", why: "Bake hands" }, c));
-    const r = approve(s, { name: "juno-2", size: "whole", pool: POOL }, c);
-    expect(r.ok ? "" : r.why).toBe("nova-1 keeps taskbox-ws1. End it or let it finish first.");
-    s = ok(end(s, { name: "nova-1" }, c));
-    expect(find(ok(approve(s, { name: "juno-2", size: "whole", pool: POOL }, c)), "juno-2")!.user).toBe("taskbox-ws1");
-  });
-
-  test("pause on Saving says pause --now", () => {
-    const r = pause(at("saving"), { name: "nova-1" }, ctx());
-    expect(r.ok ? "" : r.why).toContain("pause --now");
-  });
-});
-
-describe("names, accounts and nonces", () => {
-  test("names are never used twice, even after the old ones are gone", () => {
-    const c = ctx();
-    let s = ok(queue(emptyState(), { agent: "nova", size: "whole", why: "Render" }, c));
-    s = ok(release(s, { name: "nova-1", agent: "nova" }, c));
-    s = ok(queue(s, { agent: "nova", size: "whole", why: "Render" }, c));
+describe("a request", () => {
+  test("gets an id that is never given twice, holds nothing and has no account", () => {
+    let s = asked(emptyState());
+    s = ok(end(s, { name: "nova-1", by: "agent", agent: "nova" }, T));
+    s = asked(s, "nova");
     expect(s.workspaces.map((w) => w.name)).toEqual(["nova-1", "nova-2"]);
+    expect(find(s, "nova-2")!.user).toBeNull();
+    expect(held(s)).toEqual({ memoryMB: 0, cpus: 0, whole: false });
   });
-
-  test("each agent gets the same pool account every time; new agents spread over the pool", () => {
-    const c = ctx();
-    const pool = ["taskbox-ws1", "taskbox-ws2"];
-    let s = ok(queue(emptyState(), { agent: "nova", size: "whole", why: "Render" }, c));
-    s = ok(approve(s, { name: "nova-1", size: "whole", pool }, c));
-    s = ok(release(s, { name: "nova-1", agent: "nova" }, c));
-    s = ok(queue(s, { agent: "juno", size: "whole", why: "Bake" }, c));
-    s = ok(approve(s, { name: "juno-2", size: "whole", pool }, c));
-    s = ok(release(s, { name: "juno-2", agent: "juno" }, c));
-    s = ok(queue(s, { agent: "nova", size: "whole", why: "Render again" }, c));
-    s = ok(approve(s, { name: "nova-3", size: "whole", pool }, c));
-    expect(s.accounts).toEqual({ nova: "taskbox-ws1", juno: "taskbox-ws2" });
-    expect(find(s, "nova-3")!.user).toBe("taskbox-ws1");
-    // An agent named constructor is any other name.
-    s = ok(release(s, { name: "nova-3", agent: "nova" }, c));
-    s = ok(queue(s, { agent: "constructor", size: "whole", why: "Bake" }, c));
-    expect(find(ok(approve(s, { name: "constructor-4", size: "whole", pool }, c)), "constructor-4")!.user).toBe("taskbox-ws1");
+  test("can't speak for the owner or the box", () => {
+    for (const agent of ["owner", "taskbox", "admin", "root", "service", "rule"]) expect(request(emptyState(), { agent, size: "light", why: "x" }, RULES, T).ok).toBe(false);
   });
-
-  test(`the ${MAX_AGENTS + 1}st agent name is refused with a line that says why`, () => {
-    const c = ctx();
-    const accounts = Object.fromEntries(Array.from({ length: MAX_AGENTS }, (_, i) => [`a${i}`, "taskbox-ws1"]));
-    const s = ok(queue({ ...emptyState(), accounts }, { agent: "nova", size: "whole", why: "Render" }, c));
-    const r = approve(s, { name: "nova-1", size: "whole", pool: POOL }, c);
-    expect(r.ok ? "" : r.why).toBe("100 agent names have pool accounts on this box, and taskbox frees none yet. Use a name that has one: a0, a1, a2.");
-    expect(approve(ok(queue({ ...emptyState(), accounts }, { agent: "a7", size: "whole", why: "Render" }, c)), { name: "a7-1", size: "whole", pool: POOL }, c).ok).toBe(true);
+  test("refuses words that aren't plain, and a size it doesn't know", () => {
+    expect(request(emptyState(), { agent: "nova", size: "light", why: "rm -rf $HOME" }, RULES, T).ok).toBe(false);
+    expect(request(emptyState(), { agent: "nova", size: "huge" as "light", why: "x" }, RULES, T).ok).toBe(false);
+    expect(request(emptyState(), { agent: "Nova", size: "light", why: "x" }, RULES, T).ok).toBe(false);
   });
-
-  test("an account that left the pool is named, never swapped for another", () => {
-    const c = ctx();
-    let s = ok(release(approvedState(c), { name: "nova-1", agent: "nova" }, c));
-    s = ok(queue(s, { agent: "nova", size: "whole", why: "Render" }, c));
-    const r = approve(s, { name: "nova-2", size: "whole", pool: ["taskbox-ws2"] }, c);
-    expect(r.ok ? "" : r.why).toContain("taskbox-ws1 isn't on this box any more");
+  test("past maxRequests waiting is refused with the count", () => {
+    let s = emptyState();
+    for (let i = 0; i < RULES.maxRequests; i++) s = asked(s, `a${i}`, "light");
+    const r = request(s, { agent: "late", size: "light", why: "x" }, RULES, T);
+    expect(r).toMatchObject({ ok: false, code: "busy" });
+    expect((r as { why: string }).why).toContain("20 requests");
   });
-
-  test("the nonce changes on a change of state, never on a pass that changes nothing", () => {
-    const s = at("waiting");
-    const held = advance(s, box({ slotsBusy: 1 }), () => N(999));
-    expect(held).toBe(s);
-    const moved = advance(s, box(), () => N(999));
-    expect(find(moved, "nova-1")!.nonce).toBe(N(999));
+  test("expires after requestHours, not before, and can't be approved then", () => {
+    const s = asked(emptyState());
+    expect(stateOf(tick(s, RULES, T + RULES.requestMs).state)).toBe("requested");
+    const t = tick(s, RULES, T + RULES.requestMs + 1);
+    expect(stateOf(t.state)).toBe("expired");
+    expect(t.steps.map((x) => x.type)).toEqual(["expired"]);
+    expect(approve(s, { name: "nova-1", size: "whole", by: OWNER, pool: POOL }, RULES, T + RULES.requestMs + 1)).toMatchObject({ ok: false, code: "expired" });
+  });
+  test("a deny keeps its reason, unsigned", () => {
+    const d = ok(deny(asked(emptyState()), { name: "nova-1", reason: "after 6pm" }, T));
+    expect(stateLine(find(d, "nova-1")!)).toBe("denied: after 6pm");
   });
 });
 
-describe("the queue and held slots", () => {
-  test("held() names every size, and a size it doesn't know holds every slot", () => {
-    const s = at("waiting");
-    const odd = { ...s, workspaces: s.workspaces.map((w) => ({ ...w, size: "light" as never })) };
-    expect(held(odd, 4)).toBe(4);
-    expect(holdsFor("whole", 4)).toBe(4);
-    expect(holdsFor(undefined, 4)).toBe(4);
-    expect(held(s, -1)).toBe(0);
+describe("approval", () => {
+  test("at a smaller size is said, and a bigger one is refused", () => {
+    const s = asked(emptyState(), "nova", "heavy");
+    const r = approve(s, { name: "nova-1", size: "light", by: OWNER, pool: POOL }, RULES, T);
+    expect(r.ok).toBe(true);
+    const w = find((r as { state: WsState }).state, "nova-1")!;
+    expect([w.size, w.asked]).toEqual(["light", "heavy"]);
+    expect(stateLine(w)).toBe("approved as light (asked for heavy)");
+    expect(approve(s, { name: "nova-1", size: "whole", by: OWNER, pool: POOL }, RULES, T)).toMatchObject({ ok: false, code: "usage" });
   });
-
-  test("a request nobody approved holds nothing; an approved Whole holds every slot until it pauses or is done", () => {
-    const rows: [Phase, number][] = [
-      ["requested", 0],
-      ["waiting", 4],
-      ["active", 4],
-      ["saving", 4],
-      ["paused", 0],
-      ["done", 0],
-      ["denied", 0],
-    ];
-    for (const [phase, n] of rows) expect([phase, held(at(phase), 4)]).toEqual([phase, n]);
+  test("with no pool account is refused", () => {
+    expect(approve(asked(emptyState()), { name: "nova-1", size: "whole", by: OWNER, pool: [] }, RULES, T).ok).toBe(false);
   });
-
-  test("a waiting Whole goes Active only when the box is empty for it", () => {
-    const s = at("waiting");
-    const rows: [string, Partial<Parameters<typeof box>[0]>, string | null][] = [
-      ["a job runs", { jobs: [{ name: "app/test", leftMs: 6 * 60_000 }, { name: "app/build", leftMs: null }] }, "app/test (about 6 m left), app/build"],
-      ["a slot still has a VM", { slotsBusy: 1 }, "the last VM to stop"],
-      ["a VM process is left", { vmsLeft: 1 }, "the last VM to stop"],
-      ["the disk is low", { diskLow: true }, "free disk above the box's floor"],
-      ["the account isn't proved ready", { ready: [] }, "making taskbox-ws1 ready"],
-      ["the box is empty", {}, null],
-    ];
-    for (const [why, b, line] of rows) {
-      const w = find(s, "nova-1")!;
-      expect([why, whyWaiting(s, w, box(b ?? {}))]).toEqual([why, line]);
-      expect([why, find(advance(s, box(b ?? {}), () => N(7)), "nova-1")!.phase]).toEqual([why, line === null ? "active" : "waiting"]);
-    }
+  test("lapses to expired when it hasn't started within approvalHours", () => {
+    // A Whole is ready in ws1, so nova-2's Whole waits.
+    const s = approved(asked(readyState(), "orion"), "orion-2", "whole");
+    expect(whyNotStart(s, find(s, "orion-2")!, RULES)).toContain("has the whole box");
+    expect(stateOf(tick(s, RULES, T + RULES.approvalMs).state, "orion-2")).toBe("approved");
+    const t = tick(s, RULES, T + RULES.approvalMs + 1);
+    expect(stateOf(t.state, "orion-2")).toBe("expired");
+    expect(find(t.state, "orion-2")!.reason).toContain("didn't start within 24 h");
   });
-
-  test("Active is stamped with this boot", () => {
-    expect(find(at("active"), "nova-1")!.boot).toBe(BOOT1);
-  });
-
-  test("the queue goes in order, and an open workspace holds the next", () => {
-    const c = ctx();
-    const pool = ["taskbox-ws1", "taskbox-ws2"];
-    let s = ok(queue(emptyState(), { agent: "nova", size: "whole", why: "Render" }, c));
-    s = ok(queue(s, { agent: "juno", size: "whole", why: "Bake" }, c));
-    s = ok(approve(s, { name: "juno-2", size: "whole", pool }, c));
-    s = ok(approve(s, { name: "nova-1", size: "whole", pool }, c));
-    const b = box({ ready: pool });
-    expect(whyWaiting(s, find(s, "nova-1")!, b)).toBe("next after juno-2");
-    s = advance(s, b, c.nonce);
-    expect(find(s, "juno-2")!.phase).toBe("active");
-    expect(whyWaiting(s, find(s, "nova-1")!, b)).toBe("juno-2 is Active");
-    expect(find(advance(s, b, c.nonce), "nova-1")!.phase).toBe("waiting");
-    s = ok(release(s, { name: "juno-2", agent: "juno" }, c));
-    expect(find(advance(s, b, c.nonce), "nova-1")!.phase).toBe("active");
+  test("a resume restarts the approval's clock", () => {
+    const p = ok(pause(readyState(), { name: "nova-1" }, RULES, T));
+    const pp = ok(saved(p, { name: "nova-1", agent: "nova" }, T));
+    const r = ok(resume(pp, { name: "nova-1", by: OWNER, pool: POOL }, T + 10 * HOUR));
+    expect(find(r, "nova-1")!.approvedAt).toBe(T + 10 * HOUR);
+    expect(find(r, "nova-1")!.user).toBe("taskbox-ws1");
   });
 });
 
-describe("a restart and a full disk", () => {
-  test("after a restart, Active and Saving are Paused by a restart, with their approval kept", () => {
-    for (const phase of ["active", "saving"] as Phase[]) {
-      const s = { ...at(phase), boot: BOOT1 };
-      const after = onBoot(s, BOOT2, ctx(T + 5000, 500));
-      const w = find(after, "nova-1")!;
-      expect(w).toMatchObject({ phase: "paused", pausedBy: "restart", approvedAt: T, user: "taskbox-ws1", nonce: N(501) });
-      expect(after.boot).toBe(BOOT2);
-      expect(after.history.at(-1)!.text).toBe("nova-1 paused by a restart");
-      expect(held(after, 4)).toBe(0);
-      expect(openFor({ ...after, beat: T }, "taskbox-ws1", BOOT2, T)).toEqual({ why: "nova-1 is Paused." });
-    }
+describe("the queue, sizes and the budget", () => {
+  test("two Lights run beside each other within the budget, a third waits", () => {
+    let s = emptyState();
+    for (const a of ["ana", "bo"]) s = approved(asked(s, a, "light"), `${a}-${a === "ana" ? 1 : 2}`, "light");
+    s = started(s);
+    expect(s.workspaces.map((w) => w.state)).toEqual(["starting", "starting"]);
+    expect(held(s)).toEqual({ memoryMB: 16384, cpus: 4, whole: false });
+    s = approved(asked(s, "cy", "light"), "cy-3", "light", T, [...POOL, "taskbox-ws3"]);
+    s = start(assign(s, [...POOL, "taskbox-ws3"], T).state, RULES, T).state;
+    expect(stateOf(s, "cy-3")).toBe("approved");
+    expect(whyNotStart(s, find(s, "cy-3")!, RULES)).toContain("2 Light at once is the most");
   });
-
-  test("the same boot again changes nothing; waiting and paused ones stay as they were", () => {
-    const s = { ...at("active"), boot: BOOT1 };
-    expect(onBoot(s, BOOT1, ctx())).toBe(s);
-    for (const phase of ["requested", "waiting", "paused", "done"] as Phase[]) {
-      const st = at(phase);
-      expect([phase, find(onBoot(st, BOOT2, ctx()), "nova-1")!.phase]).toEqual([phase, phase]);
-    }
+  test("a Heavy beside a Light passes the budget, so it waits", () => {
+    let s = approved(asked(emptyState(), "ana", "light"), "ana-1", "light");
+    s = started(s);
+    s = approved(asked(s, "bo", "heavy"), "bo-2", "heavy");
+    s = started(s);
+    expect(stateOf(s, "bo-2")).toBe("approved");
+    expect(whyNotStart(s, find(s, "bo-2")!, RULES)).toContain("workspaces hold 8.0 GB of the box's 21.8 GB");
   });
-
-  test("the gate opens only in the boot the workspace went Active in, and only on a fresh state", () => {
-    const s = { ...at("active"), beat: T };
-    expect(openFor(s, "taskbox-ws1", BOOT1, T)).toMatchObject({ ws: { name: "nova-1" } });
-    expect(openFor(s, "taskbox-ws1", BOOT2, T)).toEqual({ why: "nova-1 went Active before the last restart." });
-    expect(openFor(s, "taskbox-ws2", BOOT1, T)).toEqual({ why: "No workspace is open for taskbox-ws2." });
-    const stale = { why: "The workspaces state is stale: the guard hasn't made a pass for 3 minutes." };
-    expect(openFor(s, "taskbox-ws1", BOOT1, T + 3 * 60_000 + 1)).toEqual(stale);
-    expect(openFor({ ...s, beat: null }, "taskbox-ws1", BOOT1, T)).toEqual(stale);
+  test("a Whole never runs beside another workspace, either way", () => {
+    let s = started(approved(asked(emptyState(), "ana", "light"), "ana-1", "light"));
+    s = started(approved(asked(s, "bo", "whole"), "bo-2", "whole"));
+    expect(stateOf(s, "bo-2")).toBe("approved");
+    expect(whyNotStart(s, find(s, "bo-2")!, RULES)).toContain("ana-1 (Light) holds room");
+    let w = started(approved(asked(emptyState(), "bo", "whole"), "bo-1", "whole"));
+    w = started(approved(asked(w, "ana", "light"), "ana-2", "light"));
+    expect(stateOf(w, "ana-2")).toBe("approved");
+    expect(whyNotStart(w, find(w, "ana-2")!, RULES)).toContain("bo-1 (Whole) has the whole box");
+    expect(held(w).whole).toBe(true);
   });
-
-  test("below the disk floor, open workspaces pause by themselves", () => {
-    const s = diskPause(at("active"), ctx());
-    expect(find(s, "nova-1")).toMatchObject({ phase: "paused", pausedBy: "disk" });
-    expect(find(diskPause(at("waiting"), ctx()), "nova-1")!.phase).toBe("waiting");
+  test("a Whole asked first is never passed by later Lights", () => {
+    let s = started(approved(asked(emptyState(), "ana", "light"), "ana-1", "light"));
+    s = approved(asked(s, "bo", "whole"), "bo-2", "whole");
+    s = approved(asked(s, "cy", "light"), "cy-3", "light");
+    s = started(s);
+    expect(stateOf(s, "cy-3")).toBe("approved");
+    expect(whyNotStart(s, find(s, "cy-3")!, RULES)).toBe("next after bo-2");
   });
-
-  test("the boot stamp is read from sysctl's output, and nothing else", () => {
-    expect(parseBoot(`${BOOT1}\n`)).toBe(BOOT1);
-    expect(parseBoot("")).toBeUndefined();
-    expect(parseBoot("kern.bootsessionuuid: x")).toBeUndefined();
+  test("a size bigger than the whole budget says so", () => {
+    const small = { ...RULES, budget: { memoryMB: 6000, cpus: 4 } };
+    const s = assign(approved(asked(emptyState(), "ana", "light"), "ana-1", "light"), POOL, T).state;
+    expect(whyNotStart(s, find(s, "ana-1")!, small)).toContain("more than the box's VM budget");
+  });
+  test("maxAtOnce defaults to what fits, rounded down; Whole is 1", () => {
+    expect(fitsAtOnce("light", 8192, { memoryMB: 22360 })).toBe(2);
+    expect(fitsAtOnce("heavy", 18432, { memoryMB: 22360 })).toBe(1);
+    expect(fitsAtOnce("light", 8192, {})).toBe(1);
+    expect(fitsAtOnce("whole", 1, { memoryMB: 99999 })).toBe(1);
+    const r = rulesOf(CFG, { memoryMB: 40000, cpus: 12 });
+    expect(r.sizes.light.maxAtOnce).toBe(4);
+    expect(r.sizes.heavy.maxAtOnce).toBe(1); // the default sets it
+    expect(r.sizes.whole).toEqual({ memoryMB: 40000, cpus: 12, maxAtOnce: 1 });
+  });
+  test("a maxAtOnce set above what fits is named for the check row", () => {
+    const cfg = { ...CFG, workspaces: { sizes: { light: { maxAtOnce: 5 } } } };
+    expect(overSet(cfg, { memoryMB: 22360 })).toEqual(["light.maxAtOnce 5 is more than the 2 that fit"]);
+    expect(overSet(cfg, {})).toEqual([]);
   });
 });
 
-describe("what the guard and the agent read", () => {
-  test("the guard stops every pool account without an open workspace", () => {
-    const pool = ["taskbox-ws1", "taskbox-ws2"];
-    expect(closedUsers(at("active"), pool)).toEqual(["taskbox-ws2"]);
-    expect(closedUsers(at("saving"), pool)).toEqual(["taskbox-ws2"]);
-    expect(closedUsers(at("paused"), pool)).toEqual(pool);
-    expect(closedUsers(at("waiting"), pool)).toEqual(pool);
+describe("accounts", () => {
+  test("an agent keeps its account between workspaces while no one else needs it", () => {
+    let s = readyState("light");
+    s = ended(ok(end(s, { name: "nova-1", by: "agent", agent: "nova" }, T)), "nova-1", T).state;
+    s = started(approved(asked(s, "nova", "light"), "nova-2", "light"));
+    expect(find(s, "nova-2")!).toMatchObject({ user: "taskbox-ws1", clear: false });
   });
-
-  test("progress exits 10 while Saving, 0 while Active, and 1 otherwise", () => {
-    expect(progressExit(find(at("saving"), "nova-1"))).toBe(10);
-    expect(progressExit(find(at("active"), "nova-1"))).toBe(0);
-    expect(progressExit(find(at("paused"), "nova-1"))).toBe(1);
-    expect(progressExit(undefined)).toBe(1);
+  test("a new agent takes a never-used account first, then the one used longest ago, cleared", () => {
+    let s = readyState("light"); // nova in ws1
+    s = approved(asked(s, "orion", "light"), "orion-2", "light", T + 1);
+    expect(find(s, "orion-2")!).toMatchObject({ user: "taskbox-ws2", clear: false });
+    // nova ends; ws1 is free again but nova's; a third agent waits for no account until one frees.
+    s = ended(ok(end(s, { name: "nova-1", by: "agent", agent: "nova" }, T + 2)), "nova-1", T + 2).state;
+    s = approved(asked(s, "vega", "light"), "vega-3", "light", T + 3);
+    expect(find(s, "vega-3")!).toMatchObject({ user: "taskbox-ws1", clear: true });
+    expect(s.accounts["taskbox-ws1"]).toEqual({ agent: "vega", usedAt: T + 3 });
+    expect(cleared(s, "vega-3").workspaces.find((w) => w.name === "vega-3")!.clear).toBe(false);
   });
-
-  test("an agent that goes quiet shows as quiet after ten minutes", () => {
-    const w = find(at("active"), "nova-1")!;
-    expect(quietFor(w, null, w.changedAt + QUIET_MS - 1)).toBeNull();
-    expect(quietFor(w, null, w.changedAt + QUIET_MS)).toBe(QUIET_MS);
-    expect(quietFor(w, w.changedAt + 60_000, w.changedAt + QUIET_MS)).toBeNull();
+  test("with every account kept, the approval waits for one", () => {
+    let s = started(approved(asked(readyState("light"), "orion", "light"), "orion-2", "light"));
+    const r = approve(asked(s, "vega", "light"), { name: "vega-3", size: "light", by: OWNER, pool: POOL }, RULES, T);
+    expect(r.ok && r.said).toContain("every pool account is in use");
+    s = (r as { state: WsState }).state;
+    expect(find(s, "vega-3")!.user).toBeNull();
+    expect(whyNotStart(s, find(s, "vega-3")!, RULES)).toBe("every pool account is in use");
   });
+  test("a paused workspace keeps its account", () => {
+    let s = ok(saved(ok(pause(readyState("light"), { name: "nova-1" }, RULES, T)), { name: "nova-1", agent: "nova" }, T));
+    s = approved(asked(s, "orion", "light"), "orion-2", "light", T, ["taskbox-ws1"]);
+    expect(find(s, "orion-2")!.user).toBeNull();
+  });
+});
 
-  test("the history has signed steps and what follows from them; queue, deny and withdrawals stay out", () => {
-    const c = ctx();
-    let s = ok(queue(emptyState(), { agent: "nova", size: "whole", why: "Render" }, c));
-    s = ok(queue(s, { agent: "juno", size: "whole", why: "Bake" }, c));
-    s = ok(queue(s, { agent: "kai", size: "whole", why: "Bake" }, c));
-    s = ok(deny(s, { name: "juno-2", by: "kai", reason: "" }, c));
-    s = ok(release(s, { name: "kai-3", agent: "kai" }, c));
-    expect(s.history).toEqual([]);
-    s = ok(approve(s, { name: "nova-1", size: "whole", pool: POOL }, c));
-    s = advance(s, box(), c.nonce);
-    s = ok(pause(s, { name: "nova-1" }, c));
-    s = ok(saved(s, { name: "nova-1", agent: "nova", words: "Saved after frame 1800" }, c));
-    s = ok(resume(s, { name: "nova-1" }, c));
-    s = advance(s, box(), c.nonce);
-    s = ok(release(s, { name: "nova-1", agent: "nova" }, c));
-    expect(s.history.map((e) => e.text)).toEqual([
-      "You approved nova-1 for nova",
-      "nova-1 went Active",
-      "You asked nova to save nova-1",
-      "nova saved nova-1",
-      "You resumed nova-1",
-      "nova-1 went Active",
-      "nova released nova-1",
+describe("time", () => {
+  test("an agent with no word for quietWindows is asked to save, then paused unsaved", () => {
+    const s = readyState();
+    expect(stateOf(tick(s, RULES, T + RULES.quietMs - 1).state)).toBe("ready");
+    const q = tick(s, RULES, T + RULES.quietMs);
+    expect(find(q.state, "nova-1")!).toMatchObject({ state: "saving", pausedBy: "quiet" });
+    expect(q.steps[0]!.text).toContain("no word from nova for 60 m");
+    const p = tick(q.state, RULES, T + RULES.quietMs + RULES.saveMs + 1);
+    expect(find(p.state, "nova-1")!).toMatchObject({ state: "paused", pausedBy: "quiet", saved: false });
+    expect(stateLine(find(p.state, "nova-1")!)).toBe("paused with no word from its agent, unsaved");
+    expect(held(p.state).whole).toBe(false);
+  });
+  test("progress keeps it ready", () => {
+    let s = readyState();
+    s = ok(progress(s, { name: "nova-1", agent: "nova", text: "Frame 1200 of 4000", step: { n: 1200, m: 4000 } }, T + 50 * MIN));
+    expect(stateOf(tick(s, RULES, T + 100 * MIN).state)).toBe("ready");
+    expect(stateOf(tick(s, RULES, T + 110 * MIN).state)).toBe("saving");
+  });
+  test("a save made in time pauses saved", () => {
+    const p = ok(saved(ok(pause(readyState(), { name: "nova-1" }, RULES, T)), { name: "nova-1", agent: "nova" }, T + MIN));
+    expect(find(p, "nova-1")!).toMatchObject({ state: "paused", pausedBy: "owner", saved: true, hold: null });
+  });
+  test("final records go after keepDays", () => {
+    const d = ok(deny(asked(emptyState()), { name: "nova-1", reason: "" }, T));
+    expect(tick(d, RULES, T + RULES.keepMs).state.workspaces).toHaveLength(1);
+    expect(tick(d, RULES, T + RULES.keepMs + 1).state.workspaces).toHaveLength(0);
+  });
+  test("past MAX_WORKSPACES the oldest final record goes", () => {
+    let s = emptyState();
+    for (let i = 0; i < MAX_WORKSPACES; i++) s = ok(deny(asked(s, `a${i}`, "light"), { name: `a${i}-${i + 1}`, reason: "" }, T));
+    s = asked(s, "late", "light");
+    expect(s.workspaces).toHaveLength(MAX_WORKSPACES);
+    expect(s.workspaces[0]!.name).toBe("a1-2");
+  });
+});
+
+describe("progress answers", () => {
+  test("continue, save and stop", () => {
+    const r = readyState();
+    expect(doFor(find(r, "nova-1"))).toBe("continue");
+    expect(doFor(find(ok(pause(r, { name: "nova-1" }, RULES, T)), "nova-1"))).toBe("save");
+    expect(doFor(find(ok(end(r, { name: "nova-1", by: "owner" }, T)), "nova-1"))).toBe("stop");
+    expect(doFor(undefined)).toBe("stop");
+    expect(doFor(find(asked(emptyState()), "nova-1"))).toBe("continue");
+  });
+  test("an agent can't report for, save or end another's", () => {
+    const r = readyState();
+    expect(progress(r, { name: "nova-1", agent: "orion", text: "x", step: null }, T).ok).toBe(false);
+    expect(saved(ok(pause(r, { name: "nova-1" }, RULES, T)), { name: "nova-1", agent: "orion" }, T).ok).toBe(false);
+    expect(end(r, { name: "nova-1", by: "agent", agent: "orion" }, T).ok).toBe(false);
+  });
+  test("a step past its end is refused", () => {
+    expect(progress(readyState(), { name: "nova-1", agent: "nova", text: "x", step: { n: 5, m: 4 } }, T).ok).toBe(false);
+  });
+});
+
+describe("restarts and the box's own pauses", () => {
+  test("a new boot pauses what held room, ends what was ending, and keeps the approval", () => {
+    let s = readyState("light");
+    s = started(approved(asked(s, "orion", "light"), "orion-2", "light"));
+    s = { ...s, boot: BOOT1 };
+    const b = onBoot(s, BOOT2, T + HOUR);
+    expect(b.state.workspaces.map((w) => [w.name, w.state, w.pausedBy])).toEqual([
+      ["nova-1", "paused", "restart"],
+      ["orion-2", "paused", "restart"],
     ]);
+    expect(held(b.state)).toEqual({ memoryMB: 0, cpus: 0, whole: false });
+    expect(onBoot(b.state, BOOT2, T + HOUR).steps).toEqual([]);
+    const e = onBoot({ ...ok(end(readyState(), { name: "nova-1", by: "owner" }, T)), boot: BOOT1 }, BOOT2, T);
+    expect(stateOf(e.state)).toBe("ended");
   });
+  test("off pauses what waits too, the disk only what holds room", () => {
+    let s = approved(asked(readyState("light"), "orion", "light"), "orion-2", "light", T, ["taskbox-ws9"]);
+    expect(boxPause(s, "disk", T).state.workspaces.map((w) => w.state)).toEqual(["paused", "approved"]);
+    expect(boxPause(s, "off", T).state.workspaces.map((w) => w.state)).toEqual(["paused", "paused"]);
+  });
+  test("closed accounts, and the gate's word", () => {
+    const s = { ...readyState(), beat: T };
+    expect(closedUsers(s, POOL)).toEqual(["taskbox-ws2"]);
+    expect(openFor(s, "taskbox-ws1", BOOT1, T)).toHaveProperty("ws");
+    expect(openFor(s, "taskbox-ws1", BOOT2, T)).toEqual({ why: "nova-1 went ready before the last restart." });
+    expect(openFor(s, "taskbox-ws1", BOOT1, T + 4 * MIN)).toHaveProperty("why");
+    expect(openFor(s, "taskbox-ws2", BOOT1, T)).toEqual({ why: "No workspace is open for taskbox-ws2." });
+  });
+});
 
-  test("an unsigned deny shows as withdrawn by who sent it, never as the owner's no", () => {
-    const r = deny(at("requested"), { name: "nova-1", by: "juno", reason: "after 6pm" }, ctx());
-    expect(r.ok && r.said).toBe("nova-1: Withdrawn by juno (unsigned): after 6pm");
-    const w = find(ok(r), "nova-1")!;
-    expect(stateLine(w)).toBe("Withdrawn by juno (unsigned): after 6pm");
-    expect(PHASE_WORD.denied).toBe("Withdrawn");
-    expect(Object.values(PHASE_WORD).join(" ")).not.toContain("said no");
-    expect(deny(at("requested"), { name: "nova-1", by: "Bad Name", reason: "" }, ctx()).ok).toBe(false);
+describe("the settings", () => {
+  const cfg = (w: unknown) => ({ ...CFG, workspaces: w }) as typeof CFG;
+  test("defaults, and each key set on its own", () => {
+    const r = rulesOf(cfg({ requestHours: 2, sizes: { light: { memoryGB: 4 } } }), { memoryMB: 22360, cpus: 10 });
+    expect(r.requestMs).toBe(2 * HOUR);
+    expect(r.quietMs).toBe(60 * MIN);
+    expect(r.sizes.light).toEqual({ memoryMB: 4096, cpus: 2, maxAtOnce: 5 });
   });
-  test("an unsigned deny never names the owner or the box", () => {
-    for (const by of ["owner", "taskbox"]) {
-      const r = deny(at("requested"), { name: "nova-1", by, reason: "" }, ctx());
-      expect({ by, ok: r.ok }).toEqual({ by, ok: false });
+  test("refuses what it doesn't know or what is out of bounds", () => {
+    for (const bad of [[], { requestHours: 0 }, { requestHours: 1.5 }, { nope: 1 }, { sizes: { huge: {} } }, { sizes: { whole: { maxAtOnce: 2 } } }, { sizes: { light: { memoryGB: 0 } } }, { sizes: { light: { cpus: 2, gpu: 1 } } }, { sizes: { heavy: { memoryGB: 4 } } }]) {
+      expect(() => checkWorkspaces(cfg(bad))).toThrow(/taskbox\.json: workspaces/);
     }
+    expect(() => checkWorkspaces(cfg({ requestHours: 48, sizes: { light: { maxAtOnce: 3, nice: 12 } } }))).not.toThrow();
   });
 });

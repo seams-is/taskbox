@@ -4,7 +4,7 @@ taskbox turns a spare Apple silicon Mac, the box, into a GitHub Actions runner h
 
 Every job on a box is untrusted code. A box never runs a job that holds secrets: those stay on GitHub's hosted runners. MIT licensed ([LICENSE](LICENSE)). Tart, Softnet and Tailscale have their own licences ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 
-## A new owner
+## First setup
 
 1. Make a private copy of this repo in your organisation, named `taskbox`.
 2. Make a GitHub App there: Contents read-only, Self-hosted runners read and write. Install it on your copy. Its ID is `appId`.
@@ -37,7 +37,7 @@ As the service account:
 - `taskbox pause` takes no new jobs; `taskbox drain` also waits for running ones; `taskbox resume` undoes both. `taskbox stop` drains, then stops the loop, and `taskbox start` starts it.
 - `taskbox template show test-job` prints a working job for your repo.
 - `taskbox policy show` prints the Tailscale policy entries.
-- `taskbox load start` runs a load test from a test repo of your own.
+- `taskbox load start --pattern burst|day|merge`, on the controller, runs a load test in the test repo the box's settings name.
 
 As your admin user:
 - `taskbox update [VERSION]` installs the newest release, or the one named.

@@ -1,15 +1,15 @@
 {
   "tagOwners": {
-    "tag:taskbox": ["OWNER"]
+    "tag:taskbox": ["YOUR_LOGIN"]
   },
   "grants": [
     { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] }
   ],
   "ssh": [],
   "sshTests": [
-    { "src": "OWNER", "dst": ["tag:taskbox"], "deny": ["root", "taskbox", "ADMIN"] }
+    { "src": "YOUR_LOGIN", "dst": ["tag:taskbox"], "deny": ["root", "taskbox", "ADMIN"] }
   ],
   "tests": [
-    { "src": "tag:taskbox", "deny": ["OWNER:22", "OWNER:80", "OWNER:443", "OWNER:445", "OWNER:548", "OWNER:3283", "OWNER:5900", "OWNER:7000"] }
+    { "src": "tag:taskbox", "deny": ["YOUR_LOGIN:22", "YOUR_LOGIN:80", "YOUR_LOGIN:443", "YOUR_LOGIN:445", "YOUR_LOGIN:548", "YOUR_LOGIN:3283", "YOUR_LOGIN:5900", "YOUR_LOGIN:7000"] }
   ]
 }

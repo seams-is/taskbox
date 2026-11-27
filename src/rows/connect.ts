@@ -49,7 +49,7 @@ export async function runnerGroupRow(c: CheckContext, ask = asker(c)): Promise<O
   const { boxLabels } = await import("../watchdog.ts");
   const problems = runnerProblems((a as { runners?: { id: number; name: string; labels: string[] }[] }).runners ?? [], c.cfg.runnerNamePrefix, boxLabels(c.cfg));
   if (problems.length) return { status: "FAIL", detail: problems.join(". ") };
-  if (!g.restricted) return { status: "OK", detail: `runner group ${g.name}: any workflow of its repo, as the owner set it` };
+  if (!g.restricted) return { status: "OK", detail: `runner group ${g.name}: any workflow of its repo, as set on GitHub` };
   return { status: "OK", detail: `runner group ${g.name}: ${g.workflows?.length ?? 0} allowed workflows, only this box's runners` };
 }
 

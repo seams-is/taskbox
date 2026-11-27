@@ -12,29 +12,27 @@ import { writeProof } from "../src/proof.ts";
 import { AGENTS_FIX, computeState, headline, HOLD_NEXT } from "../src/state.ts";
 import { screen } from "../src/watch.ts";
 import { stateHold, workspacesNow } from "../src/workspace/hold.ts";
-import { advance, end, FRESH_MS, pauseNow, resume, type WsState } from "../src/workspace/model.ts";
+import { end, ended, FRESH_MS, pause, resume, type WsState } from "../src/workspace/model.ts";
+import { day } from "../src/workspace/show.ts";
 import { readState, stateText, type StateRead } from "../src/workspace/store.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, loopDeps, tempRoot } from "./helpers.ts";
-import { approvedState, box, ctx, N, T } from "./ws-helpers.ts";
+import { approved, asked, emptyState, ok, OWNER, POOL, readyState, RULES, started, T } from "./ws-helpers.ts";
 
-const at = (ms: number) => new Date(ms).toTimeString().slice(0, 5);
 const fresh = (s: WsState, beat = T): StateRead => ({ kind: "ok", state: { ...s, beat } });
-const waiting = () => approvedState();
-const active = () => advance(waiting(), box(), () => N(50));
-const done = () => {
-  const r = end(active(), { name: "nova-1" }, ctx(T));
-  if (!r.ok) throw new Error(r.why);
-  return r.state;
-};
-const LINE = `CI paused for nova-1 (you approved it at ${at(T)})`;
+const queued = () => approved(asked(emptyState()), "nova-1", "whole");
+const waiting = () => started(queued());
+const active = () => readyState();
+const done = () => ended(ok(end(active(), { name: "nova-1", by: "owner" }, T)), "nova-1", T).state;
+const LINE = `CI paused for nova-1 (Whole), approved ${day(T, T)}`;
 
 describe("the state, as the loop holds it", () => {
   test("each kind of read: missing and newer hold nothing; bad holds every slot, saying why", () => {
     const rows: [string, StateRead, number, string | undefined][] = [
       ["missing", { kind: "missing" }, 0, undefined],
       ["no workspace", fresh({ ...waiting(), workspaces: [] }), 0, undefined],
-      ["waiting", fresh(waiting()), 2, LINE],
+      ["approved, in the queue", fresh(queued()), 0, undefined],
+      ["starting", fresh(waiting()), 2, LINE],
       ["active", fresh(active()), 2, LINE],
       ["done", fresh(done()), 0, undefined],
       ["bad", { kind: "bad", why: "the state doesn't parse", torn: true }, 2, "CI is paused: the workspaces state can't be read (the state doesn't parse)"],
@@ -49,9 +47,7 @@ describe("the state, as the loop holds it", () => {
   });
 
   test("a request nobody approved holds nothing", () => {
-    const s = waiting();
-    const req = { ...s, workspaces: s.workspaces.map((w) => ({ ...w, phase: "requested" as const, user: null, approvedAt: null, order: null })) };
-    expect(heldOf(workspacesNow(fresh(req), T), 2)).toBe(0);
+    expect(heldOf(workspacesNow(fresh(asked(emptyState())), T), 2)).toBe(0);
   });
 
   test("a stale state holds the larger of the last good read and itself, and never frees a slot", () => {
@@ -73,15 +69,13 @@ describe("the state, as the loop holds it", () => {
     expect(STALE_TEXT).toBe("the guard hasn't made a pass for 3 minutes, so the workspaces state is stale and no workspace opens");
   });
 
-  test("the owner's last OK: approved, or resumed after a pause, with the day when it isn't today", () => {
+  test("the owner's last OK: the approval, or the resume after a pause, with the day when it isn't today", () => {
     const later = T + 2 * 86_400_000;
-    const p = pauseNow(active(), { name: "nova-1" }, ctx(T + 60_000));
-    if (!p.ok) throw new Error(p.why);
-    const r = resume(p.state, { name: "nova-1" }, ctx(T + 3_600_000));
-    if (!r.ok) throw new Error(r.why);
-    expect(holdReason(workspacesNow(fresh(r.state, T + 3_600_000), T + 3_600_000))?.text).toBe(`CI paused for nova-1 (you resumed it at ${at(T + 3_600_000)})`);
-    const day = `${new Date(T).toDateString().slice(4, 10)} ${at(T)}`;
-    expect(holdReason(workspacesNow(fresh(active(), later), later))?.text).toBe(`CI paused for nova-1 (you approved it at ${day})`);
+    const p = ok(pause(waiting(), { name: "nova-1" }, RULES, T + 60_000));
+    const r = started(ok(resume(p, { name: "nova-1", by: OWNER, pool: POOL }, T + 3_600_000)), T + 3_600_000);
+    expect(holdReason(workspacesNow(fresh(r, T + 3_600_000), T + 3_600_000))?.text).toBe(`CI paused for nova-1 (Whole), approved ${day(T + 3_600_000, T + 3_600_000)}`);
+    expect(holdReason(workspacesNow(fresh(active(), later), later))?.text).toBe(`CI paused for nova-1 (Whole), approved ${day(T, later)}`);
+    expect(day(T, later)).toMatch(/^[A-Z][a-z]{2} \d{2} \d{2}:\d{2}$/);
   });
 });
 

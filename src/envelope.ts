@@ -1,5 +1,5 @@
 // The answers envelope, version 4. Every command with --json prints one. The box
-// writes it here; src/schema.ts reads it, on the box's own tests and on the laptop.
+// writes it here; src/schema.ts reads it, on the box's own tests and on the controller.
 import type { ErrorBody } from "./command.ts";
 
 export const ANSWERS_V4 = 4;
@@ -75,7 +75,7 @@ export function versionsOf(v: string): number[] | undefined {
 
 // Why two sides can't talk, in words, with who updates: the side with the older versions.
 export function gapError(theirs: readonly number[], mine: readonly number[] = WRITES): ErrorBody {
-  const older = Math.max(...theirs) < Math.max(...mine) ? "laptop" : "box";
+  const older = Math.max(...theirs) < Math.max(...mine) ? "controller" : "box";
   return { code: "failed", message: `This box answers in versions ${mine.join(" and ")}, and the reader takes ${theirs.join(" and ")}.`, fix: `update the ${older}`, who: "waits" };
 }
 

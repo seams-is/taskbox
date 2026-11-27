@@ -100,7 +100,7 @@ export function updateNonces<O>(path: string, o: Owner, change: (s: Nonces) => P
   }, { mode: 0o644, owner, ...(o.chown ? { chown: o.chown } : {}) });
 }
 
-// The subject's nonce, made and kept when it has none: what the laptop asks for before it signs.
+// The subject's nonce, made and kept when it has none: what the controller asks for before it signs.
 export const nonceFor = (path: string, subject: string, o: Owner & { now: number; rand?: NonceRand; exists?: (subject: string) => boolean }): Promise<string> =>
   updateNonces(path, o, (s) => {
     const r = withNonce(s, subject, o.now, o.rand, o.exists);

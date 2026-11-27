@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { within } from "./clock.ts";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
 import { appendJob, type JobRecord, jobOfVm, newJobId, stopJob, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
 import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, screenSharingSeen, sharingOff } from "./checks.ts";
@@ -10,11 +11,13 @@ import { rows } from "./rows/index.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import { eventLog } from "./core/events.ts";
 import { loopState, rootStateOf } from "./core/paths.ts";
-import { afterEnd, beforeStart, type JobHook, jobStarted, type TokenSource, withHookFields } from "./core/hooks.ts";
+import { afterEnd, beforeStart, type GuestAccess, type JobHook, jobStarted, runnerEnded, type TokenSource, withHookFields } from "./core/hooks.ts";
 import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
 import { AGENT_LABEL, awayOf, budgetOf, DEFAULT_SIZE, keepsOf, forKind, forSize, sizeOf, sizesOf, sizeWord, smallestSize, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf, vmsAtMostOf } from "./config.ts";
 import { guestOf } from "./guest.ts";
+import { recordAgreement } from "./net/agree.ts";
+import { verdictWords } from "./net/words.ts";
 import { installedCommit, peerTargets, PROOF_RETRY_MS, proofHolds, proofResult, proofScript, proofTargets, readProof, writeProof } from "./proof.ts";
 import { type KindChooser, type Occupant, QUEUE_POLL_MS, schedule, type Turn } from "./kinds.ts";
 import type { KindHistory } from "./scheduler.ts";
@@ -26,7 +29,7 @@ import { holdsLine } from "./sizes.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
 import { closedNow, recordStart, v2Seen } from "./pfstarts.ts";
 import { readLoop } from "./watch.ts";
-import { heldOf, holdReason, isHeld, type WorkspacesNow } from "./held.ts";
+import { forcingView, heldOf, holdReason, isHeld, lessHeld, roomHeld, type WorkspacesNow } from "./held.ts";
 import { readKick } from "./loopwatch.ts";
 import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
@@ -143,6 +146,13 @@ export function countRestart(p: Paths, now: number, extra: Record<string, unknow
 }
 
 // The guard's restart of a frozen loop, logged and counted once by the loop that starts after it.
+// Why a running job's VM stops now: a forced drain or stop at its deadline, or, for a test job, the
+// end of its load test session, which the box ignores test jobs outside of. undefined: it runs on.
+export const LOAD_ENDED = "the end of the load test session";
+export function stopFor(forcing: string | undefined, role: string | undefined, loadOn: () => boolean): string | undefined {
+  return forcing ?? (role === "load" && !loadOn() ? LOAD_ENDED : undefined);
+}
+
 export function noteGuardRestart(d: Pick<LoopDeps, "paths" | "log"> & { rootUid?: number }, now: number): void {
   const k = readKick(d.paths, d.rootUid ?? 0);
   if (!k || k.at <= (readLoop(d.paths.loopState).watchKickSeen ?? 0)) return;
@@ -475,7 +485,7 @@ export async function pullImage(
     const stop = stopIf();
     if (stop) {
       p.kill();
-      await Promise.race([done, sys.sleep(30_000)]);
+      await within(sys, done, 30_000);
       const why = typeof stop === "string" ? stop : "an update was installed";
       rec.finish(false, why, false);
       return { ok: false, updated: true, error: typeof stop === "string" ? `stopped: ${why}` : "stopped for an update" };
@@ -485,10 +495,10 @@ export async function pullImage(
       p.kill();
       break;
     }
-    await Promise.race([done, sys.sleep(10_000)]);
+    await within(sys, done, 10_000);
   }
   // After a kill, don't wait forever for output a child process might keep open.
-  const code = stopped ? await Promise.race([done, p.exited.then(async (c) => (await sys.sleep(30_000), c))]) : await done;
+  const code = stopped ? await Promise.race([done, p.exited.then(async (c) => (await within(sys, done, 30_000)) ?? c)]) : await done;
   if (code === 0 && !stopped) {
     rec.finish(true);
     return { ok: true };
@@ -528,7 +538,7 @@ export async function ensureImage(d: LoopDeps, stopIf: () => boolean | string = 
 
 // Each slot's own fields (v2.2.0) go under slots, by slot number. The top-level copies are the
 // busiest slot's, so a reader from before v2.2.0 still reads one slot.
-export const SLOT_KEYS = ["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "runner", "registeredAt", "waitingFor", "labels", "why", "beat"];
+export const SLOT_KEYS = ["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "runner", "registeredAt", "waitingFor", "labels", "why", "beat", "net"];
 // Busiest first: a job running anywhere is what the box is doing.
 // A slot that waits for memory while another has a VM up shows that VM: the box is ready.
 const SLOT_ORDER = ["running a job", "checks failed", "no public address", "proving Linux", "starting a VM", "waiting for a job", "waiting", "cleaning up", "idle"];
@@ -601,7 +611,7 @@ export async function guestReady(d: LoopDeps, vm: string, phase: string, exited:
     const r = await Promise.race([t.exec(vm, cmd, undefined, 15_000), died]);
     if (r === "died") return false;
     if (r.code === 0) return true;
-    if ((await Promise.race([d.sys.sleep(5000), died])) === "died") return false;
+    if ((await within(d.sys, died, 5000)) === "died") return false;
   }
   return false;
 }
@@ -728,6 +738,36 @@ const NONE: WorkspacesNow = { views: [] };
 export const heldNow = (d: Pick<LoopDeps, "workspaces" | "box" | "cfg">): number => heldOf(d.workspaces?.() ?? NONE, d.box?.count ?? slotCount(d.cfg));
 const slotHeld = (d: LoopDeps): boolean => isHeld(d.slot, d.box?.count ?? slotCount(d.cfg), heldNow(d));
 
+// The VM this slot holds up and waiting, when it doesn't fit in the VM budget beside the other VMs
+// and what Lights and Heavies hold: the hold's wait, which ends it. A running job is never ended.
+function roomWait(d: LoopDeps): { key: string; text: string } | undefined {
+  const room = roomHeld(d.workspaces?.() ?? NONE);
+  if (room.memoryMB <= 0 || !d.box) return undefined;
+  const b = budgetOf(d.cfg, d.box.totalGB, d.box.logicalCpus);
+  if (b.memoryMB === undefined) return undefined;
+  const me = d.box.held.get(d.slot);
+  const mine = me ? (me.memoryMB ?? sizeOf(d.cfg, me.kind, me.size).vmMemoryMB) : 0;
+  if (othersMB(d) + mine + room.memoryMB <= b.memoryMB) return undefined;
+  return { key: "workspace", text: `workspaces hold ${(room.memoryMB / 1024).toFixed(1)} GB of the VM budget, so this waiting VM gives them room` };
+}
+
+// A workspace rushed with --force (workspace/flows.ts) stops this slot's running job when the job is
+// in its way: every job for a Whole; for a Light or Heavy, while the VMs and the holds pass the budget.
+export function rushForcing(d: LoopDeps): string | undefined {
+  const w = d.workspaces?.() ?? NONE;
+  const v = forcingView(w);
+  if (!v) return undefined;
+  const by = `workspace rush --force for ${v.name}`;
+  if (v.size === "whole") return by;
+  if (!d.box) return undefined;
+  const b = budgetOf(d.cfg, d.box.totalGB, d.box.logicalCpus);
+  if (b.memoryMB === undefined) return by;
+  const me = d.box.held.get(d.slot);
+  const mine = me ? (me.memoryMB ?? sizeOf(d.cfg, me.kind, me.size).vmMemoryMB) : 0;
+  const room = roomHeld(w).memoryMB;
+  return othersMB(d) + mine + room > b.memoryMB ? by : undefined;
+}
+
 // The box's availability, from root's control.json (availability.ts): read on every turn, inside the
 // start gate, and every few seconds while a job runs.
 // A break-glass start at the box (startHere) runs past the gen it was asked over, while its note counts:
@@ -761,6 +801,9 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
   }
   const hold = drainOrHold(d);
   if (hold) return hold;
+  // A waiting VM that no longer fits beside what Lights and Heavies hold gives way to them.
+  const room = up ? roomWait(d) : undefined;
+  if (room) return room;
   // v2's guardClosed goes once the guard has taken it into account (pfstarts.ts).
   if (readState(d).guardClosed === true && v2Seen(d.paths, d.checks.rootUid ?? 0)) writeState(d, { guardClosed: undefined });
   if (!d.cfg.vmnetPfProven && closedNow(d.paths, d.checks.rootUid ?? 0, process.getuid?.() ?? 0, d.cfg, readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0)) && (await screenSharingOn(d.sys))) {
@@ -836,6 +879,8 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
     const r = await t.exec(vm, ["/bin/bash", "-s"], proofScript(targets), 600_000);
     if (r.code !== 0) return { ok: false, detail: `the proof script ended with exit ${r.code}` };
     const res = proofResult(targets, r.stdout);
+    // The rules evaluator beside what the guest met, for the "Network rules" row (net/agree.ts).
+    recordAgreement(d, t.evaluator(net), verdictWords(net), targets, r.stdout);
     // With more than one slot, a pass says when it tried no other job VM.
     const none = d.box && d.box.count > 1 && !peerList.length && res.ok ? "; no other job VM was up to try" : "";
     return { ...res, detail: `${res.detail}${none}`, peers: peerList.length };
@@ -845,7 +890,10 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
     stopDone = d.box?.window(d.slot, "stop", d.sys.now());
     try {
       await t.stop(vm, 30);
-      proc?.kill();
+      if (proc) {
+        proc.kill();
+        await within(d.sys, proc.exited, 30_000);
+      }
       await t.delete(vm);
     } catch (e) {
       d.log.write(`cleaning up ${vm} failed: ${(e as Error).message}`);
@@ -986,7 +1034,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
             // minute. Anything else, such as GitHub being down, is tried again and counted by the
             // chain. The real repo carries on either way.
             const m = (e as Error).message;
-            if (groupSetupWrong(m)) loadFailed(d.paths, d.sys.now(), `the test repo's runner group: ${m}`);
+            if (groupSetupWrong(m)) loadFailed(d.paths, d.sys.now(), `the test repo's runner group: ${m}`, d.checks.rootUid ?? 0);
             throw e;
           }
         } else group = await d.gh.runnerGroupId(runners);
@@ -1021,8 +1069,10 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   let from: Awaited<ReturnType<typeof cloneSource>> = { source: d.cfg.image };
   // Set once every hook let this start through, so each hook hears of its end (core/hooks.ts).
   const hooks = d.hooks ?? jobHooks();
-  const hookJob = { slot: d.slot, kind, vm, labels, ...(turn.role ? { role: turn.role } : {}), ...(turn.className ? { className: turn.className } : {}) };
+  const hookJob = { slot: d.slot, kind, vm, labels, ...(turn.role ? { role: turn.role } : {}), ...(turn.className ? { className: turn.className } : {}), net };
   let hooked = false;
+  // The guest while it is up, for the hooks: set once it answered, so a hook reads only a guest that did.
+  let guestUp: GuestAccess | undefined;
   try {
     const hold = await beforeStart(hooks, d, hookJob);
     if (hold) {
@@ -1075,6 +1125,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     const meUp = d.box?.held.get(d.slot);
     if (meUp) meUp.vm = vm;
     mark("guestUp");
+    guestUp = { ip: () => t.ip(vm), exec: (cmd: string[], ms: number) => t.exec(vm, cmd, undefined, ms) };
     startDone?.(d.sys.now());
     guardSeen = guardAtStart.rulesWentMissing ? "rules went missing at start" : guardAtStart.read ? "ok" : "not read";
     writeState(d, { vmStartGuard: { ...guardAtStart, at: vmStartedAt, slot: d.slot } });
@@ -1204,7 +1255,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
         }
         d.box?.jobStarted(kind, started, labels);
         jobName = clean(m[1]!).slice(0, 120);
-        jobStarted(hooks, d, { ...hookJob, at: started, name: jobName });
+        jobStarted(hooks, d, { ...hookJob, at: started, name: jobName, ...(guestUp ? { guest: guestUp } : {}), note: (text) => writeState(d, { net: text ? clean(text).slice(0, 80) : undefined }) });
         const me = d.box?.held.get(d.slot);
         if (me) me.job = true;
         writeState(d, { why: undefined, slot: "running a job", job: clean(m[1]!).slice(0, 120), slotAt: started, vmSize: `${sizeWord(kind, turn.size)}, ${d.cfg.vmCpus} CPUs, ${d.cfg.vmMemoryMB / 1024} GB`, beside });
@@ -1234,10 +1285,10 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     let forced = false;
     while (!exited) {
       await d.sys.sleep(5000);
-      // A forced drain or stop at its deadline: the job's VM stops, as job cancel stops it, and the
-      // job ends as stopped by it.
+      // A forced drain or stop at its deadline, or the end of the load test session a test job ran
+      // in: the job's VM stops, as job cancel stops it, and the job ends as stopped by it.
       if (started !== undefined && !forced) {
-        const by = gateOf(d).forcing;
+        const by = stopFor(gateOf(d).forcing ?? rushForcing(d), turn.role, () => !!loadNow(d.paths, d.sys.now(), d.checks.rootUid ?? 0));
         if (by) {
           forced = true;
           const id = jobOfVm(vm);
@@ -1397,12 +1448,18 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     let deleted = { code: -1 };
     // Each on its own: a state file it can't write, such as on a disk this VM filled, never skips the delete.
     try {
-      writeState(d, { slot: "cleaning up", slotAt: d.sys.now(), vmSize: undefined, beside: undefined });
+      writeState(d, { slot: "cleaning up", slotAt: d.sys.now(), vmSize: undefined, beside: undefined, net: undefined });
     } catch {}
+    // The hooks read the guest once before it stops (core/hooks.ts).
+    if (hooked && guestUp) await runnerEnded(hooks, d, { ...hookJob, guest: guestUp }).catch(() => {});
     const stopDone = d.box?.window(d.slot, "stop", d.sys.now());
     try {
       await t.stop(vm, 30);
-      vmProc?.kill();
+      // A killed tart run holds the VM until it ends, and Tart won't delete a VM still held.
+      if (vmProc) {
+        vmProc.kill();
+        await within(d.sys, vmProc.exited, 30_000);
+      }
       deleted = await t.delete(vm);
       if (deleted.code === 0) mark("deleted");
     } catch (e) {
@@ -1660,13 +1717,14 @@ export async function runLoop(d: LoopDeps): Promise<number> {
         claim: (o) => box.held.set(o.slot, o),
         history: () => box.history(kindsOf(d.cfg), (k) => sizesOf(d.cfg, k).map((z) => z.name)),
         // The VMs' share of the box: its memory as last read, less boxKeepsGB, and its CPUs.
-        budget: () => budgetOf(d.cfg, box.totalGB, box.logicalCpus),
+        // Less what Lights and Heavies hold of it (held.ts): the scheduler starts only what fits beside them.
+        budget: () => lessHeld(budgetOf(d.cfg, box.totalGB, box.logicalCpus), roomHeld(d.workspaces?.() ?? NONE)),
         // v2.6.0: the load test's window, read each time a slot asks (load.ts).
-        load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now()) : undefined),
+        load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now(), d.checks.rootUid ?? 0) : undefined),
         // The slots held for workspaces, read each time a slot asks: the scheduler sees the rest.
         held: () => heldNow({ ...d, box }),
         seen: (s) => {
-          noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.());
+          noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.(), d.checks.rootUid ?? 0);
           noteSource(d, s);
         },
       }),

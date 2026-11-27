@@ -85,7 +85,7 @@ describe("applyControl", () => {
   test("a drain or a stop begins an op; resume and start cancel it; a stop takes a drain over", () => {
     expect(applyControl(initialControl(), req({ kind: "drain", actor: by }), at()).start).toEqual({ type: "drain", params: { force: false } });
     const d = stateIn("draining");
-    expect(applyControl(d, req({ kind: "resume", actor: "owner (signed, key x)" }), at()).ended).toEqual({ op: d.op!, state: "cancelled", why: "cancelled by owner (signed, key x)" });
+    expect(applyControl(d, req({ kind: "resume", actor: "approver (signed, key x)" }), at()).ended).toEqual({ op: d.op!, state: "cancelled", why: "cancelled by approver (signed, key x)" });
     const s = applyControl(d, req({ kind: "stop", actor: by }), at());
     expect([s.state.stop, s.start?.type, s.ended?.why]).toEqual([true, "stop", "taskbox stop took it over"]);
     // A stop's drain: resume names start, and a drain is busy beside it.
@@ -185,8 +185,8 @@ describe("control.json", () => {
     expect(availabilityLine(f, me)).toBeUndefined();
     writeFileSync(f, JSON.stringify(stateIn("draining", { stop: true, reason: undefined })), { mode: 0o644 });
     expect(availabilityLine(f, me)).toBe("stopping since 11:59 UTC, by service (op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ)");
-    writeFileSync(f, JSON.stringify(stateIn("paused", { reason: "disk swap", actor: "owner (signed, key SHA256:abc)" })), { mode: 0o644 });
-    expect(availabilityLine(f, me)).toBe("paused since 11:59 UTC, by owner (signed, key SHA256:abc): disk swap");
+    writeFileSync(f, JSON.stringify(stateIn("paused", { reason: "disk swap", actor: "approver (signed, key SHA256:abc)" })), { mode: 0o644 });
+    expect(availabilityLine(f, me)).toBe("paused since 11:59 UTC, by approver (signed, key SHA256:abc): disk swap");
     writeFileSync(f, JSON.stringify(initialControl()), { mode: 0o644 });
     expect(availabilityLine(f, me)).toBeUndefined();
   });
@@ -412,7 +412,7 @@ describe("the owner's signed requests", () => {
       };
       expect(await put("drain", { force: true }, n.nonce)).toMatchObject({ ok: false, code: "usage" });
       expect(await put("pause", { reason: "from the controller" }, n.nonce)).toMatchObject({ ok: true, said: expect.stringContaining("Paused") });
-      expect(b.control()).toMatchObject({ availability: "paused", reason: "from the controller", actor: expect.stringMatching(/^owner \(signed, key SHA256:/) });
+      expect(b.control()).toMatchObject({ availability: "paused", reason: "from the controller", actor: expect.stringMatching(/^approver \(signed, key SHA256:/) });
       // The nonce moved on: the same word again is stale.
       expect(await put("pause", { reason: "from the controller" }, n.nonce)).toMatchObject({ ok: false, code: "stale-state" });
     },
@@ -423,7 +423,7 @@ describe("the owner's signed requests", () => {
     const { contractProblem } = await import("../src/core/dispatch.ts");
     const { registry } = await import("../src/registry.ts");
     expect(contractProblem(registry(), requestHandlers())).toBeUndefined();
-    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "op.cancel", "pause", "resume", "start", "stop"]);
+    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "key.add", "key.rotate", "load.start", "load.stop", "op.cancel", "pause", "resume", "rollback", "settings.apply", "settings.repo", "start", "stop", "update", "withdraw", "workspace.approve", "workspace.clear", "workspace.end", "workspace.jump", "workspace.pause", "workspace.resume", "workspace.rule.add", "workspace.rule.delete", "workspace.rush"]);
   });
 });
 
@@ -566,7 +566,7 @@ describe("the commands at the box", () => {
     async () => {
       const r = await cli(["drain", "--json"], { uid: me + 1 });
       expect(r.code).toBe(1);
-      expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
+      expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs an approver key's signature") } });
       expect(readControl(r.b.s.control, me).kind).toBe("missing");
       // As root, stop is refused before its first line: no advice for a command that didn't run.
       const root = await cli(["stop"], { uid: 0 });
@@ -678,7 +678,7 @@ describe("control.json is the truth: power cuts, rollbacks and restarts", () => 
   );
 });
 
-describe("the review's other fixes", () => {
+describe("forced stops, start notes and cancels racing a take-over", () => {
   test("a forced drain or stop with no mono reading is refused, never one that forces nothing", () => {
     for (const r of [requestOf("stop", { force: true }, "service"), requestOf("drain", { force: true, timeout: "10m" }, "service")]) {
       const a = applyControl(initialControl(), r, { wall: T });
@@ -824,5 +824,28 @@ describe("the review's other fixes", () => {
     expect(readdirSync(dir).sort()[0]).toBe(`rq_01J${String(5).padStart(23, "0")}.json`);
   });
 
-  test.todo("start is refused while an update is past its drain, naming the update (scenario 9, with the releases package)");
+  test("start is refused while an update is past its drain, naming the update (scenario 9); during its drain, resume cancels it", async () => {
+    const b = await box();
+    await b.send("stop");
+    b.loop({ controlEmpty: (b.control() as { gen: number }).gen });
+    await b.job();
+    expect(b.control()).toMatchObject({ availability: "stopped" });
+    mkdirSync(b.s.ops, { recursive: true });
+    const u = begin([], opType("update"), { subject: "box", params: { to: "3.0.1" }, actor: "an admin" }, T);
+    if (u.kind !== "start") throw new Error("no update");
+    const ops = { dir: b.s.ops, owner: me };
+    writeOp(ops, { ...u.op, phase: "installing" });
+    for (const a of ["start", "resume"] as const) {
+      const r = await b.send(a);
+      expect(r).toMatchObject({ ok: false, code: "busy", said: expect.stringContaining(`the update ${u.op.id}, which is installing`) });
+    }
+    expect(b.control()).toMatchObject({ availability: "stopped" });
+    // The update's own resume, once it is installed, is its own.
+    const own = await changeControl({ sys: b.sys, state: b.s, rootUid: me, events: eventLog("guard", { dir: b.s.events, owner: me }, b.sys), log: () => {} }, { kind: "start", actor: `update ${u.op.id}` });
+    expect(own).toMatchObject({ ok: true });
+    // Back in its drain, a start or a resume isn't held: it ends the drain, which the update reads as cancelled.
+    writeOp(ops, { ...u.op, phase: "draining" });
+    await b.send("drain");
+    expect(await b.send("resume")).toMatchObject({ ok: true });
+  });
 });

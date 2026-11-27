@@ -5,6 +5,7 @@ import type { Paths, Versions } from "./config.ts";
 import type { UsageProbe } from "./guest.ts";
 import type { Proc, RunResult, Sys } from "./sys.ts";
 import type { UsageSample } from "./usage.ts";
+import type { Evaluator } from "./net/rules.ts";
 import { TART_KIT } from "./tart.ts";
 
 // IMAGE_GONE lives in imagegone.ts, so tart.ts can use it without importing this file's values.
@@ -52,6 +53,9 @@ export interface VmEngine {
   runtimeProblem(): Promise<{ why: string; halt: boolean } | undefined>;
   // The policy as the engine applied it, for the status file a job reads (box-check reads these).
   netRecord(net: NetPolicy): Record<string, unknown>;
+  // What the engine's own rules let a VM's packet reach, from the very lists it passes (net/rules.ts).
+  // vmIp: the VM's address, for the engine's own address on its network; absent, asked as "@host".
+  evaluator(net: NetPolicy, vmIp?: string): Evaluator;
   // v2.5.0: one sample of what the guest uses, by the guest's own probe, within timeoutMs. Never
   // throws: a sample that fails or can't be read is undefined.
   usage(vm: string, probe: UsageProbe, timeoutMs: number): Promise<UsageSample | undefined>;

@@ -1,55 +1,72 @@
-// taskbox load start, load on --only, load off and load report.
-// on and off are the service account's, at the box, like stop and start. report is anyone's,
-// remote too, read from the copies every user may read.
+// The load test's box commands: load status, load stop at the box, load report, and the workflow
+// template. load start comes signed from the controller only (handlers/load.ts); the controller
+// then dispatches the runs (controller/load.ts). load stop at the box is the service account's. status
+// and report are anyone's, remote too, read from the copies every user may read.
 import { readFileSync } from "node:fs";
 import { loadReportAnswer } from "./answers.ts";
-import { awayChecks } from "./away.ts";
 import type { CheckContext } from "./checks.ts";
-import { canaryLabels, fingerprint } from "./watchdog.ts";
+import { fingerprint } from "./watchdog.ts";
 import { EMBEDDED } from "./embedded.ts";
 import { GitHub } from "./github.ts";
 import { Log } from "./log.ts";
-import { type Config, type Kind, kindsOf, labelsFor, loadRepoOf, readStateJson, vmsAtMostOf } from "./config.ts";
-import { readJobs } from "./jobs.ts";
-import { currentSession, FRESH_MS, LOAD_MAX_MS, LOAD_MIN_MS, loadBlind, loadOff, loadOn, parseFor, readLoad } from "./load.ts";
-import { loadReport, loadReportLines } from "./loadreport.ts";
+import { type Config, type Kind, kindsOf, labelsFor, loadRepoOf, readStateJson } from "./config.ts";
+import { boxLabelFor } from "./settings/kinds.ts";
+import { type JobRecord, readJobs, readLive } from "./jobs.ts";
+import { currentSession, FRESH_MS, type LoadFile, type LoadSession, loadBlind, loadOff, PATTERNS, readLoad, sessionEnd } from "./load.ts";
+import { loadReport, loadReportLines, replayDay } from "./loadreport.ts";
 import type { OpsDeps } from "./ops.ts";
 import { serviceName } from "./names.ts";
 
 const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
+export const LOAD_WORKFLOW = ".github/workflows/load.yml";
+// Throwaway pull requests the merge pattern opens a run.
+export const MERGE_PRS = 6;
 
-// The checklist: taskbox check --away's checks not met, by name (v2.5.0, src/away.ts). load on names them
-// and the report keeps them as they stood, so a slow result on a box that fails the checklist isn't
-// read as the scheduler's. It never stops load on: the owner chose to test now.
-export async function checklistNotMet(c: CheckContext): Promise<string[]> {
-  try {
-    return (await awayChecks(c)).filter((k) => k.status === "FAIL").map((k) => k.name.replace(/[^\x20-\x7e]/g, "").slice(0, 60));
-  } catch {
-    return ["the checklist couldn't be read"];
-  }
-}
+// ---- The template ----
 
-// taskbox template show load: the test repo's workflow, made from the box's settings, as taskbox template show test-job
-// makes the canary (v2.5.0, src/watchdog.ts). Its canary pattern asks for the same jobs as the
-// canary: one per kind, on each kind's own label.
-export function loadSettings(cfg: Config) {
-  const first = (k: Kind) => labelsFor(cfg, k)[0]!;
-  const linux = kindsOf(cfg).includes("linux");
-  return { v: 1, canary: canaryLabels(cfg), macos: first("macos"), ...(linux ? { linux: first("linux") } : {}) };
+// Everything the load workflow takes from a box, and nothing else: each kind's label of this box
+// alone, so another box never takes a test job, and the label the merge queue's jobs ask for.
+export interface LoadValues {
+  v: 2;
+  macos: string;
+  linux?: string;
+  merge: string;
+  prs: number;
 }
-export function loadWorkflowYaml(cfg: Config, template = EMBEDDED["templates/taskbox-load.yml"]): string {
-  const s = loadSettings(cfg);
+const LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,49}$/;
+const boxLabel = (cfg: Config, k: Kind) => boxLabelFor(cfg, k) ?? labelsFor(cfg, k)[0]!;
+export function loadValues(cfg: Config): LoadValues {
+  const linux = kindsOf(cfg).includes("linux") ? boxLabel(cfg, "linux") : undefined;
+  return { v: 2, macos: boxLabel(cfg, "macos"), ...(linux ? { linux } : {}), merge: linux ?? boxLabel(cfg, "macos"), prs: MERGE_PRS };
+}
+// The values as the controller takes them from a box: the exact keys, labels GitHub takes, a small count.
+export function checkLoadValues(v: unknown): LoadValues | string {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return "the load workflow's values aren't an object";
+  const o = v as Record<string, unknown>;
+  const keys = Object.keys(o).sort().join(",");
+  if (keys !== "macos,merge,prs,v" && keys !== "linux,macos,merge,prs,v") return "the load workflow's values have keys taskbox doesn't make";
+  if (o.v !== 2) return "the load workflow's values are of a version this release doesn't read";
+  for (const k of ["macos", "merge", "linux"] as const) if (o[k] !== undefined && (typeof o[k] !== "string" || !LABEL.test(o[k] as string))) return `the load workflow's ${k} label isn't one GitHub takes`;
+  if (!Number.isInteger(o.prs) || (o.prs as number) < 1 || (o.prs as number) > 20) return "the load workflow's pull request count is out of range";
+  return o as unknown as LoadValues;
+}
+export const patternsOf = (v: LoadValues) => PATTERNS.filter((p) => p !== "burst" || !!v.linux);
+export function loadYamlFrom(v: LoadValues, template = EMBEDDED["templates/taskbox-load.yml"]): string {
   // A box with no Linux kind has no Linux job, and no burst.
-  const body = s.linux ? template.replace(/^# __LINUX(START|END)__\n/gm, "") : template.replace(/^# __LINUXSTART__\n[\s\S]*?^# __LINUXEND__\n/m, "");
+  const body = v.linux ? template.replace(/^# __LINUX(START|END)__\n/gm, "") : template.replace(/^# __LINUXSTART__\n[\s\S]*?^# __LINUXEND__\n/m, "");
+  const patterns = patternsOf(v);
   const values: Record<string, string> = {
-    FINGERPRINT: fingerprint(s),
-    CANARYLABELS: `[${s.canary.map((l) => JSON.stringify(l)).join(", ")}]`,
-    MACOSLABEL: s.macos,
-    LINUXLABEL: s.linux ?? "",
-    PATTERNS: `[${(s.linux ? ["canary", "burst", "push", "day"] : ["canary", "push", "day"]).join(", ")}]`,
+    FINGERPRINT: fingerprint(v),
+    MACOSLABEL: v.macos,
+    LINUXLABEL: v.linux ?? "",
+    MERGELABEL: v.merge,
+    MERGEPRS: String(v.prs),
+    PATTERNS: `[${patterns.join(", ")}]`,
+    DEFAULTPATTERN: patterns[0]!,
   };
   return body.replace(/__([A-Z]+)__/g, (m, k: string) => values[k] ?? m);
 }
+export const loadWorkflowYaml = (cfg: Config, template?: string) => loadYamlFrom(loadValues(cfg), template);
 
 // taskbox check's row for the test repo: its runner group exists, is
 // limited to selected private repos, and lists the test repo alone. As the service account, with
@@ -71,124 +88,115 @@ export async function testRepoRow(c: CheckContext): Promise<{ status: "OK" | "FA
   }
 }
 
-export async function loadCommand(d: OpsDeps, cfg: Config, rest: string[], json: boolean): Promise<number> {
-  const asService = d.uid === d.serviceUid;
-  // The subcommand: the first word that is neither an option nor an option's value.
-  const sub = rest.find((a, i) => !a.startsWith("--") && !["--for", "--session"].includes(rest[i - 1] ?? "")) ?? "status";
+// ---- load status ----
+
+type Result = { exit: number; result?: Record<string, unknown> };
+const sessionJson = (s: LoadSession, now: number) => ({
+  n: s.n,
+  pattern: s.pattern ?? null,
+  only: s.only,
+  startedAt: s.startedAt,
+  until: s.until,
+  endedAt: sessionEnd(s, now) ?? null,
+  by: s.by ?? null,
+  stoppedBy: s.stoppedBy ?? null,
+  why: s.why ?? null,
+});
+
+// A session's test jobs: done (the job list), running (the live files) and waiting (the source).
+export function testJobs(jobs: JobRecord[], live: { repo: string }[], f: LoadFile, s: LoadSession | undefined, repo: string, now: number): { done: number; running: number; waiting: number | null } {
+  if (!s) return { done: 0, running: 0, waiting: null };
+  const to = sessionEnd(s, now) ?? now;
+  const done = jobs.filter((j) => j.repo === repo && j.jobAt !== undefined && j.jobAt >= s.startedAt && j.jobAt <= to).length;
+  const seen = f.seen && f.seen.known && now - f.seen.at <= FRESH_MS ? f.seen.load : null;
+  return { done, running: live.filter((l) => l.repo === repo).length, waiting: seen };
+}
+
+export async function loadStatus(d: OpsDeps, cfg: Config): Promise<Result> {
   const repo = loadRepoOf(cfg);
-  // The service account reads its own files; anyone else, the copies in the folder every user may read.
-  const shared = !asService;
-  const now = d.sys.now();
   if (!repo) {
-    d.say("taskbox.json names no test repo, so there is no load test.");
-    return 1;
+    d.say("The box's settings name no test repo, so there is no load test.");
+    return { exit: 0, result: { repo: null, session: null } };
   }
-  if (!["status", "on", "off", "report", "workflow"].includes(sub)) {
-    d.say("taskbox load takes on, on --only, off, report or workflow.");
-    return 1;
-  }
-  if (sub === "workflow") {
-    d.say(loadWorkflowYaml(cfg).trimEnd());
-    return 0;
-  }
-  if (sub === "on" || sub === "off") {
-    if (!asService) {
-      d.say(`Type taskbox load ${sub === "on" ? "start" : "stop"} as ${serviceName()}, at the box.`);
-      return 1;
-    }
-    if (sub === "off") {
-      const s = loadOff(d.paths, now);
-      if (!s) {
-        d.say("No load test session is on.");
-        return 0;
-      }
-      d.say(`Load test session ${s.n} is off. Running load jobs finish, within 20 minutes; no new load VM starts.`);
-      const seen = readLoad(d.paths).seen;
-      const left = seen && now - seen.at <= FRESH_MS ? seen.load : 0;
-      if (left) d.say(`${left} test repo job${left > 1 ? "s are" : " is"} still queued on GitHub. The box's App can only read, so cancel them in the test repo's Actions tab.`);
-      d.say(`taskbox load report shows session ${s.n}.`);
-      return 0;
-    }
-    const only = rest.includes("--only");
-    const i = rest.indexOf("--for");
-    const forMs = i >= 0 ? parseFor(rest[i + 1] ?? "") : undefined;
-    if (i >= 0 && (forMs === undefined || forMs < LOAD_MIN_MS)) {
-      d.say("taskbox load start --for takes hours and minutes, such as 2h or 90m: at least 10m, at most 4h.");
-      return 1;
-    }
-    const slots = vmsAtMostOf(cfg);
-    if (!only && slots < 2) {
-      d.say("With one VM at a time, the load test can't run beside the real repo: it never takes the real repo's last slot. Type taskbox load start --only to give it the box for a while.");
-      return 1;
-    }
-    const f = readLoad(d.paths);
-    const cur = currentSession(f, now);
-    if (cur) {
-      d.say(`Load test session ${cur.n} is on already, until ${hhmm(cur.until)} UTC. Type taskbox load stop first.`);
-      return 1;
-    }
-    const blind = loadBlind(f, now);
-    if (only) {
-      const seen = f.seen;
-      const fresh = !!seen?.known && now - seen.at <= FRESH_MS;
-      // Ask whenever real jobs wait, and whenever the box can't say.
-      if (fresh && seen!.real > 0) d.say(`${seen!.real} real job${seen!.real > 1 ? "s wait" : " waits"} on GitHub now${seen!.realMerge ? `, ${seen!.realMerge} of them merge queue jobs` : ""}. With --only they wait until the session ends.`);
-      if (!fresh) d.say(`The box can't say whether real jobs wait: ${blind ?? "it can't see the queue now"}. With --only they wait until the session ends.`);
-      if (!fresh || seen!.real > 0) {
-        d.say("A merge queue drops a pull request whose checks wait past its timeout, 60 minutes unless you changed it. An alert that the real repo's jobs wait is expected while the session is on.");
-        const a = (await d.ask("Type yes to give the test repo the box anyway: ")).trim().toLowerCase();
-        if (a !== "yes") {
-          d.say("Not started. The real repo carries on.");
-          return 1;
-        }
-      }
-    }
-    // v2.5.0's checklist first, as taskbox check --away runs it.
-    const checklist = await checklistNotMet({ sys: d.sys, cfg, paths: d.paths, uid: d.uid, serviceUid: d.serviceUid });
-    const s = loadOn(d.paths, now, { ...(forMs !== undefined ? { forMs } : {}), only, checklist });
-    if (typeof s === "string") {
-      d.say(`A load test session is on already: ${s}.`);
-      return 1;
-    }
-    d.say(`Load test session ${s.n} is on until ${hhmm(s.until)} UTC, ${only ? "with the box to itself: the real repo's jobs wait on GitHub" : "beside the real repo, never taking its last slot"}.`);
-    if (blind) d.say(`Test jobs run only while the box can see the queue, and now ${blind}. taskbox load says when that changes.`);
-    if (checklist.length) d.say(`taskbox check --away has ${checklist.length} thing${checklist.length > 1 ? "s" : ""} not met: ${checklist.join(", ")}. The session runs; the report names them, so a slow result there isn't read as the scheduler's. taskbox check --away has each fix.`);
-    if ((forMs ?? LOAD_MAX_MS) > LOAD_MAX_MS) d.say("It ends by itself after 4 hours, the most a session runs.");
-    d.say("Now start the test repo's load workflow on GitHub: Actions, load, Run workflow.");
-    return 0;
-  }
-  if (sub === "report") {
-    const jobs = readJobs(d.paths, d.serviceUid);
-    if (jobs === undefined) {
-      d.say(json ? JSON.stringify({ answers: 3, kind: "error", error: "jobs-unreadable" }) : `${d.paths.jobsFile} isn't taskbox's, so the report can't be read. Nothing to do: agents fix it.`);
-      return 1;
-    }
-    const st = readStateJson<{ gaveWayLog?: unknown; kindChoice?: unknown }>(d.paths.loopState) ?? {};
-    const log = (Array.isArray(st.gaveWayLog) ? st.gaveWayLog : [])
-      .filter((x): x is { at: number; role?: unknown } => !!x && typeof x === "object" && Number.isFinite((x as { at?: unknown }).at))
-      .map((x) => ({ at: x.at, ...(x.role === "load" ? { role: "load" as const } : {}) }));
-    const j = rest.indexOf("--session");
-    const n = j >= 0 ? Number(rest[j + 1]) : undefined;
-    if (n !== undefined && !Number.isInteger(n)) {
-      d.say("taskbox load report --session takes a session's number.");
-      return 1;
-    }
-    const r = loadReport(cfg, jobs, readLoad(d.paths, shared), log, now, st.kindChoice === "source", n);
-    if (typeof r === "string") {
-      d.say(json ? JSON.stringify({ answers: 3, kind: "error", error: "no-session" }) : `${r}.`);
-      return 1;
-    }
-    d.say(json ? JSON.stringify(loadReportAnswer(r)) : loadReportLines(r).join("\n"));
-    return 0;
-  }
-  // taskbox load status: the session now.
-  const f = readLoad(d.paths, shared);
+  const shared = d.uid !== d.serviceUid;
+  const now = d.sys.now();
+  const f = readLoad(d.paths, shared, d.rootUid ?? 0);
   const s = currentSession(f, now);
   const last = f.sessions.at(-1);
-  d.say(s ? `Load test session ${s.n} is on until ${hhmm(s.until)} UTC, ${s.only ? "with the box to itself" : "beside the real repo"}.` : `No load test session is on.${last ? ` The last was session ${last.n}: taskbox load report.` : ""}`);
-  const blind = s ? loadBlind(f, now) : undefined;
-  if (blind) d.say(`Test jobs wait: ${blind}.`);
-  if (!s && last?.why) d.say(`The box ended session ${last.n} at ${hhmm(last.endedAt ?? last.until)} UTC: ${last.why}`);
-  if (f.seen?.known && f.seen.load && !s && now - f.seen.at <= FRESH_MS) d.say(`${f.seen.load} test repo job${f.seen.load > 1 ? "s are" : " is"} queued on GitHub with no session on: no VM starts for them.`);
+  const jobs = readJobs(d.paths, d.serviceUid) ?? [];
+  const live = readLive(d.paths, d.serviceUid);
+  const t = testJobs(jobs, live, f, s ?? last, repo.name, now);
+  const seen = f.seen && now - f.seen.at <= FRESH_MS ? f.seen : undefined;
+  if (s) {
+    d.say(`Load test session ${s.n}${s.pattern ? ` (${s.pattern})` : ""} is on until ${hhmm(s.until)} UTC, ${s.only ? "with the box to itself" : "beside the real repo"}.`);
+    d.say(`Test jobs: ${t.done} done, ${t.running} running, ${t.waiting ?? "not known how many"} waiting.`);
+    const blind = loadBlind(f, now);
+    if (blind) d.say(`Test jobs wait: ${blind}.`);
+  } else {
+    d.say(`No load test session is on.${last ? ` The last was session ${last.n}: taskbox load report.` : ""}`);
+    if (last?.why) d.say(`The box ended session ${last.n} at ${hhmm(last.endedAt ?? last.until)} UTC: ${last.why}`);
+    if (seen?.known && seen.load) d.say(`${seen.load} test repo job${seen.load > 1 ? "s are" : " is"} queued on GitHub with no session on: no VM starts for them.`);
+  }
+  return {
+    exit: 0,
+    result: {
+      repo: repo.name,
+      workflow: LOAD_WORKFLOW,
+      session: s ? sessionJson(s, now) : null,
+      last: last ? sessionJson(last, now) : null,
+      tests: t,
+      // Real jobs waiting, for load start --only's typed yes on the controller; null when the box can't say.
+      realWaiting: seen?.known ? seen.real : null,
+      realMergeWaiting: seen?.known ? seen.realMerge : null,
+    },
+  };
+}
+
+// ---- load stop, at the box ----
+
+export function loadStopHere(d: OpsDeps, cfg: Config): Result {
+  if (!loadRepoOf(cfg)) {
+    d.say("The box's settings name no test repo, so there is no load test.");
+    return { exit: 1 };
+  }
+  if (d.uid !== d.serviceUid) {
+    d.say(`Type taskbox load stop as ${serviceName()}, at the box, or from the controller, which signs it.`);
+    return { exit: 1 };
+  }
+  const now = d.sys.now();
+  const s = loadOff(d.paths, now, d.rootUid ?? 0);
+  if (!s) {
+    d.say("No load test session is on.");
+    return { exit: 0 };
+  }
+  d.say(`Load test session ${s.n} is off. Its running test VMs stop now, and no new one starts.`);
+  const seen = readLoad(d.paths, false, d.rootUid ?? 0).seen;
+  const left = seen && now - seen.at <= FRESH_MS ? seen.load : 0;
+  d.say(`Queued test runs stay queued until the session's --for ends or they are cancelled on GitHub${left ? `: ${left} test job${left > 1 ? "s are" : " is"} queued now` : ""}. taskbox load stop from the controller cancels them.`);
+  d.say(`taskbox load report shows session ${s.n}.`);
+  return { exit: 0, result: { session: s.n } };
+}
+
+// ---- load report ----
+
+export async function loadReportRun(d: OpsDeps, cfg: Config, n: number | undefined, how: "text" | "json" | "replay"): Promise<number> {
+  const shared = d.uid !== d.serviceUid;
+  const now = d.sys.now();
+  const jobs = readJobs(d.paths, d.serviceUid);
+  if (jobs === undefined) {
+    d.say(how !== "text" ? JSON.stringify({ answers: 3, kind: "error", error: "jobs-unreadable" }) : `${d.paths.jobsFile} isn't taskbox's, so the report can't be read. Nothing to do: agents fix it.`);
+    return 1;
+  }
+  const st = readStateJson<{ gaveWayLog?: unknown; kindChoice?: unknown }>(d.paths.loopState) ?? {};
+  const log = (Array.isArray(st.gaveWayLog) ? st.gaveWayLog : [])
+    .filter((x): x is { at: number; role?: unknown } => !!x && typeof x === "object" && Number.isFinite((x as { at?: unknown }).at))
+    .map((x) => ({ at: x.at, ...(x.role === "load" ? { role: "load" as const } : {}) }));
+  const r = loadReport(cfg, jobs, readLoad(d.paths, shared, d.rootUid ?? 0), log, now, st.kindChoice === "source", n);
+  if (typeof r === "string") {
+    d.say(how !== "text" ? JSON.stringify({ answers: 3, kind: "error", error: "no-session" }) : `${r}.`);
+    return 1;
+  }
+  if (how === "replay") d.say(JSON.stringify(replayDay(r, jobs)));
+  else d.say(how === "json" ? JSON.stringify(loadReportAnswer(r)) : loadReportLines(r).join("\n"));
   return 0;
 }

@@ -98,9 +98,9 @@ describe("the settings", () => {
     expect(load({ timings: { speed: 1, giveWayMinutes: 0 } })).toThrow("giveWayMinutes is 1 to 60");
   });
   test("releaseRepo and publicRepo (v2.6.1): names in GitHub's shape, and v2 releases read from releaseRepo", () => {
-    const c = load({ releaseRepo: "taskbox-archive", publicRepo: "example-org/taskbox" })();
-    expect(releaseRepoOf(c)).toBe("taskbox-archive");
-    expect(assetUrl(c, 7)).toBe("https://api.github.com/repos/example-org/taskbox-archive/releases/assets/7");
+    const c = load({ releaseRepo: "example-releases", publicRepo: "example-org/taskbox" })();
+    expect(releaseRepoOf(c)).toBe("example-releases");
+    expect(assetUrl(c, 7)).toBe("https://api.github.com/repos/example-org/example-releases/releases/assets/7");
     expect(releaseRepoOf(load({})())).toBe("taskbox");
     expect(load({ releaseRepo: "a/b" })).toThrow("releaseRepo is the name of the repo in org");
     expect(load({ publicRepo: "taskbox" })).toThrow("publicRepo is the public repo");

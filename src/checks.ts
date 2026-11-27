@@ -27,7 +27,9 @@ import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
 import { MAX_HOLD_MS, rollbackWatchState } from "./hop.ts";
 import type { Sys } from "./sys.ts";
 import { fresh } from "./workspace/model.ts";
-import { readStateFile, spoolProblem } from "./workspace/pass.ts";
+import { readStateFile } from "./workspace/pass.ts";
+import { spoolProblem } from "./core/spool.ts";
+import { rootStateOf } from "./core/paths.ts";
 import { socketDirProblem } from "./tssocket.ts";
 import { failMode } from "./workspace/store.ts";
 
@@ -224,7 +226,7 @@ export const FILEVAULT_FIX = "FileVault is off. At the box, as your admin user: 
 async function fileVault(c: CheckContext): Promise<Omit<Check, "name">> {
   const r = await c.sys.run("/usr/bin/fdesetup", ["isactive"]);
   if (r.stdout.trim() === "true") return ok("on");
-  return awayOf(c.cfg).restartPlan === "filevault-off" ? ok("off, by the owner's restart plan") : fail(FILEVAULT_FIX);
+  return awayOf(c.cfg).restartPlan === "filevault-off" ? ok("off, by the restart plan in taskbox.json") : fail(FILEVAULT_FIX);
 }
 
 function sha256File(path: string): string {
@@ -254,7 +256,7 @@ export function listFiles(dir: string, base = dir): string[] {
     if (st.isDirectory()) out.push(...listFiles(p, base));
     else out.push(relative(base, p));
   }
-  return out.filter((f) => f !== "installed.json").sort();
+  return out.filter((f) => f !== "installed.json" && f !== "install.json").sort();
 }
 
 export function listDirs(dir: string, base = dir): string[] {
@@ -652,14 +654,14 @@ export async function peopleRow(c: CheckContext): Promise<Omit<Check, "name">> {
 
 // The account agents log in as over Tailscale SSH. It must be a standard user with taskbox's shell
 // and a read-only home, so a session can read the box, and change nothing else. Admin work is never
-// done through it. Its name is the one a laptop pairs with.
+// done through it. Its name is the one a controller pairs with.
 export async function agentRow(c: CheckContext): Promise<Omit<Check, "name">> {
   const u = c.paths.agent;
-  if (u === undefined || c.paths.agentHome === undefined) return { status: "SKIP", detail: "taskbox.json names no agent account, so agents and laptops can't reach the box" };
+  if (u === undefined || c.paths.agentHome === undefined) return { status: "SKIP", detail: "taskbox.json names no agent account, so agents and controllers can't reach the box" };
   const id = await c.sys.run("/usr/bin/id", ["-u", u]);
   // Before the first install it is pending. After it, the install made it, so a missing one is a fault.
   if (id.code !== 0) {
-    if (existsSync(c.paths.accountsRecord)) return fail(`${u} isn't on this Mac, so agents and laptops can't reach the box. As your admin user, type taskbox update, and it makes ${u}.`);
+    if (existsSync(c.paths.accountsRecord)) return fail(`${u} isn't on this Mac, so agents and controllers can't reach the box. As your admin user, type taskbox update, and it makes ${u}.`);
     return { status: "SKIP", detail: `${u} isn't made yet; the install makes it. Tailscale SSH logs in as ${u} to read the box` };
   }
   const a = await adminState(c.sys, u);
@@ -679,7 +681,7 @@ export async function agentRow(c: CheckContext): Promise<Omit<Check, "name">> {
   if (home !== c.paths.agentHome) return fail(`${u}'s home isn't taskbox's empty folder ${c.paths.agentHome}. As your admin user, type taskbox update.`);
   const why = homeProblem(home, c.rootUid ?? 0);
   if (why) return fail(`${why}, so whoever logs in as ${u} could change what runs there. As your admin user, type taskbox update.`);
-  return ok(`${u}, a hidden standard user with no password, taskbox's shell and a read-only home. Laptops pair with the name ${u}`);
+  return ok(`${u}, a hidden standard user with no password, taskbox's shell and a read-only home. Controllers pair with the name ${u}`);
 }
 
 // Workspaces: the approver key the settings name must be the one the box
@@ -724,7 +726,7 @@ export async function fenceRow(c: CheckContext): Promise<Omit<Check, "name">> {
   if (!r.state.fence.ok) return fail(`${r.state.fence.why}, so no workspace opens`);
   const agent = c.cfg.accounts.agent;
   const uid = agent !== undefined ? readRecord(c.paths.accountsRecord).made[agent]?.uid : undefined;
-  const spool = uid === undefined ? "the agent account isn't taskbox's" : spoolProblem(c.paths.workspaceSpool, uid, root);
+  const spool = uid === undefined ? "the agent account isn't taskbox's" : spoolProblem(rootStateOf(c.paths).agentSpool, uid, root);
   if (spool) return fail(`${spool}, so agents can't ask for a workspace. As your admin user, type taskbox update.`);
   return ok(`${r.state.fence.why}. The spool is the agent account's at mode 700, and the state is root's and fresh`);
 }
@@ -893,7 +895,7 @@ function sameText(a: string, b: string): boolean {
 
 // The install ID a controller pairs with: there, root's and read-only.
 async function installIdRow(c: CheckContext): Promise<Omit<Check, "name">> {
-  return readInstallId(c.paths.installId, c.rootUid ?? 0) ? ok("there, root's and read-only") : fail("there is no install ID, so a laptop can't pair with the box. As your admin user, type taskbox update.");
+  return readInstallId(c.paths.installId, c.rootUid ?? 0) ? ok("there, root's and read-only") : fail("there is no install ID, so a controller can't pair with the box. As your admin user, type taskbox update.");
 }
 
 // The service is left logged in at the console, holding the App key, the job source key and Tart,

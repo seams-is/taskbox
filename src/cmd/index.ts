@@ -22,15 +22,18 @@ import * as key from "./key.ts";
 import * as load from "./load.ts";
 import * as logins from "./logins.ts";
 import * as logs from "./logs.ts";
+import * as netwatch from "./netwatch.ts";
 import * as nonce from "./nonce.ts";
 import * as op from "./op.ts";
 import * as pause from "./pause.ts";
 import * as policy from "./policy.ts";
 import * as poll from "./poll.ts";
 import * as prune from "./prune.ts";
+import * as release from "./release.ts";
 import * as remove from "./remove.ts";
 import * as resume from "./resume.ts";
 import * as rollback from "./rollback.ts";
+import * as settings from "./settings.ts";
 import * as size from "./size.ts";
 import * as source from "./source.ts";
 import * as start from "./start.ts";
@@ -58,15 +61,18 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "load.ts", module: load },
   { file: "logins.ts", module: logins },
   { file: "logs.ts", module: logs },
+  { file: "netwatch.ts", module: netwatch },
   { file: "nonce.ts", module: nonce },
   { file: "op.ts", module: op },
   { file: "pause.ts", module: pause },
   { file: "policy.ts", module: policy },
   { file: "poll.ts", module: poll },
   { file: "prune.ts", module: prune },
+  { file: "release.ts", module: release },
   { file: "remove.ts", module: remove },
   { file: "resume.ts", module: resume },
   { file: "rollback.ts", module: rollback },
+  { file: "settings.ts", module: settings },
   { file: "size.ts", module: size },
   { file: "source.ts", module: source },
   { file: "start.ts", module: start },

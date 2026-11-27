@@ -1,4 +1,4 @@
-// The one schema module for the box's answers, shared by the box and the laptop.
+// The one schema module for the box's answers, shared by the box and the controller.
 // Version 4 is the envelope (src/envelope.ts); version 3 is v2.x's one line per answer. A reader
 // takes its own version and the one before. It fails closed: no envelope, one that doesn't parse, an
 // answers version it doesn't take, another install's answer, or a stream with no final line is
@@ -77,7 +77,7 @@ export const anyOf =
     return first;
   };
 
-// The word lists the box's answers use. The box and the laptop are one program, so they are one list.
+// The word lists the box's answers use. The box and the controller are one program, so they are one list.
 export const OUTCOMES = ["done", "ceiling", "update", "no-guest", "failed", "softnet-root", "held-back", "prestart-failed", "pressure", "guard-closed", "halted"] as const;
 export const KINDS = ["macos", "linux"] as const;
 export const WORDS = ["Stopped", "Downloading", "Ready", "Running", "Waiting", "Updating", "Needs you", "Failing"] as const;
@@ -168,7 +168,8 @@ export type EnvelopeRead = { ok: true; envelopes: Envelope[] } | { ok: false; co
 
 // The box's stdout, read as envelopes. One envelope, or for a stream one per line with final true on
 // the last alone. Every failure is unreachable.
-export function readEnvelopes(stdout: string, expect: { command?: string; installId?: string | null; stream?: boolean } = {}): EnvelopeRead {
+// partial: part of a stream, read as its lines come, so its last line needn't be final.
+export function readEnvelopes(stdout: string, expect: { command?: string; installId?: string | null; stream?: boolean; partial?: boolean } = {}): EnvelopeRead {
   const no = (detail: string): EnvelopeRead => ({ ok: false, code: "unreachable", detail });
   const lines = stdout.split("\n").filter((l) => l.trim() !== "");
   if (!lines.length) return no("no answer");
@@ -191,13 +192,14 @@ export function readEnvelopes(stdout: string, expect: { command?: string; instal
     if (e.ok !== (e.exit === 0)) return no("ok and exit disagree");
     if (expect.command !== undefined && e.command !== expect.command && e.command !== "error") return no(`an answer to ${e.command}`);
     if (expect.installId && e.box?.installId !== expect.installId) return no("another install's answer");
-    if (e.final !== (i === lines.length - 1)) return no(e.final ? "a final line before the end" : "a stream with no final line");
+    if (e.final && i !== lines.length - 1) return no("a final line before the end");
+    if (!e.final && i === lines.length - 1 && !expect.partial) return no("a stream with no final line");
     out.push(e);
   }
   return { ok: true, envelopes: out };
 }
 
-// One answer for the laptop's reads, in version 4 or 3, as the version 3 shape the laptop's screens
+// One answer for the controller's reads, in version 4 or 3, as the version 3 shape the controller's screens
 // take. A v4 error comes back as the box's error.
 export type Read<T> =
   | { ok: true; answer: T; version: number }

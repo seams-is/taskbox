@@ -31,7 +31,8 @@ export const commands: CommandSpec[] = [
       const beat = await keeperBeat(sys, brokerPathsOf(c.p).beat, c.uid, process.pid);
       await beat();
       sys.every(30_000, () => void beat());
-      runBroker({ sys, log, settings: () => loadConfig(c.p.app, c.p.boxSettings), keysDir: b.keys, ownerUid: c.uid }, { socket: b.socket, guardSocket: b.guardSocket, usedFile: b.used });
+      const { readBoxFile } = await import("../boxsettings.ts");
+      runBroker({ sys, log, settings: () => loadConfig(c.p.app, c.p.boxSettings), box: () => readBoxFile(c.p.boxSettings).settings, keysDir: b.keys, ownerUid: c.uid }, { socket: b.socket, guardSocket: b.guardSocket, usedFile: b.used });
       await new Promise<never>(() => {});
       return 0;
     },

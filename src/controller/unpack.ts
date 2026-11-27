@@ -24,7 +24,7 @@ const octal = (h: Uint8Array, off: number, len: number) => {
 };
 
 // The entries a tarball holds, checked, with no file written.
-export function readTar(tgz: Uint8Array): { path: string; dir: boolean; data: Uint8Array }[] {
+export function readTar(tgz: Uint8Array): { path: string; dir: boolean; data: Uint8Array; mode: number }[] {
   let tar: Uint8Array;
   try {
     tar = Bun.gunzipSync(new Uint8Array(tgz));
@@ -32,7 +32,7 @@ export function readTar(tgz: Uint8Array): { path: string; dir: boolean; data: Ui
     throw new Refused("the tarball isn't gzip");
   }
   if (tar.length > MAX_UNPACKED) throw new Refused("the tarball unpacks larger than taskbox takes");
-  const out: { path: string; dir: boolean; data: Uint8Array }[] = [];
+  const out: { path: string; dir: boolean; data: Uint8Array; mode: number }[] = [];
   let off = 0;
   for (;;) {
     if (off + 512 > tar.length) throw new Refused("the tarball ends early");
@@ -52,7 +52,7 @@ export function readTar(tgz: Uint8Array): { path: string; dir: boolean; data: Ui
     if (type === "5" && size !== 0) throw new Refused("a tar folder has a size");
     const start = off + 512;
     if (start + size > tar.length) throw new Refused("the tarball ends early");
-    if (parts.length > 1) out.push({ path: parts.slice(1).join("/"), dir: type === "5", data: tar.subarray(start, start + size) });
+    if (parts.length > 1) out.push({ path: parts.slice(1).join("/"), dir: type === "5", data: tar.subarray(start, start + size), mode: octal(h, 100, 8) & 0o777 });
     if (out.length > MAX_ENTRIES) throw new Refused("the tarball holds more files than taskbox takes");
     off = start + Math.ceil(size / 512) * 512;
   }

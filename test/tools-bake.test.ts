@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { type Config, paths } from "../src/config.ts";
 import { oneJob, Slots } from "../src/loop.ts";
 import type { Proc, RunResult } from "../src/sys.ts";
+import { Evaluator } from "../src/net/rules.ts";
 import { TartEngine } from "../src/tart.ts";
 import { type BaseRecord, baseNameFor, cloneSourceOf, pinKey, readBases, writeBase } from "../src/tools/base.ts";
 import { BAKE_NET, bake, type BakeDeps } from "../src/tools/bake.ts";
@@ -129,6 +130,9 @@ class Engine implements VmEngine {
   }
   netRecord() {
     return {};
+  }
+  evaluator() {
+    return new Evaluator({ block: [], allow: [] });
   }
 }
 
@@ -471,7 +475,7 @@ describe("a job VM on the box", () => {
   });
 });
 
-describe("the review's fixes", () => {
+describe("the bake's seal, its paths, and its waits", () => {
   test("SSH goes off first, before the tool cache is probed or anything is copied in; a guest that won't turn it off fails the bake", async () => {
     const { dir, s } = storeWith([node], [NODE]);
     const gen = (await buildGeneration(s, "linux", [node])).gen!;

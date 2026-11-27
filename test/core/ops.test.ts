@@ -16,7 +16,7 @@ const rand = (k: number) => {
 const drain: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "drain", phases: ["draining", "drained"], onBoot: () => "resume" };
 const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["downloading", "verifying", "draining", "installing", "swap", "proving"], pointOfNoReturn: "swap", onBoot: (op) => (op.phases.indexOf(op.phase) >= op.phases.indexOf("swap") ? "resume" : "cancel") };
 const rollback: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "rollback", phases: ["draining", "swapping"], onBoot: () => "fail" };
-const who = { actor: "owner (signed, key SHA256:abc)" };
+const who = { actor: "approver (signed, key SHA256:abc)" };
 function started(t: OpDecl, params: Record<string, never> | Record<string, unknown> = {}, subject = "box"): Op {
   const b = begin([], t, { subject, params: params as never, ...who }, T, rand);
   if (b.kind !== "start") throw new Error();

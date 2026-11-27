@@ -79,7 +79,9 @@ const FIX: Partial<Record<string, string>> = {
 function outcomeOf(d: AskDeps, id: string, o: Outcome | undefined, what: string, left?: "unread" | "gone"): { exit: number; result: Record<string, unknown>; changed?: boolean; error?: ErrorBody } {
   if (!o && left === "gone") return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message: `${what[0]!.toUpperCase()}${what.slice(1)} (${id}) left the spool with no answer from the guard in ${waited(d)}: the spool may have dropped it in a flood.`, fix: "taskbox events at the box says whether it applied.", who: "at-the-box" } };
   if (!o) return { exit: EXIT.failed, result: { request: id }, error: { code: "failed", message: `The box's guard hasn't read ${what} (${id}) in ${waited(d)}, so it may be down. Send it again once taskbox check at the box is clean.`, fix: "taskbox check at the box says why.", who: "at-the-box" } };
-  const result = { request: id, ...(o.op ? { op: o.op } : {}) };
+  // The guard's whole line, beside the lines the envelope cuts to 120 characters: a sealed answer
+  // (a Tailscale sign-in link) is longer.
+  const result = { request: id, ...(o.op ? { op: o.op } : {}), said: o.said };
   if (o.ok) return { exit: EXIT.ok, changed: true, result };
   const code = o.code ?? "failed";
   return { exit: code === "expired" ? EXIT.denied : EXIT.failed, result, error: { code, message: o.said, fix: FIX[code] ?? null, who: null } };
@@ -90,7 +92,7 @@ export async function sendSigned(c: Pick<BoxCtx, "spec" | "args" | "opts" | "fla
   const word = c.flags.signed;
   const parts = isSignedWord(word) ? splitSigned(word) : undefined;
   if (!parts || !parseStatement(parts.statement)) {
-    const message = "--signed takes the owner's statement and signature, each base64url, joined by a dot.";
+    const message = "--signed takes the signed statement and its signature, each base64url, joined by a dot.";
     c.say(message);
     return { exit: EXIT.usage, error: { code: "usage", message, fix: null, who: null } };
   }

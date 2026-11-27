@@ -10,6 +10,7 @@ import type { UsageProbe } from "./guest.ts";
 import type { Proc, RunResult, Sys } from "./sys.ts";
 import type { UsageSample } from "./usage.ts";
 import { IMAGE_GONE } from "./imagegone.ts";
+import { Evaluator, gatewayOf } from "./net/rules.ts";
 import type { EngineKit, NetPolicy, VmEngine, VmInfo } from "./vm.ts";
 
 export interface TartVM {
@@ -150,7 +151,7 @@ export function softnetRules(net: NetPolicy): { block: string[]; allow: string[]
 
 // Softnet starts as root, through its setuid bit, makes its network, then drops to the service. A Softnet still
 // root this long after it started never dropped. Younger ones are mid-start, such as another VM's
-// starting beside this one with two VMs at once (v2.4.2: that race halted taskbox-1).
+// starting beside this one with two VMs at once. Before v2.4.2, that race halted the box.
 export const SOFTNET_DROP_GRACE_S = 20;
 // How many times the check waits out a Softnet still in its grace before it decides.
 export const SOFTNET_CHECK_TRIES = 3;
@@ -261,6 +262,10 @@ export class TartEngine implements VmEngine {
   netRecord(net: NetPolicy): Record<string, unknown> {
     const r = softnetRules(net);
     return { softnetBlock: r.block, softnetAllow: r.allow };
+  }
+  // The evaluator reads softnetRules, the lists start and startBake pass Softnet, so the two can't drift.
+  evaluator(net: NetPolicy, vmIp?: string): Evaluator {
+    return new Evaluator(softnetRules(net), vmIp ? gatewayOf(vmIp) : undefined);
   }
 }
 

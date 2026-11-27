@@ -8,8 +8,9 @@
 // - this account is a pool account pool.json records, with this user ID;
 // - root's workspaces state reads the safe way: root's plain file, in root's folder, written by
 //   nobody else;
-// - model.openFor() says the account's workspace is Active or Saving, the guard made a pass within
-//   3 minutes, and the workspace went Active in this boot (kern.bootsessionuuid);
+// - an approver key is pinned at the box (approvers.json), else it says how to pin one;
+// - model.openFor() says the account's workspace is ready or saving, the guard made a pass within
+//   3 minutes, and the workspace went ready in this boot (kern.bootsessionuuid);
 // - free disk is above the box's floor, read with statfs, which writes nothing.
 // Before it hands over, it lowers the hard RLIMIT_NPROC (GATE_NPROC), which the account can't raise
 // again. Otherwise it prints one line with the state and exits 1.
@@ -19,7 +20,9 @@ import { dirname, join } from "node:path";
 import { realClock } from "./clock.ts";
 import { loadConfig } from "./config.ts";
 import { FIRST_HIDDEN_ID, LAST_HIDDEN_ID, type PoolRecord, readPoolRecord } from "./pin.ts";
-import { floorWhy, openFor, parseBoot, POOL_USER, type Workspace } from "./workspace/model.ts";
+import { pinnedKeys, readApprovers } from "./core/approvers.ts";
+import { floorWhy, NO_KEY, openFor, parseBoot, POOL_USER, type Workspace } from "./workspace/model.ts";
+import { reachWhy } from "./workspace/flows.ts";
 import { freeBytesAt, readStateFile } from "./workspace/read.ts";
 import type { StateRead } from "./workspace/store.ts";
 
@@ -27,6 +30,7 @@ export const GATE_CLOSED = "taskbox: this box has no workspaces yet, so this acc
 const APP = "/opt/taskbox/app";
 const STATE = "/opt/taskbox-state/workspaces.json";
 const POOL_RECORD = "/opt/taskbox-state/pool.json";
+const APPROVERS = "/opt/taskbox-state/approvers.json";
 const SHELL = "/bin/zsh";
 
 // The most processes the pool account may have at once, once the gate hands over. RLIMIT_NPROC
@@ -44,6 +48,7 @@ export interface GateInputs {
   pool: PoolRecord | "bad"; // root's pool.json
   folderOk: boolean; // the state's folder is root's, and nobody else can write it
   read: StateRead; // root's workspaces.json, read the safe way
+  keyPinned: boolean; // an approver key is pinned at the box
   boot: string | undefined; // this boot's kern.bootsessionuuid
   now: number;
   freeBytes: number | undefined; // statfs on the account's home
@@ -68,14 +73,23 @@ export function gateFor(i: GateInputs): GateDecision {
   const user = poolUserOf(i.pool, i.uid);
   if (user === undefined) return no(`This account isn't one of taskbox's workspace accounts, ${shut}`);
   if (!i.folderOk) return no(`The workspaces state's folder isn't root's alone, ${shut}`);
+  if (!i.keyPinned) return no(NO_KEY);
   if (i.read.kind === "missing") return no(GATE_CLOSED.slice("taskbox: ".length));
   if (i.read.kind !== "ok") return no(`The workspaces state can't be used (${i.read.why}), ${shut}`);
   if (i.boot === undefined) return no(`The box's boot can't be read, ${shut}`);
   const o = openFor(i.read.state, user, i.boot, i.now);
   if ("why" in o) return no(o.why);
+  const unproved = reachWhy(o.ws, i.now);
+  if (unproved) return no(unproved);
   const low = floorWhy(i.freeBytes, i.floorGB, o.ws.name);
   if (low) return no(low);
   return { open: true, user, ws: o.ws };
+}
+
+// Whether approvers.json, root's, pins a key.
+function keyPinnedAt(path: string, rootUid: number): boolean {
+  const a = readApprovers(path, rootUid);
+  return a.kind === "ok" && pinnedKeys(a.value).length > 0;
 }
 
 // The state's folder: root's, a real folder, closed to writes by group and others.
@@ -147,6 +161,7 @@ export interface GateEnv {
   rootUid: number;
   state: string;
   poolRecord: string;
+  approvers: string;
   home: (user: string) => string;
   boot: () => string | undefined;
   floorGB: () => number | undefined;
@@ -160,6 +175,7 @@ const boxEnv = (): GateEnv => ({
   rootUid: 0,
   state: STATE,
   poolRecord: POOL_RECORD,
+  approvers: APPROVERS,
   home: (user) => join("/Users", user),
   boot: bootNow,
   floorGB: () => floorNow(APP),
@@ -187,7 +203,7 @@ export async function gate(argv: readonly string[], over: Partial<GateEnv> = {})
   const pool = readPoolRecord(e.poolRecord, e.rootUid);
   const named = poolUserOf(pool, e.uid);
   const home = named ? e.home(named) : "/var/empty";
-  const d = gateFor({ uid: e.uid, pool, folderOk: folderOk(dirname(e.state), e.rootUid), read: readStateFile(e.state, e.rootUid), boot: e.boot(), now: e.now(), freeBytes: freeBytesAt(home), floorGB: e.floorGB() });
+  const d = gateFor({ uid: e.uid, pool, folderOk: folderOk(dirname(e.state), e.rootUid), read: readStateFile(e.state, e.rootUid), keyPinned: keyPinnedAt(e.approvers, e.rootUid), boot: e.boot(), now: e.now(), freeBytes: freeBytesAt(home), floorGB: e.floorGB() });
   if (!d.open) {
     console.log(`taskbox: ${d.why}`);
     return 1;

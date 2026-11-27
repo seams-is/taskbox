@@ -59,12 +59,12 @@ describe("the release repo", () => {
       const p = new URL(url).pathname;
       if (method === "GET" && p === "/orgs/example-org/installation") return json({ id: 42 });
       if (method === "POST" && p === "/app/installations/42/access_tokens") return json({ token: "t" });
-      if (method === "GET" && p === "/repos/example-org/taskbox-archive/releases") return json([{ tag_name: "v2.6.1", name: "", draft: false, prerelease: false }]);
+      if (method === "GET" && p === "/repos/example-org/example-releases/releases") return json([{ tag_name: "v2.6.1", name: "", draft: false, prerelease: false }]);
       return undefined;
     });
-    const gh = new GitHub(sys, { ...CFG, releaseRepo: "taskbox-archive" }, PEM, new Log());
+    const gh = new GitHub(sys, { ...CFG, releaseRepo: "example-releases" }, PEM, new Log());
     const t = await gh.token("contents");
-    expect(sys.requests.find((r) => r.method === "POST")!.body).toEqual({ repositories: ["taskbox-archive"], permissions: { contents: "read" } });
+    expect(sys.requests.find((r) => r.method === "POST")!.body).toEqual({ repositories: ["example-releases"], permissions: { contents: "read" } });
     expect((await gh.release(t))!.tag).toBe("v2.6.1");
   });
 
@@ -74,9 +74,9 @@ describe("the release repo", () => {
     sys.routes.push((method, url) => (method === "POST" && new URL(url).pathname === "/app/installations/42/access_tokens" ? json({ message: "There is at least one repository that does not exist or is not accessible to the parent installation." }, 422) : undefined));
     githubRoutes(sys);
     const { d, root } = installDeps(sys, "yes");
-    writeFileSync(join(d.configDir, "taskbox.json"), JSON.stringify({ ...CFG, releaseRepo: "taskbox-archive" }));
+    writeFileSync(join(d.configDir, "taskbox.json"), JSON.stringify({ ...CFG, releaseRepo: "example-releases" }));
     const e = await install(d, { first: true }).catch((x: Error) => x);
-    expect((e as Error).message).toBe("The release repo example-org/taskbox-archive isn't there yet, so nothing was installed. Nothing to do: agents fix it.");
+    expect((e as Error).message).toBe("The release repo example-org/example-releases isn't there yet, so nothing was installed. Nothing to do: agents fix it.");
     expect(existsSync(join(root, "opt/taskbox"))).toBe(false);
   });
 
@@ -187,17 +187,17 @@ describe("the statement", () => {
   });
 
   // V2.6.1 is the one place the release key can be pinned without trusting the release itself.
-  // v2.6.1 isn't released with a placeholder: the signers file must pin the owner's release key.
-  test.serial("v2.6.1 isn't released until it pins the owner's release key", () => {
+  // v2.6.1 isn't released with a placeholder: the repo's signers file must pin a release key.
+  test.serial("the repo's signers file pins a release key", () => {
     expect(signersProblem(readFileSync(join(import.meta.dir, "../signers/allowed_signers"), "utf8"))).toBeUndefined();
   });
 
-  // A real signature from the owner's Secure Enclave key, made with Touch ID on 24 Nov 2026 over a
-  // trial file, checked by the real ssh-keygen against the pinned file, with the user-present flag.
-  test.serial("the pinned key verifies a real Secure Enclave signature, and it carries the user-present flag", () => {
+  // A real signature from a Secure Enclave key, made with Touch ID over a trial file, checked by the
+  // real ssh-keygen against a fixture signers file that pins that key, with the user-present flag.
+  test.serial("a Secure Enclave key verifies a real signature, and it carries the user-present flag", () => {
     const fx = (n: string) => join(import.meta.dir, "fixtures", n);
     const out = Bun.spawnSync(
-      ["/usr/bin/ssh-keygen", "-Y", "verify", "-f", join(import.meta.dir, "../signers/allowed_signers"), "-I", PRINCIPAL, "-n", NAMESPACE, "-s", fx("release-key-trial.txt.sig")],
+      ["/usr/bin/ssh-keygen", "-Y", "verify", "-f", fx("release-key-trial.signers"), "-I", PRINCIPAL, "-n", NAMESPACE, "-s", fx("release-key-trial.txt.sig")],
       { stdin: new Blob([readFileSync(fx("release-key-trial.txt"))]), env: { PATH: "/usr/bin:/bin" } },
     );
     expect(out.exitCode).toBe(0);
@@ -716,7 +716,9 @@ describe("the rollback watcher and undo", () => {
 
   test("only a tag that says v2 drops guardwatch; a missing or unreadable tag keeps it, so the guard stays watched", async () => {
     const { laterDaemons } = await import("../src/hop.ts");
-    for (const t of ["v3.0.0-rc.1", "v4.0.0", undefined, "", 3, "3.0.0", "taskbox"]) expect(laterDaemons(t)).toEqual(["local.taskbox.guardwatch"]);
+    for (const t of [undefined, "", 3, "3.0.0", "taskbox"]) expect(laterDaemons(t)).toEqual(["local.taskbox.guardwatch"]);
+    // netwatch only with a tag that says v3 or later: an older install has no netwatch to run.
+    for (const t of ["v3.0.0-rc.1", "v4.0.0"]) expect(laterDaemons(t)).toEqual(["local.taskbox.guardwatch", "local.taskbox.netwatch"]);
     for (const t of ["v2.6.1", "v2.0.0"]) expect(laterDaemons(t)).toEqual([]);
   });
 

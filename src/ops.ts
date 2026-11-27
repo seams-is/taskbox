@@ -1,6 +1,7 @@
 // The owner's commands at the box. Each one ends with three lines: Now (the state), Did (what
 // changed) and Next (one step). They read the files the loop writes; only clean, undo and remove
 // change anything.
+import { workspacesBlock } from "./workspace/show.ts";
 import { createHash } from "node:crypto";
 import { existsSync, lchownSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -10,6 +11,8 @@ export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
 import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, screenSharingOn, treeProblem } from "./checks.ts";
 import { GUARDWATCH_LABEL, guardStaleSince, watchPaths } from "./guardwatch.ts";
+import { removeNetwatch, stopBridges } from "./net/netwatch.ts";
+import { NETWATCH_LABEL } from "./net/paths.ts";
 import { sourceWords } from "./sourcefail.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
 import { checkAnswer, logAnswer, statusAnswer } from "./answers.ts";
@@ -166,7 +169,7 @@ function installedLine(p: Paths): string {
 
 // logins: the line for a Tailscale SSH login in the last hour to any account but the agent account
 // (logins.ts, recentLine), or undefined for none.
-export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise<number> {
+export async function status(d: OpsDeps, who?: Reader, logins?: string, extra: readonly string[] = []): Promise<number> {
   const s = await stateNow(d);
   const loop = readLoopState(d.paths.loopState);
   const running = asService(d) ? await loopRunning(d.sys, d.uid, d.paths.loopLabels) : undefined;
@@ -174,6 +177,7 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   d.say(`  Installed: ${installedLine(d.paths)}`);
   const avail = availabilityLine(rootStateOf(d.paths).control, d.rootUid ?? 0);
   if (avail) d.say(`  Available: ${avail}`);
+  for (const l of workspacesBlock(d.paths.workspaces, d.sys.now(), d.rootUid ?? 0)) d.say(`  ${l}`);
   d.say(`  Download:  ${pullLine(readPull(d.paths.pull), d.sys.now(), running, readStopped(d.paths, d.rootUid ?? 0)?.at)}`);
   const linux = readPull(d.paths.pullLinux);
   if (linux) d.say(`  Linux:     ${pullLine(linux, d.sys.now(), running, readStopped(d.paths, d.rootUid ?? 0)?.at)}`);
@@ -186,11 +190,11 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
     if (pf.shown) d.say(`  VM starts: ${pf.line}`);
   } catch {}
   // v2.6.0: the load test's session, while one is on.
-  const lf = readLoad(d.paths, !asService(d));
+  const lf = readLoad(d.paths, !asService(d), d.rootUid ?? 0);
   const ls = currentSession(lf, d.sys.now());
   const lastLoad = lf.sessions.at(-1);
   const blind = ls ? loadBlind(lf, d.sys.now()) : undefined;
-  if (ls) d.say(`  Load:      session ${ls.n}, on until ${new Date(ls.until).toISOString().slice(11, 16)} UTC, ${ls.only ? "the test repo alone" : "beside the real repo"}${blind ? `. Test jobs wait: ${blind}` : ""}`);
+  if (ls) d.say(`  Load:      session ${ls.n}${ls.pattern ? ` (${ls.pattern})` : ""}, on until ${new Date(ls.until).toISOString().slice(11, 16)} UTC, ${ls.only ? "the test repo alone" : "beside the real repo"}${blind ? `. Test jobs wait: ${blind}` : ""}`);
   // A session the box ended itself, in the last day: why, since the owner may not have seen it.
   else if (lastLoad?.why && d.sys.now() - (lastLoad.endedAt ?? lastLoad.until) < 24 * 3600_000) d.say(`  Load:      the box ended session ${lastLoad.n}: ${lastLoad.why}`);
   const shown = slotsShown(loop);
@@ -199,6 +203,7 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   } else if (loop.vmKind && loop.slot && loop.slot !== "idle") d.say(`  VM:        a ${KIND_WORD[loop.vmKind === "linux" ? "linux" : "macos"]} VM, ${noControl(loop.slot)}`);
   d.say(`  Last job:  ${loop.lastJob ? `${noControl(loop.lastJob)}${loop.lastJobResult ? `, ${noControl(loop.lastJobResult)}` : ""}` : "none yet"}`);
   if (logins) d.say(`  Logins:    ${logins}`);
+  for (const l of extra) d.say(`  ${l}`);
   d.say("");
   d.say(commandsFor(d, who));
   for (const l of footer(s, "Nothing changed.")) d.say(l);
@@ -216,7 +221,14 @@ export async function statusJson(d: OpsDeps, me: string): Promise<number> {
   const view = readLoopState(d.paths.loopState);
   const jobs = runningJobs(view).map((j) => ({ name: j.job, kind: j.vmKind, since: j.slotAt }));
   const slots = { total: view.slotCount ?? 1, busy: view.slots ? Object.values(view.slots).filter((v) => ["starting a VM", "waiting for a job", "running a job", "proving Linux"].includes(v.slot ?? "")).length : 0 };
-  d.say(JSON.stringify(statusAnswer({ state: s, installed, othersLoggedIn: others, job: str(loop.job), lastJob: str(loop.lastJob), lastJobResult: str(loop.lastJobResult), jobs, slots })));
+  // Temporary admin SSH while its window is open (settings/adminssh.ts), or null.
+  let adminSsh: { user: string; until: string } | null = null;
+  try {
+    const { loadConfig } = await import("./config.ts");
+    const { windowJson } = await import("./settings/adminssh.ts");
+    adminSsh = windowJson(loadConfig(d.paths.app, d.paths.boxSettings).adminSsh, d.sys.now());
+  } catch {}
+  d.say(JSON.stringify({ ...statusAnswer({ state: s, installed, othersLoggedIn: others, job: str(loop.job), lastJob: str(loop.lastJob), lastJobResult: str(loop.lastJobResult), jobs, slots }), adminSsh }));
   return 0;
 }
 
@@ -501,7 +513,7 @@ function readText(path: string): string | undefined {
 // o.yes: asked already, as the rollback watcher has (hop.ts). o.keep: the launchd daemons to leave.
 // o.locked: the caller holds the update lock. o.floorFrom: the app folder whose $undoFloor applies,
 // for the watcher, which goes back to the install it left whatever a newer release says.
-export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; locked?: boolean; floorFrom?: string } = {}): Promise<number> {
+export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; locked?: boolean; floorFrom?: string; selfOp?: string } = {}): Promise<number> {
   if (!o.locked) {
     return withUpdateLock(
       d.paths,
@@ -557,7 +569,7 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   // Every op job first: its child runs this release's code, which the swap takes away (core/child.ts).
   const opsDir = rootStateOf(d.paths).ops;
   if (existsSync(opsDir)) {
-    const ended = await endOpJobs({ sys: d.sys, ops: { dir: opsDir, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {} }, "undone").catch(() => ({ cancelled: [], missed: ["the op jobs couldn't be read"] }));
+    const ended = await endOpJobs({ sys: d.sys, ops: { dir: opsDir, owner: d.rootUid ?? 0 }, events: eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys), log: () => {} }, "undone", o.selfOp).catch(() => ({ cancelled: [], missed: ["the op jobs couldn't be read"] }));
     if (ended.cancelled.length) d.say(`  Stopped ${ended.cancelled.length} operation${ended.cancelled.length === 1 ? "" : "s"} that ${ended.cancelled.length === 1 ? "was" : "were"} running.`);
     for (const m of ended.missed) d.say(`  ${noControl(m).slice(0, 160)}`);
   }
@@ -579,9 +591,11 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   const notEnded: string[] = [];
   // The install gone back to keeps the daemons it ships itself (guardwatch, from v3 on).
   const ships = laterDaemons(readStateJson<Installed>(d.paths.installed)?.tag);
-  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? [...KNOWN_DAEMONS, ...ships], d.serviceUid, notEnded).catch(() => [] as string[]);
+  const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? [...KNOWN_DAEMONS, ...ships], d.serviceUid, notEnded, o.selfOp).catch(() => [] as string[]);
   for (const m of notEnded) d.say(`  An op job couldn't be ended: ${noControl(m).slice(0, 120)}.`);
   if (gone.length) did += ` Stopped ${gone.join(", ")}, which this install doesn't run.`;
+  // netwatch gone: so are the captures it started, which launchd would keep running.
+  if (gone.includes(NETWATCH_LABEL)) await stopBridges(d.sys, d.paths).catch(() => {});
   // Back across the label move: the kept code knows only the old labels (install.ts, labelsBack).
   const back = d.paths.previousLabelPrefix ? await labelsBack({ ...d, sys: d.sys }, d.paths.previousLabelPrefix).catch((e: Error) => `The services' names weren't put back: ${noControl(e.message).slice(0, 80)}. Type taskbox update.`) : undefined;
   if (back) did += ` ${back}`;
@@ -854,6 +868,8 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
     rmSync(watchPlist, { force: true });
     done.push("removed guardwatch, which restarted a stuck guard");
   }
+  // Network capture: netwatch, then each bridge's capture and parser it started.
+  if (await removeNetwatch(d.sys, d.paths).catch(() => false)) done.push("removed network capture");
   for (const label of [GUARD_LABEL, ...(old ? [old.guard] : [])]) await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
   // Every running op's job, booted out by its label, which ends its child and what that started:
   // launchd owns them, so no pid is signalled. A job that can't be booted out is said.
@@ -1220,7 +1236,7 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
 }
 
 // taskbox key reset approver: clears the approver key the box
-// trusts, for a lost laptop, at the box only, after a typed yes. Workspaces stay off until the next
+// trusts, for a lost controller, at the box only, after a typed yes. Workspaces stay off until the next
 // taskbox update pins the key taskbox.json names, after its own yes.
 export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {
   if (o.overSsh) {
@@ -1233,7 +1249,7 @@ export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (
     return 0;
   }
   d.say(pin.state === "pinned" ? `This box trusts the approver key ${fingerprint(pin.key)}.` : "This box's pinned approver key isn't root's plain file.");
-  d.say("Clearing it turns workspaces off, and this box never takes that key again. The next taskbox update shows the key taskbox.json names, with its fingerprint, and pins it after your yes. Clear it when the laptop that holds the key is lost.");
+  d.say("Clearing it turns workspaces off, and this box never takes that key again. The next taskbox update shows the key taskbox.json names, with its fingerprint, and pins it after your yes. Clear it when the controller that holds the key is lost.");
   if ((await d.ask("Type yes to clear it: ")).trim().toLowerCase() !== "yes") {
     for (const l of footer(await stateNow(d), "Nothing changed.", NOTHING)) d.say(l);
     return 1;
@@ -1247,7 +1263,7 @@ export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (
     for (const l of footer(await stateNow(d), `The key wasn't cleared (${noControl((e as Error).message).slice(0, 80)}).`, "Nothing to do: agents fix it.")) d.say(l);
     return 1;
   }
-  for (const l of footer(await stateNow(d), "Cleared the approver key. Workspaces are off.", "Make a new key on your laptop, put it in taskbox.json in a PR, then type taskbox update at the box, and check its fingerprint.")) d.say(l);
+  for (const l of footer(await stateNow(d), "Cleared the approver key. Workspaces are off.", "Make a new key on the controller, put it in taskbox.json in a PR, then type taskbox update at the box, and check its fingerprint.")) d.say(l);
   return 0;
 }
 

@@ -133,18 +133,26 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["size list", "size list --json"], bad: ["size", "size list small", "size list -n 5", "size list --force"] },
   { good: ["tool list", "tool list --json", "tool refresh", "tool refresh --timeout 30m --json", "tool refresh --detach", "image list", "image list --json"], bad: ["tool", "tool list bun", "tool list -w", "tool refresh --force", "tool refresh --timeout soon", "tool add", "image", "image list macos", "image list --force"] },
   { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job list --state running --kind linux --since 2h -w", "job list --result passed --class merge --size small", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job list --state lost", "job list -w --json", "job timings --all", "job cancel"] },
-  { good: ["job show j_0123abcd", "job show job-j_0123abcd -w", "job logs j_0123abcd -f", "job show 3141592653 --json", "job logs 42 --tail 20 --json", "job cancel j_0123abcd", "job cancel 42 -y --json"], bad: ["job show", "job show j_0123ABCD", "job show ../x", "job show j_0123abcd -w --json", "job logs j_0123abcd -f --json", "job cancel j_0123abcd --json", "job cancel 0", "job cancel j_0123abcd --force", "job show j_0123abcd --net"] },
-  { good: ["load status", "load report --session 3 --json", "load start --only --for 2h", "load stop"], bad: ["load report --session x", "load status --json", "load begin"] },
+  { good: ["job show j_0123abcd", "job show job-j_0123abcd -w", "job logs j_0123abcd -f", "job show 3141592653 --json", "job logs 42 --tail 20 --json", "job cancel j_0123abcd", "job cancel 42 -y --json", "job show j_0123abcd --net"], bad: ["job show", "job show j_0123ABCD", "job show ../x", "job show j_0123abcd -w --json", "job logs j_0123abcd -f --json", "job cancel j_0123abcd --json", "job cancel 0", "job cancel j_0123abcd --force", "job list --net"] },
+  { good: ["load status", "load report --session 3 --json", "load start --pattern burst --only --for 2h", "load stop"], bad: ["load report --session x", "load status --since 1h", "load begin"] },
   { good: ["template show box-check", "template show test-job", "template show load", "template list", "template list --json"], bad: ["template show", "template show watchdog", "template show load load", "template list box-check"] },
-  { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
+  { good: ["policy show", "policy show --login you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --login nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
+  { good: ["settings show", "settings show --pending --origin --json", "settings apply 0123456789abcdef0123456789abcdef01234567", "settings repo example-org/box-settings --json", "update --check", "withdraw pc_01JD8Q4ZZZZZZZZZZZZZZZZZZZ", "confirm", "confirm --refuse pc_01JD8Q4ZZZZZZZZZZZZZZZZZZZ --json"], bad: ["settings show x", "settings apply 0123abc", "settings apply", "settings repo nothing", "withdraw x", "confirm --refuse ../x", "confirm -y"] },
   { good: ["op list", "op list --state running --type drain --since 1h --json", "op show op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ -w --timeout 5m", "op cancel op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ -y"], bad: ["op list --state ended", "op show", "op show x", "op cancel", "op cancel op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ --force"] },
   { good: ["stop", "start", "drain", "prune", "pause", "resume", "pause --reason upgrades", "drain --timeout 30m --force --detach", "stop --force -y --timeout 1h"], bad: ["stop --now", "start x", "drain --now", "prune --dry-run", "pause x", "resume --force", "pause --reason", "start --force"] },
-  { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
-  { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova", "confirm", "confirm --refuse screen-sharing"], bad: ["rollback --to 2.6.1", "confirm now", "confirm -y", "confirm --refuse", "confirm --refuse ../x", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
+  { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1", "update --to 3.0.1", "update --check", "update --repair", "update --force --timeout 30m", "update --detach -y", "release list", "release list --all", "release show 3.0.1", "release show v3.0.0-rc.2"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main", "update --channel beta", "release show", "release show main", "release list x"] },
+  { good: ["rollback", "rollback --to 2.6.1", "rollback --to v3.0.1 --detach", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova", "confirm", "confirm --refuse screen-sharing", "confirm --refuse pc_01HZZZZZZZZZZZZZZZZZZZZZZZ"], bad: ["rollback --to main", "rollback 2.6.1", "confirm now", "confirm -y", "confirm --refuse", "confirm --refuse ../x", "confirm --refuse pc_1", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
+  { good: ["key list", "key list --json", "key rotate runner", "key rotate tailscale --timeout 10m --json", "key rotate source --detach", "key trust approver", "key trust approver -y --json", "key reset approver -y", "confirm --refuse pc_01JD8Q4ZZZZZZZZZZZZZZZZZZZ", "key add approver", "key offer approver", "key code op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ --state aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --code abc"], bad: ["key add runner", "key offer approver --key x", "key rotate", "key rotate release", "key rotate runner source", "key rotate approver --new short", "key rotate tailscale --seal x", "key trust", "key trust approver x", "key list x", "confirm pc_01JD8Q4ZZZZZZZZZZZZZZZZZZZ"] },
   { good: ["connect github", "connect github --jobs example-org/app", "connect status", "connect listen", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "connect github --new-key", "disconnect"] },
   { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch", "broker"], bad: ["install --bootstrap", "guard x"] },
+  { good: ["netwatch", "netwatch parse bridge100 32 failures 14"], bad: ["netwatch x", "netwatch parse bridge100 32 failures"] },
   // The agent's release is under the workspace noun, so a release list can register.
   { good: [], bad: ["release nova-1"] },
+  // Workspace ids are an agent's name and a number. Words go as one argument, so the table's lines use one-word words.
+  {
+    good: ["workspace request --as nova --size heavy --why Render", "workspace request --as nova --why Render --json", "workspace list", "workspace list --state ready -w", "workspace status nova-1 --json", "workspace wait nova-1 --for ended --timeout 10m", "workspace connect nova-1", "workspace progress nova-1 Frames --step 1/4 --saved", "workspace end nova-1 --force", "workspace approve nova-1 --size light", "workspace deny nova-1 --reason later", "workspace pause nova-1", "workspace resume nova-1", "workspace pause nova-1 --to light", "workspace pause nova-1 --now -y", "workspace jump nova-1", "workspace rush nova-1 --force", "workspace rule add --agent nova --size light --window 22:00-07:00 --expires 30d", "workspace rule list", "workspace rule delete r_001", "workspace progress nova-1 Light --saved --downsized"],
+    bad: ["workspace request --as nova", "workspace request --as Owner! --why x", "workspace request --as nova --why x --size huge", "workspace list --state gone", "workspace list --json -w", "workspace status nova", "workspace wait nova-1 --for gone", "workspace progress nova-1", "workspace progress nova Frames", "workspace progress nova-1 Frames --step 5/4", "workspace end", "workspace approve nova-1 --size huge", "workspace deny", "workspace pause nova-1 --to heavy", "workspace pause nova-1 --to light --now", "workspace rule add --agent nova --size whole --window 22:00-07:00 --expires 30d", "workspace rule add --agent nova --size light --window 22:00-07:00 --expires 31d", "workspace rule add --agent nova --size light --window 7-8 --expires 1d", "workspace rule delete nova-1", "workspace progress nova-1 Light --downsized", "workspace resume", "workspaces", "queue --as nova --why x"],
+  },
 ];
 
 describe("the command line", () => {
@@ -157,8 +165,9 @@ describe("the command line", () => {
     const tabled = new Set(TABLE.flatMap((r) => r.good.map((l) => { const p = parseLine(l.split(" ")); return p.ok ? p.path.join(" ") : ""; })));
     const raw = registry().filter((s) => s.raw).map((s) => s.path.join(" "));
     expect(parseLine(["workspace", "end", "nova-1"]).ok).toBe(true);
-    // A release list registers beside everything here.
-    expect(registryProblem([...registry(), { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBeUndefined();
+    // A new noun registers beside everything here, and a second release list doesn't.
+    expect(registryProblem([...registry(), { path: ["selftest", "run"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBeUndefined();
+    expect(registryProblem([...registry(), { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBe("two commands are taskbox release list");
     for (const s of registry()) if (!raw.includes(s.path.join(" "))) expect({ cmd: s.path.join(" "), tabled: tabled.has(s.path.join(" ")) }).toEqual({ cmd: s.path.join(" "), tabled: true });
   });
 
@@ -511,7 +520,7 @@ describe("--json: one envelope per command", () => {
   });
 
   // Check's exit 1 is its verdict, not a failure of the command: the envelope carries every row.
-  test("check's lines are its rows, made from the result; a FAIL is exit 1 with every row, and the laptop shows them all", async () => {
+  test("check's lines are its rows, made from the result; a FAIL is exit 1 with every row, and the controller shows them all", async () => {
     const r = await run(["check", "--json"], CALLERS.ci, { healthy: true });
     const e = JSON.parse(r.said[0]!);
     expect(readEnvelopes(r.said[0]!, { command: "check" }).ok).toBe(true);
@@ -559,7 +568,7 @@ describe("hello and the answers version", () => {
     const newer = await hello("6,5");
     expect([newer.code, newer.v.error.fix]).toEqual([1, "update the box"]);
     const older = await hello("2,1");
-    expect([older.code, older.v.error.fix]).toEqual([1, "update the laptop"]);
+    expect([older.code, older.v.error.fix]).toEqual([1, "update the controller"]);
   });
 
   test("--answers given twice is refused", async () => {
@@ -593,25 +602,25 @@ describe("policy show --json, for the controller's --box all", () => {
   test("answers with the box's tag and rules, with the owner it was given, which the controller reads back whole", async () => {
     const { policyOfAnswer, policyFor } = await import("../src/policy.ts");
     const { validateAccounts } = await import("../src/access.ts");
-    const r = await run(["policy", "show", "--json", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere, prep: recorded });
+    const r = await run(["policy", "show", "--json", "--login", "me@example.com"], CALLERS.ci, { setup: agentThere, prep: recorded });
     expect(r.code).toBe(0);
     const e = JSON.parse(r.said[0]!);
-    expect([e.result.tag, e.result.owners]).toEqual(["tag:taskbox", ["owner@example.com"]]);
-    expect(JSON.stringify(e.result)).not.toMatch(/"(OWNER|ADMIN)/);
+    expect([e.result.tag, e.result.owners]).toEqual(["tag:taskbox", ["me@example.com"]]);
+    expect(JSON.stringify(e.result)).not.toMatch(/"(YOUR_LOGIN|ADMIN)/);
     // The controller reads it with the install ID it paired with, and its own owner.
-    const back = policyOfAnswer(e.result, "a".repeat(32), "owner@example.com");
+    const back = policyOfAnswer(e.result, "a".repeat(32), "me@example.com");
     if (typeof back === "string") throw new Error(back);
-    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { owner: "owner@example.com", admins: ["owner"] }).ssh);
+    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { owner: "me@example.com", admins: ["owner"] }).ssh);
   });
-  test("--json without --owner is refused before anything is read: it would answer a placeholder", async () => {
+  test("--json without --login is refused before anything is read: it would answer a placeholder", async () => {
     const r = await run(["policy", "show", "--json"], CALLERS.ci);
     expect(r.code).toBe(2);
   });
   test("an agent the settings name that taskbox didn't make refuses the policy; one not made yet is left out", async () => {
-    const refused = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere });
+    const refused = await run(["policy", "show", "--login", "me@example.com"], CALLERS.ci, { setup: agentThere });
     expect(refused.code).toBe(1);
     expect(refused.said[0]).toMatch(/^taskbox-agent, the agent the settings name, isn't the account taskbox made, so no policy lets it in/);
-    const later = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)) });
+    const later = await run(["policy", "show", "--login", "me@example.com"], CALLERS.ci, { setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)) });
     expect(later.code).toBe(0);
     expect(later.said.join("\n")).not.toContain('"accept"');
     expect(later.said.join("\n")).toContain("taskbox-agent isn't made yet, so the policy leaves it out");

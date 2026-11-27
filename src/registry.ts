@@ -5,8 +5,8 @@
 import { commandFiles } from "./cmd/index.ts";
 import { type CommandSpec, GLOBAL_FLAGS, type GlobalFlag, parse, type Parsed } from "./command.ts";
 
-// A statement's action (core/statement.ts ACTION): a word, or two with a dot.
-const ACTION = /^[a-z][a-z0-9-]{0,31}(\.[a-z][a-z0-9-]{0,31})?$/;
+// A statement's action (core/statement.ts ACTION): one to three words with dots.
+import { ACTION } from "./core/statement.ts";
 
 // One file of src/cmd/, as src/cmd/index.ts names it: its name and what it exports.
 export interface CommandFile {

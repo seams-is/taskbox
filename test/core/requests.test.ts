@@ -135,7 +135,7 @@ describe("a signed request through the agent spool", () => {
       const out = await sendSigned(c, b.d);
       expect(out).toMatchObject({ exit: 0, changed: true, result: { op: "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ" } });
       expect(said).toEqual(["Draining.", "Its op is op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ."]);
-      expect(b.applied).toEqual([{ action: "drain", args: { timeout: "1h" }, actor: `owner (signed, key ${fingerprint(owner.key)})`, id: expect.stringMatching(/^rq_/) }]);
+      expect(b.applied).toEqual([{ action: "drain", args: { timeout: "1h" }, actor: `approver (signed, key ${fingerprint(owner.key)})`, id: expect.stringMatching(/^rq_/) }]);
       expect(b.nonce()).not.toBe((n as { nonce: string }).nonce);
       // The spool is empty again: root only read and unlinked.
       expect(readdirSync(b.s.agentSpool)).toEqual([]);
@@ -158,7 +158,7 @@ describe("a signed request through the agent spool", () => {
       // is refused unchecked, as the agent account's.
       const actors = b.events().filter((e) => e.type === "guard.refused").map((e) => e.actor);
       expect(actors).toHaveLength(1);
-      expect([`owner (signed, key ${fingerprint(owner.key)})`, "agent account"]).toContain(actors[0]!);
+      expect([`approver (signed, key ${fingerprint(owner.key)})`, "agent account"]).toContain(actors[0]!);
     },
     SLOW,
   );
@@ -620,7 +620,7 @@ describe("the registry and the command line", () => {
   });
 });
 
-describe("the review's cases", () => {
+describe("signatures and the order requests are seen in", () => {
   // A forged word: the current nonce, a well-formed signature naming the owner's pinned key, over other bytes.
   const forged = (nonce: string, i: number) => {
     const st = statementFor({ box: INSTALL_ID, action: "drain", args: drainArgs(), subject: "box", nonce, now: T });
@@ -945,7 +945,7 @@ describe("--signed through the box's command line", () => {
     const b = await box();
     const r = await cli(b, ["drain", "--timeout", "1h", "--json"], { ran });
     expect(r.code).toBe(1);
-    expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
+    expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs an approver key's signature") } });
     expect(ran).toEqual([]);
     const s = await cli(b, ["drain", "--timeout", "1h"], { uid: me, service: me, ran });
     expect(s.code).toBe(0);
@@ -955,7 +955,8 @@ describe("--signed through the box's command line", () => {
   test("a command whose path a statement can't name, or with a --words flag, can't take --signed", () => {
     const base: CommandSpec = { path: ["connect", "github"], summary: "x", who: ["owner"], flags: ["signed"], shell: true, run: async () => 0 };
     expect(registryProblem([base])).toBeUndefined();
-    expect(registryProblem([{ ...base, path: ["workspace", "pause", "now"] }])).toContain("a statement can't name workspace.pause.now");
+    expect(registryProblem([{ ...base, path: ["workspace", "rule", "add"] }])).toBeUndefined();
+    expect(registryProblem([{ ...base, path: ["workspace", "rule", "add", "now"] }])).toContain("a statement can't name workspace.rule.add.now");
     expect(registryProblem([{ ...base, options: [{ name: "--words", value: "W" }] }])).toContain("--words");
   });
 });

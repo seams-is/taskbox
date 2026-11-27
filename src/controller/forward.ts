@@ -19,13 +19,13 @@ import { readAnswer } from "./schema.ts";
 import { boxChecksBody, footer, header, jobsBody, logBody, nextFor, nowLine, statusBody } from "./screens.ts";
 import { keySigner } from "./signer.ts";
 import { boxCall, remoteLine, sendable } from "./ssh.ts";
+import { dirname } from "node:path";
+import { claimFor, nextProof, proofWord } from "../workspace/claim.ts";
 import { controllerStatus as statusFile, save } from "./statusline.ts";
 
 export const ANSWER_MS = 90_000;
 // A signed line waits as long as the box's asker waits for the guard (core/asker.ts POLLS), and more.
 export const SIGNED_MS = POLLS * POLL_MS + 30_000;
-// How many reads of a followed op may fail in a row before the controller stops following.
-export const FOLLOW_MISSES = 10;
 export const WATCH_MS = 3_000;
 
 export interface Shown {
@@ -102,7 +102,8 @@ function ownEnvelope(d: Deps, command: string, box: Paired | null, exit: number,
 const refusal = (d: Deps, json: boolean, command: string, exit: number, lines: string[], error: ErrorFields): Shown => ({ lines, json: json ? [ownEnvelope(d, command, null, exit, lines, error)] : [], exit });
 
 // signed: the owner's command, which the controller signs with the approver key before it is sent.
-export type Asked = { spec: CommandSpec; parsed: Extract<Parsed, { ok: true }>; sel?: string; words: string[]; json: boolean; watch: boolean; signed: boolean } | { shown: Shown };
+// stream: -w on a command the box streams: its JSON Lines are read as they come, not drawn again.
+export type Asked = { spec: CommandSpec; parsed: Extract<Parsed, { ok: true }>; sel?: string; words: string[]; json: boolean; watch: boolean; signed: boolean; stream: boolean } | { shown: Shown };
 export type Ask = Exclude<Asked, { shown: Shown }>;
 
 // The line the box gets, in the version hello agreed. The agent's own verbs go as typed.
@@ -142,7 +143,12 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [cleanLine(why)], { code: "usage", message: cleanLine(why), fix: null, who: null }) };
   }
   const signed = !spec.raw && (spec.flags ?? []).includes("signed") && spec.who.includes("owner") && p.flags.signed === undefined;
-  return { spec, parsed: p, sel: cut.sel, words, json, watch: !spec.raw && p.flags.watch === true, signed };
+  const stream = !spec.raw && spec.streams === true && p.flags.watch === true;
+  if (stream && cut.sel === "all") {
+    const l = `${name} -w follows one box. Name it with --box.`;
+    return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [l], { code: "usage", message: l, fix: null, who: null }) };
+  }
+  return { spec, parsed: p, sel: cut.sel, words: stream ? [...words, "-w"] : words, json, watch: !spec.raw && p.flags.watch === true && !stream, signed, stream };
 }
 
 export type One = { box: Paired; stop?: Stop; envelopes?: Envelope[]; raw?: string[]; exit: number };
@@ -173,6 +179,24 @@ async function oldBox(d: Deps, c: Connected, a: Ask): Promise<One> {
     return isStop(r) ? back(r) : wrap(r, boxChecksBody(r.checks), r.checks.some((x) => x.status === "FAIL") ? 1 : 0);
   }
   return back({ stop: `${c.box.name} runs ${c.hello.release ?? "an older taskbox"}, which has no taskbox ${a.spec.path.join(" ")}${a.parsed.opts.away ? " --away" : ""}.`, next: "Nothing to do: the box updates itself within a day." });
+}
+
+// The agent's claim key for a box lives here, on the controller, in the agents user's home: a
+// request sends its public half, and progress and end a proof by it (workspace/claim.ts). The box
+// binds the workspace and its files to the key, so another agent can't end it or claim its files.
+export function withClaim(d: Pick<Deps, "home">, box: string, a: Pick<Ask, "spec" | "parsed" | "words">, now: number): string[] {
+  const verb = a.spec.path.join(" ");
+  const userHome = dirname(dirname(dirname(d.home.dir)));
+  const dir = lower(box);
+  try {
+    if (verb === "workspace request" && a.parsed.opts.claim === undefined && typeof a.parsed.opts.as === "string") return [...a.words, "--claim", claimFor(userHome, dir, a.parsed.opts.as).pub];
+    if ((verb === "workspace progress" || verb === "workspace end" || verb === "workspace connect") && a.parsed.opts.proof === undefined && a.parsed.flags.signed === undefined) {
+      const id = a.parsed.args[0] ?? "";
+      const p = nextProof(userHome, dir, id, now);
+      if (p) return [...a.words, "--proof", proofWord(p)];
+    }
+  } catch {}
+  return a.words;
 }
 
 // An envelope from a line, or the stop that says why not.
@@ -228,7 +252,7 @@ async function signedOnBox(d: Deps, c: Connected, a: Ask): Promise<One> {
     // An op it started is followed here, unless --detach asked otherwise: the drain or stop carries on
     // at the box whatever this controller does.
     const op = e.at(-1)?.result?.op;
-    if (typeof op === "string" && /^op_[0-9A-HJKMNP-TV-Z]{26}$/.test(op) && !a.parsed.flags.detach && !a.json && (a.spec.flags ?? []).includes("detach")) return follow(d, c, a, op, e);
+    if (typeof op === "string" && /^op_[0-9A-HJKMNP-TV-Z]{26}$/.test(op) && !a.parsed.flags.detach && (a.spec.flags ?? []).includes("detach")) return follow(d, c, a, op, e);
     return { box: c.box, envelopes: e, exit: e.at(-1)!.exit };
   }
   return back({ stop: "The box's nonce moved on twice.", next: "Try again in a moment." });
@@ -236,37 +260,62 @@ async function signedOnBox(d: Deps, c: Connected, a: Ask): Promise<One> {
 
 // An op's progress, read every few seconds with op show, each new line said once, until it ends or
 // the command's --timeout runs out (exit 3; the op carries on).
-async function follow(d: Deps, c: Connected, a: Ask, op: string, started: Envelope[]): Promise<One> {
-  for (const l of started.at(-1)!.lines) d.out(cleanLine(l));
-  d.out(`Following ${op}. Ctrl-C stops following; the box carries on. taskbox op show ${op} -w --box ${c.box.name} follows it again.`);
-  const limit = typeof a.parsed.flags.timeout === "string" ? (durationOf(a.parsed.flags.timeout) ?? 0) : 0;
-  const shown = new Set<string>();
-  let misses = 0;
-  for (let waited = 0; !limit || waited < limit; waited += WATCH_MS) {
-    await d.sleep(WATCH_MS);
-    const e = await call(d, c, remoteLine(["op", "show", op, "--json", "--answers", String(c.hello.answers)]));
-    // A box that stops answering is left to carry on: this controller says how to follow it later.
-    if (isStop(e)) {
-      if (++misses >= FOLLOW_MISSES) return { box: c.box, stop: { stop: `${c.box.name} stopped answering while ${op} ran. It carries on at the box.`, next: `taskbox op show ${op} -w --box ${c.box.name}` }, exit: EXIT.timeout };
-      continue;
-    }
-    misses = 0;
-    const last = e.at(-1)!;
-    for (const l of last.lines) if (!shown.has(l)) (shown.add(l), d.out(cleanLine(l)));
-    const state = (last.result?.op as { state?: unknown } | undefined)?.state;
-    // Its lines are said already; the answer is its exit.
-    if (state && state !== "running") return { box: c.box, envelopes: [], exit: state === "succeeded" ? EXIT.ok : EXIT.failed };
+// A stream from the box: each envelope line read as it comes by the shared schema and handed to each,
+// until the one marked final. No time limit: the box ends it, at its --timeout or the op's end, and
+// Ctrl-C here stops the watching only.
+async function streamCall(d: Deps, c: Connected, line: string, each: (e: Envelope) => void): Promise<{ exit: number } | Stop> {
+  let last: Envelope | undefined;
+  let bad: string | undefined;
+  let r: Awaited<ReturnType<typeof boxCall>>;
+  try {
+    r = await boxCall(sshDeps(d), c.target, line, 0, 2_000_000, (l) => {
+      if (bad || !l.trim() || last?.final) return;
+      const e = readEnvelopes(`${l}\n`, { installId: c.box.installId, stream: true, partial: true });
+      if (!e.ok) return void (bad = e.detail);
+      last = e.envelopes[0]!;
+      each(last);
+    });
+  } catch {
+    return { stop: `${c.box.name} can't be asked that over ssh.`, next: "Run it at the box." };
   }
-  return { box: c.box, stop: { stop: `${op} is still running at ${c.box.name}, and --timeout ran out here.`, next: `taskbox op show ${op} -w --box ${c.box.name}` }, exit: EXIT.timeout };
+  if (!r.ok) return sshStop(c.box.name, r.why, 0);
+  if (bad) return { stop: `${c.box.name}'s stream stopped with an answer taskbox doesn't read (${bad}).`, next: "Update taskbox on this controller and on the box." };
+  if (!last?.final) return { stop: `${c.box.name}'s stream ended before its last line.`, next: "Type it again." };
+  return { exit: last.exit };
+}
+
+// How a stream shows: each envelope rebuilt with --json, else each line the first time it is seen.
+function shower(d: Deps, json: boolean) {
+  const shown = new Set<string>();
+  return (e: Envelope) => {
+    if (json) return d.out(rebuilt(e));
+    for (const l of e.lines.map(cleanLine)) if (!shown.has(l)) (shown.add(l), d.out(l));
+  };
+}
+
+// An op a signed drain or stop started, followed by the box's own op show -w as a stream, with the
+// command's --timeout (exit 3 when it runs out; the op carries on).
+async function follow(d: Deps, c: Connected, a: Ask, op: string, started: Envelope[]): Promise<One> {
+  const show = shower(d, a.json);
+  show(started.at(-1)!);
+  if (!a.json) d.out(`Following ${op}. Ctrl-C stops following; the box carries on. taskbox op show ${op} -w --box ${c.box.name} follows it again.`);
+  const timeout = typeof a.parsed.flags.timeout === "string" ? ["--timeout", a.parsed.flags.timeout] : [];
+  const r = await streamCall(d, c, remoteLine(["op", "show", op, "-w", ...timeout, "--json", "--answers", String(c.hello.answers)]), show);
+  if (isStop(r)) return { box: c.box, stop: { stop: `${r.stop} ${op} carries on at the box.`, next: `taskbox op show ${op} -w --box ${c.box.name}` }, exit: EXIT.timeout };
+  return { box: c.box, envelopes: [], exit: r.exit };
 }
 
 async function onBox(d: Deps, c: Connected, a: Ask): Promise<One> {
   if (c.hello.answers === 3) return oldBox(d, c, a);
+  if (a.stream) {
+    const r = await streamCall(d, c, lineFor(a.spec, a.words, c.hello.answers), shower(d, a.json));
+    return isStop(r) ? { box: c.box, stop: r, exit: EXIT.failed } : { box: c.box, envelopes: [], exit: r.exit };
+  }
   if (a.signed) return signedOnBox(d, c, a);
   const name = c.box.name;
   let r: Awaited<ReturnType<typeof boxCall>>;
   try {
-    r = await boxCall(sshDeps(d), c.target, lineFor(a.spec, a.words, c.hello.answers), ANSWER_MS);
+    r = await boxCall(sshDeps(d), c.target, lineFor(a.spec, withClaim(d, c.box.name, a, d.now()), c.hello.answers), ANSWER_MS);
   } catch {
     return { box: c.box, stop: { stop: `${name} can't be asked taskbox ${a.spec.path.join(" ")} over ssh.`, next: "Run it at the box." }, exit: EXIT.failed };
   }

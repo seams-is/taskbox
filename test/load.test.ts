@@ -6,8 +6,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { join } from "node:path";
 import { type Config, DEFAULT_TIMINGS, type Kind, loadConfig, loadRepoOf, paths, runnerDefaults, servedRepos } from "../src/config.ts";
 import type { JobRecord } from "../src/jobs.ts";
-import { currentSession, groupSetupWrong, LOAD_MAX_MS, LOAD_MIN_MS, loadFile, loadNow, loadOff, loadOn, noteSeen, parseFor, readLoad, seenFile } from "../src/load.ts";
-import { loadCommand, testRepoRow } from "../src/loadcmd.ts";
+import { currentSession, groupSetupWrong, LOAD_MAX_MS, LOAD_MIN_MS, loadFile, loadNow, loadOff, noteSeen, openSession, type Pattern, parseFor, readLoad, rootLoadFile, seenFile } from "../src/load.ts";
+import { loadReportRun, loadStatus, loadStopHere, testRepoRow } from "../src/loadcmd.ts";
 import { serviceName, setServiceName } from "../src/names.ts";
 import { aheadOfReal, behindLoad, loadReport, loadReportLines } from "../src/loadreport.ts";
 import type { OpsDeps } from "../src/ops.ts";
@@ -23,6 +23,10 @@ const M = 60_000;
 const NOW = Date.parse("2026-11-18T10:00:00Z");
 const TEST = { name: "example-org/load", role: "load" as const, runnerGroup: "taskbox-load" };
 const LOADCFG: Config = { ...CFG, vmsAtOnce: 2, sources: [{ type: "github-actions", appId: 4242, repos: [CFG.jobsFrom, TEST] }] };
+// Root's files in a test are the tester's own.
+const ME = process.getuid!();
+// A session the owner opened, as the guard's signed handler writes it (handlers/load.ts).
+const openAt = (ps: ReturnType<typeof paths>, at: number, o: { only: boolean; forMs?: number; pattern?: Pattern }) => openSession(ps, at, { pattern: "burst", by: "owner (signed)", ...o }, { rootUid: ME });
 
 describe("the test repo in the settings", () => {
   const base = () => JSON.parse(settingsText());
@@ -33,7 +37,7 @@ describe("the test repo in the settings", () => {
     return loadConfig(dir);
   };
   const org = () => (base().jobsFrom as string).split("/")[0];
-  test("at most one, beside jobsFrom, with a role of load and a runner group of its own", () => {
+  test("at most one, beside jobsFrom, with a role of load and a runner group of its own", async () => {
     const t = { name: `${org()}/load`, role: "load", runnerGroup: "taskbox-load" };
     const c = load(["JOBS", t])();
     expect(servedRepos(c).map((r) => [r.name, r.role, r.runnerGroup])).toEqual([
@@ -50,7 +54,7 @@ describe("the test repo in the settings", () => {
     expect(load([t])).toThrow("names jobsFrom");
     expect(load(["JOBS", "JOBS"])).toThrow("names jobsFrom");
   });
-  test("refuses a test repo that could share the real repo's runners or reach another organisation", () => {
+  test("refuses a test repo that could share the real repo's runners or reach another organisation", async () => {
     const t = { name: `${org()}/load`, role: "load", runnerGroup: "taskbox-load" };
     expect(load(["JOBS", { ...t, runnerGroup: base().runnerGroup }])).toThrow("never the box's runnerGroup");
     expect(load(["JOBS", { ...t, name: base().jobsFrom }])).toThrow("never jobsFrom");
@@ -138,13 +142,13 @@ const ON = { on: true, only: false };
 const ONLY = { on: true, only: true };
 
 describe("the scheduler's roles", () => {
-  test("load ranks after every real job, a merge class load job too, however long it waited", () => {
+  test("load ranks after every real job, a merge class load job too, however long it waited", async () => {
     const d = decide(input({ load: ON, free: [1], slotStates: [vm(2, "linux", "busy")], snapshot: { known: true, at: T, items: [item("load-merge", ["taskbox-linux-merge"], T - 60 * M, { event: "merge_group", load: true }), item("real", ["taskbox-linux"], T - M)] } }));
     expect(d).toEqual([expect.objectContaining({ slot: 1, do: "start", item: expect.objectContaining({ key: "real" }) })]);
     expect((d[0] as { role?: string }).role).toBeUndefined();
     expect(LOAD_RANK).toBeGreaterThan(100);
   });
-  test("beside the real repo, load never takes the last slot", () => {
+  test("beside the real repo, load never takes the last slot", async () => {
     const items = [item("l1", ["taskbox-linux"], T - 5 * M, { load: true }), item("l2", ["taskbox-linux"], T - 4 * M, { load: true })];
     const d = decide(input({ load: ON, snapshot: { known: true, at: T, items } }));
     expect(d.filter((x) => x.do === "start" && x.role === "load")).toHaveLength(1);
@@ -154,40 +158,40 @@ describe("the scheduler's roles", () => {
     const busy = decide(input({ load: ON, slotStates: [vm(1, "linux", "busy", "load"), vm(2, "linux", "waiting")], snapshot: { known: true, at: T, items } }));
     expect(busy).toEqual([]);
   });
-  test("a load job never takes a real job's VM, and a real job never takes a load VM", () => {
+  test("a load job never takes a real job's VM, and a real job never takes a load VM", async () => {
     const d = decide(input({ load: ON, slotStates: [vm(1, "linux", "waiting", "load"), vm(2, "linux", "busy")], snapshot: { known: true, at: T, items: [item("real", ["taskbox-linux"], T - 5 * M)] } }));
     // The load VM isn't matched by the real job, so it gives way to it.
     expect(d).toEqual([expect.objectContaining({ slot: 1, do: "give-way" })]);
   });
-  test("with only, every VM is the test repo's: waiting real VMs give way, and the real repo's jobs wait", () => {
+  test("with only, every VM is the test repo's: waiting real VMs give way, and the real repo's jobs wait", async () => {
     const d = decide(input({ load: ONLY, slotStates: [vm(1, "linux", "waiting"), vm(2, "macos", "busy")], snapshot: { known: true, at: T, items: [item("real", ["taskbox-linux"], T - 30 * M), item("l1", ["taskbox-linux"], T - M, { load: true })] } }));
     expect(d).toEqual([{ slot: 1, do: "give-way", why: "the load test has the box to itself for now, so this real VM goes" }]);
     const free = decide(input({ load: ONLY, snapshot: { known: true, at: T, items: [item("real", ["taskbox-linux"], T - 30 * M), item("l1", ["taskbox-linux"], T - M, { load: true })] } }));
     expect(free.filter((x) => x.do === "start").every((x) => x.do === "start" && x.role === "load")).toBe(true);
     expect(free.some((x) => x.do === "start" && x.item?.key === "real")).toBe(false);
   });
-  test("once load is off, a waiting load VM gives way at once, and a busy one finishes", () => {
+  test("once load is off, a waiting load VM gives way at once, and a busy one finishes", async () => {
     expect(decide(input({ slotStates: [vm(1, "linux", "waiting", "load"), vm(2, "linux", "busy", "load")] }))).toEqual([{ slot: 1, do: "give-way", why: "the load test is off, so this load VM goes" }]);
     // Load jobs still listed are not served.
     expect(decide(input({ free: [1], slotStates: [vm(2, "linux", "busy")], snapshot: { known: true, at: T, items: [item("l1", ["taskbox-linux"], T - M, { load: true })] } })).every((x) => x.do !== "start" || !x.role)).toBe(true);
   });
-  test("load leaves macOS one place below its cap, so a real macOS job never waits for load to end", () => {
+  test("load leaves macOS one place below its cap, so a real macOS job never waits for load to end", async () => {
     const k4 = kinds().map((k) => ({ ...k, cap: k.kind === "macos" ? 2 : 4 }));
     const items = [item("lm", ["taskbox-macos"], T - 5 * M, { load: true }), item("lm2", ["taskbox-macos"], T - 4 * M, { load: true })];
     const d = decide(input({ slots: 4, kinds: k4, load: ON, free: [2], slotStates: [vm(1, "macos", "busy", "load"), vm(3, "linux", "busy", "load"), vm(4, "linux", "busy")], snapshot: { known: true, at: T, items } }));
     expect(d.some((x) => x.do === "start" && x.role === "load" && x.kind === "macos")).toBe(false);
   });
-  test("a load job never makes a real VM give way, even a warm one no job needs", () => {
+  test("a load job never makes a real VM give way, even a warm one no job needs", async () => {
     const d = decide(input({ slots: 3, kinds: kinds().map((k) => ({ ...k, cap: k.kind === "macos" ? 2 : 3 })), load: ON, slotStates: [vm(1, "macos", "waiting"), vm(2, "linux", "waiting"), vm(3, "linux", "busy", "load")], snapshot: { known: true, at: T, items: [item("l1", ["taskbox-linux"], T - 30 * M, { load: true })] } }));
     expect(d).toEqual([]);
   });
-  test("a load VM no load job came for gives way after giveWayMinutes; without a view of the queue too", () => {
+  test("a load VM no load job came for gives way after giveWayMinutes; without a view of the queue too", async () => {
     const idle = vm(1, "linux", "waiting", "load", T - 4 * M);
     expect(decide(input({ load: ON, slotStates: [idle, vm(2, "linux", "busy")] }))).toEqual([{ slot: 1, do: "give-way", why: "no load test job came for 4 min since it was ready" }]);
     expect(decide(input({ load: ON, slotStates: [{ ...idle, readySince: T - M }, vm(2, "linux", "busy")] }))).toEqual([]);
     expect(decide(input({ load: ON, slotStates: [idle, vm(2, "linux", "busy")], snapshot: { known: false, at: T, why: "offline" } }))).toContainEqual({ slot: 1, do: "give-way", why: "the box can't see the queue, so no load test job comes for this VM" });
   });
-  test("without a view of the queue, no load VM starts beside the real repo", () => {
+  test("without a view of the queue, no load VM starts beside the real repo", async () => {
     const d = decide(input({ load: ON, snapshot: { known: false, at: T, why: "offline" } }));
     expect(d.every((x) => x.do !== "start" || !x.role)).toBe(true);
   });
@@ -199,109 +203,112 @@ describe("sessions", () => {
     mkdirSync(ps.shared, { recursive: true });
     return ps;
   };
-  test("load on works before the loop has ever made its state folder (the Tart test)", () => {
+  test("a session opens, and stops at the box, before the loop has ever made its state folder (the Tart test)", async () => {
     const ps = p();
     rmSync(ps.projectState, { recursive: true, force: true });
-    expect(typeof loadOn(ps, NOW, { only: false })).toBe("object");
+    expect(typeof (await openAt(ps, NOW, { only: false }))).toBe("object");
+    expect(loadNow(ps, NOW + M, ME)).toEqual({ on: true, only: false });
+    expect(loadOff(ps, NOW + 2 * M, ME)?.n).toBe(1);
     expect(statSync(ps.projectState).mode & 0o777).toBe(0o700);
-    expect(loadNow(ps, NOW + M)).toEqual({ on: true, only: false });
   });
-  test("on, numbered, ends at off or by itself; at most 4 hours and at least 10 minutes", () => {
+  test("on, numbered, ends at off or by itself; at most 4 hours and at least 10 minutes", async () => {
     const ps = p();
-    const s = loadOn(ps, NOW, { only: false });
+    const s = await openAt(ps, NOW, { only: false });
     expect(typeof s === "object" && s.n === 1 && s.until === NOW + LOAD_MAX_MS).toBe(true);
-    expect(loadNow(ps, NOW + M)).toEqual({ on: true, only: false });
-    expect(typeof loadOn(ps, NOW + M, { only: true })).toBe("string");
-    expect(loadOff(ps, NOW + 2 * M)?.endedAt).toBe(NOW + 2 * M);
-    expect(loadNow(ps, NOW + 3 * M)).toBeUndefined();
-    expect(loadOff(ps, NOW + 3 * M)).toBeUndefined();
-    const s2 = loadOn(ps, NOW + 5 * M, { only: true, forMs: 60_000 });
+    expect(loadNow(ps, NOW + M, ME)).toEqual({ on: true, only: false });
+    expect(typeof await openAt(ps, NOW + M, { only: true })).toBe("string");
+    expect(loadOff(ps, NOW + 2 * M, ME)?.endedAt).toBe(NOW + 2 * M);
+    expect(loadNow(ps, NOW + 3 * M, ME)).toBeUndefined();
+    expect(loadOff(ps, NOW + 3 * M, ME)).toBeUndefined();
+    const s2 = await openAt(ps, NOW + 5 * M, { only: true, forMs: 60_000 });
     expect(typeof s2 === "object" && s2.n === 2 && s2.until - s2.startedAt === LOAD_MIN_MS).toBe(true);
-    expect(currentSession(readLoad(ps), NOW + 5 * M + LOAD_MIN_MS)).toBeUndefined();
-    const s3 = loadOn(ps, NOW + 60 * M, { only: false, forMs: 9 * 3600_000 });
+    expect(currentSession(readLoad(ps, undefined, ME), NOW + 5 * M + LOAD_MIN_MS)).toBeUndefined();
+    const s3 = await openAt(ps, NOW + 60 * M, { only: false, forMs: 9 * 3600_000 });
     expect(typeof s3 === "object" && s3.until - s3.startedAt === LOAD_MAX_MS).toBe(true);
-    // Mirrored to the folder every user may read.
-    expect(JSON.parse(readFileSync(join(ps.shared, "load.json"), "utf8")).sessions).toHaveLength(3);
+    // Root's file, which every user may read, holds them.
+    expect(JSON.parse(readFileSync(rootLoadFile(ps), "utf8")).sessions).toHaveLength(3);
+    expect(statSync(rootLoadFile(ps)).mode & 0o777).toBe(0o644);
   });
-  test("an odd file reads as no sessions, and never starts load", () => {
+  test("an odd file reads as no sessions, and never starts load", async () => {
     const ps = p();
     for (const bad of ["nope", "[]", JSON.stringify({ sessions: [{ n: "1", startedAt: NOW, until: NOW + M, only: false }] }), JSON.stringify({ sessions: [{ n: 1, startedAt: NOW, until: "later", only: false }] })]) {
       writeFileSync(loadFile(ps), bad);
-      expect(readLoad(ps).sessions).toEqual([]);
-      expect(loadNow(ps, NOW)).toBeUndefined();
+      expect(readLoad(ps, undefined, ME).sessions).toEqual([]);
+      expect(loadNow(ps, NOW, ME)).toBeUndefined();
     }
   });
-  test("--for takes hours and minutes", () => {
+  test("--for takes hours and minutes", async () => {
     expect(parseFor("2h")).toBe(120 * M);
     expect(parseFor("90m")).toBe(90 * M);
     expect(parseFor("1h30m")).toBe(90 * M);
     for (const bad of ["", "2", "h", "2d", "-1h", "1.5h", "2h 30m"]) expect(parseFor(bad)).toBeUndefined();
   });
-  test("what the source saw is kept when it changes, or each minute, with the reads", () => {
+  test("what the source saw is kept when it changes, or each minute, with the reads", async () => {
     const ps = p();
     const snap = (items: WaitingItem[]) => ({ known: true as const, at: NOW, items });
-    noteSeen(ps, snap([item("r", ["taskbox-linux"], 0, { event: "merge_group" }), item("l", ["taskbox-linux"], 0, { load: true })]), NOW, 7);
-    expect(readLoad(ps).seen).toEqual({ at: NOW, known: true, real: 1, realMerge: 1, load: 1, reads: 7 });
-    noteSeen(ps, snap([item("r", ["taskbox-linux"], 0, { event: "merge_group" }), item("l", ["taskbox-linux"], 0, { load: true })]), NOW + 1000, 9);
-    expect(readLoad(ps).seen?.at).toBe(NOW);
-    noteSeen(ps, snap([]), NOW + 2000, 11);
-    expect(readLoad(ps).seen).toEqual({ at: NOW + 2000, known: true, real: 0, realMerge: 0, load: 0, reads: 11 });
+    noteSeen(ps, snap([item("r", ["taskbox-linux"], 0, { event: "merge_group" }), item("l", ["taskbox-linux"], 0, { load: true })]), NOW, 7, undefined, ME);
+    expect(readLoad(ps, undefined, ME).seen).toEqual({ at: NOW, known: true, real: 1, realMerge: 1, load: 1, reads: 7 });
+    noteSeen(ps, snap([item("r", ["taskbox-linux"], 0, { event: "merge_group" }), item("l", ["taskbox-linux"], 0, { load: true })]), NOW + 1000, 9, undefined, ME);
+    expect(readLoad(ps, undefined, ME).seen?.at).toBe(NOW);
+    noteSeen(ps, snap([]), NOW + 2000, 11, undefined, ME);
+    expect(readLoad(ps, undefined, ME).seen).toEqual({ at: NOW + 2000, known: true, real: 0, realMerge: 0, load: 0, reads: 11 });
     // Reads at on and at the end, for the report: the loop notes the end at its next look.
-    const s = loadOn(ps, NOW + 3000, { only: false });
-    noteSeen(ps, snap([item("x", ["taskbox-linux"], 0)]), NOW + 4000, 40);
+    const s = await openAt(ps, NOW + 3000, { only: false });
+    noteSeen(ps, snap([item("x", ["taskbox-linux"], 0)]), NOW + 4000, 40, undefined, ME);
     expect(typeof s === "object" && s.readsAtStart).toBe(11);
-    loadOff(ps, NOW + 5000);
-    noteSeen(ps, snap([item("l", ["taskbox-linux"], 0, { load: true })]), NOW + 6000, 44);
-    expect(readLoad(ps).sessions.at(-1)).toMatchObject({ readsAtStart: 11, readsAtEnd: 44, leftAtEnd: 1, sawQueue: true });
+    loadOff(ps, NOW + 5000, ME);
+    noteSeen(ps, snap([item("l", ["taskbox-linux"], 0, { load: true })]), NOW + 6000, 44, undefined, ME);
+    expect(readLoad(ps, undefined, ME).sessions.at(-1)).toMatchObject({ readsAtStart: 11, readsAtEnd: 44, leftAtEnd: 1, sawQueue: true });
   });
-  test("a session that runs out its time is closed by the loop too; a restart makes its reads not known", () => {
+  test("a session that runs out its time is closed by the loop too; a restart makes its reads not known", async () => {
     const ps = p();
     const snap = { known: true as const, at: NOW, items: [] };
-    noteSeen(ps, snap, NOW, 100);
-    loadOn(ps, NOW + 1000, { only: false, forMs: LOAD_MIN_MS });
-    noteSeen(ps, snap, NOW + 2000, 3); // the loop restarted: its count began again
-    noteSeen(ps, snap, NOW + 1000 + LOAD_MIN_MS + 5000, 9);
-    const s = readLoad(ps).sessions.at(-1)!;
+    noteSeen(ps, snap, NOW, 100, undefined, ME);
+    await openAt(ps, NOW + 1000, { only: false, forMs: LOAD_MIN_MS });
+    noteSeen(ps, snap, NOW + 2000, 3, undefined, ME); // the loop restarted: its count began again
+    noteSeen(ps, snap, NOW + 1000 + LOAD_MIN_MS + 5000, 9, undefined, ME);
+    const s = readLoad(ps, undefined, ME).sessions.at(-1)!;
     expect(s.readsReset).toBe(true);
     expect(s.readsAtEnd).toBeUndefined();
     expect(s.leftAtEnd).toBe(0);
   });
-  test("a session is never longer than 4 hours, and a clock gone back ends it, whatever the file says", () => {
+  test("a session is never longer than 4 hours, and a clock gone back ends it, whatever the file says", async () => {
     const ps = p();
     writeFileSync(loadFile(ps), JSON.stringify({ v: 1, sessions: [{ n: 1, startedAt: NOW, until: NOW + 30 * 86_400_000, only: true }] }));
-    expect(loadNow(ps, NOW + 3 * 3600_000)).toEqual({ on: true, only: true });
-    expect(loadNow(ps, NOW + 4 * 3600_000)).toBeUndefined();
-    expect(loadNow(ps, NOW - 10 * M)).toBeUndefined();
+    expect(loadNow(ps, NOW + 3 * 3600_000, ME)).toEqual({ on: true, only: true });
+    expect(loadNow(ps, NOW + 4 * 3600_000, ME)).toBeUndefined();
+    expect(loadNow(ps, NOW - 10 * M, ME)).toBeUndefined();
     // A small step back keeps it.
-    expect(loadNow(ps, NOW - M)).toEqual({ on: true, only: true });
+    expect(loadNow(ps, NOW - M, ME)).toEqual({ on: true, only: true });
   });
-  test("a session the clock ended stays ended when the clock comes forward again, and says why", () => {
+  test("a session the clock ended stays ended when the clock comes forward again, and says why", async () => {
     const ps = p();
     const snap = { known: true as const, at: NOW, items: [] };
-    loadOn(ps, NOW, { only: true, forMs: LOAD_MAX_MS });
+    await openAt(ps, NOW, { only: true, forMs: LOAD_MAX_MS });
     // The clock goes back an hour; the loop's next look closes the session.
-    noteSeen(ps, snap, NOW - 60 * M, 1);
-    expect(loadNow(ps, NOW - 59 * M)).toBeUndefined();
+    noteSeen(ps, snap, NOW - 60 * M, 1, undefined, ME);
+    expect(loadNow(ps, NOW - 59 * M, ME)).toBeUndefined();
     // It comes forward again, inside the session's old window: still off.
-    expect(loadNow(ps, NOW + 30 * M)).toBeUndefined();
-    expect(readLoad(ps).sessions.at(-1)?.why).toBe("the box's clock went back past the session's start");
+    expect(loadNow(ps, NOW + 30 * M, ME)).toBeUndefined();
+    expect(readLoad(ps, undefined, ME).sessions.at(-1)?.why).toBe("the box's clock went back past the session's start");
     // A session that ran out its time stays ended too, and needs no reason.
     const q = p();
-    loadOn(q, NOW, { only: false, forMs: LOAD_MIN_MS });
-    noteSeen(q, snap, NOW + LOAD_MIN_MS + 1000, 1);
-    expect(readLoad(q).sessions.at(-1)).toMatchObject({ endedAt: NOW + LOAD_MIN_MS });
-    expect(readLoad(q).sessions.at(-1)?.why).toBeUndefined();
+    await openAt(q, NOW, { only: false, forMs: LOAD_MIN_MS });
+    noteSeen(q, snap, NOW + LOAD_MIN_MS + 1000, 1, undefined, ME);
+    expect(readLoad(q, undefined, ME).sessions.at(-1)).toMatchObject({ endedAt: NOW + LOAD_MIN_MS });
+    expect(readLoad(q, undefined, ME).sessions.at(-1)?.why).toBeUndefined();
   });
-  test("the commands and the loop each write their own file", () => {
+  test("the commands and the loop each write their own file", async () => {
     const ps = p();
-    loadOn(ps, NOW, { only: false });
-    const before = readFileSync(loadFile(ps), "utf8");
-    noteSeen(ps, { known: true, at: NOW, items: [] }, NOW + 1000, 5);
-    expect(readFileSync(loadFile(ps), "utf8")).toBe(before);
+    await openAt(ps, NOW, { only: false });
+    const before = readFileSync(rootLoadFile(ps), "utf8");
+    noteSeen(ps, { known: true, at: NOW, items: [] }, NOW + 1000, 5, undefined, ME);
+    expect(readFileSync(rootLoadFile(ps), "utf8")).toBe(before);
+    expect(existsSync(loadFile(ps))).toBe(false);
     expect(existsSync(seenFile(ps))).toBe(true);
     expect(existsSync(join(ps.shared, "load-seen.json"))).toBe(true);
   });
-  test("only a runner group set up wrong ends a session; GitHub's own trouble is tried again", () => {
+  test("only a runner group set up wrong ends a session; GitHub's own trouble is tried again", async () => {
     expect(groupSetupWrong("no runner group named taskbox-load")).toBe(true);
     expect(groupSetupWrong("runner group taskbox-load must list example-org/load only")).toBe(true);
     expect(groupSetupWrong("runner group taskbox-load must be limited to selected private repositories")).toBe(true);
@@ -339,114 +346,85 @@ function rowCtx(sys: FakeSys, uid = 502) {
   return { sys, cfg: LOADCFG, paths: p, uid, serviceUid: 502 };
 }
 
-function cmd(o: { asService?: boolean; answers?: string[]; cfg?: Config } = {}) {
+function cmd(o: { asService?: boolean; cfg?: Config } = {}) {
   const sys = new FakeSys();
   unreadied(sys);
   sys.clock = NOW;
   const p = paths(tempRoot(), testBox());
   mkdirSync(p.shared, { recursive: true });
   const said: string[] = [];
-  const answers = [...(o.answers ?? [])];
-  const asked: string[] = [];
-  const d: OpsDeps = { sys, paths: p, uid: o.asService === false ? 501 : 502, serviceUid: 502, say: (l) => said.push(l), ask: async (q) => (asked.push(q), answers.shift() ?? "no") };
-  const run = (...args: string[]) => loadCommand(d, o.cfg ?? LOADCFG, args, args.includes("--json"));
-  return { d, said, asked, p, sys, run };
+  const d: OpsDeps = { sys, paths: p, uid: o.asService === false ? 501 : 502, serviceUid: 502, rootUid: ME, say: (l) => said.push(l), ask: async () => "no" };
+  const cfg = o.cfg ?? LOADCFG;
+  // start: the owner's session, as the signed handler opens it; the rest as the box's commands run.
+  const run = async (...args: string[]): Promise<number> => {
+    const w = args[0] ?? "status";
+    if (w === "start") return typeof (await openAt(p, sys.now(), { only: args.includes("--only") })) === "object" ? 0 : 1;
+    if (w === "stop") return loadStopHere(d, cfg).exit;
+    if (w === "report") return loadReportRun(d, cfg, args.includes("--session") ? Number(args[args.indexOf("--session") + 1]) : undefined, args.includes("--json") ? "json" : "text");
+    return (await loadStatus(d, cfg)).exit;
+  };
+  return { d, said, p, sys, run, cfg };
 }
 
-describe("taskbox load status", () => {
+describe("taskbox load status and load stop at the box", () => {
   test("no test repo: says so and does nothing", async () => {
     const c = cmd({ cfg: CFG });
-    expect(await c.run("on")).toBe(1);
-    expect(c.said[0]).toContain("names no test repo");
+    expect(await c.run("stop")).toBe(1);
+    expect(c.said[0]).toContain("name no test repo");
     expect(existsSync(loadFile(c.p))).toBe(false);
+    expect((await loadStatus(c.d, CFG)).result).toEqual({ repo: null, session: null });
   });
-  test("on and off are the service account's, at the box, named from the box's accounts", async () => {
+  test("stop at the box is the service account's, named from the box's accounts", async () => {
     // A service account not named ci, so a "ci" left over shows.
     setServiceName("builder");
     try {
       const c = cmd({ asService: false });
-      expect(await c.run("on")).toBe(1);
-      expect(c.said).toEqual(["Type taskbox load start as builder, at the box."]);
-      expect(await c.run("off")).toBe(1);
-      expect(c.said.at(-1)).toBe("Type taskbox load stop as builder, at the box.");
+      expect(await c.run("stop")).toBe(1);
+      expect(c.said).toEqual(["Type taskbox load stop as builder, at the box, or from the controller, which signs it."]);
       expect(await testRepoRow(rowCtx(new FakeSys(), 501))).toEqual({ status: "SKIP", detail: "run as builder to check" });
-      // Whatever taskbox load says, to the service or anyone else, it names the account only in
-      // "as builder".
       const said: string[] = [];
       for (const asService of [true, false]) {
-        const any = cmd({ asService, answers: ["yes"] });
-        for (const args of [[], ["on"], ["on", "--only"], ["status"], ["off"], ["report"], ["report", "--json"], ["workflow"], ["of"]]) await any.run(...args);
+        const any = cmd({ asService });
+        await any.run("start");
+        for (const args of [["status"], ["stop"], ["report"], ["report", "--json"]]) await any.run(...args);
         said.push(...any.said, (await testRepoRow({ sys: any.sys, cfg: LOADCFG, paths: any.p, uid: asService ? 502 : 501, serviceUid: 502 })).detail);
       }
-      // Paths are the box's own (paths() names the service's home), so only the words are read.
       const words = said.join("\n").replace(/\S*\/\S*/g, "");
       expect(words).toContain("as builder");
       expect(words.replaceAll(" as builder", "")).not.toMatch(/\bbuilder\b/);
     } finally {
       setServiceName(undefined);
     }
-    // The account's name comes from names.ts alone, never typed by hand here.
-    expect(readFileSync(join(import.meta.dir, "../src/loadcmd.ts"), "utf8")).not.toMatch(/"ci"| as ci|run as ci/);
   });
-  test("with one VM at a time, beside is refused and --only is offered", async () => {
-    const c = cmd({ cfg: { ...LOADCFG, vmsAtOnce: 1 } });
-    expect(await c.run("on")).toBe(1);
-    expect(c.said[0]).toContain("--only");
-    // The box hasn't seen the queue, so it can't say whether real jobs wait: it asks.
-    c.d.ask = async () => "yes";
-    expect(await c.run("on", "--only")).toBe(0);
-    expect(c.said.join("\n")).toContain("The box can't say whether real jobs wait: the box hasn't read the queue in the last 2 minutes");
-    expect(loadNow(c.p, NOW)).toEqual({ on: true, only: true });
-  });
-  test("on --only asks while real jobs wait, and warns about the merge queue's timeout", async () => {
+  test("status shows the session with its pattern, and its test jobs done, running and waiting", async () => {
     const c = cmd();
-    noteSeen(c.p, { known: true, at: NOW, items: [item("r", ["taskbox-linux-merge"], 0, { event: "merge_group" }), item("r2", ["taskbox-linux"], 0)] }, NOW);
-    expect(await c.run("on", "--only")).toBe(1);
-    expect(c.said.join("\n")).toContain("2 real jobs wait on GitHub now, 1 of them merge queue jobs");
-    expect(c.said.join("\n")).toContain("60 minutes");
-    expect(c.said.at(-1)).toBe("Not started. The real repo carries on.");
-    expect(loadNow(c.p, NOW)).toBeUndefined();
-    const y = cmd({ answers: ["YES "] });
-    noteSeen(y.p, { known: true, at: NOW, items: [item("r", ["taskbox-linux"], 0)] }, NOW);
-    expect(await y.run("--for", "1h", "on", "--only")).toBe(0);
-    expect(y.said.join("\n")).toContain("An alert that the real repo's jobs wait is expected");
-    expect(currentSession(readLoad(y.p), NOW)?.until).toBe(NOW + 60 * M);
-    // No real job waits, as the box saw a minute ago: nothing to ask.
-    const z = cmd();
-    noteSeen(z.p, { known: true, at: NOW - M, items: [] }, NOW - M);
-    expect(await z.run("on", "--only")).toBe(0);
-    expect(z.asked).toEqual([]);
-    // A failing source: it asks.
-    const w = cmd();
-    noteSeen(w.p, { known: false, at: NOW, why: "offline" }, NOW);
-    expect(await w.run("on", "--only")).toBe(1);
-    expect(w.said.join("\n")).toContain("the box can't see the queue now");
+    await openAt(c.p, NOW, { only: false, pattern: "day" });
+    noteSeen(c.p, { known: true, at: NOW + 9 * M, items: [item("l", ["taskbox-linux"], 0, { load: true }), item("l2", ["taskbox-linux"], 0, { load: true }), item("r", ["taskbox-linux"], 0)] }, NOW + 9 * M, undefined, undefined, ME);
+    writeFileSync(c.p.jobsFile, [line(TEST.name, "linux", 1, 3, 2), line(CFG.jobsFrom, "linux", 1, 3, 2), line(TEST.name, "linux", -30, -20, 2)].map((j) => JSON.stringify(j)).join("\n") + "\n");
+    // The jobs file is the service account's: here, the test's own user is it.
+    c.sys.clock = NOW + 10 * M;
+    const r = await loadStatus({ ...c.d, uid: ME, serviceUid: ME }, LOADCFG);
+    expect(c.said[0]).toBe("Load test session 1 (day) is on until 14:00 UTC, beside the real repo.");
+    expect(c.said[1]).toBe("Test jobs: 1 done, 0 running, 2 waiting.");
+    expect(r.result).toMatchObject({ repo: TEST.name, workflow: ".github/workflows/load.yml", session: { n: 1, pattern: "day", only: false, endedAt: null }, tests: { done: 1, running: 0, waiting: 2 }, realWaiting: 1, realMergeWaiting: 0 });
   });
-  test("beside asks nothing; a second on is refused; a bad --for is refused", async () => {
+  test("stop at the box ends the session by its own file; queued runs stay queued, and it says who cancels them", async () => {
     const c = cmd();
-    noteSeen(c.p, { known: true, at: NOW, items: [item("r", ["taskbox-linux"], 0)] }, NOW);
-    expect(await c.run("on")).toBe(0);
-    expect(c.asked).toEqual([]);
-    expect(c.said[0]).toContain("Load test session 1 is on until 14:00 UTC, beside the real repo");
-    expect(await c.run("on")).toBe(1);
-    expect(c.said.at(-1)).toContain("taskbox load stop first");
-    expect(await cmd().run("on", "--for", "a day")).toBe(1);
-    const short = cmd();
-    expect(await short.run("on", "--for", "5m")).toBe(1);
-    expect(short.said[0]).toContain("at least 10m");
-    expect(await cmd().run("of")).toBe(1);
-  });
-  test("off says what is still queued, since the box can't cancel it", async () => {
-    const c = cmd();
-    await c.run("on");
-    noteSeen(c.p, { known: true, at: NOW, items: [item("l", ["taskbox-linux"], 0, { load: true }), item("l2", ["taskbox-linux"], 0, { load: true })] }, NOW + 29 * M);
+    await c.run("start");
+    noteSeen(c.p, { known: true, at: NOW, items: [item("l", ["taskbox-linux"], 0, { load: true }), item("l2", ["taskbox-linux"], 0, { load: true })] }, NOW + 29 * M, undefined, undefined, ME);
+    const rootBefore = readFileSync(rootLoadFile(c.p), "utf8");
     c.sys.clock = NOW + 30 * M;
-    expect(await c.run("off")).toBe(0);
-    expect(c.said.join("\n")).toContain("2 test repo jobs are still queued on GitHub");
-    expect(await c.run("off")).toBe(0);
+    expect(await c.run("stop")).toBe(0);
+    expect(c.said.join("\n")).toContain("Its running test VMs stop now");
+    expect(c.said.join("\n")).toContain("Queued test runs stay queued until the session's --for ends or they are cancelled on GitHub: 2 test jobs are queued now. taskbox load stop from the controller cancels them.");
+    // Root's file is the guard's: the service's stop is in its own file, and wins.
+    expect(readFileSync(rootLoadFile(c.p), "utf8")).toBe(rootBefore);
+    expect(readLoad(c.p, false, ME).sessions.at(-1)).toMatchObject({ endedAt: NOW + 30 * M, stoppedBy: "the service account, at the box" });
+    expect(loadNow(c.p, NOW + 31 * M, ME)).toBeUndefined();
+    expect(await c.run("stop")).toBe(0);
     expect(c.said.at(-1)).toBe("No load test session is on.");
     await c.run();
-    expect(c.said.at(-2)).toContain("The last was session 1");
+    expect(c.said.join("\n")).toContain("No load test session is on. The last was session 1: taskbox load report.");
   });
 });
 
@@ -466,12 +444,12 @@ const line = (repo: string, kind: Kind, q: number, t: number, m: number, extra: 
 });
 
 describe("taskbox load report", () => {
-  test("scores the real repo and the test repo apart, from measured numbers only", () => {
+  test("scores the real repo and the test repo apart, from measured numbers only", async () => {
     const ps = paths(tempRoot(), testBox());
-    loadOn(ps, NOW, { only: false });
-    loadOff(ps, NOW + 60 * M);
+    await openAt(ps, NOW, { only: false });
+    loadOff(ps, NOW + 60 * M, ME);
     const jobs = [line(CFG.jobsFrom, "linux", 1, 3, 4), line(TEST.name, "linux", 1, 3, 2), line(TEST.name, "linux", 1, 6, 2), line(TEST.name, "linux", 1, 70, 2)];
-    const r = loadReport(LOADCFG, jobs, readLoad(ps), [], NOW + 90 * M, true);
+    const r = loadReport(LOADCFG, jobs, readLoad(ps, undefined, ME), [], NOW + 90 * M, true);
     if (typeof r === "string") throw new Error(r);
     expect([r.realJobs, r.loadJobs, r.running]).toEqual([1, 2, false]);
     expect(r.to).toBe(NOW + 60 * M);
@@ -479,13 +457,16 @@ describe("taskbox load report", () => {
     expect(r.ahead).toBe(0);
     expect(r.waitedForLoad).toBe(0);
     const text = loadReportLines(r).join("\n");
-    expect(text).toContain("session 1, beside the real repo, 10:00 to 11:00 UTC");
+    expect(text).toContain("session 1 (burst), beside the real repo, 10:00 to 11:00 UTC");
+    expect(text).toContain("Sizes: load Linux: 2; real Linux: 1.");
+    expect(text).toContain("Tool cache: 0 of 3 jobs started with it.");
+    expect(text).toContain("Network: load not measured; real not measured.");
     expect(text).toContain("Load jobs (2):");
     expect(text).toContain("PASS         real jobs a load VM went ahead of: 0, at most 0");
     expect(text).toContain("MEASURED     real jobs that waited for a running load job: 0");
     expect(loadReportLines(r).filter((l) => l.includes("simulator"))).toEqual([]);
   });
-  test("a load VM asked for while a real job waited with no VM went ahead of it; waiting for a running load job is a cost", () => {
+  test("a load VM asked for while a real job waited with no VM went ahead of it; waiting for a running load job is a cost", async () => {
     // Real job queued at 0, its VM asked at 8; a load VM asked at 3 went ahead of it.
     expect(aheadOfReal([line(CFG.jobsFrom, "linux", 0, 10, 3)], [line(TEST.name, "linux", 0, 5, 2)])).toBe(1);
     // A load VM asked within the source's lag, or before the real job was queued, didn't.
@@ -493,17 +474,17 @@ describe("taskbox load report", () => {
     expect(aheadOfReal([line(CFG.jobsFrom, "linux", 5, 10, 3)], [line(TEST.name, "linux", 0, 3, 2)])).toBe(0);
     expect(aheadOfReal([{ ...line(CFG.jobsFrom, "linux", 0, 3, 3), phases: undefined }], [])).toBeUndefined();
   });
-  test("give-ways are scored on their own side", () => {
+  test("give-ways are scored on their own side", async () => {
     const ps = paths(tempRoot(), testBox());
-    loadOn(ps, NOW, { only: false });
+    await openAt(ps, NOW, { only: false });
     const jobs = [line(CFG.jobsFrom, "linux", 1, 3, 30), line(TEST.name, "linux", 1, 3, 30)];
     const log = Array.from({ length: 6 }, (_, i) => ({ at: NOW + (10 + i) * M, role: "load" as const }));
-    const r = loadReport(LOADCFG, jobs, readLoad(ps), log, NOW + 40 * M, true);
+    const r = loadReport(LOADCFG, jobs, readLoad(ps, undefined, ME), log, NOW + 40 * M, true);
     if (typeof r === "string") throw new Error(r);
     const gw = (c: typeof r.real) => c.find((x) => x.id.includes("give"))?.value;
     expect(gw(r.real)).not.toBe(gw(r.load));
   });
-  test("a real job that waited past a boot and 2 minutes while load ran waited for load", () => {
+  test("a real job that waited past a boot and 2 minutes while load ran waited for load", async () => {
     const real = [line(CFG.jobsFrom, "linux", 0, 10, 3)];
     const load = [line(TEST.name, "linux", 0, 1, 15)];
     expect(behindLoad(real, load, [...real, ...load])).toBe(1);
@@ -512,24 +493,24 @@ describe("taskbox load report", () => {
   });
   test("no session, an unknown session, and without a source", async () => {
     const ps = paths(tempRoot(), testBox());
-    expect(loadReport(LOADCFG, [], readLoad(ps), [], NOW, true)).toContain("no load test session yet");
-    loadOn(ps, NOW, { only: true });
-    expect(loadReport(LOADCFG, [], readLoad(ps), [], NOW, true, 4)).toBe("no session 4");
-    const r = loadReport(LOADCFG, [], readLoad(ps), [], NOW + M, false);
+    expect(loadReport(LOADCFG, [], readLoad(ps, undefined, ME), [], NOW, true)).toContain("no load test session yet");
+    await openAt(ps, NOW, { only: true });
+    expect(loadReport(LOADCFG, [], readLoad(ps, undefined, ME), [], NOW, true, 4)).toBe("no session 4");
+    const r = loadReport(LOADCFG, [], readLoad(ps, undefined, ME), [], NOW + M, false);
     if (typeof r === "string") throw new Error(r);
     expect(r.running).toBe(true);
     expect(loadReportLines(r).join("\n")).toContain("none: the real repo's jobs waited on GitHub");
     expect(loadReportLines(r).join("\n")).not.toContain("went ahead of");
     // Beside, with no real job: says so, rather than blaming the source.
     const b = paths(tempRoot(), testBox());
-    loadOn(b, NOW, { only: false });
-    const rb = loadReport(LOADCFG, [], readLoad(b), [], NOW + M, true);
+    await openAt(b, NOW, { only: false });
+    const rb = loadReport(LOADCFG, [], readLoad(b, undefined, ME), [], NOW + M, true);
     if (typeof rb === "string") throw new Error(rb);
     expect(loadReportLines(rb).join("\n")).toContain("NOT MEASURED real jobs a load VM went ahead of: no real job ran in the session");
   });
   test("anyone may read it, from the copy every user may read; --json answers", async () => {
     const c = cmd();
-    await c.run("on");
+    await c.run("start");
     const other = cmd({ asService: false });
     // The other user reads ci's shared copy: the same box's paths.
     // readJobs checks ci owns the folder: here, the test's own user is ci.
@@ -538,10 +519,11 @@ describe("taskbox load report", () => {
     const said: string[] = [];
     d.say = (l) => said.push(l);
     writeFileSync(c.p.jobsFile, "");
-    expect(await loadCommand(d, LOADCFG, ["report", "--json"], true)).toBe(0);
+    expect(await loadReportRun(d, LOADCFG, undefined, "json")).toBe(0);
     expect(JSON.parse(said[0]!).kind).toBe("load-report");
     expect(JSON.parse(said[0]!)).not.toHaveProperty("predicted");
-    expect(await loadCommand(d, LOADCFG, ["report", "--session", "x"], false)).toBe(1);
+    expect(JSON.parse(said[0]!).session.pattern).toBe("burst");
+    expect(await loadReportRun(d, LOADCFG, 9, "text")).toBe(1);
   });
 });
 
@@ -579,7 +561,7 @@ describe("replays with load beside", () => {
       expect(worst(out.runs)).toBeLessThanOrEqual(worst(alone.runs) + 3 * M);
     });
   }
-  test("with only, the test repo has every slot and no real job runs", () => {
+  test("with only, the test repo has every slot and no real job runs", async () => {
     const load: SimJob[] = Array.from({ length: 12 }, (_, i) => ({ name: `l${i}`, kind: "linux", labels: ["taskbox-linux"], queuedAt: 0, minutes: 2, role: "load" }));
     const real: SimJob[] = [{ name: "r0", kind: "linux", labels: ["taskbox-linux"], queuedAt: 0, minutes: 2 }];
     let both = false;
@@ -593,15 +575,15 @@ describe("replays with load beside", () => {
 describe("a test repo the box can't use", () => {
   test("a load VM whose runner group fails ends the session, and taskbox load says why", async () => {
     const c = cmd();
-    await c.run("on");
+    await c.run("start");
     const { loadFailed } = await import("../src/load.ts");
-    loadFailed(c.p, NOW + M, "the load test's runner group: runner group taskbox-load must list example-org/load only\u0007");
-    expect(loadNow(c.p, NOW + 2 * M)).toBeUndefined();
+    loadFailed(c.p, NOW + M, "the load test's runner group: runner group taskbox-load must list example-org/load only\u0007", ME);
+    expect(loadNow(c.p, NOW + 2 * M, ME)).toBeUndefined();
     c.sys.clock = NOW + 2 * M;
     await c.run();
     expect(c.said.at(-1)).toBe("The box ended session 1 at 10:01 UTC: the load test's runner group: runner group taskbox-load must list example-org/load only");
     // Nothing is on, so a second failure changes nothing.
-    expect(loadFailed(c.p, NOW + 3 * M, "again")).toBeUndefined();
+    expect(loadFailed(c.p, NOW + 3 * M, "again", ME)).toBeUndefined();
   });
 });
 
@@ -628,37 +610,24 @@ describe("taskbox check's test repo row", () => {
   });
 });
 
-describe("the v2.5.0 hooks", () => {
-  test("taskbox template show load makes the test repo's workflow from the box's settings, with a canary pattern", async () => {
+describe("the workflow template", () => {
+  test("taskbox template show load makes the test repo's workflow from the box's settings, each kind on this box's own label", async () => {
     const { loadWorkflowYaml } = await import("../src/loadcmd.ts");
     const LIN: Config = { ...LOADCFG, linux: { label: "taskbox-linux", image: "ghcr.io/cirruslabs/ubuntu-runner-arm64@sha256:" + "1".repeat(64), vmCpus: 4, vmMemoryMB: 8192 } };
     const y = loadWorkflowYaml(LIN);
     expect(y).not.toMatch(/__[A-Z]+__/);
-    expect(y).toContain("options: [canary, burst, push, day]");
-    expect(y).toContain('label: ["taskbox-1-macos", "taskbox-1-linux"]');
-    expect(y).toContain("runs-on: [taskbox-macos]");
-    expect(y).toContain("runs-on: [taskbox-linux]");
+    expect(y).toContain("options: [burst, day, merge]");
+    expect(y).toContain("runs-on: [taskbox-1-macos]");
+    expect(y).toContain("runs-on: [taskbox-1-linux]");
     expect(y).toContain("permissions: {}");
     expect(y).not.toContain("schedule");
-    // macOS only: no Linux job, and no burst.
+    // macOS only: no Linux job, and no burst; the merge queue's jobs on macOS.
     const m = loadWorkflowYaml(LOADCFG);
     expect(m).not.toMatch(/__[A-Z]+__/);
-    expect(m).not.toContain("linux:");
-    expect(m).toContain("options: [canary, push, day]");
+    expect(m).not.toContain("  linux:");
+    expect(m).toContain("options: [day, merge]");
+    expect(m).toContain("default: day");
     // The fingerprint follows the labels, so a copy made before a change can be told apart.
     expect(/run-name: .* ([0-9a-f]{12})$/m.exec(y)![1]).not.toBe(/run-name: .* ([0-9a-f]{12})$/m.exec(m)![1]);
-    const c = cmd();
-    expect(await c.run("workflow")).toBe(0);
-    expect(c.said[0]).toContain("name: load");
-  });
-  test("load on runs taskbox check --away's checks first, names what isn't met, and the session keeps it", async () => {
-    const c = cmd();
-    expect(await c.run("on")).toBe(0);
-    const line = c.said.find((l) => l.startsWith("taskbox check --away has "));
-    const s = currentSession(readLoad(c.p), NOW)!;
-    // The fake box meets few of the checks for leaving.
-    expect(line).toBeDefined();
-    expect(s.checklist?.length).toBeGreaterThan(0);
-    expect(line).toContain(s.checklist![0]!);
   });
 });

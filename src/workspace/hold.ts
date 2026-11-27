@@ -2,7 +2,7 @@
 // cached by the file's identity for a few seconds.
 import { lstatSync } from "node:fs";
 import type { WorkspacesNow, WorkspaceView } from "../held.ts";
-import { fresh, type Workspace, type WsState } from "./model.ts";
+import { fresh, HOLDS, type Workspace } from "./model.ts";
 import { readStateFile } from "./read.ts";
 import { day } from "./show.ts";
 import type { StateRead } from "./store.ts";
@@ -19,17 +19,15 @@ export function workspacesNow(r: StateRead, now: number, last?: WorkspacesNow): 
   if (r.kind === "missing") return { views: [] };
   if (r.kind === "bad") return { views: [], all: { kind: "bad", text: `CI is paused: the workspaces state can't be read (${r.why})` } };
   if (r.kind === "newer") return { views: [], newer: { kind: "newer", text: `the workspaces state is from a newer taskbox (version ${r.v}), so every workspace stays closed` } };
-  const views = r.state.workspaces.map((w) => viewOf(r.state, w, now));
+  const views = r.state.workspaces.filter((w) => HOLDS.includes(w.state) || w.state === "approved").map((w) => viewOf(w, now));
   if (fresh(r.state, now)) return { views };
   return { views: [...(last?.views ?? []), ...views], stale: true };
 }
 
-// One workspace as the loop sees it. The owner's last OK is the approve or the last resume, named
-// by the history entry at that time.
-function viewOf(s: WsState, w: Workspace, now: number): WorkspaceView {
-  const resumed = w.approvedAt !== null && s.history.some((e) => e.at === w.approvedAt && e.text === `You resumed ${w.name}`);
-  const ok = w.approvedAt === null ? "you approved it" : `you ${resumed ? "resumed" : "approved"} it at ${day(w.approvedAt, now)}`;
-  return { size: w.size, phase: w.phase, name: w.name, approvedAt: w.approvedAt, ok };
+// One workspace as the loop sees it, with the owner's last OK in words.
+function viewOf(w: Workspace, now: number): WorkspaceView {
+  const ok = w.approvedAt === null ? "approved" : `approved ${day(w.approvedAt, now)}`;
+  return { size: w.size, state: w.state, name: w.name, approvedAt: w.approvedAt, ok, hold: w.hold, ...(w.rush?.force ? { force: true } : {}) };
 }
 
 // A read is good, and kept for a stale state, when it is fresh or there is no state.

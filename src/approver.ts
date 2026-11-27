@@ -2,7 +2,7 @@
 // root's own file, so a PR can change taskbox.json's key but never the one the box trusts:
 // - the first key is pinned at the box's screen, after the owner's yes, with its fingerprint shown;
 // - a new key after that needs a statement signed by the pinned key, naming the new one;
-// - taskbox key reset approver, at the box, clears the pin, for a lost laptop.
+// - taskbox key reset approver, at the box, clears the pin, for a lost controller.
 // This file is pure: no Sys, no files, no commands. The signature check is a Verifier the caller
 // gives: the update gives src/workspace/approval.ts keyChangeVerifier.
 import { createHash } from "node:crypto";
@@ -63,14 +63,14 @@ export type KeyChange = { statement: string; signature: string };
 const B64URL = /^[A-Za-z0-9_-]{1,8192}$/;
 
 export function keyChangeProblem(v: unknown): string | undefined {
-  const shape = 'approverKeyChange is { "statement": ..., "signature": ... }, each base64url, as taskbox approver on your laptop writes them';
+  const shape = 'approverKeyChange is { "statement": ..., "signature": ... }, each base64url, as taskbox approver on the controller writes them';
   if (typeof v !== "object" || v === null || Array.isArray(v)) return shape;
   const o = v as Record<string, unknown>;
   if (Object.keys(o).sort().join(",") !== "signature,statement") return shape;
   return typeof o.statement === "string" && B64URL.test(o.statement) && typeof o.signature === "string" && B64URL.test(o.signature) ? undefined : shape;
 }
 
-// The exact bytes the old key signs to name a new one. Fields in one order, so the laptop and the
+// The exact bytes the old key signs to name a new one. Fields in one order, so the controller and the
 // box make the same line. box: the box's install ID. gen: the pin's generation, which every change
 // moves on, so a statement works once: A to B, then B to A, never lets the old A-to-B statement
 // back in. from: the old key's fingerprint.
@@ -112,8 +112,8 @@ export async function approverPlan(pin: Pin, next: string | undefined, change: K
   if (pin.state === "none") return next === undefined ? { change: "none" } : { change: "first", key: next, fingerprint: fingerprint(next), gen: 1, cleared: [] };
   if (pin.state === "cleared") {
     if (next === undefined) return { change: "none" };
-    // A key cleared at the box stays out: whoever has the lost laptop has it.
-    if (pin.cleared.includes(fingerprint(next))) return { refuse: `The release's taskbox.json names the approver key ${fingerprint(next)}, which was cleared at this box with taskbox key reset approver. Nothing was installed. Make a new key on your laptop, and put it in taskbox.json in a PR.` };
+    // A key cleared at the box stays out: whoever has the lost controller has it.
+    if (pin.cleared.includes(fingerprint(next))) return { refuse: `The release's taskbox.json names the approver key ${fingerprint(next)}, which was cleared at this box with taskbox key reset approver. Nothing was installed. Make a new key on the controller, and put it in taskbox.json in a PR.` };
     return { change: "first", key: next, fingerprint: fingerprint(next), gen: pin.gen + 1, cleared: pin.cleared };
   }
   const from = fingerprint(pin.key);
@@ -138,8 +138,8 @@ export async function approverPlan(pin: Pin, next: string | undefined, change: K
 // The line the update shows before the yes, on its own, or undefined when nothing changes.
 export function approverLine(p: ApproverPlan): string | undefined {
   if ("refuse" in p) return undefined;
-  if (p.change === "first") return `Approver key: ${p.fingerprint}, new. It turns workspaces on and signs every workspace step. Check it is the fingerprint taskbox approver showed on your laptop.`;
-  if (p.change === "rotate") return `Approver key: from ${p.from} to ${p.fingerprint}, signed by the old key. Check the new one is the fingerprint taskbox approver showed on your laptop: the next question asks for its last 6 characters.`;
+  if (p.change === "first") return `Approver key: ${p.fingerprint}, new. It turns workspaces on and signs every workspace step. Check it is the fingerprint taskbox approver showed on the controller.`;
+  if (p.change === "rotate") return `Approver key: from ${p.from} to ${p.fingerprint}, signed by the old key. Check the new one is the fingerprint taskbox approver showed on the controller: the next question asks for its last 6 characters.`;
   if (p.change === "off") return `Approver key: taskbox.json names none, so workspaces are off. The box keeps ${p.from}: taskbox key reset approver clears it.`;
   return undefined;
 }

@@ -1,8 +1,8 @@
 #!/bin/sh
-# The first install of taskbox on a Mac as the controller, the Mac the owner runs every box from.
+# The first install of taskbox on a Mac as the controller, the Mac you run every box from.
 # Run as your own user, from the release folder you downloaded and unpacked:
-#   sh ~/Downloads/taskbox/install-controller.sh <owner>/<repo>
-# <owner>/<repo> is the public repo you downloaded it from. It fetches the pinned bun, checks its
+#   sh ~/Downloads/taskbox/install-controller.sh <org>/<repo>
+# <org>/<repo> is the public repo you downloaded it from. It fetches the pinned bun, checks its
 # hash, and hands over to src/controller/main.ts, which downloads that repo's newest release,
 # checks its signature against the signers file in this folder, and installs it after your yes.
 # It uses no admin rights. The bun pin below must equal versions.json (a test checks it).
@@ -14,13 +14,13 @@ BUN_SHA256="c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510"
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 self="$here/$(basename -- "$0")"
 if [ "$(id -u)" = 0 ]; then
-  echo "Run it as your own user: sh $self <owner>/<repo>"
+  echo "Run it as your own user: sh $self <org>/<repo>"
   exit 1
 fi
 case "${1:-}" in
   */*) ;;
   *)
-    echo "Type sh $self <owner>/<repo>, naming the public repo you downloaded taskbox from."
+    echo "Type sh $self <org>/<repo>, naming the public repo you downloaded taskbox from."
     exit 1
     ;;
 esac

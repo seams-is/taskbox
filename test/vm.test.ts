@@ -7,6 +7,7 @@ import { PRESTART } from "../src/checks.ts";
 import { type Config, loadConfig, paths } from "../src/config.ts";
 import { netFor, oneJob, proveLinux, RESTART, runLoop, TAILNET_RANGE } from "../src/loop.ts";
 import type { Proc, RunResult } from "../src/sys.ts";
+import { Evaluator } from "../src/net/rules.ts";
 import { softnetRules, TartEngine } from "../src/tart.ts";
 import { DEFAULT_ENGINE, engineFor, ENGINES, kitFor, type NetPolicy, type VmEngine, type VmInfo } from "../src/vm.ts";
 import { FakeSys } from "./fake.ts";
@@ -96,6 +97,9 @@ class FakeEngine implements VmEngine {
   }
   netRecord(net: NetPolicy) {
     return { fakeNet: net.block };
+  }
+  evaluator(net: NetPolicy) {
+    return new Evaluator({ block: net.block, allow: [] });
   }
 }
 

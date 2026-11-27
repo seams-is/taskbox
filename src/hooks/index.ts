@@ -4,10 +4,12 @@
 import type { JobHook, PlacedHook } from "../core/hooks.ts";
 import { identityHook } from "./identity.ts";
 import { measureHook } from "./measure.ts";
+import { netHook } from "./net.ts";
 
 const placed: readonly PlacedHook[] = [
   identityHook,
   measureHook(),
+  netHook,
 ];
 
 export const jobHooks = (): JobHook[] => {

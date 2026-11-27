@@ -333,6 +333,8 @@ export function tailscaledWatch(sys: Sys, p: Paths, log: Pick<Log, "write">): ()
 // tailscaled's socket folder is put back first (tssocket.ts): a failure there never stops the pass.
 export function workspaceRunner(d: WsDeps, log: Pick<Log, "write">): () => Promise<void> {
   const mem = newWsMemory();
+  // Each workspace step the box takes itself goes in root's event log, as the handlers' do.
+  if (!d.events) d = { ...d, events: eventLog("guard", { dir: rootStateOf(d.p).events, owner: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}) }, d.sys) };
   const sock = newSocketMemory();
   let said = "";
   return async () => {
