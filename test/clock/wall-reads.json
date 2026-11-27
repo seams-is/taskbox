@@ -222,5 +222,37 @@
   "cmd/tool.ts": {
     "reads": 3,
     "why": "when a tool refresh was asked, and how long the command watches it: a step only stops watching sooner or later, and the refresh carries on"
+  },
+  "approverkeys.ts": {
+    "reads": 7,
+    "why": "when a key was pinned and when an offer came, and the moment a lasting change is judged at (with mono and the boot, pending.ts): labels, and an offer's hour, where the admin's yes against the fingerprint is the gate"
+  },
+  "keychild.ts": {
+    "reads": 1,
+    "why": "a rotation's deadline when its record has none: the guard ends the child on mono time"
+  },
+  "keycmd.ts": {
+    "reads": 3,
+    "why": "when an op began, a listener's minutes and a key's age: labels, and a wait the op's mono deadline bounds"
+  },
+  "keyops.ts": {
+    "reads": 3,
+    "why": "an op's start, its deadline and a refused op's end: the child's limit runs on mono time (child.ts)"
+  },
+  "keyrotate.ts": {
+    "reads": 2,
+    "why": "when an App was retired, a label, and the code wait: a step only ends a wait"
+  },
+  "tsrotate.ts": {
+    "reads": 3,
+    "why": "the waits for the sign-in and for the box to be online: a step only ends a wait sooner or later"
+  },
+  "controller/keys.ts": {
+    "reads": 5,
+    "why": "a statement's time, which the box judges within 5 minutes, and the controller's own waits: a step only ends a wait"
+  },
+  "rows/keys.ts": {
+    "reads": 1,
+    "why": "how long a retired App is listed: a step only shows it a little longer or shorter"
   }
 }

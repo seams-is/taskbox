@@ -423,7 +423,7 @@ describe("the owner's signed requests", () => {
     const { contractProblem } = await import("../src/core/dispatch.ts");
     const { registry } = await import("../src/registry.ts");
     expect(contractProblem(registry(), requestHandlers())).toBeUndefined();
-    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "op.cancel", "pause", "resume", "start", "stop"]);
+    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "key.add", "key.rotate", "op.cancel", "pause", "resume", "start", "stop"]);
   });
 });
 

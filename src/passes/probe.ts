@@ -38,7 +38,7 @@ export function probeOf(code: number, stdout: string): Probe {
 
 // A key rotation that re-authenticates Tailscale, running now (key rotate tailscale).
 export function reauthRunning(ops: { type: string; state: string; subject: string; params: Record<string, unknown> }[]): boolean {
-  return ops.some((o) => o.state === "running" && o.type === "key-rotate" && (o.subject === "tailscale" || o.params.key === "tailscale" || o.params.which === "tailscale"));
+  return ops.some((o) => o.state === "running" && o.type === "key-rotate-tailscale");
 }
 
 export const probeRecord = (p: { guardState: string }) => join(dirname(p.guardState), "taskbox-tailscaled-restart.json");

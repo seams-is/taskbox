@@ -112,7 +112,7 @@ describe("taskbox status", () => {
     linked(p);
     expect(await status(d)).toBe(0);
     expect(said[0]).toBe("app: Ready. Waiting for a job.");
-    expect(said.join("\n")).toContain("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, resume, size, connect, start, status, stop, template, tool");
+    expect(said.join("\n")).toContain("Commands: check, drain, image, job, key, load, logins, logs, op, pause, policy, prune, resume, size, connect, start, status, stop, template, tool");
     expect(tail(said)).toEqual(["Now: Ready. Waiting for a job.", "Did: Nothing changed.", "Next: Nothing to do."]);
   });
 
@@ -148,10 +148,10 @@ describe("taskbox status", () => {
     const { d } = ops({ running: true });
     const notCi = { ...d, uid: d.uid + 1 };
     expect(commandsFor(d, { remote: false, admin: false })).toBe(commandList());
-    expect(commandList()).toBe("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, resume, size, connect, start, status, stop, template, tool, workspace, queue, wait, progress, deny, signed, workspaces, and as your admin user: connect, disconnect, key, remove, rollback, unlock, update, workspace.");
-    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, drain, hello, image, job, load, logins, logs, nonce, op, pause, resume, size, start, status, stop, template, tool, workspace, queue, wait, progress, deny, signed, workspaces.");
-    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, image, job, load, logins, logs, op, policy, size, connect, status, template, tool, workspaces, and connect, disconnect, key, remove, rollback, unlock, update, workspace.");
-    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, image, job, load, logins, logs, op, policy, size, connect, status, template, tool, workspaces.");
+    expect(commandList()).toBe("Commands: check, drain, image, job, key, load, logins, logs, op, pause, policy, prune, resume, size, connect, start, status, stop, template, tool, workspace, queue, wait, progress, deny, signed, workspaces, and as your admin user: confirm, connect, disconnect, key, remove, rollback, unlock, update, workspace.");
+    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, drain, hello, image, job, key, load, logins, logs, nonce, op, pause, resume, size, start, status, stop, template, tool, workspace, queue, wait, progress, deny, signed, workspaces.");
+    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, image, job, key, load, logins, logs, op, policy, size, connect, status, template, tool, workspaces, and confirm, connect, disconnect, key, remove, rollback, unlock, update, workspace.");
+    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, image, job, key, load, logins, logs, op, policy, size, connect, status, template, tool, workspaces.");
     expect(commandsFor(notCi, undefined)).toBe(commandList());
   });
 

@@ -140,6 +140,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["stop", "start", "drain", "prune", "pause", "resume", "pause --reason upgrades", "drain --timeout 30m --force --detach", "stop --force -y --timeout 1h"], bad: ["stop --now", "start x", "drain --now", "prune --dry-run", "pause x", "resume --force", "pause --reason", "start --force"] },
   { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
   { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
+  { good: ["key list", "key list --json", "key rotate runner", "key rotate tailscale --timeout 10m --json", "key rotate source --detach", "key trust approver", "key trust approver -y --json", "key reset approver -y", "confirm", "confirm --refuse pc_01JD8Q4ZZZZZZZZZZZZZZZZZZZ", "confirm --json", "key add approver", "key offer approver", "key code op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ --state aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --code abc"], bad: ["key add runner", "key offer approver --key x", "key rotate", "key rotate release", "key rotate runner source", "key rotate approver --new short", "key rotate tailscale --seal x", "key trust", "key trust approver x", "key list x", "confirm -y", "confirm --refuse x", "confirm pc_01JD8Q4ZZZZZZZZZZZZZZZZZZZ"] },
   { good: ["connect github", "connect github --jobs example-org/app", "connect status", "connect listen", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "connect github --new-key", "disconnect"] },
   { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch", "broker"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
@@ -181,7 +182,7 @@ describe("the command line", () => {
   test("--help gives the command's line and usage, and taskbox --help the commands", async () => {
     expect((await run(["job", "list", "--help"])).said).toEqual(["One line per job, newest first: 20, or -n N, or --all.", "Usage: taskbox job list [--all] [--state STATE] [--kind KIND] [--size NAME] [--class NAME] [--result RESULT] [--json] [--tail N] [--since TIME] [--watch]"]);
     const all = await run(["--help"]);
-    expect([all.code, all.said[0]]).toEqual([0, expect.stringMatching(/^Commands: .*and as your admin user: connect, /)]);
+    expect([all.code, all.said[0]]).toEqual([0, expect.stringMatching(/^Commands: .*and as your admin user: confirm, connect, /)]);
     expect(all.said[0]).not.toContain("guard");
   });
 
