@@ -1,6 +1,6 @@
 // What a command is, and how a command line is read. Each noun's commands
-// are one file in src/cmd/, found by src/registry.ts, and read by cli.ts, shell.ts and elevate.ts.
-// So a later package adds a command by adding a file, and edits no shared one.
+// are one file in src/cmd/, named in src/cmd/index.ts, and read by cli.ts, shell.ts and elevate.ts.
+// So a later package adds a command by adding a file and its line in that index.
 //
 // A file in src/cmd/ imports types and small helpers only. Its handlers import what they run when
 // they run, so the agent account's shell can read every command's name and flags without loading the box.

@@ -20,8 +20,9 @@
 import { skFlags as readFlags } from "./core/sshsig.ts";
 import { bootOutListed } from "./core/child.ts";
 import { rootStateOf } from "./core/paths.ts";
+import { inVerifyFolder } from "./core/verifyfolder.ts";
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, existsSync, renameSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, renameSync, lstatSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { SUDO } from "./elevate.ts";
 import { CALL_LIMIT_MS, DOWNLOAD_LIMIT_MS } from "./ghfail.ts";
@@ -308,20 +309,14 @@ export async function verifySignature(sys: Sys, o: { statement: Uint8Array; sign
 // The line the elevating command prints when it won't run one: its own name, then a colon.
 const REFUSED_RUN = new RegExp(`^${basename(SUDO)}: `, "m");
 
-// The ssh-keygen step alone: the signers and the signature copied to a folder of their own that
-// nobody can read, ssh-keygen -Y verify run there as nobody with no environment but PATH, the
+// The ssh-keygen step alone: the signers and the signature copied to a folder of their own
+// (core/verifyfolder.ts), ssh-keygen -Y verify run there as nobody with no environment but PATH, the
 // statement on stdin, and its line read. Tested with the real ssh-keygen (hop.test.ts).
 export async function sshVerify(sys: Sys, o: { statement: Uint8Array; signature: Uint8Array; signers: string; workRoot: string }): Promise<{ type: string; fingerprint: string }> {
-  const dir = mkdtempSync(join(o.workRoot, "taskbox-verify-"));
-  try {
-    chmodSync(dir, 0o755);
-    writeFileSync(join(dir, "allowed_signers"), o.signers, { mode: 0o644 });
-    writeFileSync(join(dir, "statement.json.sig"), o.signature, { mode: 0o644 });
-    chmodSync(join(dir, "allowed_signers"), 0o644);
-    chmodSync(join(dir, "statement.json.sig"), 0o644);
+  return inVerifyFolder(o.workRoot, { signers: o.signers, signature: o.signature, readable: true }, async (f) => {
     const r = await sys.run(
       SUDO,
-      ["-n", "-u", "nobody", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", SSH_KEYGEN, "-Y", "verify", "-f", join(dir, "allowed_signers"), "-I", PRINCIPAL, "-n", NAMESPACE, "-s", join(dir, "statement.json.sig")],
+      ["-n", "-u", "nobody", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", SSH_KEYGEN, "-Y", "verify", "-f", f.signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", f.signature],
       { stdin: o.statement, timeoutMs: 20_000 },
     );
     // Refused the run as nobody: the box's setup, never a bad release, so said apart.
@@ -330,9 +325,7 @@ export async function sshVerify(sys: Sys, o: { statement: Uint8Array; signature:
     const good = goodSignature(r.stdout + r.stderr);
     if (!good) throw new HopStop("ssh-keygen didn't name the key that signed the release.");
     return good;
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 }
 
 // The rollback watcher: a LaunchDaemon run every minute from the install before, and its file.
