@@ -1,10 +1,11 @@
 # A taskbox release, as a draft: run by a push of a tag vX.Y.Z on main, once the owner merges the
-# release PR. It runs only from a tag, and only when the tag's commit is on main and is a PR's merge;
-# there is no run by hand, so no branch's copy of this file makes a draft. Then the tarball (git
-# archive of the tag under one top folder), the Tailscale build (two hosts, compared), the revoke
-# list and the statement, unsigned, all attached to a draft release. CI holds no signing key and
-# can't publish: taskbox sign on the signing Mac checks every file against GitHub (the PR, main and
-# this run), signs the statement and publishes it.
+# release PR. The repo's tag rule lets only the owner make v* tags, and the owner approves the run
+# (the release environment). It runs only from a tag, and only when the tag's commit is on main and
+# is a PR's merge; there is no run by hand, so no branch's copy of this file makes a draft. Then the
+# tarball (git archive of the tag under one top folder), the Tailscale build (two hosts, compared),
+# the revoke list and the statement, unsigned, all attached to a draft release. CI holds no signing
+# key and can't publish: taskbox sign on the signing Mac checks every file against GitHub (the PR,
+# main and this run), signs the statement and publishes it.
 
 name: release
 
@@ -33,6 +34,7 @@ jobs:
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: release
     permissions:
       contents: write
       pull-requests: read
