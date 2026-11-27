@@ -81,6 +81,11 @@ export const handlers: { signed: SignedHandler[] } = {
             }
           }
         }
+        // An approver key's wait ends its op too, so the next rotation isn't refused as busy.
+        if (gone.kind === "approver-add" || gone.kind === "approver-rotate") {
+          const { endApproverOp } = await import("../approverkeys.ts");
+          endApproverOp({ sys: c.sys, state: c.state, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}), events: c.events }, gone.op, "cancelled", "withdrawn by an approver");
+        }
         return { ok: true, said: `Withdrawn: the ${gone.kind} change ${id} won't apply.` };
       },
     },

@@ -126,6 +126,21 @@ describe("key rotate approver: signed by the old key, held for confirm at the bo
     expect(b.eventsText()).toContain("key.pinned");
   });
 
+  test("a second, different rotation while one waits is busy; a signed withdraw of the wait ends its op", async () => {
+    const { b, old } = await pinned();
+    const r = await raiseApproverRotate(b.hc, b64(keyPair().key), actorOf(old));
+    expect(await raiseApproverRotate(b.hc, b64(keyPair().key), actorOf(old))).toMatchObject({ ok: false, code: "busy", op: r.op });
+    const p = readPending(b.state.pending, me);
+    expect(p.kind === "ok" && p.value.items.length).toBe(1);
+    const { handlers } = await import("../src/handlers/settings.ts");
+    const withdraw = handlers.signed.find((h) => h.action === "withdraw")!;
+    const id = p.kind === "ok" ? p.value.items[0]!.id : "";
+    expect(await withdraw.apply(b.hc, { id: "rq_x", statement: { args: { words: [id] } } as never, by: Verified.signer(fingerprint(old)) })).toMatchObject({ ok: true });
+    expect(readOp({ dir: b.state.ops, owner: me }, r.op!)).toMatchObject({ kind: "ok", value: { state: "cancelled", why: "withdrawn by an approver" } });
+    // The next rotation isn't busy.
+    expect(await raiseApproverRotate(b.hc, b64(keyPair().key), actorOf(old))).toMatchObject({ code: "needs-confirm" });
+  });
+
   test("confirm's no keeps the old key; a key not pinned can't ask; a cleared key is refused", async () => {
     const { b, old } = await pinned();
     const nu = keyPair().key;
