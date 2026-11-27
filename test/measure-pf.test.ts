@@ -2,14 +2,14 @@
 // message; the guard's own corroboration of each start; its lasting record, mark and witness; the
 // lock two root processes share; confirm's checks at the box's screen.
 import { describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { paths } from "../src/config.ts";
 import { eventLog, readEvents } from "../src/core/events.ts";
 import { rootStateOf } from "../src/core/paths.ts";
 import { oneJob, whyWait } from "../src/loop.ts";
 import { atBoxScreen } from "../src/ops.ts";
-import { closedNow, closureShows, CONFIRM, judge, markFile, passChange, PF_STARTS_NEEDED, pfLine, type PfMode, type PfRecord, pfStartsPass, pfStartsRow, pfState, readStarts, recordFile, recordStart, reopen, runningVms, type VmStart, withFileLock, witnessFile } from "../src/pfstarts.ts";
+import { beganFile, closedNow, closureShows, CONFIRM, judge, markFile, passChange, PF_STARTS_NEEDED, pfLine, type PfMode, type PfRecord, pfStartsPassWith, pfStartsRow, pfState, readStarts, recordFile, recordStart, reopen, runningVms, type VmStart, withFileLock, witnessFile } from "../src/pfstarts.ts";
 import { FakeSys } from "./fake.ts";
 import { loopDeps, tempRoot, testBox } from "./helpers.ts";
 
@@ -76,14 +76,17 @@ describe("trial, closed and proven", () => {
 });
 
 describe("the guard sees the VMs itself", () => {
-  test("job VMs running as the service, by name, from ps", () => {
-    const ps = `  501 /opt/taskbox/bin/tart.app/Contents/MacOS/tart run ${vmN(1)} --no-graphics --net-softnet\n    0 /opt/taskbox/bin/tart.app/Contents/MacOS/tart run ${vmN(2)} --no-graphics\n  501 /bin/sh -c echo tart run ${vmN(3)}\n  501 /usr/bin/vim notes\n`;
-    expect(runningVms(ps, 501)).toEqual([vmN(1)]);
+  test("job VMs running as the service, by the kernel's executable path: arguments alone prove nothing", () => {
+    const TART = "/opt/taskbox-abc1234-Ab12Cd/bin/tart.app/Contents/MacOS/tart";
+    const exe: Record<number, string> = { 11: TART, 12: TART, 13: "/bin/sh", 14: "/tmp/tart" };
+    const ps = [`11 501 ${TART} run ${vmN(1)} --no-graphics --net-softnet`, `12 0 ${TART} run ${vmN(2)} --no-graphics`, `13 501 /bin/sh -c echo ${TART} run ${vmN(3)}`, `14 501 /opt/taskbox/bin/tart.app/Contents/MacOS/tart run ${vmN(4)}`, `15 501 ${TART} run ${vmN(5)}`].join("\n");
+    // 12 is root's; 13 and 14 aren't the pinned Tart, whatever they say; 15's executable can't be read.
+    expect(runningVms(ps, 501, TART, (pid) => exe[pid])).toEqual([vmN(1)]);
   });
   test("forged entries in the service's file never count: a VM the guard didn't see, or saw at another time", async () => {
     const b = box();
     writeAll3(b.p, rec({ seq: 1, judged: AT - 1 }));
-    b.ps(`501 /x/tart run ${vmN(1)} --no-graphics\n`);
+    b.ps(`4242 501 /x/tart run ${vmN(1)} --no-graphics\n4343 501 /x/tart run ${vmN(9)}\n`);
     await b.tick(AT + 1_000);
     for (const s of [start(AT, 1), start(AT + 1, 9), start(AT + 400_000, 1)]) recordStart(b.p, s, me);
     b.guard({ at: AT + 500_000 });
@@ -98,17 +101,21 @@ function writeAll3(p: ReturnType<typeof paths>, r: PfRecord, markSeq = r.seq, wi
   writeFileSync(recordFile(p), JSON.stringify(r), { mode: 0o644 });
   writeFileSync(markFile(p), JSON.stringify({ v: 1, seq: markSeq, firstAt: 1 }), { mode: 0o644 });
   writeFileSync(witnessFile(p), JSON.stringify({ v: 1, seq: witnessSeq }), { mode: 0o644 });
+  writeFileSync(beganFile(p), JSON.stringify({ v: 1, at: 1 }), { mode: 0o644 });
 }
 function box(o: { loopState?: Record<string, unknown>; first?: boolean } = {}) {
   const sys = new FakeSys();
   let ps = "";
-  sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args[0] === "-u" ? { code: 0, stdout: `${me}\n`, stderr: "" } : cmd === "/bin/ps" && args[1] === "uid=,command=" ? { code: 0, stdout: ps.replace(/^501 /gm, `${me} `), stderr: "" } : undefined));
+  sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args[0] === "-u" ? { code: 0, stdout: `${me}\n`, stderr: "" } : cmd === "/bin/ps" && args[1] === "pid=,uid=,command=" ? { code: 0, stdout: ps.replace(/^(\d+) 501 /gm, `$1 ${me} `), stderr: "" } : undefined));
   const p = paths(tempRoot(), testBox());
   for (const d of [dirname(p.guardState), dirname(p.loopState), rootStateOf(p).events, dirname(p.installed)]) mkdirSync(d, { recursive: true });
   // Root's install record: the box's first v3 install, or a later one.
   writeFileSync(p.installed, JSON.stringify({ installedAt: "2027-01-01T00:00:00.000Z", v3Since: o.first === false ? "2026-12-01T00:00:00.000Z" : "2027-01-01T00:00:00.000Z" }), { mode: 0o644 });
   if (o.loopState) writeFileSync(p.loopState, JSON.stringify(o.loopState));
-  const make = () => pfStartsPass.make({ sys, cfg: {} as never, p, log: { write: () => {} }, writer: true, rootUid: me })!;
+  // The pinned Tart, as the kernel would name the process 4242 that ps lists.
+  mkdirSync(dirname(p.tart), { recursive: true });
+  writeFileSync(p.tart, "");
+  const make = () => pfStartsPassWith((pid) => (pid === 4242 ? realpathSync(p.tart) : undefined)).make({ sys, cfg: {} as never, p, log: { write: () => {} }, writer: true, rootUid: me })!;
   const pass = make();
   const guard = (x: { at: number; missingAt?: number }) => writeFileSync(p.guardState, JSON.stringify(g(x)), { mode: 0o644 });
   const events = () => readEvents([{ dir: rootStateOf(p).events, owner: me, writer: "guard" }]).events;
@@ -143,6 +150,7 @@ describe("the record lasts, and only the first v3 install starts it afresh", () 
     ["the mark damaged", (p) => writeFileSync(markFile(p), "{")],
     ["the witness deleted", (p) => rmSync(witnessFile(p))],
     ["the record restored alone", (p, older) => cpSync(`${older}/pf-starts.json`, recordFile(p))],
+    ["the marker deleted with the records present", (p) => rmSync(beganFile(p))],
   ];
   for (const [name, harm] of harms) {
     test(`${name}: closed, with an event, rewritten closed with judged kept`, async () => {
@@ -162,11 +170,36 @@ describe("the record lasts, and only the first v3 install starts it afresh", () 
       await b.tick(AT + 40_000);
       const st = pfState(b.p, me) as { kind: string; rec: PfRecord };
       expect(st).toMatchObject({ kind: "ok", rec: { mode: "closed" } });
-      if (name !== "all three deleted") expect(st.rec.seq).toBeGreaterThan(2);
-      if (name !== "all three deleted" && name !== "the record deleted") expect(st.rec.judged).toBe(AT + 10_000);
+      if (!name.startsWith("all")) expect(st.rec.seq).toBeGreaterThan(2);
+      if (!name.startsWith("all") && name !== "the record deleted") expect(st.rec.judged).toBe(AT + 10_000);
       expect(b.events().map((e) => e.type)).toContain("guard.pf-record-broken");
     });
   }
+  test("an event log rotated past its cap changes nothing: the marker says the record began", async () => {
+    const b = box();
+    b.guard({ at: AT });
+    await b.tick(AT);
+    rmSync(rootStateOf(b.p).events, { recursive: true, force: true });
+    mkdirSync(rootStateOf(b.p).events, { recursive: true });
+    for (const f of [recordFile(b.p), markFile(b.p), witnessFile(b.p)]) rmSync(f);
+    expect(pfState(b.p, me)).toMatchObject({ kind: "broken" });
+  });
+  test("an install record with no v3Since is the hop's first v3 install: fresh", () => {
+    const b = box();
+    writeFileSync(b.p.installed, JSON.stringify({ installedAt: "2027-01-01T00:00:00.000Z", release: { repo: "x" } }), { mode: 0o644 });
+    expect(pfState(b.p, me).kind).toBe("fresh");
+  });
+  test("a rollback to the first v3 install, with a later v3 install kept, is never fresh", () => {
+    const b = box();
+    const opt = dirname(dirname(b.p.installed));
+    const later = `${opt}/taskbox-abcdef1-Zz99Yy`;
+    mkdirSync(later, { recursive: true });
+    writeFileSync(`${later}/installed.json`, JSON.stringify({ installedAt: "2027-02-01T00:00:00.000Z", v3Since: "2027-01-01T00:00:00.000Z", release: { repo: "x" } }), { mode: 0o644 });
+    expect(pfState(b.p, me)).toMatchObject({ kind: "broken", why: "the record of starts is gone, and root's install records show an earlier v3 install" });
+    // A kept v2 install beside it is no v3 install.
+    writeFileSync(`${later}/installed.json`, JSON.stringify({ installedAt: "2026-02-01T00:00:00.000Z", format: 2 }), { mode: 0o644 });
+    expect(pfState(b.p, me).kind).toBe("fresh");
+  });
   test("all three missing on a later v3 install is closed, never fresh", () => {
     const b = box({ first: false });
     expect(pfState(b.p, me)).toMatchObject({ kind: "broken" });

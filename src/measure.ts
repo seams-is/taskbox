@@ -73,6 +73,21 @@ export const rusageFootprint: Footprint = (pid) => {
   }
 };
 
+// A process's executable, from the kernel (proc_pidpath), which its own arguments can't change; or
+// undefined when it can't be read.
+const PATH_MAX = 4096;
+let pidpath: ((pid: number, buf: ReturnType<typeof ptr>, size: number) => number) | undefined;
+export const procPidPath = (pid: number): string | undefined => {
+  try {
+    pidpath ??= dlopen("/usr/lib/libSystem.B.dylib", { proc_pidpath: { args: [FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 } }).symbols.proc_pidpath as unknown as typeof pidpath;
+    const buf = new Uint8Array(PATH_MAX);
+    const n = pidpath!(pid, ptr(buf), PATH_MAX);
+    return n > 0 ? new TextDecoder().decode(buf.subarray(0, n)) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 // The VM's footprint in MB: the sum over its processes, or undefined when none could be read.
 export function footprintMB(pids: number[], read: Footprint): number | undefined {
   const each = pids.map(read).filter((x): x is number => x !== undefined && Number.isFinite(x) && x >= 0);

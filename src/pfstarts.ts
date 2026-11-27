@@ -21,17 +21,18 @@
 //   install, and no witness exists. That first record clears v2's closure (the loop's guardClosed)
 //   once and marks it; v2 setting it again later, after a rollback, closes the box.
 // Two VMs starting within 10 s of each other share any loss: it fails toward closed.
-import { closeSync, constants, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { type Check, type CheckContext, screenSharingOn } from "./checks.ts";
 import type { Config, Paths } from "./config.ts";
-import { appendAdmin, eventLog, readEvents } from "./core/events.ts";
+import { appendAdmin, eventLog } from "./core/events.ts";
 import type { PassMaker } from "./core/passes.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { readOwnedText, withLock, writeOwnedText } from "./core/rootfile.ts";
 import type { Row } from "./core/rows.ts";
 import { type GuardRecord, readGuard } from "./guard.ts";
+import { procPidPath } from "./measure.ts";
 import type { Sys } from "./sys.ts";
 
 export const PF_STARTS_NEEDED = 100;
@@ -115,25 +116,36 @@ function markOf(v: unknown): PfMark | undefined {
 }
 const witnessOf = (v: unknown) => (v && typeof v === "object" && (v as { v?: unknown }).v === 1 && int((v as { seq?: unknown }).seq, 1) ? (v as { seq: number }).seq : undefined);
 
-// Whether root's install record says this is the box's first v3 install: its v3Since is its own
-// installedAt, or it has none (the hop's install from v2, before any v3 install wrote one).
+// The marker the guard writes when it first sets up the record (and clears v2's closure): root's, in
+// root's lasting state, never pruned. With it, a missing or damaged record is always closed.
+export const beganFile = (p: Pick<Paths, "installId">) => join(rootStateOf(p).dir, "pf-starts-began.json");
+const v3Install = (v: unknown) => !!v && typeof v === "object" && ((v as { release?: unknown }).release !== undefined || (v as { v3Since?: unknown }).v3Since !== undefined);
+// Whether root's install records, across every install the box keeps, show no v3 install before the
+// one running: none of the others is v3's, and this one's v3Since, when it has one, is its own time.
 export function firstV3Install(p: Pick<Paths, "installed">, rootUid: number): boolean {
-  const v = readJsonOwned(p.installed, rootUid, 1_000_000) as { installedAt?: unknown; v3Since?: unknown } | string;
-  if (typeof v !== "object" || !v || typeof v.installedAt !== "string") return false;
-  return v.v3Since === undefined || v.v3Since === v.installedAt;
-}
-
-function startedBefore(p: Pick<Paths, "installId">, rootUid: number): boolean {
+  const cur = readJsonOwned(p.installed, rootUid, 1_000_000) as { installedAt?: unknown; v3Since?: unknown } | string;
+  if (typeof cur !== "object" || !cur || typeof cur.installedAt !== "string") return false;
+  if (cur.v3Since !== undefined && cur.v3Since !== cur.installedAt) return false;
+  const opt = dirname(dirname(p.installed));
+  let here: string;
+  let names: string[];
   try {
-    const r = readEvents([{ dir: rootStateOf(p).events, owner: rootUid, writer: "guard" }], { type: "guard.pf-started", limit: 1 });
-    // Events that can't be read are no proof of a fresh box.
-    return r.events.length > 0 || r.skipped.length > 0;
+    here = realpathSync(dirname(p.installed));
+    names = readdirSync(opt).filter((n) => /^taskbox-[0-9a-f]{7,40}-[A-Za-z0-9]{6}$/.test(n));
   } catch {
-    return true;
+    return false;
   }
+  for (const n of names) {
+    const dir = join(opt, n);
+    if (realpathSync(dir) === here) continue;
+    const v = readJsonOwned(join(dir, "installed.json"), rootUid, 1_000_000);
+    if (v === "bad" || v3Install(v)) return false;
+  }
+  return true;
 }
 
-// The three as the guard left them: fresh only on a box's first v3 install with all three missing;
+// The record as the guard left it: fresh only when the record, its mark, its witness and the marker
+// are all missing and root's install records show no earlier v3 install;
 // broken (and so closed) for anything that doesn't agree.
 export type PfState = { kind: "fresh" } | { kind: "ok"; rec: PfRecord; mark: PfMark } | { kind: "broken"; why: string; rec?: PfRecord; mark?: PfMark; witness?: number };
 export function pfState(p: RootPaths, rootUid: number): PfState {
@@ -144,13 +156,9 @@ export function pfState(p: RootPaths, rootUid: number): PfState {
   const mark = typeof mv === "string" ? undefined : markOf(mv);
   const witness = typeof wv === "string" ? undefined : witnessOf(wv);
   const parts = { ...(rec ? { rec } : {}), ...(mark ? { mark } : {}), ...(witness !== undefined ? { witness } : {}) };
-  if (rv === "missing" && mv === "missing" && wv === "missing") {
-    if (!firstV3Install(p, rootUid)) return { kind: "broken", why: "the record of starts is gone, and this isn't the box's first v3 install" };
-    // The first record writes guard.pf-started, which stays in root's events: once it is there, the
-    // record was made, and three files gone mean they were taken away.
-    if (startedBefore(p, rootUid)) return { kind: "broken", why: "the record of starts, its mark and its witness are all gone" };
-    return { kind: "fresh" };
-  }
+  const began = readJsonOwned(beganFile(p), rootUid, 1024);
+  if (rv === "missing" && mv === "missing" && wv === "missing" && began === "missing") return firstV3Install(p, rootUid) ? { kind: "fresh" } : { kind: "broken", why: "the record of starts is gone, and root's install records show an earlier v3 install" };
+  if (began === "missing" || began === "bad") return { kind: "broken", why: "the guard's marker that it began the record is gone or damaged", ...parts };
   if (!rec) return { kind: "broken", why: rv === "missing" ? "the record of starts is gone" : "the record of starts isn't root's plain file in shape", ...parts };
   if (!mark) return { kind: "broken", why: mv === "missing" ? "the record's mark is gone" : "the record's mark isn't root's plain file in shape", ...parts };
   if (witness === undefined) return { kind: "broken", why: wv === "missing" ? "the record's witness in /var/db is gone" : "the record's witness isn't root's plain file in shape", ...parts };
@@ -161,6 +169,8 @@ export function pfState(p: RootPaths, rootUid: number): PfState {
 
 function writeAll(p: RootPaths, rec: PfRecord, mark: PfMark, owner: number): void {
   mkdirSync(dirname(witnessFile(p)), { recursive: true });
+  // The marker, written once and never again; kept across updates and rollbacks.
+  if (readJsonOwned(beganFile(p), owner, 1024) === "missing") writeOwnedText(beganFile(p), JSON.stringify({ v: 1, at: mark.firstAt }), { mode: 0o644, owner });
   writeOwnedText(recordFile(p), JSON.stringify(rec), { mode: 0o644, owner });
   writeOwnedText(markFile(p), JSON.stringify({ ...mark, seq: rec.seq }), { mode: 0o644, owner });
   writeOwnedText(witnessFile(p), JSON.stringify({ v: 1, seq: rec.seq }), { mode: 0o644, owner });
@@ -183,15 +193,25 @@ const heldOf = (path: string): Held | undefined => {
     return undefined;
   }
 };
+// The whole file is written under a name of its own, then linked into place, which fails when the
+// name is taken: nobody ever reads a lock half written.
 function createExcl(path: string, text: string): boolean {
+  const tmp = `${path}.${randomBytes(8).toString("hex")}.new`;
+  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try {
-    const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     writeSync(fd, text);
+    fsyncSync(fd);
+  } finally {
     closeSync(fd);
+  }
+  try {
+    linkSync(tmp, path);
     return true;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw e;
+  } finally {
+    rmSync(tmp, { force: true });
   }
 }
 // One try at the lock: "held" when it is ours now, else "wait". A stale lock is removed only by the
@@ -290,14 +310,16 @@ export function judge(r: PfRecord, starts: readonly VmStart[], g: GuardRecord | 
   return { next, lost, proven };
 }
 
-// The job VMs running as the service account, by name, from `ps`.
-export function runningVms(ps: string, serviceUid: number): string[] {
+// The job VMs running as the service account, by name: each process ps lists with the service's
+// uid whose executable, as the kernel has it, is the pinned Tart. Its arguments name the VM; a
+// process can set its own arguments, but not its executable or its uid.
+export function runningVms(ps: string, serviceUid: number, tart: string, exeOf: (pid: number) => string | undefined): string[] {
   const out = new Set<string>();
   for (const l of ps.split("\n")) {
-    const m = /^\s*(\d+)\s+(.*)$/.exec(l);
-    if (!m || Number(m[1]) !== serviceUid) continue;
-    const vm = /\/tart run (job-j_[0-9abcdefghjkmnpqrstvwxyz]{8})(?:\s|$)/.exec(m[2]!)?.[1];
-    if (vm) out.add(vm);
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l);
+    if (!m || Number(m[2]) !== serviceUid) continue;
+    const vm = / run (job-j_[0-9abcdefghjkmnpqrstvwxyz]{8})(?:\s|$)/.exec(m[3]!)?.[1];
+    if (vm && exeOf(Number(m[1])) === tart) out.add(vm);
   }
   return [...out];
 }
@@ -365,10 +387,19 @@ export function passChange(st: PfState, starts: readonly VmStart[], g: GuardReco
 }
 
 // The guard's pass, on every tick, so every loss and running VM it reads is kept. By the one writer.
-export const pfStartsPass: PassMaker = {
+const realTart = (path: string) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+};
+// exeOf: a process's executable as the kernel has it (measure.ts procPidPath), a fake in tests.
+export const pfStartsPassWith = (exeOf: (pid: number) => string | undefined): PassMaker => ({
   name: "pf-starts",
   make(c) {
     if (!c.writer) return undefined;
+    let tart: string | undefined;
     const root = c.rootUid ?? 0;
     const events = eventLog("guard", { dir: rootStateOf(c.p).events, owner: root }, c.sys);
     let service: number | undefined;
@@ -381,8 +412,9 @@ export const pfStartsPass: PassMaker = {
       }
       if (service === undefined) return;
       const ci = service;
-      const ps = await c.sys.run("/bin/ps", ["-axo", "uid=,command="], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
-      const vms = ps.code === 0 ? runningVms(ps.stdout, ci) : [];
+      const ps = await c.sys.run("/bin/ps", ["-axo", "pid=,uid=,command="], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
+      tart ??= realTart(c.p.tart);
+      const vms = ps.code === 0 && tart ? runningVms(ps.stdout, ci, tart, exeOf) : [];
       const starts = readStarts(c.p, ci);
       const loop = readJsonOwned(c.p.loopState, ci, 2_000_000) as { guardClosed?: unknown } | string;
       const v2Flag = typeof loop === "object" && loop?.guardClosed === true;
@@ -391,7 +423,8 @@ export const pfStartsPass: PassMaker = {
     };
     return { name: "pf-starts", at: "after", start: (now) => job(now), next: (now) => job(now) };
   },
-};
+});
+export const pfStartsPass = pfStartsPassWith(procPidPath);
 
 // Whether the box is closed to VM starts while Screen Sharing is on, at the loop: anything but a good
 // record in trial or proven is closed, and so is a loss in the window of a start not judged yet.

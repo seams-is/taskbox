@@ -173,3 +173,11 @@ describe("through the loop", () => {
     expect(line.usage.box.footprintPeakMB).toBeUndefined();
   });
 });
+
+if (process.platform === "darwin") {
+  test("proc_pidpath names this process's own executable, and none for a pid that isn't there", async () => {
+    const { procPidPath } = await import("../src/measure.ts");
+    expect(procPidPath(process.pid)).toBe(process.execPath);
+    expect(procPidPath(2 ** 30)).toBeUndefined();
+  });
+}

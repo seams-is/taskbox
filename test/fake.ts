@@ -69,7 +69,7 @@ export class FakeSys implements Sys {
     if (cmd === "/usr/bin/du" && args[0] === "-sk") return { code: 0, stdout: `20971520\t${args[1]}\n`, stderr: "" };
     if (cmd === "/usr/sbin/lsof") return { code: 1, stdout: "", stderr: "" };
     // The guard's look at the job VMs running (pfstarts.ts): none, unless a test says otherwise.
-    if (cmd === "/bin/ps" && args[0] === "-axo" && args[1] === "uid=,command=") return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "/bin/ps" && args[0] === "-axo" && args[1] === "pid=,uid=,command=") return { code: 0, stdout: "", stderr: "" };
     if (cmd === "/usr/bin/powermetrics") return { code: 0, stdout: "**** GPU usage ****\n\nGPU HW active frequency: 389 MHz\nGPU HW active residency:   0.00% (389 MHz:   0%)\nGPU idle residency: 100.00%\nGPU Power: 0 mW\n", stderr: "" };
     // Plenty of room unless a test says otherwise: 500 GB.
     if (cmd === "/bin/df") return { code: 0, stdout: `F 1 U A C M\n/dev/disk3s5 1 1 ${500e9 / 1024} 1% /\n`, stderr: "" };

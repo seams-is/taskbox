@@ -408,9 +408,10 @@ export function socketDirOk(c: { sys: FakeSys; paths: { tailscaleSocketDir: stri
 export function pfOpen(p: { installId: string; guardState: string }): void {
   const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
   const { dirname } = require("node:path") as typeof import("node:path");
-  const { markFile, recordFile, witnessFile } = require("../src/pfstarts.ts") as typeof import("../src/pfstarts.ts");
+  const { beganFile, markFile, recordFile, witnessFile } = require("../src/pfstarts.ts") as typeof import("../src/pfstarts.ts");
   for (const f of [recordFile(p), witnessFile(p)]) mkdirSync(dirname(f), { recursive: true });
   writeFileSync(recordFile(p), JSON.stringify({ v: 1, seq: 1, mode: "trial", clean: 0, judged: 0, losses: [], seen: [], v2Seen: false }), { mode: 0o644 });
   writeFileSync(markFile(p), JSON.stringify({ v: 1, seq: 1, firstAt: 0 }), { mode: 0o644 });
   writeFileSync(witnessFile(p), JSON.stringify({ v: 1, seq: 1 }), { mode: 0o644 });
+  writeFileSync(beganFile(p), JSON.stringify({ v: 1, at: 0 }), { mode: 0o644 });
 }
