@@ -137,7 +137,7 @@ export async function askGuard(c: BoxCtx, spool: "service" | "admin", kind: stri
 
 // The one watcher: an op followed to its end, each change of its phase or progress said once.
 // polls: 0 for no limit. again: the command that watches again; undo: the one that cancels it.
-export async function followOp(c: Pick<BoxCtx, "say" | "ops" | "root" | "deps" | "own" | "cu">, id: string, o: { polls: number; interrupt: Interrupt; again: string; undo?: string; done?: string }): Promise<{ exit: number; result: Record<string, unknown>; error?: ErrorBody; next?: string }> {
+export async function followOp(c: Pick<BoxCtx, "say" | "ops" | "root" | "deps" | "own" | "cu" | "stream">, id: string, o: { polls: number; interrupt: Interrupt; again: string; undo?: string; done?: string }): Promise<{ exit: number; result: Record<string, unknown>; error?: ErrorBody; next?: string }> {
   const tail = `${o.again} watches again${o.undo ? `; ${o.undo} cancels it` : ""}.`;
   let last = "";
   let phase = "";
@@ -150,8 +150,12 @@ export async function followOp(c: Pick<BoxCtx, "say" | "ops" | "root" | "deps" |
     }
     const what = clean(cur.type, 20);
     const text = clean(cur.progress?.text ?? "");
-    if (i > 0 && cur.phase !== phase && cur.state === "running") c.say(`Now ${clean(cur.phase, 30)}.`);
-    if (text && text !== last) c.say(`${text[0]!.toUpperCase()}${text.slice(1)}.`);
+    // Each change is said, and with --json also sent at once as its own envelope line.
+    const change: string[] = [];
+    if (i > 0 && cur.phase !== phase && cur.state === "running") change.push(`Now ${clean(cur.phase, 30)}.`);
+    if (text && text !== last) change.push(`${text[0]!.toUpperCase()}${text.slice(1)}.`);
+    for (const l of change) c.say(l);
+    if (change.length && cur.state === "running") c.stream?.(change, { op: opJson(cur) });
     last = text;
     phase = cur.phase;
     if (cur.state === "succeeded") {

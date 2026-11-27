@@ -72,8 +72,8 @@
     "why": "the guard's record's freshness: a stale read FAILs, so a step fails closed"
   },
   "cli.ts": {
-    "reads": 3,
-    "why": "the answers envelope's at, for a usage error, a rename and every answer: a label"
+    "reads": 4,
+    "why": "the answers envelope's at, for a usage error, a rename and every answer: a label; a streamed line's at: a label"
   },
   "ops.ts": {
     "reads": 21,

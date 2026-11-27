@@ -18,6 +18,7 @@ import { declOf, opDecls, opType, opTypeFiles } from "../src/optypes/index.ts";
 import { controlJob } from "../src/passes/control.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
+import { readEnvelopes } from "../src/schema.ts";
 
 const me = process.getuid!();
 const T = Date.UTC(2026, 10, 27, 12, 0, 0);
@@ -142,6 +143,24 @@ describe("op show", () => {
       const w = b.update();
       const late = await b.cli(["op", "show", w.id, "-w", "--timeout", "6s"]);
       expect(late.code).toBe(3);
+    },
+    SLOW,
+  );
+
+  test(
+    "-w --json is JSON Lines: one envelope a change, then the final one, which the shared schema reads as a stream",
+    async () => {
+      const b = await box();
+      const u = b.update();
+      const r = await b.cli(["op", "show", u.id, "-w", "--json"], { after: (n) => (n === 0 ? writeOp(b.f, toPhase(b.op(u.id)!, "draining", { text: "1 job running" })) : n === 2 ? writeOp(b.f, end(b.op(u.id)!, "succeeded", b.sys.now())) : undefined) });
+      expect(r.code).toBe(0);
+      const lines = r.said.map((l) => JSON.parse(l));
+      expect(lines.map((e) => e.final)).toEqual([false, true]);
+      expect(lines[0]).toMatchObject({ command: "op.show", lines: ["Now draining.", "1 job running."], result: { op: { id: u.id, state: "running", phase: "draining" } } });
+      expect(lines[1]).toMatchObject({ exit: 0, result: { op: { state: "succeeded" } } });
+      expect(readEnvelopes(`${r.said.join("\n")}\n`, { stream: true }).ok).toBe(true);
+      // Without -w, one envelope, as before.
+      expect((await b.cli(["op", "show", u.id, "--json"])).said).toHaveLength(1);
     },
     SLOW,
   );

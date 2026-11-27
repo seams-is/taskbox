@@ -85,6 +85,8 @@ export interface CommandSpec {
   typed?: boolean;
   // Readers that anyone but the service account and root reads from the copies every user may read (shared.ts).
   sharedReads?: boolean;
+  // With -w and --json it prints JSON Lines: one envelope a change, final on the last (ctx.stream).
+  streams?: boolean;
   // Its own parser checks every word (the workspace agent's commands). No flag is read here.
   raw?: boolean;
   // For a raw command: the verb the workspace parser (workspace/agent.ts) knows it by, where that isn't its
@@ -186,6 +188,8 @@ export interface Ctx {
   chown(path: string, uid: number, gid: number, recursive?: boolean): void;
   root: string;
   app: string; // /opt/taskbox/app under root
+  // A streaming command's change, as its own envelope line before the final one (--json only).
+  stream?(lines: string[], result?: Record<string, unknown>): void;
 }
 
 // The box's own context, read once settings are: which accounts, which paths, what the reader may see.
