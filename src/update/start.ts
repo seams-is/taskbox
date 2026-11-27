@@ -33,7 +33,7 @@ export function updateArgsProblem(kind: UpdateKind, args: Record<string, unknown
 }
 
 // signed: a request the owner signed. A signed rollback sets no hold, so one swapped statement can't
-// keep a box below a fix until the next release (§6.6 residual 1); an admin's rollback at the box does.
+// keep a box below a fix until the next release; an admin's rollback at the box does.
 export async function startUpdateOp(c: HandlerCtx, kind: UpdateKind, args: Record<string, unknown>, actor: string, o: { auto?: boolean; signed?: boolean } = {}): Promise<Answer> {
   const bad = updateArgsProblem(kind, args, o);
   if (bad) return { ok: false, code: "usage", said: `${bad[0]!.toUpperCase()}${bad.slice(1)}.` };
