@@ -44,12 +44,19 @@ describe("the memory rule", () => {
   test("a Whole has no cap", () => {
     expect(capStep({}, { size: "whole", capMB: 0, usedMB: 1e6, highest: true, saving: false, now: T }).act.do).toBe("none");
   });
-  test("ps's lines summed: rss in KB, %cpu per process", () => {
-    expect(parsePs(" 1048576  50.0\n  524288 120.5\n\nbad line\n")).toEqual({ memoryMB: 1536, cpu: 1.71 });
+  test("ps's lines summed: each process at its footprint, else its rss in KB; %cpu per process", () => {
+    expect(parsePs(" 11 1048576  50.0\n 12  524288 120.5\n\nbad line\n")).toEqual({ memoryMB: 1536, cpu: 1.71 });
+    // Compressed and swapped pages count: the footprint is what is summed when it is bigger.
+    const fp = (pid: number) => (pid === 11 ? 6 * 1024 ** 3 : undefined);
+    expect(parsePs(" 11 1048576  50.0\n 12  524288 120.5\n", fp)).toEqual({ memoryMB: 6656, cpu: 1.71 });
+  });
+  test("the real reader gives this process's own footprint", async () => {
+    const { rusageFootprint } = await import("../src/measure.ts");
+    expect(rusageFootprint(process.pid)).toBeGreaterThan(1024 * 1024);
   });
 });
 
-function box(usedKB: () => number, pressure = "1") {
+function box(usedKB: () => number, pressure = "1", footprint: (pid: number) => number | undefined = () => undefined) {
   const root = tempRoot();
   const me = process.getuid!();
   const p = paths(root, testBox());
@@ -60,14 +67,14 @@ function box(usedKB: () => number, pressure = "1") {
   const sys = new FakeSys();
   sys.clock = T;
   sys.responders.push((cmd, args) => {
-    if (cmd === "/bin/ps" && args[0] === "-U") return { code: 0, stdout: `${usedKB()}  80.0\n`, stderr: "" };
+    if (cmd === "/bin/ps" && args[0] === "-U") return { code: 0, stdout: `4711 ${usedKB()}  80.0\n`, stderr: "" };
     if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.memorystatus_vm_pressure_level") return { code: 0, stdout: `${pressure}\n`, stderr: "" };
     if (cmd === "/usr/bin/renice" || cmd === "/usr/bin/pkill") return { code: 0, stdout: "", stderr: "" };
     return undefined;
   });
   const cfg = { ...CFG, accounts: { ...CFG.accounts, workspaces: { pool: "taskbox-ws", size: 2 } } };
   const events: string[] = [];
-  const d = { sys, cfg, p, rootUid: me, events: { write: (e: { type: string; text: string }) => void events.push(`${e.type} ${e.text}`) } };
+  const d = { sys, cfg, p, rootUid: me, footprint, events: { write: (e: { type: string; text: string }) => void events.push(`${e.type} ${e.text}`) } };
   const state = () => {
     const r = readStateFile(p.workspaces, me);
     if (r.kind !== "ok") throw new Error(r.kind);
@@ -83,7 +90,7 @@ describe("the caps pass", () => {
     writeStateFile({ rootUid: b.me }, b.p.workspaces, { ...readyState("light"), beat: T });
     const run = newCapsRun();
     await capsTick(b.d, run);
-    expect(b.sys.calls.some((c) => c.cmd === "/usr/bin/renice" && c.args.join(" ") === "-n 10 -u taskbox-ws1")).toBe(true);
+    expect(b.sys.calls.some((c) => c.cmd === "/usr/bin/renice" && c.args.join(" ") === "10 -u taskbox-ws1")).toBe(true);
     expect(find(b.state(), "nova-1")!.state).toBe("ready");
     kb = 13 * 1024 * 1024;
     b.sys.clock = T + 2_000;
@@ -119,6 +126,12 @@ describe("the caps pass", () => {
     writeStateFile({ rootUid: b.me }, b.p.workspaces, { ...readyState("light"), beat: T });
     await capsTick(b.d, newCapsRun());
     expect(find(b.state(), "nova-1")!.frozen!.text).toContain("highest memory pressure");
+  });
+  test("a Light whose resident memory is small but whose footprint is past 150% is stopped at once", async () => {
+    const b = box(() => 1024 * 1024, "1", () => 13 * 1024 ** 3);
+    writeStateFile({ rootUid: b.me }, b.p.workspaces, { ...readyState("light"), beat: T });
+    await capsTick(b.d, newCapsRun());
+    expect(find(b.state(), "nova-1")!.frozen!.text).toBe("memory 13.0 GB of Light's 8.0");
   });
   test("a Whole is never capped and runs at nice 0", async () => {
     const b = box(() => 64 * 1024 * 1024);

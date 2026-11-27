@@ -45,7 +45,7 @@ describe("the guard's signed clear", () => {
     });
     const lstat = (p: string): Stats => {
       const st = lstatSync(p);
-      return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { uid: st.uid === me && !p.includes(CLEARED) ? 471 : st.uid });
+      return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { uid: st.uid === me && !p.includes(CLEARED) && !p.endsWith("/Library/LaunchAgents") ? 471 : st.uid });
     };
     const h: HandoverDeps = { sys, usersDir: users, rootUid: me, chown: () => {}, now: () => T, lstat };
     const done = ended(ok(end(readyState("light"), { name: "nova-1", by: "agent", agent: "nova" }, T)), "nova-1", T).state;
@@ -67,7 +67,7 @@ describe("the guard's signed clear", () => {
   test("the idle account's files go, the account is freed, and the clear is done", async () => {
     const o = setup();
     const r = await run(o, true);
-    expect(readdirSync(o.homeDir)).toEqual([]);
+    expect(readdirSync(o.homeDir)).toEqual(["Library"]);
     expect(existsSync(join(o.users, CLEARED))).toBe(true);
     expect(readdirSync(join(o.users, CLEARED))).toEqual([]);
     expect(r.state.accounts).toEqual({});

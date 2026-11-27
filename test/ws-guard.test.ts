@@ -364,7 +364,7 @@ describe("handing an account to another agent", () => {
     const h = { sys, usersDir: users, rootUid: me, chown: () => {}, now: () => T };
     const a = { user: "taskbox-ws1", uid: me, gid: 20 };
     expect(moveAside(h, a)).toBeUndefined();
-    expect(readdirSync(home)).toEqual([]);
+    expect(readdirSync(home)).toEqual(["Library"]);
     const dir = clearedDir(h)!;
     expect(dir).toBe(join(users, CLEARED));
     const st = lstatSync(dir);
