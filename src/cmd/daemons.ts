@@ -7,13 +7,16 @@ import type { CliDeps, CommandSpec, Ctx } from "../command.ts";
 import { boxNames, type Paths } from "../config.ts";
 import { INSTALL_NAME } from "../layout.ts";
 import type { OpsDeps } from "../ops.ts";
+import { SOURCE_TREE } from "../self.ts";
 
-// The install this code runs from, read once, at the loop's start, or undefined in a checkout.
+// The install this code runs from, read once, at the loop's start, or undefined in a checkout or
+// the compiled engine.
 let ownInstall: string | null | undefined;
 function own(): string | undefined {
   if (ownInstall === undefined) {
     try {
-      const dir = realpathSync(join(import.meta.dir, "../../.."));
+      if (SOURCE_TREE === undefined) throw new Error("no source tree");
+      const dir = realpathSync(join(SOURCE_TREE, ".."));
       ownInstall = INSTALL_NAME.test(basename(dir)) ? dir : null;
     } catch {
       ownInstall = null;
@@ -334,13 +337,13 @@ export const commands: CommandSpec[] = [
         c.say("taskbox rollback-watch is launchd's, run as root after the hop to v3. Nothing to do.");
         return 1;
       }
-      const { join } = await import("node:path");
       const { boxNames, paths } = await import("../config.ts");
       const { Log } = await import("../log.ts");
       const { rollbackWatch } = await import("../ops.ts");
       let n: ReturnType<typeof boxNames>;
       try {
-        n = boxNames(join(import.meta.dir, "..", ".."));
+        if (SOURCE_TREE === undefined) throw new Error("The compiled engine has no install folder of its own");
+        n = boxNames(SOURCE_TREE);
       } catch (e) {
         c.say(`${(e as Error).message}, so the rollback watcher can't run. Nothing to do: agents fix it.`);
         return 1;
