@@ -122,12 +122,24 @@ export interface SpoolRules {
   // A request-named file root removed unread, so its asker can be told: the flood's cut, or one that
   // waited past forMs.
   dropped?: (name: string, why: "flood" | "expired") => void;
+  // Kinds with a cap of their own (the connect code's 4): a flood of one kind never pushes out
+  // another, and a capped kind's files never count toward max. Within the kind, screen (a cheap check
+  // with no network, such as a state against its op's hash) drops a file that can't be one to take,
+  // newest first, at most SCREEN_PER_PASS a pass, its verdict kept; then the oldest past the cap go,
+  // never one screen kept.
+  kindOf?: (name: string) => string | undefined;
+  caps?: Record<string, number>;
+  screen?: (kind: string, name: string) => boolean;
+  screened?: (kind: string, dropped: number) => void;
 }
+
+export const SCREEN_PER_PASS = 200;
 
 export interface SpoolMemory {
   stuck: Set<string>; // names whose unlink failed: never chosen again while they are there
+  kept?: Set<string>; // names screen kept, so they aren't read again
 }
-export const newSpoolMemory = (): SpoolMemory => ({ stuck: new Set() });
+export const newSpoolMemory = (): SpoolMemory => ({ stuck: new Set(), kept: new Set() });
 
 export interface SpoolReport {
   did: string[];
@@ -182,6 +194,53 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
   }
   if (old.length) report.did.push(`removed ${old.length} of the spool's files that aren't requests it reads, over ${Math.round(forMs / 60_000)} minutes old`);
   entries = entries.filter((x) => !old.includes(x));
+  const kept = (mem.kept ??= new Set());
+  for (const n of [...kept]) if (!here.has(n)) kept.delete(n);
+  // Capped kinds: screened, then cut to their own cap, apart from the rest.
+  const apart: Entry[] = [];
+  const capOf = (e: Entry) => {
+    const k = r.kindOf?.(e.name);
+    return k !== undefined && r.caps && Object.hasOwn(r.caps, k) ? k : undefined;
+  };
+  if (r.caps) {
+    let budget = SCREEN_PER_PASS;
+    for (const [kind, cap] of Object.entries(r.caps)) {
+      let mine = entries.filter((e) => capOf(e) === kind).sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? 1 : -1));
+      let dropped = 0;
+      if (r.screen) {
+        const gone: Entry[] = [];
+        for (const e of mine) {
+          if (kept.has(e.name)) continue;
+          if (budget <= 0) break;
+          budget--;
+          if (r.screen(kind, e.name)) kept.add(e.name);
+          else gone.push(e);
+        }
+        for (const e of gone) {
+          try {
+            unlinkSync(join(spool, e.name));
+            dropped++;
+          } catch {
+            mem.stuck.add(e.name);
+          }
+        }
+        mine = mine.filter((e) => !gone.includes(e));
+        if (dropped) r.screened?.(kind, dropped);
+      }
+      // Kept ones first, then the newest; the oldest past the cap go.
+      mine.sort((a, b) => Number(kept.has(b.name)) - Number(kept.has(a.name)) || b.mtimeMs - a.mtimeMs);
+      for (const e of mine.slice(cap)) {
+        try {
+          unlinkSync(join(spool, e.name));
+          if (r.isRequest(e.name)) r.dropped?.(e.name, "flood");
+        } catch {
+          mem.stuck.add(e.name);
+        }
+      }
+      apart.push(...mine.slice(0, cap));
+    }
+    entries = entries.filter((e) => capOf(e) === undefined);
+  }
   // A flood: the oldest past max go.
   if (entries.length > max) {
     const age = r.age ?? ((e: Entry) => e.mtimeMs);
@@ -198,6 +257,7 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
     entries = entries.slice(drop.length);
     report.did.push(`dropped the ${drop.length} oldest of the spool's files, past ${max}`);
   }
+  entries = [...apart, ...entries];
   const until = clock.now() + (r.budgetMs ?? BUDGET_MS);
   for (const name of r.order(entries.filter((e) => r.isRequest(e.name)), perPass)) {
     if (clock.now() >= until) {

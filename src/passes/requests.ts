@@ -27,12 +27,16 @@ import { parseStatement, SIGNED_FOR_MS, signsInProcess, splitSigned } from "../c
 import { isSignedWord } from "../core/word.ts";
 import { asNobody, type VerifyDeps, verifyFolder } from "../workspace/approval.ts";
 import { agentUid } from "../workspace/pass.ts";
+import { CODE_KIND, connectCodeScreen } from "../connectflow.ts";
 
 export const REFRESH = 30; // passes between lookups of the agent account's uid
 export const WINDOW = 30;
 export const PER_WINDOW = 60;
 export const SIGNED_PER_PASS = 5;
 export const OUTCOMES_KEEP = 1000; // outcomes this guard wrote, newest kept; keeping ages the rest
+// Kinds with a cap of their own in the spool, each screened with no network before the cut. The
+// connect code's: 4, and only one with a state of its open op's hash is kept (connectflow.ts).
+export const KIND_CAPS: Record<string, number> = { [CODE_KIND]: 4 };
 
 export interface RequestsDeps {
   c: PassCtx;
@@ -117,22 +121,8 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
       }
       return owners;
     };
-    // An unsigned request its handler vouches for, such as the owner's connect code: read once a pass,
-    // kept last past the cap, and taken outside the window, at most SIGNED_PER_PASS a pass.
-    const vouchedNames = new Map<string, boolean>();
-    const vouched = (name: string): boolean => {
-      const kind = REQUEST_NAME.exec(name)?.[2];
-      const h = d.handlers.unsigned.find((u) => u.kind === kind);
-      if (!h?.vouched || !kind) return false;
-      if (vouchedNames.has(name)) return vouchedNames.get(name)!;
-      const f = readSpoolFile(join(s.agentSpool, name), agent!);
-      const rr = f ? readRequest(name, f, { owner: agent!, now, kinds: { [kind]: (b) => h.check(b) } }) : undefined;
-      const v = rr?.ok === true && h.vouched({ ...dd.ctx, now }, rr.request.body);
-      vouchedNames.set(name, v);
-      return v;
-    };
     const BIG = 1e12;
-    const age = (e: Entry): number => (REQUEST_NAME.exec(e.name)?.[2] !== SIGNED ? firstSeen(e) + (vouched(e.name) ? BIG : 0) : firstSeen(e) + (ranked().has(e.name) ? BIG : -BIG));
+    const age = (e: Entry): number => (REQUEST_NAME.exec(e.name)?.[2] !== SIGNED ? firstSeen(e) : firstSeen(e) + (ranked().has(e.name) ? BIG : -BIG));
     const note = (name: string, code: "busy" | "expired", said: string) => {
       const id = REQUEST_NAME.exec(name)?.[1];
       if (!id) return;
@@ -154,22 +144,16 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
       const sorted = entries
         .map((e) => ({ e, m: REQUEST_NAME.exec(e.name) }))
         .filter((x) => x.m !== null)
-        .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || Number(vouched(b.e.name)) - Number(vouched(a.e.name)) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
+        .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
       let left = Math.max(0, perPass);
       let signedLeft = SIGNED_PER_PASS;
       let otherLeft = Math.max(0, PER_WINDOW - window.taken);
-      let vouchedLeft = SIGNED_PER_PASS;
       const out: string[] = [];
       for (const x of sorted) {
-        if (left === 0 && !(vouchedLeft > 0 && x.m![2] !== SIGNED && vouched(x.e.name))) continue;
+        if (left === 0) break;
         if (x.m![2] === SIGNED) {
           if (signedLeft === 0) continue;
           signedLeft--;
-        } else if (vouched(x.e.name)) {
-          if (vouchedLeft === 0) continue;
-          vouchedLeft--;
-          out.push(x.e.name);
-          continue;
         } else {
           if (otherLeft === 0) continue;
           otherLeft--;
@@ -181,10 +165,15 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     };
     const late: string[] = [];
     const report: SpoolReport = { did: [], problems: [] };
-    await drainSpool({ dir: s.agentSpool, owner: agent, rootUid: root, isRequest: (n) => REQUEST_NAME.test(n), order, age, dropped, whose: "the agent account", ...(d.perPass ? { perPass: d.perPass } : {}) }, mem, c.sys, report, async (name, f) => {
-      if (REQUEST_NAME.exec(name)?.[2] !== SIGNED && !vouched(name)) window.taken++;
+    // The connect codes refused this pass, written as one summary, never one event a file.
+    const refusedCodes = { screened: 0, refused: 0 };
+    let screen: ((name: string) => boolean) | undefined;
+    const screenOf = () => (screen ??= connectCodeScreen({ ops: { dir: s.ops, owner: root }, spool: s.agentSpool, agent: agent!, now }));
+    await drainSpool({ dir: s.agentSpool, owner: agent, rootUid: root, isRequest: (n) => REQUEST_NAME.test(n), order, age, dropped, whose: "the agent account", kindOf: (n) => REQUEST_NAME.exec(n)?.[2], caps: KIND_CAPS, screen: (_kind, name) => screenOf()(name), screened: (_kind, n) => void (refusedCodes.screened += n), ...(d.perPass ? { perPass: d.perPass } : {}) }, mem, c.sys, report, async (name, f) => {
+      if (REQUEST_NAME.exec(name)?.[2] !== SIGNED) window.taken++;
       const o = await takeRequest(dd, name, f);
       if (!o) return;
+      if (REQUEST_NAME.exec(name)?.[2] === CODE_KIND && !o.ok) refusedCodes.refused++;
       if (o.code === "timeout") late.push(o.said);
       written.push(o.id);
       while (written.length > (d.outcomesKeep ?? OUTCOMES_KEEP)) {
@@ -194,6 +183,11 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
       }
     });
     for (const l of report.did) c.log.write(`agent spool: ${l}`);
+    if (refusedCodes.screened || refusedCodes.refused) {
+      try {
+        events.write({ type: "guard.refused", actor: "agent account", subject: "box", text: `Connect codes refused this pass: ${refusedCodes.screened} without the open connect's state, ${refusedCodes.refused} more by the box.`, data: { kind: CODE_KIND, ...refusedCodes } });
+      } catch {}
+    }
     // A problem is said once while it lasts. A closed spool, or a handler that didn't answer, fails the pass.
     const problems = new Set(report.problems);
     for (const p of problems) if (!said.has(p)) c.log.write(`agent spool: ${p}`);

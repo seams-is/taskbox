@@ -2,16 +2,17 @@
 // code bound to the open op, the key handed to the keeper, and the whole flow against a fake GitHub.
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, rmSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Config } from "../src/config.ts";
 import { appName, conversionProblem, hookProblem, installationProblem, installationsOf, manifestFor, publicProblem, reposProblem, startPage } from "../src/connect.ts";
-import { adoptV2, applyCodeRequest, askText, cancelConnect, cleanEndedConnects, CONNECT_CODE_HANDLER, codeRequestProblem, codeWaiter, confirmPhase, openControllerConnect, stateHash, v2AdoptFrom, connectGithub, connectStatus, disconnectGithub, type FlowDeps, oldKeyFiles, openConnectOp, parseAsk, readCodeInbox, takeConnectCode } from "../src/connectflow.ts";
+import { adoptV2, applyCodeRequest, askText, cancelConnect, cleanEndedConnects, CONNECT_CODE_HANDLER, codeRequestProblem, codeWaiter, confirmPhase, connectCodeScreen, openControllerConnect, stateHash, v2AdoptFrom, connectGithub, connectStatus, disconnectGithub, type FlowDeps, oldKeyFiles, openConnectOp, parseAsk, readCodeInbox, takeConnectCode } from "../src/connectflow.ts";
 import { keyFileName, keysDirProblem, listKeys, placePending, promoteKey, readAdoptedKey, readHeldKey } from "../src/keys.ts";
 import { type ListenEvent, parentWatch, serveOnce, setupProblem } from "../src/listen.ts";
 import { Log } from "../src/log.ts";
 import { parseLine } from "../src/registry.ts";
+import { writeSpoolFile } from "../src/core/spool.ts";
 import { FakeSys, json } from "./fake.ts";
 import { CFG } from "./helpers.ts";
 
@@ -744,28 +745,33 @@ describe("the controller's code, bound to the op's state", () => {
     expect(readCodeInbox(o.inbox, me)).toEqual({ v: 1, op: opened.op.id, role: "runner", code: "real" });
     expect(await codeWaiter({ sys, rootUid: me }, o.inbox, opened.op.id, sys.now() + 3000)("runner")).toEqual({ code: "real" });
     expect(fetched).toBe(0);
-    // Through the dispatcher's handler: a refusal is a guard.refused event with no code or state in it.
+    // Through the dispatcher's handler: refused with why, and no event a file (the pass writes one summary).
     const refused: unknown[] = [];
-    const ctx = { state: { dir, ops }, rootUid: me, events: { refused: (e: unknown) => (refused.push(e), e) } } as never;
+    const ctx = { state: { dir, ops }, rootUid: me, events: { refused: (e: unknown) => (refused.push(e), e), write: (e: unknown) => (refused.push(e), e) } } as never;
     const h = await CONNECT_CODE_HANDLER.apply(ctx, { id: "rq_1", body: { op: opened.op.id, state: "c".repeat(64), code: "secretcode" }, by: {} as never });
-    expect(h).toMatchObject({ ok: false, code: "denied" });
-    expect(refused).toEqual([{ type: "guard.refused", text: "A connect code was refused: that code doesn't carry this connect's state.", data: { request: "rq_1", kind: "connect-code", code: "denied" } }]);
-    expect(JSON.stringify(refused)).not.toMatch(/secretcode|cccc/);
+    expect(h).toMatchObject({ ok: false, code: "denied", said: "that code doesn't carry this connect's state" });
+    expect(refused).toEqual([]);
   });
 
-  test("the handler vouches only for a code this connect would take, so it outlives a flood", () => {
-    const dir = mkdtempSync(join(tmpdir(), "taskbox-vouch-"));
+  test("the spool's screen keeps only a code this connect would take, with one read of the ops a pass", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-screen-"));
     const ops = join(dir, "ops");
+    const spool = join(dir, "spool");
     mkdirSync(ops);
+    mkdirSync(spool, { mode: 0o700 });
+    const sys = new FakeSys();
+    const put = (body: Record<string, unknown>) => writeSpoolFile(spool, "connect-code", body, sys).file;
+    const real = put({ op: ID, state: RS, code: "real" });
+    const other = put({ op: ID, state: SS, code: "real" });
+    const junk = put({ op: ID, state: "a".repeat(64), code: "x" });
+    expect(connectCodeScreen({ ops: { dir: ops, owner: me }, spool, agent: me, now: sys.now() })(real)).toBe(false); // no open connect
     const opened = openControllerConnect({ ops: { dir: ops, owner: me }, now: SINCE, actor: "owner", params: {}, stateHashes: HASHES });
     if (!("op" in opened)) throw new Error(opened.why);
     const rec = JSON.parse(readFileSync(join(ops, `${opened.op.id}.json`), "utf8"));
-    writeFileSync(join(ops, `${opened.op.id}.json`), JSON.stringify({ ...rec, phase: "making-runner" }));
-    const ctx = { state: { dir, ops }, rootUid: me } as never;
-    expect(CONNECT_CODE_HANDLER.vouched!(ctx, { op: opened.op.id, state: RS, code: "real" })).toBe(true);
-    expect(CONNECT_CODE_HANDLER.vouched!(ctx, { op: opened.op.id, state: SS, code: "real" })).toBe(false);
-    expect(CONNECT_CODE_HANDLER.vouched!(ctx, { op: opened.op.id, state: "a".repeat(64), code: "x" })).toBe(false);
-    expect(CONNECT_CODE_HANDLER.vouched!(ctx, { code: "x" })).toBe(false);
+    rmSync(join(ops, `${opened.op.id}.json`));
+    writeFileSync(join(ops, `${ID}.json`), JSON.stringify({ ...rec, id: ID, phase: "making-runner" }));
+    const screen = connectCodeScreen({ ops: { dir: ops, owner: me }, spool, agent: me, now: sys.now() });
+    expect([screen(real), screen(other), screen(junk)]).toEqual([true, false, false]);
   });
 
   test("the child converts its one code once: a code GitHub refuses ends the op, with nothing kept", async () => {

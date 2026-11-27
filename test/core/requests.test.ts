@@ -18,6 +18,8 @@ import { eventLog, readEvents } from "../../src/core/events.ts";
 import { currentNonce, nonceFor, readNonces, SUBJECT } from "../../src/core/nonces.ts";
 import { NAME } from "../../src/workspace/model.ts";
 import { handlerFiles } from "../../src/handlers/index.ts";
+import { CONNECT_CODE_HANDLER, openControllerConnect, stateHash } from "../../src/connectflow.ts";
+import { writeOp } from "../../src/core/ops.ts";
 import { rootStateOf } from "../../src/core/paths.ts";
 import { readOutcome, readSpoolFile, writeSpoolFile } from "../../src/core/spool.ts";
 import { type Args, argsOf, CONTROL_NS, signedWord, signsInProcess, statementFor, statementText } from "../../src/core/statement.ts";
@@ -384,31 +386,52 @@ describe("what the agent account can plant in the spool", () => {
   });
 });
 
-describe("an unsigned request its handler vouches for", () => {
+describe("the connect code's own cap", () => {
   test(
-    "a flood of junk of every kind, the owner's code last: it is never dropped, never waits on the window, and applies",
+    "a 1000-file junk flood: each pass stays fast, junk is dropped unread and summed in one event, and the real code is taken",
     async () => {
-      const taken: unknown[] = [];
       const t = testHandlers();
-      const code: Handlers["unsigned"][number] = {
-        kind: "code",
-        check: (b) => (typeof b.state === "string" ? undefined : "a code has a state"),
-        vouched: (_c, b) => b.state === "the-real-one",
-        async apply(_c, r) {
-          taken.push(r.body.state);
-          return { ok: true, said: "Taken." };
-        },
-      };
-      const b = await box({ handlers: { signed: t.handlers.signed, unsigned: [...t.handlers.unsigned, code] } });
-      for (let i = 0; i < 70; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${i}` }, b.sys);
-      for (let i = 0; i < 70; i++) writeSpoolFile(b.s.agentSpool, "code", { state: `junk${i}` }, b.sys);
-      const real = writeSpoolFile(b.s.agentSpool, "code", { state: "the-real-one" }, b.sys).id;
-      await b.job();
-      expect(readOutcome(b.d.outcomes, real, me)).toMatchObject({ kind: "ok", value: { ok: true, said: "Taken." } });
-      expect(taken).toContain("the-real-one");
+      const b = await box({ handlers: { signed: t.handlers.signed, unsigned: [...t.handlers.unsigned, CONNECT_CODE_HANDLER] } });
+      const real = "7".repeat(64);
+      mkdirSync(b.s.ops, { recursive: true });
+      const opened = openControllerConnect({ ops: { dir: b.s.ops, owner: me }, now: T, actor: "owner", params: {}, stateHashes: { runner: stateHash(real), source: stateHash("8".repeat(64)) } });
+      if (!("op" in opened)) throw new Error(opened.why);
+      writeOp({ dir: b.s.ops, owner: me }, { ...opened.op, phase: "making-runner" });
+      for (let i = 0; i < 950; i++) writeSpoolFile(b.s.agentSpool, "connect-code", { op: opened.op.id, state: "abcdef"[i % 6]!.repeat(64), code: `junk${i}` }, b.sys);
+      for (let i = 0; i < 49; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${i}` }, b.sys);
+      writeSpoolFile(b.s.agentSpool, "connect-code", { op: opened.op.id, state: real, code: "the-real-code" }, b.sys);
+      const inbox = join(b.s.dir, "connect-code.json");
+      let passes = 0;
+      let slowest = 0;
+      while (!existsSync(inbox) && passes < 10) {
+        const t0 = performance.now();
+        await b.job();
+        slowest = Math.max(slowest, performance.now() - t0);
+        passes++;
+      }
+      expect(JSON.parse(readFileSync(inbox, "utf8"))).toMatchObject({ role: "runner", code: "the-real-code" });
+      expect(slowest).toBeLessThan(2000);
+      const summaries = b.events().filter((e) => e.type === "guard.refused" && (e.data as { kind?: string })?.kind === "connect-code");
+      expect(summaries.length).toBeLessThanOrEqual(passes);
+      expect(summaries.reduce((n, e) => n + Number((e.data as { screened: number }).screened), 0)).toBeGreaterThan(0);
+      expect(JSON.stringify(summaries)).not.toMatch(/junk|the-real-code|7777/);
     },
     SLOW,
   );
+
+  test("junk of one kind never pushes out another: the connect code keeps its own slots past the spool's cap", async () => {
+    const t = testHandlers();
+    const b = await box({ handlers: { signed: t.handlers.signed, unsigned: [...t.handlers.unsigned, CONNECT_CODE_HANDLER] } });
+    const real = "7".repeat(64);
+    mkdirSync(b.s.ops, { recursive: true });
+    const opened = openControllerConnect({ ops: { dir: b.s.ops, owner: me }, now: T, actor: "owner", params: {}, stateHashes: { runner: stateHash(real), source: stateHash("8".repeat(64)) } });
+    if (!("op" in opened)) throw new Error(opened.why);
+    writeOp({ dir: b.s.ops, owner: me }, { ...opened.op, phase: "making-runner" });
+    const code = writeSpoolFile(b.s.agentSpool, "connect-code", { op: opened.op.id, state: real, code: "the-real-code" }, b.sys);
+    for (let i = 0; i < 300; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${i}` }, b.sys);
+    await b.job();
+    expect(readOutcome(b.d.outcomes, code.id, me)).toMatchObject({ kind: "ok", value: { ok: true } });
+  });
 });
 
 describe("the spool itself", () => {

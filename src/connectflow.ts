@@ -11,6 +11,7 @@ import { jobLabel, leasePath, progressPath, type Report, reporter, reportsPath }
 import { begin, listOps, type Op, type OpFolder, type OpType, readOp, writeOp } from "./core/ops.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "./core/rootfile.ts";
 import type { UnsignedHandler } from "./core/dispatch.ts";
+import { readRequest, readSpoolFile } from "./core/spool.ts";
 import type { Json } from "./core/statement.ts";
 import { CLOCK_LIMIT_S, clockOffsetS } from "./ghfail.ts";
 import { AppClient, apiCall, bodyOf, revokeToken, runnerGroupsOf, tokenCall, tokenRepos } from "./github.ts";
@@ -741,23 +742,31 @@ export function applyCodeRequest(o: { inbox: string; ops: Pick<OpFolder, "dir" |
 
 // The agent spool's connect-code handler, in the shape of the shared dispatcher's unsigned handlers
 // (core/dispatch.ts on its branch): its handlers list adds this one line once it lands.
-// A refused code writes guard.refused, with why and never the code or state.
+// The requests pass writes one summary of refused codes a pass; the handler writes none.
 export const CONNECT_CODE_HANDLER: UnsignedHandler = {
   kind: CODE_KIND,
   check: codeRequestProblem,
   async apply(c, r) {
     const why = applyCodeRequest({ inbox: join(c.state.dir, "connect-code.json"), ops: { dir: c.state.ops, owner: c.rootUid }, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) }, r.body);
-    if (!why) return { ok: true, said: "The box took the code." };
-    c.events.refused({ type: "guard.refused", text: `A connect code was refused: ${why}.`, data: { request: r.id, kind: CODE_KIND, code: "denied" } }, r.by);
-    return { ok: false, said: why, code: "denied" };
-  },
-  // The one this connect would take: a state of its hash, for the open op making that App.
-  vouched(c, body) {
-    if (codeRequestProblem(body)) return false;
-    const t = takeConnectCode(listOps({ dir: c.state.ops, owner: c.rootUid }).ops, readCodeInbox(join(c.state.dir, "connect-code.json"), c.rootUid), { op: body.op as string, state: body.state as string, code: body.code as string });
-    return "inbox" in t;
+    return why ? { ok: false, said: why, code: "denied" } : { ok: true, said: "The box took the code." };
   },
 };
+
+// The spool's screen for connect-code files, made once a pass: the running controller connects and
+// their state hashes are read once, then each file costs one small read and a hash. A file that
+// can't be one the open connect takes is dropped before the cut.
+export function connectCodeScreen(o: { ops: Pick<OpFolder, "dir" | "owner">; spool: string; agent: number; now: number }): (name: string) => boolean {
+  let open: Pick<Op, "id" | "type" | "state" | "phase" | "params">[] | undefined;
+  return (name) => {
+    open ??= listOps(o.ops).ops.filter((x) => x.type === CONNECT_OP.type && x.state === "running" && x.params.from === "controller");
+    if (!open.length) return false;
+    const f = readSpoolFile(join(o.spool, name), o.agent);
+    const rr = f ? readRequest(name, f, { owner: o.agent, now: o.now, kinds: { [CODE_KIND]: codeRequestProblem } }) : undefined;
+    if (!rr?.ok) return false;
+    const b = rr.request.body;
+    return "inbox" in takeConnectCode(open, undefined, { op: b.op as string, state: b.state as string, code: b.code as string });
+  };
+}
 
 // A controller's connect, opened by the guard for its signed connect github: the op's record, with
 // the state hashes its statement carried. The guard then starts the child (connectchild.ts) through
