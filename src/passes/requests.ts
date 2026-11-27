@@ -129,7 +129,8 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
       const sorted = entries
         .map((e) => ({ e, m: REQUEST_NAME.exec(e.name) }))
         .filter((x) => x.m !== null)
-        .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
+        // Within a rank, a capped kind's files (screened, and at most its cap) go first.
+        .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || Number(Object.hasOwn(KIND_CAPS, b.m![2]!)) - Number(Object.hasOwn(KIND_CAPS, a.m![2]!)) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
       let left = Math.max(0, perPass);
       let signedLeft = SIGNED_PER_PASS;
       let otherLeft = Math.max(0, PER_WINDOW - window.taken);
