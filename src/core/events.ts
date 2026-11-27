@@ -121,8 +121,6 @@ export const seqFile = (seq: number, day: string, noise = false) => `${String(se
 const LASTING = /^(op|confirm|guard|events)\./;
 const isNoise = (type: string) => !LASTING.test(type) || /\.(progress|refused)$/.test(type);
 const byWrite = (a: string, b: string) => seqOf(a)!.seq - seqOf(b)!.seq;
-// For tests and readers: the day a file was started on.
-export const dayOfFile = (name: string) => seqOf(name)?.day;
 
 export interface Folder {
   dir: string;

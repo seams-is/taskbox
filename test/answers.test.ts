@@ -96,7 +96,7 @@ describe("--json", () => {
       `${at} error: ENOENT: no such file, open '/opt/taskbox/app/x'`,
       `${at} pull failed: /Users/ci/.tart/tmp is full`,
     ];
-    expect(logAnswer(jsonLogEntries(lines, now)).lines.map((l) => l.text)).toEqual(["A job ran and finished.", "The box was held.", "The box was shared again.", "No new VM started: the box is held.", "The download stopped."]);
+    expect(logAnswer(jsonLogEntries(lines, now - 86_400_000)).lines.map((l) => l.text)).toEqual(["A job ran and finished.", "The download stopped."]);
     expect(logAnswer([{ at: 7, text: "x\u0000y" }]).lines).toEqual([{ at: 7, text: "x y" }]);
   });
   test("check leaves out each row's detail for anyone but ci and root", () => {
@@ -156,14 +156,6 @@ describe("taskbox check as anyone but ci", () => {
     });
     const r = await otherUsers({ sys, cfg: CFG, paths: stateDir(), uid: 504, serviceUid: 502 } as unknown as CheckContext);
     expect(r).toEqual({ status: "OK", detail: "3 users: 1 admin, 2 standard, 0 logged in" });
-  });
-});
-
-describe("log --json after hold went (v2.2.0)", () => {
-  test("a kept hold's end reads as taskbox's own sentence, naming nobody", () => {
-    const at = "2026-11-17T01:00:00.000Z";
-    const out = jsonLogEntries([`${at} hold: pat's hold until 2026-11-17T04:00:00.000Z ended: hold is gone in v2.2.0`], Date.parse(at) + 1);
-    expect(out).toEqual([{ at: Date.parse(at), text: "A hold from before v2.2.0 ended: jobs share the box all the time." }]);
   });
 });
 

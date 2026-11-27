@@ -11,7 +11,7 @@ import { keepOutcomes, OUTCOME_KEEP_MS, recordOutcome } from "../../src/core/spo
 const T = Date.parse("2026-11-25T12:00:00Z");
 const M = 5_000_000; // monotonic ms at the ask
 const at = (wall: number, mono = M, boot = "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17") => ({ wall, mono, boot });
-const ask = { kind: "channel" as const, subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { to: "beta" } };
+const ask = { kind: "rule" as const, subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { to: "beta" } };
 function raised() {
   const r = raise(noPending(), ask, at(T));
   if (!r.ok) throw new Error(r.why);

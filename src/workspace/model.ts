@@ -277,7 +277,7 @@ export function deny(s: WsState, o: { name: string; reason: string }, now: numbe
 export function end(s: WsState, o: { name: string; by: "owner" | "agent"; agent?: string }, now: number): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
-  if (o.by === "agent" && o.agent !== w.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (o.by === "agent" && o.agent !== w.agent) return no(`${w.name} is ${w.agent}'s. ${o.agent} can't act on it.`);
   if (isFinal(w)) return no(`${w.name} is ${w.state} already.`);
   if (w.state === "ending") return no(`${w.name} is ending already: its processes are stopping.`);
   const who = o.by === "owner" ? "an approver" : w.agent;
@@ -316,7 +316,7 @@ export function pausedNow(s: WsState, w: Workspace, by: PausedBy, now: number, s
 export function saved(s: WsState, o: { name: string; agent: string }, now: number): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
-  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s. ${o.agent} can't act on it.`);
   if (w.state !== "saving") return no(`${w.name} is ${w.state}. --saved answers a save the box asked for.`);
   const r = pausedNow(s, w, w.pausedBy ?? "owner", now, true);
   return r.ok ? { ...r, said: `${w.name} saved and paused. CI has its room back.` } : r;
@@ -346,7 +346,7 @@ export function doFor(w: Workspace | undefined): Do {
 export function progress(s: WsState, o: { name: string; agent: string; text: string; step: { n: number; m: number } | null }, now: number): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
-  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s. ${o.agent} can't act on it.`);
   const text = cleanWords(o.text);
   if (!text) return no(`The words take letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`, "usage");
   if (o.step && !(Number.isSafeInteger(o.step.n) && Number.isSafeInteger(o.step.m) && o.step.n >= 0 && o.step.m >= 1 && o.step.n <= o.step.m && o.step.m <= STEP_MAX)) return no("--step is N/M: whole numbers, N at most M.", "usage");
@@ -452,7 +452,7 @@ export function start(s: WsState, r: Rules, now: number): { state: WsState; step
 export function ready(s: WsState, name: string, boot: string, now: number): Result {
   const w = find(s, name);
   if (!w) return no(`No workspace ${name}.`, "not-found");
-  if (w.state !== "starting") return no(`${w.name} is ${w.state}, not starting.`);
+  if (w.state !== "starting") return no(`${w.name} is ${w.state}. It goes ready only from starting.`);
   if (w.clear) return no(`${w.name}'s account still holds another agent's files.`);
   const st = put(s, move(w, "ready", now, { boot, word: null }));
   return yes(st, w.name, `${w.name} is ready.`, [{ name: w.name, type: "ready", text: `${label(w)} ready in ${w.user}` }]);
@@ -551,12 +551,6 @@ export function boxPause(s: WsState, by: "disk" | "off" | "noboot", now: number)
     }
   }
   return { state: st, steps };
-}
-
-// The pool accounts whose processes the guard stops: every one with no open workspace.
-export function closedUsers(s: WsState, pool: readonly string[]): string[] {
-  const open = new Set(s.workspaces.filter((w) => w.user && OPEN.includes(w.state)).map((w) => w.user!));
-  return pool.filter((u) => !open.has(u));
 }
 
 // The workspace the gate may open for this account in this boot, or why not.

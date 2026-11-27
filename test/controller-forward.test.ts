@@ -51,7 +51,7 @@ describe("every command the agent shell runs", () => {
     expect(w.calls.length).toBeGreaterThan(0);
   }, 60_000);
 
-  test("status --state runs at the box; template show answers in JSON and goes to the box; workspace commands go as any other", async () => {
+  test("status --state is refused; template show answers in JSON and goes to the box; workspace commands go as any other", async () => {
     const { w, d, box } = v3();
     for (const argv of [["status", "--state", "/tmp/x"]]) {
       const r = await runLine(d, argv);

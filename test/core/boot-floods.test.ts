@@ -36,7 +36,7 @@ describe("a real boot id, end to end", () => {
     const moment = async () => ({ wall: b.sys.now(), mono: await monoNow(b.sys), boot: await bootId(b.sys) });
     const at = await moment();
     expect(at.boot).toHaveLength(36);
-    const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { to: "beta" } }, at);
+    const r = raise(noPending(), { kind: "rule", subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { to: "beta" } }, at);
     if (!r.ok) throw new Error(r.why);
     const back = parsePending(JSON.parse(JSON.stringify(r.state)));
     expect(typeof back).not.toBe("string");
@@ -56,7 +56,7 @@ describe("a real boot id, end to end", () => {
     expect(keepOutcomes(dir, await moment())).toEqual([id]);
   });
   test("a boot that isn't a uuid is refused in a pending item and in an outcome", () => {
-    const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["x"], actor: "owner", payload: {} }, { wall: T, mono: 5, boot: "b1" });
+    const r = raise(noPending(), { kind: "rule", subject: "channel", shows: ["x"], actor: "owner", payload: {} }, { wall: T, mono: 5, boot: "b1" });
     expect(r.ok).toBe(false);
     const dir = join(tmp(), "outcomes", "agent");
     expect(() => recordOutcome(dir, { id: `rq_${"1".repeat(26)}`, at: T, ok: true, said: "x", mono: 5, boot: "x".repeat(36) }, { owner: uid })).toThrow();

@@ -152,7 +152,6 @@ describe("the loop's wait", () => {
     const d = loopDeps(new FakeSys(), tempRoot());
     d.cfg = { ...CFG, vmsAtOnce: 2 };
     d.box = new Slots(2);
-    d.box.oldHoldEnded = true;
     d.slot = 1;
     d.workspaces = () => w;
     if (drain) {

@@ -38,8 +38,3 @@ export function readBoxFile(path: string, rootUid = 0): BoxFile {
 // The one line that says how to clear a box file taskbox set aside: connect writes it anew.
 export const BOX_FIX = "To keep or replace the job source, type taskbox connect github, or taskbox disconnect github to go without one.";
 
-// Where the job source comes from, for taskbox check and the update.
-export function sourceFrom(release: Record<string, unknown>, box: Record<string, unknown> | undefined): "box" | "release" | "none" {
-  if (box && "sources" in box) return "box";
-  return "sources" in release || "actionsAppId" in release ? "release" : "none";
-}

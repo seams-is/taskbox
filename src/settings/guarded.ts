@@ -151,9 +151,3 @@ export function holdBack(to: Doc, from: Doc, held: readonly string[]): Doc {
   return out;
 }
 
-// The same, with the paths given taken from the commit: what in force becomes once they apply.
-export function letThrough(inForce: Doc, commit: Doc, paths: readonly string[]): Doc {
-  let out = inForce;
-  for (const p of paths) out = put(out, p, at(commit, p));
-  return out;
-}

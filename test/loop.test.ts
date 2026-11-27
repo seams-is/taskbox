@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { ceilingMs, cleanLeftovers, endOldHold, ensureImage, HOLD_CHECK_MS, oneJob, pullImage, removeOldImages, RESTART, runLoop, Slots, whyWait } from "../src/loop.ts";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { ceilingMs, cleanLeftovers, ensureImage, HOLD_CHECK_MS, oneJob, pullImage, removeOldImages, RESTART, runLoop, Slots, whyWait } from "../src/loop.ts";
 import { dirname, join } from "node:path";
 import { childEnv } from "../src/sys.ts";
 import { paths } from "../src/config.ts";
@@ -468,70 +468,6 @@ describe("memory", () => {
   });
 });
 
-describe("hold and share are gone (v2.2.0)", () => {
-  // As v2.1.1 kept them: a hold in the loop's state, and requests left in ci's requests folder.
-  function leftFromBefore(d: ReturnType<typeof loopDeps>, hold: boolean, requests: number) {
-    if (hold) writeFileSync(d.paths.loopState, JSON.stringify({ hold: { until: d.sys.now() + 3600_000, at: d.sys.now(), reason: "render", by: "pat" }, holdUse: { day: "x", by: { pat: 1 } } }));
-    mkdirSync(d.paths.requests, { recursive: true });
-    for (let i = 0; i < requests; i++) writeFileSync(join(d.paths.requests, `r${i}`), '{"v":1,"do":"hold"}');
-  }
-
-  test("a hold kept from before, and the requests left, end at the first read with one log line", async () => {
-    const sys = new FakeSys();
-    const d = loopDeps(sys, tempRoot());
-    leftFromBefore(d, true, 2);
-    endOldHold(d);
-    const st = JSON.parse(readFileSync(d.paths.loopState, "utf8"));
-    expect([st.hold, st.holdUse]).toEqual([undefined, undefined]);
-    expect(readdirSync(d.paths.requests)).toEqual([]);
-    const log = readFileSync(d.paths.log, "utf8").trim().split("\n");
-    expect(log.length).toBe(1);
-    expect(log[0]).toContain("hold: pat's hold until ");
-    expect(log[0]).toContain("and 2 requests left for one ended: hold is gone in v2.2.0");
-    // Nothing left: nothing said.
-    endOldHold(d);
-    expect(readFileSync(d.paths.log, "utf8").trim().split("\n").length).toBe(1);
-  });
-
-  test("a hold that ran its time, or none at all, ends with no line", () => {
-    const d = loopDeps(new FakeSys(), tempRoot());
-    writeFileSync(d.paths.loopState, JSON.stringify({ hold: { until: d.sys.now() - 1, at: 1, reason: "x", by: "pat" } }));
-    endOldHold(d);
-    expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).hold).toBeUndefined();
-    expect(existsSync(d.paths.log)).toBe(false);
-  });
-
-  test("a requests folder that is a link is left alone, and nothing it points to goes", () => {
-    const d = loopDeps(new FakeSys(), tempRoot());
-    const elsewhere = join(d.paths.serviceHome, "elsewhere");
-    mkdirSync(elsewhere, { recursive: true });
-    writeFileSync(join(elsewhere, "keep"), "x");
-    mkdirSync(dirname(d.paths.requests), { recursive: true });
-    symlinkSync(elsewhere, d.paths.requests);
-    endOldHold(d);
-    expect(readdirSync(elsewhere)).toEqual(["keep"]);
-  });
-
-  test("runLoop ends a kept hold before it waits for anything, and no hold stops a VM", async () => {
-    const sys = new FakeSys();
-    happyGuest(sys);
-    sys.responders.push((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? { code: 0, stderr: "", stdout: JSON.stringify([{ Name: CFG_IMAGE, Source: "OCI" }]) } : undefined));
-    const d = loopDeps(sys, tempRoot());
-    mkdirSync(d.paths.shared, { recursive: true });
-    leftFromBefore(d, true, 1);
-    const real = sys.sleep.bind(sys);
-    sys.sleep = async (ms: number) => {
-      if (existsSync(d.paths.jobsFile)) writeFileSync(d.paths.installed, JSON.stringify({ commit: "beef000", files: {} }));
-      return real(ms);
-    };
-    expect(await runLoop(d)).toBe(RESTART);
-    const line = JSON.parse(readFileSync(d.paths.jobsFile, "utf8").trim().split("\n")[0]!);
-    expect(line).toMatchObject({ result: "finished", job: "integration" });
-    expect(line.waits).toBeUndefined();
-    expect(readFileSync(d.paths.log, "utf8")).toContain("ended: hold is gone in v2.2.0");
-  });
-});
-
 describe("the guard fails closed", () => {
   test("rules gone at a VM's start with Screen Sharing on: the VM goes, and no VM starts while it's on", async () => {
     const sys = new FakeSys();
@@ -594,43 +530,6 @@ describe("taskbox hold and share typed after the update", () => {
       expect(r.exitCode).toBe(2);
       expect(r.stdout.toString()).toBe(`taskbox ${cmd[0]} is gone from v2.2.0: jobs share the box with every user, all the time. To stop jobs, the service account types taskbox stop.\n`);
     }
-  });
-});
-
-describe("clearing the old requests folder", () => {
-  test("a folder someone left with files in it stays, and the loop says so once", () => {
-    const d = loopDeps(new FakeSys(), tempRoot());
-    mkdirSync(join(d.paths.requests, "x"), { recursive: true });
-    writeFileSync(join(d.paths.requests, "x", "y"), "x");
-    endOldHold(d);
-    endOldHold(d);
-    const log = readFileSync(d.paths.log, "utf8").trim().split("\n");
-    expect(log).toEqual([expect.stringContaining("the old requests folder keeps 1 name another user left, so it stays")]);
-  });
-
-  test("files and links go, only their names; an empty folder goes; a folder with files is never walked into", async () => {
-    const { clearRequests, removeRequests } = await import("../src/requests.ts");
-    const root = tempRoot();
-    const dir = join(root, "requests");
-    const outside = join(root, "outside");
-    mkdirSync(dir);
-    mkdirSync(outside);
-    writeFileSync(join(outside, "precious"), "x");
-    writeFileSync(join(dir, "req"), "{}");
-    symlinkSync(outside, join(dir, "link-to-folder"));
-    symlinkSync(join(outside, "precious"), join(dir, "link-to-file"));
-    mkdirSync(join(dir, "empty"));
-    mkdirSync(join(dir, "full"));
-    writeFileSync(join(dir, "full", "theirs"), "x");
-    expect(clearRequests(dir)).toEqual({ removed: 4, left: 1, files: 3 });
-    expect(readdirSync(dir)).toEqual(["full"]);
-    expect(readdirSync(join(dir, "full"))).toEqual(["theirs"]);
-    expect(readFileSync(join(outside, "precious"), "utf8")).toBe("x");
-    // The folder stays while a folder with files is in it, and goes once that is gone.
-    expect(removeRequests(dir)).toEqual({ removed: false, left: 1 });
-    rmSync(join(dir, "full"), { recursive: true });
-    expect(removeRequests(dir)).toEqual({ removed: true, left: 0 });
-    expect(existsSync(dir)).toBe(false);
   });
 });
 

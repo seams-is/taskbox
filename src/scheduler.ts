@@ -128,7 +128,6 @@ export function fitOf(item: WaitingItem, kinds: KindView[]): { kv: KindView; siz
 }
 // Every load test job ranks after every real job (v2.6.0): its class's rank, plus this.
 export const LOAD_RANK = 1000;
-export const kindOfItem = (item: WaitingItem, kinds: KindView[]) => fitOf(item, kinds)?.kv;
 
 type Unmatched = ReturnType<typeof ranked>[number] & { kv: KindView; size: SizeView; register: string[]; pos: number };
 

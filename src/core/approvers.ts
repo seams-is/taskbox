@@ -99,17 +99,6 @@ export function replaceKey(s: Approvers, oldFp: string, key: string, now: number
   return { ok: true, state: { ...s, gen, keys }, said: `Approver key ${oldFp} was replaced by ${fp}.` };
 }
 
-// Narrowing, at once: a signed request by one pinned key removes another. A key never removes
-// itself this way, so a box is never left with no key by a signature.
-export function removeKey(s: Approvers, fp: string, signerFp: string): Change {
-  if (!findKey(s, signerFp)) return no("The request isn't signed by a key this box pins.");
-  if (fp === signerFp) return no("A key can't remove itself. Sign with another pinned key, or type taskbox key reset approver at the box.");
-  if (!findKey(s, fp)) return no(`${fp} isn't pinned on this box.`);
-  // Not banned: a stolen key that removes the owner's others mustn't stop them being pinned again.
-  // Only key reset approver, at the box, bans keys.
-  return { ok: true, state: { ...s, gen: s.gen + 1, keys: s.keys.filter((k) => k.fingerprint !== fp) }, said: `Removed approver key ${fp}.` };
-}
-
 // A lost controller: every key goes, and none of them is ever pinned again.
 export function resetKeys(s: Approvers): Change {
   if (!s.keys.length) return { ok: true, state: s, said: "No approver key was pinned." };

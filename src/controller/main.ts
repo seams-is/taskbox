@@ -386,6 +386,43 @@ export function realDeps(): UpdateDeps {
   };
 }
 
+// The commands that follow an op on the box until it ends, and the command that cancels each.
+const FOLLOWS: Record<string, string> = {
+  drain: "taskbox resume",
+  stop: "taskbox start",
+  "load start": "taskbox load stop",
+  update: "taskbox op cancel ID",
+  rollback: "taskbox op cancel ID",
+  "connect github": "taskbox op cancel ID",
+  "key rotate": "taskbox op cancel ID",
+  "tool refresh": "taskbox op cancel ID",
+  "image pull": "taskbox op cancel ID",
+  "selftest run": "taskbox op cancel ID",
+  "box add": "",
+};
+
+// What Ctrl-C does on this controller: the bare screen quits with 0; a command that watches the box
+// stops watching only, with 130, naming the command that watches again and the one that cancels.
+// Undefined: Node's own.
+export function interrupted(argv: readonly string[]): { line: string; exit: number } | undefined {
+  if (!argv.length) return { line: "", exit: EXIT.ok };
+  if (argv.includes("--detach")) return undefined;
+  const path = argv.slice(0, 2).join(" ");
+  const verb = path in FOLLOWS ? path : argv[0]!;
+  const watches = argv.some((a) => ["-w", "--watch", "-f", "--follow"].includes(a));
+  if (!(verb in FOLLOWS) && !watches) return undefined;
+  const plain = argv.every((a) => /^[A-Za-z0-9][\w@.:/=-]{0,80}$|^-{1,2}[a-z-]{1,20}$/.test(a));
+  const again = plain ? `taskbox ${argv.join(" ")}` : "The same command";
+  const at = argv.indexOf("--box");
+  const box = plain && at >= 0 && argv[at + 1] ? ` --box ${argv[at + 1]}` : "";
+  // op show ID -w: that op's own cancel.
+  const id = argv[0] === "op" && argv[1] === "show" && plain ? argv[2] : undefined;
+  const opposite = id ? `taskbox op cancel ${id}` : FOLLOWS[verb];
+  const undo = !opposite ? "" : opposite.endsWith(" ID") ? `; ${opposite}${box} cancels it, and taskbox op list${box} shows the ID` : `; ${opposite}${box} cancels it`;
+  const what = id || verb in FOLLOWS ? " What it started carries on at the box." : "";
+  return { line: `Stopped watching.${what} ${again} watches again${undo}.`, exit: EXIT.interrupted };
+}
+
 // Key presses from a terminal in raw mode, one each, until the screen quits.
 async function* rawKeys(): AsyncGenerator<string> {
   process.stdin.setRawMode(true);
@@ -410,13 +447,13 @@ export async function controllerMain(argv: string[]): Promise<number> {
   }
   // A watched view redraws the whole screen each time; the clear is the controller's own, never the box's.
   const draw = (l: string[]) => process.stdout.write(`\x1b[H\x1b[2J${l.join("\n")}\n`);
-  // Ctrl-C while watching stops the watching only.
-  // A signed drain or stop is followed here after it is sent, and Ctrl-C stops the following only.
-  const watching = !argv.length || argv.some((a) => ["-w", "--watch"].includes(a)) || ["drain", "stop"].includes(argv[0] ?? "");
-  if (watching)
+  const stop = interrupted(argv);
+  const watching = stop !== undefined;
+  if (stop)
     process.on("SIGINT", () => {
-      console.log("\nStopped watching. What the box was doing carries on.");
-      process.exit(EXIT.interrupted);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      if (stop.line) console.log(`\n${stop.line}`);
+      process.exit(stop.exit);
     });
   // When taskbox starts, it looks for a newer release alongside the command, and says so after.
   const quiet = !argv.length || ["self", "install", "statusline", "notify", "mcp"].includes(argv[0]!) || argv.includes("--json") || watching;

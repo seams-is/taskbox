@@ -104,19 +104,12 @@ const PLUMBING = new Set(["--signed", "--claim", "--proof"]);
 
 // Gaps known today, each under a line saying what it is.
 const GAPS = [
-  // logs takes --json only.
-  "logs: missing --follow", "logs: missing --since", "logs: missing --until", "logs: missing --tail", "logs: missing --from", "logs: missing --grep",
   // logins.
   "logins: missing --refused", "logins: missing --since",
-  // prune, remove, connect github and disconnect github lack the global flags.
-  "prune: missing --dry-run", "prune: missing --yes", "prune: missing --json",
-  "remove: missing --yes", "remove: missing --detach", "remove: missing --json",
-  "connect github: missing --timeout", "connect github: missing --detach",
-  "disconnect github: missing --yes", "disconnect github: missing --json",
-  // policy show names the login --login.
-  "policy show: missing --owner", "policy show: extra --login",
+  // remove and connect github lack these global flags.
+  "remove: missing --yes", "remove: missing --detach", "connect github: missing --detach",
   // Test hooks and plumbing a person can type today.
-  "status: extra --state", "load report: extra --replay", "key add: extra command", "workspace rule add: extra --key",
+  "load report: extra --replay", "key add: extra command", "workspace rule add: extra --key",
   // Keys builder (taskbox/v3-keys-wiring): key rotate's own words.
   "key rotate: extra --state", "key rotate: extra --seal", "key rotate: extra --new",
   // Small differences from the table, each its own fix.

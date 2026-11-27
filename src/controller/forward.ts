@@ -1,7 +1,7 @@
 // Every box command on the controller: parsed by the box's own registry, sent over ssh as the
 // pairing's agent account with --json in the version hello agreed, and read by the shared schema.
 // Text prints the envelope's lines; --json prints a rebuilt envelope in ASCII.
-import { type CommandSpec, duration as durationOf, EXIT, type Parsed, parse, usage } from "../command.ts";
+import { type CommandSpec, EXIT, type Parsed, parse, usage } from "../command.ts";
 import { POLL_MS, POLLS } from "../core/asker.ts";
 import { cleanLine, type Envelope, envelope, resultOf } from "../envelope.ts";
 import { registry } from "../registry.ts";
@@ -143,12 +143,13 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [cleanLine(why)], { code: "usage", message: cleanLine(why), fix: null, who: null }) };
   }
   const signed = !spec.raw && (spec.flags ?? []).includes("signed") && spec.who.includes("owner") && p.flags.signed === undefined;
-  const stream = !spec.raw && spec.streams === true && (p.flags.watch === true || p.flags.follow === true);
+  // The box streams logs -f and op show -w. status -w the controller draws again itself, so every box answers it.
+  const stream = !spec.raw && spec.streams === true && (p.flags.follow === true || (p.flags.watch === true && spec.path[0] !== "status"));
   if (stream && cut.sel === "all") {
-    const l = `${name} ${p.flags.watch === true ? "-w" : "-f"} follows one box. Name it with --box.`;
+    const l = `${name} ${p.flags.follow ? "-f" : "-w"} follows one box. Name it with --box.`;
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [l], { code: "usage", message: l, fix: null, who: null }) };
   }
-  return { spec, parsed: p, sel: cut.sel, words: stream && p.flags.watch === true ? [...words, "-w"] : words, json, watch: !spec.raw && p.flags.watch === true && !stream, signed, stream };
+  return { spec, parsed: p, sel: cut.sel, words: stream && p.flags.watch ? [...words, "-w"] : words, json, watch: !spec.raw && p.flags.watch === true && !stream, signed, stream };
 }
 
 export type One = { box: Paired; stop?: Stop; envelopes?: Envelope[]; raw?: string[]; exit: number };

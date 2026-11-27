@@ -4,14 +4,14 @@
 import { appendFileSync, chmodSync, lstatSync, unlinkSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { type Clock, realClock } from "./clock.ts";
-import { type AppRole, installationsOf } from "./connect.ts";
+import type { AppRole } from "./connect.ts";
 import type { Config } from "./config.ts";
 import { AppClient, bodyOf, orgRunnersOf, type RunnerGroup, runnerGroupsOf, revokeToken, type TokenAsk, tokenCall, tokenRepos } from "./github.ts";
 import { GitHub, type GroupRunner, type Head } from "./github.ts";
 import { CLOCK_LIMIT_S, clockOffsetS, GitHubError } from "./ghfail.ts";
 import { readHeldKey } from "./keys.ts";
 import type { Log } from "./log.ts";
-import { runnerAppId, settingsRepoOf } from "./settings/connect.ts";
+import { runnerAppId } from "./settings/connect.ts";
 import { loadRepoOf, servedRepos, sourceOf } from "./settings/scheduling.ts";
 import type { Sys } from "./sys.ts";
 import { boxLabels } from "./watchdog.ts";

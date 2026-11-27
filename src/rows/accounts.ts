@@ -93,7 +93,7 @@ export function policyDiff(live: Map<string, Set<"accept" | "check">>, want: { a
     const should = want.accept.includes(user) ? "accept" : want.check.includes(user) ? "check" : undefined;
     if (user === "*") out.push("a rule lets any user in");
     else if (!should) out.push(`${shown(user)} is let in, and the settings name nobody by that name`);
-    else if (modes.size > 1 || !modes.has(should)) out.push(`${shown(user)} is let in by ${[...modes].sort().join(" and ")}, not ${should} alone`);
+    else if (modes.size > 1 || !modes.has(should)) out.push(`${shown(user)} is let in by ${[...modes].sort().join(" and ")}, where the settings say ${should} alone`);
   }
   for (const user of [...want.accept, ...want.check]) if (!live.has(user)) out.push(`${shown(user)} isn't let in`);
   return out;

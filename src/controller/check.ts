@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pairedNames } from "./commands.ts";
 import { type SetupDeps, STEPS } from "./setup.ts";
 import { signingKey } from "./signer.ts";
-import { chooseBoxes, helloOf, type Connected, type Deps, helloStop, isStop, peerOrStop, type Stop, tsDeps } from "./reach.ts";
+import { helloOf, type Connected, type Deps, helloStop, isStop, peerOrStop, tsDeps } from "./reach.ts";
 import { knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { TailnetState } from "./tailscale.ts";
 import { ANSWERS } from "./schema.ts";

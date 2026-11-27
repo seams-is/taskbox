@@ -7,6 +7,7 @@
 import { declOf } from "./optypes/index.ts";
 import type { BoxCtx, ErrorBody, Outcome } from "./command.ts";
 import { duration, EXIT } from "./command.ts";
+import { err, typedYes } from "./cmdkit.ts";
 import { listOps, type Op, pastNoReturn, readOp } from "./core/ops.ts";
 import { loopState, rootState } from "./core/paths.ts";
 import { GUARD_LABEL } from "./config.ts";
@@ -15,7 +16,6 @@ import { spoolProblem } from "./core/spool.ts";
 import { beatState, STALE_MS, watchPaths } from "./guardwatch.ts";
 
 export const WATCH_MS = 2_000;
-const err = (code: ErrorBody["code"], message: string, who: ErrorBody["who"] = null): ErrorBody => ({ code, message, fix: null, who });
 const clean = (s: unknown, n = 120) => String(s ?? "").replace(/[^\x20-\x7e]/g, " ").slice(0, n);
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
 
@@ -223,15 +223,8 @@ export async function opCancel(c: BoxCtx): Promise<Outcome> {
       c.say(line);
       return { exit: EXIT.failed, error: err(d?.byLoop ? "denied" : "failed", line, d?.byLoop ? "at-the-box" : null) };
     }
-    if (c.flags.yes === undefined && c.deps.terminal?.() === false) {
-      const line = "op cancel asks a typed yes, and there is no terminal here. Add -y to answer it.";
-      c.say(line);
-      return { exit: EXIT.usage, error: err("usage", line, "at-the-box") };
-    }
-    if (c.flags.yes === undefined && (await c.ask(`Cancel the ${clean(op.type, 20)} ${id}? Type yes to go on: `)).trim().toLowerCase() !== "yes") {
-      c.say("Not cancelled. Nothing changed.");
-      return { exit: EXIT.failed, did: "Nothing changed." };
-    }
+    const no = await typedYes(c, "op cancel", `Cancel the ${clean(op.type, 20)} ${id}?`);
+    if (no) return no;
     const { cancel, writeOp } = await import("./core/ops.ts");
     const done = cancel(op, c.ops.sys.now(), "service");
     if (!done.ok) {
@@ -258,18 +251,8 @@ export async function opCancel(c: BoxCtx): Promise<Outcome> {
       return { exit: EXIT.failed, error: err("denied", line, "at-the-box") };
     }
   }
-  if (c.flags.yes === undefined) {
-    if (c.deps.terminal?.() === false) {
-      const line = "op cancel asks a typed yes, and there is no terminal here. Add -y to answer it.";
-      c.say(line);
-      return { exit: EXIT.usage, error: err("usage", line, "at-the-box") };
-    }
-    const a = (await c.ask(`Cancel the ${clean(op.type, 20)} ${id}? Type yes to go on: `)).trim().toLowerCase();
-    if (a !== "yes") {
-      c.say("Not cancelled. Nothing changed.");
-      return { exit: EXIT.failed, did: "Nothing changed." };
-    }
-  }
+  const no = await typedYes(c, "op cancel", `Cancel the ${clean(op.type, 20)} ${id}?`);
+  if (no) return no;
   const r = await askGuard(c, admin ? "admin" : "service", "op-cancel", { words: [id], ...(admin ? { admin: name! } : {}) });
   if (!r.ok) return r.out;
   const o = r.outcome;

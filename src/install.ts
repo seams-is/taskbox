@@ -27,7 +27,6 @@ import {
 import { basename, dirname, join } from "node:path";
 import { DOWNLOAD_LIMIT_MS, GitHubError } from "./ghfail.ts";
 import { readInstallId } from "./answers.ts";
-import { removeRequests } from "./requests.ts";
 import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from "./checks.ts";
 import { rows } from "./rows/index.ts";
 import { KeyStop, placeActionsKey, placeDownloadedKey, placeKeyAt, runnerKeyPath, takeDownloadedKey } from "./keys.ts";
@@ -46,7 +45,6 @@ import { adoptSource } from "./connectflow.ts";
 import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, isAgentRole, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, recordedIds, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
-import { adminState } from "./elevate.ts";
 import { readActionsKey } from "./queue.ts";
 import { placeTailscaledLog } from "./logins.ts";
 import { asNobody, keyChangeVerifier, verifyFolder } from "./workspace/approval.ts";
@@ -493,8 +491,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     mkdirSync(dirname(d.paths.opt), { recursive: true });
     // taskbox job list' folder first: root's parent, then the service's own folder per project, readable by every
     // user. It stops the install while nothing has changed.
-    const kept = placeShared(d.paths, serviceUid, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
-    if (kept) d.say(`The old requests folder, ${d.paths.requests}, couldn't be removed: another user keeps something in it. Nothing reads it, and taskbox never walks into what they left.`);
+    placeShared(d.paths, serviceUid, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
     // The box's install ID, made once and kept across updates, for a controller's pairing.
     placeInstallId(d.paths, (path, uid, gid) => d.chown(path, uid, gid), d.rootUid ?? 0);
     // Workspace requests go through the agent spool, which the guard keeps (passes/requests.ts).
@@ -1136,9 +1133,8 @@ async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what
 
 // /opt/taskbox-state and its project folder. A link or someone else's folder in either place stops
 // the install, so nobody but the service writes what taskbox job list shows.
-// Returns how many names stayed in the old requests folder, so the install can say it stayed.
 // rootUid: root, whose folder the parent is; tests use their own user, as for box.json beside it.
-export function placeShared(p: Paths, serviceUid: number, chown: (path: string, uid: number, gid: number) => void, rootUid = 0): number {
+export function placeShared(p: Paths, serviceUid: number, chown: (path: string, uid: number, gid: number) => void, rootUid = 0): void {
   for (const [dir, uid, mode] of [[dirname(p.shared), rootUid, 0o755], [p.shared, serviceUid, 0o755]] as const) {
     let st;
     try {
@@ -1155,10 +1151,6 @@ export function placeShared(p: Paths, serviceUid: number, chown: (path: string, 
       throw new Stop(`${dir} is there and isn't taskbox's. Nothing was installed. Nothing to do: agents fix it.`);
     }
   }
-  // The requests folder went with hold and share in v2.2.0. The loop clears what was left in it and
-  // says so; the install removes the folder, never walking into what a user left (requests.ts).
-  const r = removeRequests(p.requests);
-  return r.removed ? 0 : Math.max(1, r.left);
 }
 
 // The install ID: 32 hex characters from a cryptographic random source, made once, root's

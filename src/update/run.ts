@@ -122,19 +122,38 @@ function checkLive(e: UpdateEnv, resumeAfter: boolean): Promise<void> | void {
   })();
 }
 
+// How long a workspace's hold may keep an update or rollback waiting when no --timeout says.
+export const HELD_MS = 60 * 60_000;
+
+// A workspace holding the box: waited for before the box is paused, so CI runs on meanwhile, and
+// again while it drains. Past the deadline the op ends and the box resumes as it was.
+async function heldPast(e: UpdateEnv, what: string, until: number, paused: boolean): Promise<boolean> {
+  const held = e.hold();
+  if (!held) return false;
+  say(e, `${what} held by ${held}`);
+  if (e.clock() < until) return true;
+  if (paused) await e.resume();
+  const ws = /^workspace ([A-Za-z0-9-]+)/.exec(held)?.[1];
+  return fail(`${what} held by ${held} past its deadline, so nothing changed.${ws ? ` taskbox workspace end ${ws} gives the box back.` : ""}`);
+}
+
 // The drain. With --force the box stops what is left at the deadline (availability's forced drain);
 // a plain --timeout bounds only the command's watching. An auto-update gives up at its deadline
 // instead, resumes, and tries at the next window: it never stops a running job.
-async function drainPhase(e: UpdateEnv, o: { force?: boolean; timeout?: number; giveUp?: boolean }): Promise<void> {
+async function drainPhase(e: UpdateEnv, what: string, o: { force?: boolean; timeout?: number; giveUp?: boolean }): Promise<void> {
   const deadline = o.timeout !== undefined ? e.clock() + o.timeout : undefined;
+  const until = o.timeout ? e.clock() + o.timeout : e.clock() + HELD_MS;
+  while (await heldPast(e, what, until, false)) {
+    await checkLive(e, false);
+    await e.sleep(DRAIN_POLL_MS);
+  }
   const why = await e.drain({ force: o.force === true, ...(deadline !== undefined ? { deadline } : {}) });
   if (why) fail(`the box couldn't drain: ${why}`);
   for (;;) {
     await checkLive(e, true);
     const d = e.drained();
-    const held = e.hold();
+    const held = await heldPast(e, what, until, true);
     if (d === "drained" && !held) return;
-    if (held) say(e, `held by ${held}, until it is saved or ended`);
     if (d === "gone") {
       // Someone resumed the box: the drain this update began is over, so is the update.
       throw new Stop({ state: "cancelled", why: "the box was resumed during the update's drain" });
@@ -188,7 +207,7 @@ export async function runUpdate(e: UpdateEnv, p: UpdateParams, o: { proveMs: num
     await checkLive(e, false);
     phase(e, "draining", "pausing, then waiting for running jobs");
     const timeout = p.timeout !== undefined ? durationMs(p.timeout) : undefined;
-    await drainPhase(e, { ...(p.force ? { force: true } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(p.auto ? { giveUp: true } : {}) });
+    await drainPhase(e, `update ${version}`, { ...(p.force ? { force: true } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(p.auto ? { giveUp: true } : {}) });
     await checkLive(e, true);
     phase(e, "installing", `installing ${version}`);
     let dir: string;
@@ -253,7 +272,7 @@ export async function runRollback(e: RollbackEnv, p: RollbackParams): Promise<En
     const t = target!;
     phase(e, "draining", `pausing, then waiting for running jobs, to go back to ${t.version}`);
     const timeout = p.timeout !== undefined ? durationMs(p.timeout) : undefined;
-    await drainPhase(e, { ...(p.force ? { force: true } : {}), ...(timeout !== undefined ? { timeout } : {}) });
+    await drainPhase(e, `rollback to ${t.version}`, { ...(p.force ? { force: true } : {}), ...(timeout !== undefined ? { timeout } : {}) });
     await checkLive(e, true);
     phase(e, "swap", `moving the box back to ${t.version}`);
     const settled = await e.rollbackSettings(t.record);

@@ -67,7 +67,6 @@ describe("the loop's wait", () => {
     const d = loopDeps(new FakeSys(), tempRoot());
     d.cfg = { ...CFG, vmsAtOnce: n };
     d.box = new Slots(n);
-    d.box.oldHoldEnded = true;
     d.slot = slot;
     d.workspaces = () => ({ views: ws });
     return d;
