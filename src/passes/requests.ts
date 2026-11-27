@@ -18,7 +18,7 @@ import { readInstallId } from "../answers.ts";
 import { bootId, monoNow } from "../core/boot.ts";
 import { type DispatchDeps, type Handlers, handlersProblem, rankOf, requestHandlers, SIGNED, takeRequest } from "../core/dispatch.ts";
 import { eventLog } from "../core/events.ts";
-import type { PassCtx, PassMaker } from "../core/passes.ts";
+import type { PassCtx, PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { drainSpool, dropsLine, type Entry, newSpoolMemory, readRequest, readSpoolFile, REQUEST_NAME, type SpoolReport } from "../core/spool.ts";
 import { pinnedKeys, readApprovers } from "../core/approvers.ts";
@@ -203,8 +203,9 @@ export function placeSpool(spool: string, agent: number, rootUid: number, chown:
   chmodSync(spool, 0o700);
 }
 
-export const requestsPass: PassMaker = {
+export const requestsPass: PlacedMaker = {
   name: "requests",
+  order: 800,
   make(c) {
     if (!c.writer) return undefined;
     const job = requestsJob({ c, handlers: requestHandlers() });

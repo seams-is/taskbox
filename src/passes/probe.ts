@@ -10,7 +10,7 @@ import { LAUNCHCTL_MS, TAILSCALED_LABEL } from "../config.ts";
 import { bootId, isBootId, monoNow } from "../core/boot.ts";
 import { eventLog } from "../core/events.ts";
 import { listOps } from "../core/ops.ts";
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "../core/rootfile.ts";
 import { GUARD_FULL_MS, GUARD_TICK_MS } from "../guard.ts";
@@ -43,8 +43,9 @@ export function reauthRunning(ops: { type: string; state: string; subject: strin
 
 export const probeRecord = (p: { guardState: string }) => join(dirname(p.guardState), "taskbox-tailscaled-restart.json");
 
-export const probePass: PassMaker = {
+export const probePass: PlacedMaker = {
   name: "tailscaled-probe",
+  order: 300,
   make(c) {
     if (!c.writer) return undefined;
     const s = rootStateOf(c.p);

@@ -27,7 +27,7 @@ import { dirname, join } from "node:path";
 import { type Check, type CheckContext, screenSharingOn } from "./checks.ts";
 import type { Config, Paths } from "./config.ts";
 import { appendAdmin, eventLog } from "./core/events.ts";
-import type { PassMaker } from "./core/passes.ts";
+import type { PlacedMaker } from "./core/passes.ts";
 import { idOf } from "./core/ids.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { readOwnedText, withLock, writeOwnedText } from "./core/rootfile.ts";
@@ -409,8 +409,9 @@ const realTart = (path: string) => {
   }
 };
 // exeOf: a process's executable as the kernel has it (measure.ts procPidPath), a fake in tests.
-export const pfStartsPassWith = (exeOf: (pid: number) => string | undefined): PassMaker => ({
+export const pfStartsPassWith = (exeOf: (pid: number) => string | undefined): PlacedMaker => ({
   name: "pf-starts",
+  order: 1200,
   make(c) {
     if (!c.writer) return undefined;
     let tart: string | undefined;

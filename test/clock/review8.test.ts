@@ -14,6 +14,7 @@ import { writeLoopState } from "../../src/loop.ts";
 import { newLoopWatch, watchLoop } from "../../src/loopwatch.ts";
 import { FakeSys } from "../fake.ts";
 import { CFG, loopDeps, quietBox, tempRoot } from "../helpers.ts";
+import { wallReads } from "./wall-reads.ts";
 
 const H = 3_600_000;
 const U = "11111111-2222-3333-4444-555555555555";
@@ -240,9 +241,9 @@ describe("the loop watch's stale beat, on mono", () => {
     expect(t.kicks).toEqual([]);
   });
   test("the loop watch reads the wall clock for its record's label only: it is off the allowlist", () => {
-    const list = JSON.parse(readFileSync(new URL("./wall-reads.json", import.meta.url), "utf8"));
-    expect(list["loopwatch.ts"].reads).toBe(2);
-    expect(list["loopwatch.ts"].why).not.toMatch(/stale|restarted/);
+    const list = wallReads();
+    expect(list["loopwatch.ts"]?.reads).toBe(2);
+    expect(list["loopwatch.ts"]?.why).not.toMatch(/stale|restarted/);
     const src = readFileSync(new URL("../../src/loopwatch.ts", import.meta.url), "utf8");
     expect(src).not.toContain("staleBeat(");
   });
