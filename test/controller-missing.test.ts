@@ -119,7 +119,7 @@ describe("taskbox workspace connect --screen", () => {
 
 describe("taskbox box install", () => {
   test("takes ADMIN@HOST and an ORG/REPO, nothing shaped like an ssh flag", () => {
-    expect(HOST.test("admin@mac-mini.local")).toBe(true);
+    expect(HOST.test("admin@mac-mini")).toBe(true);
     for (const bad of ["-oProxyCommand=x@h", "admin@-oProxy", "admin@h;rm", "admin", "Admin@h"]) expect(HOST.test(bad)).toBe(false);
     const o = lanOptions("/Users/x/known_hosts.lan").join(" ");
     expect(o).toContain("StrictHostKeyChecking=ask");
@@ -130,7 +130,7 @@ describe("taskbox box install", () => {
   test("without a terminal it stops before anything is fetched", async () => {
     const { d } = v3();
     d.tty = false;
-    const r = await runLine(d, ["box", "install", "admin@mac-mini.local", "--settings", "example-org/settings"]);
+    const r = await runLine(d, ["box", "install", "admin@mac-mini", "--settings", "example-org/settings"]);
     expect(r.code).toBe(2);
     expect(r.lines[0]).toContain("runs in your terminal");
     expect(d.fetched).toEqual([]);
@@ -149,19 +149,19 @@ describe("taskbox box install", () => {
     const asset = (n: string) => `https://github.com/example-org/taskbox/releases/download/v3.0.0/${n}`;
     d.web.set(api, { status: 200, body: JSON.stringify({ tag_name: "v3.0.0", draft: false, prerelease: false, assets: ["statement.json", "statement.json.sig", "taskbox-v3.0.0.tar.gz"].map((name) => ({ name, browser_download_url: asset(name) })) }) });
     for (const n of ["statement.json", "statement.json.sig", "taskbox-v3.0.0.tar.gz"]) d.web.set(asset(n), { status: 200, body: "x" });
-    const r = await runLine(d, ["box", "install", "admin@mac-mini.local"]);
+    const r = await runLine(d, ["box", "install", "admin@mac-mini"]);
     expect(r.code).toBe(1);
     // Verified, it copies, installs under ssh -t with the settings repo, and turns Remote Login off.
     d.verdict = { ok: true } as never;
     const run = w.run;
     d.run = async (argv, o) => (argv[0] === "/usr/bin/ssh" ? { code: 255, stdout: "", stderr: "Connection refused", timedOut: false, tooBig: false } : run(argv, o));
-    const ok = await runLine(d, ["box", "install", "admin@mac-mini.local", "--settings", "example-org/settings"]);
+    const ok = await runLine(d, ["box", "install", "admin@mac-mini", "--settings", "example-org/settings"]);
     expect(ok.code).toBe(0);
     expect(terms.map((t) => t[0])).toEqual(["/usr/bin/ssh", "/usr/bin/scp", "/usr/bin/ssh", "/usr/bin/ssh"]);
     expect(terms[2]).toContain("-t");
     expect(terms[2]!.at(-1)).toBe("cd taskbox-install && /bin/rm -rf taskbox && /usr/bin/tar -xzf taskbox-v3.0.0.tar.gz && /bin/sh taskbox/install.sh --settings example-org/settings");
     expect(terms[3]!.at(-1)).toContain("launchctl disable system/com.openssh.sshd");
-    expect(ok.lines.join("\n")).toContain("Remote Login is off at mac-mini.local.");
+    expect(ok.lines.join("\n")).toContain("Remote Login is off at mac-mini.");
     terms.length = 0;
     d.verdict = { ok: false, code: "signature", why: "bad" } as never;
     expect(r.lines.join("\n")).toContain("Not installed");

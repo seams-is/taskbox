@@ -131,7 +131,9 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["nonce box", "nonce rules --json", "nonce nova-1"], bad: ["nonce", "nonce Box", "nonce box rules", "nonce box --signed a.b", "nonce ../x"] },
   { good: ["poll 0123456789abcdef", "poll 0123456789abcdef --json"], bad: ["poll", "poll 0123", "poll 0123456789ABCDEF", "poll 0123456789abcdef x"] },
   { good: ["size list", "size list --json"], bad: ["size", "size list small", "size list -n 5", "size list --force"] },
-  { good: ["tool list", "tool list --json", "tool refresh", "tool refresh --timeout 30m --json", "tool refresh --detach", "image list", "image list --json"], bad: ["tool", "tool list bun", "tool list -w", "tool refresh --force", "tool refresh --timeout soon", "tool add", "image", "image list macos", "image list --force"] },
+  { good: ["tool list", "tool list --json", "tool refresh", "tool refresh --timeout 30m --json", "tool refresh --detach", "image list", "image list --json", "image pull linux", "image pull macos --detach --json", "image pull linux --timeout 1h"], bad: ["tool", "tool list bun", "tool list -w", "tool refresh --force", "tool refresh --timeout soon", "tool add", "image", "image list macos", "image list --force", "image pull", "image pull windows", "image pull linux macos", "image pull linux -y"] },
+  { good: ["events", "events --json", "events -f", "events --since 1h --until 2026-11-20", "events --type drain --op op_01JD8Q4ABCDEFGHJKMNPQRSTVW --subject box", "events --type job.started -f --json"], bad: ["events -w", "events --type Drain", "events --op x", "events --subject ../x", "events x"] },
+  { good: ["selftest run", "selftest run --detach --json", "selftest run --timeout 30m", "selftest run --release 3.0.1-rc.2", "selftest list", "selftest list -n 5 --json"], bad: ["selftest", "selftest run --release soon", "selftest run --force", "selftest list --all", "selftest list x"] },
   { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job list --state running --kind linux --since 2h -w", "job list --result passed --class merge --size small", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job list --state lost", "job list -w --json", "job timings --all", "job cancel"] },
   { good: ["job show j_0123abcd", "job show job-j_0123abcd -w", "job logs j_0123abcd -f", "job show 3141592653 --json", "job logs 42 --tail 20 --json", "job cancel j_0123abcd", "job cancel 42 -y --json", "job show j_0123abcd --net"], bad: ["job show", "job show j_0123ABCD", "job show ../x", "job show j_0123abcd -w --json", "job logs j_0123abcd -f --json", "job cancel j_0123abcd --json", "job cancel 0", "job cancel j_0123abcd --force", "job list --net"] },
   { good: ["load status", "load report --session 3 --json", "load start --pattern burst --only --for 2h", "load stop"], bad: ["load report --session x", "load status --since 1h", "load begin"] },
@@ -166,7 +168,7 @@ describe("the command line", () => {
     const raw = registry().filter((s) => s.raw).map((s) => s.path.join(" "));
     expect(parseLine(["workspace", "end", "nova-1"]).ok).toBe(true);
     // A new noun registers beside everything here, and a second release list doesn't.
-    expect(registryProblem([...registry(), { path: ["selftest", "run"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBeUndefined();
+    expect(registryProblem([...registry(), { path: ["sample", "run"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBeUndefined();
     expect(registryProblem([...registry(), { path: ["release", "list"], summary: "x", who: ["anyone"], run: async () => 0 }])).toBe("two commands are taskbox release list");
     for (const s of registry()) if (!raw.includes(s.path.join(" "))) expect({ cmd: s.path.join(" "), tabled: tabled.has(s.path.join(" ")) }).toEqual({ cmd: s.path.join(" "), tabled: true });
   });

@@ -97,7 +97,13 @@ describe("taskbox events", () => {
     b.guard.write({ type: "drain.started", subject: "box", actor: "service", text: "First." });
     // Two follow rounds, then a later event, then the --until ends it.
     const until = new Date(b.sys.clock + 5_000).toISOString();
-    setTimeout(() => b.loop.write({ type: "job.started", subject: "job-1", actor: "taskbox", text: "Second.", at: b.sys.clock + 1 }), 0);
+    // The second event comes while the command sleeps between reads.
+    const sleep = b.sys.sleep.bind(b.sys);
+    let n = 0;
+    b.sys.sleep = async (ms: number, signal?: AbortSignal) => {
+      if (n++ === 0) b.loop.write({ type: "job.started", subject: "job-1", actor: "taskbox", text: "Second." });
+      return sleep(ms, signal);
+    };
     const r = await run(b, ["events", "-f", "--json", "--until", until]);
     const lines = r.said.map((l) => JSON.parse(l));
     expect(lines[0].final).toBe(false);

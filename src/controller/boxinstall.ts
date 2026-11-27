@@ -38,9 +38,9 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
     return code;
   };
   const m = HOST.exec(host);
-  if (!m) return stop("taskbox box install takes the Mac's admin and its LAN name, such as admin@mac-mini.local.", "Type it again.", EXIT.usage);
+  if (!m) return stop("taskbox box install takes the Mac's admin and its LAN name, such as admin@mac-mini.", "Type it again.", EXIT.usage);
   if (settings !== undefined && !REPO.test(settings)) return stop("--settings takes the settings repo, as ORG/REPO.", "Type it again.", EXIT.usage);
-  if (!d.tty || !d.term) return stop("taskbox box install runs in your terminal: ssh, sudo and the install ask you there.", "Type it in Terminal.", EXIT.usage);
+  if (!d.tty || !d.term) return stop("taskbox box install runs in your terminal: ssh and the install ask for passwords there.", "Type it in Terminal.", EXIT.usage);
   const c = readConfig(d.home);
   if (!c.ok || !c.config.source) return stop("taskbox isn't installed for a controller on this Mac.", "Install taskbox for a controller, from its release page.");
   const tag = currentTag(d.home);
@@ -74,7 +74,7 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
     if ((await term(scp)) !== 0) return stop("The release didn't copy.", "Run taskbox box install again.");
 
     // installing: the install's own steps, every prompt in this terminal.
-    out("installing: install.sh at the Mac, through sudo. It verifies the release again with the signers inside it.");
+    out("installing: install.sh at the Mac, as its admin. It verifies the release again with the signers inside it.");
     const t = tarballName(tag);
     const run = `cd ${FOLDER} && /bin/rm -rf taskbox && /usr/bin/tar -xzf ${t} && /bin/sh taskbox/install.sh${settings ? ` --settings ${settings}` : ""}`;
     const code = await term([SSH, "-t", ...lan, host, run]);
@@ -84,7 +84,7 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
     }
 
     // Remote Login off, as root, then read back: a new ssh connection must fail.
-    out("closing: Remote Login off at the Mac. sudo may ask once more.");
+    out("closing: Remote Login off at the Mac. It may ask the admin password once more.");
     await term([SSH, "-t", ...lan, host, "/usr/bin/sudo /bin/launchctl disable system/com.openssh.sshd && /usr/bin/sudo /bin/launchctl bootout system/com.openssh.sshd"]);
     const back = await d.run([SSH, ...lan, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, "true"], { limitMs: 20_000, maxBytes: 4_000 });
     const off = back.code !== 0;
