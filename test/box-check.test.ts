@@ -266,6 +266,6 @@ describe("every template", () => {
   });
 
   test.serial("every action is pinned by its commit", () => {
-    for (const y of filled) for (const m of y.matchAll(/uses: (\S+)/g)) expect(m[1]).toMatch(/@[0-9a-f]{40}$/);
+    for (const y of filled) for (const m of y.matchAll(/^\s*(?:-\s+)?uses: (\S+)/gm)) expect(m[1]).toMatch(/@[0-9a-f]{40}$/);
   });
 });

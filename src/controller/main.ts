@@ -174,6 +174,12 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     for (const l of help(d.version)) io.out(l);
     return EXIT.ok;
   }
+  // The load test's start and stop do more on the controller than the box's own commands.
+  if (argv[0] === "load" && (argv[1] === "start" || argv[1] === "stop") && !argv.includes("--help") && !argv.includes("--json")) {
+    const { loadStart, loadStop, ownerGh } = await import("./load.ts");
+    const gh = (d as { gh?: import("../hold.ts").Gh }).gh ?? ownerGh(d);
+    return (argv[1] === "start" ? loadStart : loadStop)({ ...d, ...(gh ? { gh } : {}) }, argv, io);
+  }
   const mine = CONTROLLER.some((s) => s.path[0] === argv[0]);
   if (!mine) return forward(d, argv, io);
   const p = parse(CONTROLLER, argv);

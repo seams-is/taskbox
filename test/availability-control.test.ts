@@ -423,7 +423,7 @@ describe("the owner's signed requests", () => {
     const { contractProblem } = await import("../src/core/dispatch.ts");
     const { registry } = await import("../src/registry.ts");
     expect(contractProblem(registry(), requestHandlers())).toBeUndefined();
-    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "key.add", "key.rotate", "op.cancel", "pause", "resume", "settings.apply", "settings.repo", "start", "stop", "withdraw", "workspace.approve", "workspace.clear", "workspace.end", "workspace.jump", "workspace.pause", "workspace.resume", "workspace.rule.add", "workspace.rule.delete", "workspace.rush"]);
+    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "key.add", "key.rotate", "load.start", "load.stop", "op.cancel", "pause", "resume", "settings.apply", "settings.repo", "start", "stop", "withdraw", "workspace.approve", "workspace.clear", "workspace.end", "workspace.jump", "workspace.pause", "workspace.resume", "workspace.rule.add", "workspace.rule.delete", "workspace.rush"]);
   });
 });
 

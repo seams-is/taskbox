@@ -51,9 +51,9 @@ describe("every command the agent shell runs", () => {
     expect(w.calls.length).toBeGreaterThan(0);
   }, 60_000);
 
-  test("load status, which answers in text only, runs at the box; template show answers in JSON and goes to the box; workspace commands go as any other", async () => {
+  test("status --state runs at the box; template show answers in JSON and goes to the box; workspace commands go as any other", async () => {
     const { w, d, box } = v3();
-    for (const argv of [["load", "status"], ["status", "--state", "/tmp/x"]]) {
+    for (const argv of [["status", "--state", "/tmp/x"]]) {
       const r = await runLine(d, argv);
       expect({ argv, code: r.code, line: r.lines[0] }).toEqual({ argv, code: r.code === 2 ? 2 : 1, line: expect.stringMatching(/answers only as text the controller can't read yet|--state/) });
     }
@@ -61,7 +61,7 @@ describe("every command the agent shell runs", () => {
     // template show takes --json, so the box answers with its own lines: this box names no test repo.
     const t = await runLine(d, ["template", "show", "load"]);
     expect(box.sent.at(-1)).toBe("template show load --json --answers 4");
-    expect([t.code, t.lines[0]]).toEqual([1, "taskbox.json names no test repo, so there is no load test."]);
+    expect([t.code, t.lines[0]]).toEqual([1, "The box's settings name no test repo, so there is no load test."]);
     await runLine(d, ["workspace", "list", "--json"]);
     expect(box.sent.at(-1)).toBe("workspace list --json --answers 4");
     // A word a workspace command doesn't take is a usage error here, before anything is sent.
