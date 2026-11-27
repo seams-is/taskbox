@@ -17,6 +17,9 @@ export type PolicyInputs = {
   admins?: readonly string[];
   // The box's tag: tag:taskbox, or one of its own, so two boxes' rules stay apart.
   tag?: string;
+  // Temporary admin SSH, given only while its window is open (settings/adminssh.ts openWindow):
+  // that login reaches that admin user in accept mode. Once it ends, the next policy drops it.
+  adminSsh?: { login: string; user: string };
 };
 
 type Rule = Record<string, unknown>;
@@ -40,7 +43,12 @@ export function policyFor(a: Accounts, inputs: PolicyInputs = {}, pool: readonly
   const owner = inputs.owner ?? OWNER;
   // root has its own deny line, so it isn't listed again as an admin.
   const given = (inputs.admins ?? []).filter((n) => n.toLowerCase() !== "root");
-  const admins = given.length > 0 ? given : [ADMIN];
+  const temp = inputs.adminSsh;
+  if (temp && (!TAILNET_LOGIN.test(temp.login) || !/^[A-Za-z_][A-Za-z0-9._-]{0,31}$/.test(temp.user) || temp.user.toLowerCase() === "root")) throw new Error("the temporary admin SSH names one person's Tailscale login and one admin user");
+  if (temp && [...named(a).map((n) => n.name), ...pool, ...(a.agent ? [a.agent] : [])].some((n) => n.toLowerCase() === temp.user.toLowerCase())) throw new Error(`${temp.user} has a taskbox role, so it can't have temporary admin SSH`);
+  // The admin let in for now is accepted, so it isn't denied too.
+  const listed = given.length > 0 ? given : [ADMIN];
+  const admins = temp ? listed.filter((n) => n.toLowerCase() !== temp.user.toLowerCase()) : listed;
   // An admin in a role would be both accepted and denied, which the console refuses with an unclear line.
   for (const { name, role } of named(a)) {
     const what = role === "person" ? "a person's account" : `the ${role} account`;
@@ -69,9 +77,14 @@ export function policyFor(a: Accounts, inputs: PolicyInputs = {}, pool: readonly
   if (pool.length > 0) ssh.push({ action: "accept", src: [owner], dst: [tag], users: [...pool] });
   if (check.length > 0) ssh.push({ action: "check", src: [owner], dst: [tag], users: check });
   for (const l of logins) if (checkFrom(l).length) ssh.push({ action: "check", src: [l], dst: [tag], users: checkFrom(l) });
+  if (temp) ssh.push({ action: "accept", src: [temp.login], dst: [tag], users: [temp.user] });
 
   // A port opens only for a role that needs it: SSH for any ssh rule, Screen Sharing for people.
-  const ownerSsh = agent.length > 0 || pool.length > 0 || check.length > 0;
+  const fromOwner = !!temp && temp.login.toLowerCase() === owner.toLowerCase();
+  const ownerSsh = agent.length > 0 || pool.length > 0 || check.length > 0 || fromOwner;
+  // A login of its own for the admin window, with no grant yet for SSH: port 22 from it alone.
+  const tempLogin = temp && !fromOwner ? temp.login : undefined;
+  const tempGrant = tempLogin !== undefined && !(logins.includes(tempLogin) && checkFrom(tempLogin).length);
   // The owner keeps Screen Sharing whenever anyone has it, as the admins do.
   const ports = [...(ownerSsh ? [22] : []), ...(a.people.length > 0 ? [5900] : [])];
   const portsOf = (l: string) => [...(checkFrom(l).length ? [22] : []), 5900];
@@ -79,6 +92,7 @@ export function policyFor(a: Accounts, inputs: PolicyInputs = {}, pool: readonly
   const grants: Rule[] = [{ src: ["autogroup:member"], dst: ["autogroup:self"], ip: ["*"] }];
   if (ports.length > 0) grants.push({ src: [owner], dst: [tag], ip: ports.map((p) => `tcp:${p}`) });
   for (const l of logins) grants.push({ src: [l], dst: [tag], ip: portsOf(l).map((p) => `tcp:${p}`) });
+  if (tempGrant) grants.push({ src: [tempLogin], dst: [tag], ip: ["tcp:22"] });
 
   const sshTest: Rule = { src: owner, dst: [tag] };
   if (accept.length > 0) sshTest.accept = accept;
@@ -89,10 +103,12 @@ export function policyFor(a: Accounts, inputs: PolicyInputs = {}, pool: readonly
     const mine = checkFrom(l);
     sshTests.push({ src: l, dst: [tag], ...(mine.length ? { check: mine } : {}), deny: ["root", a.service, ...accept, ...a.people.filter((n) => !mine.includes(n)), ...admins] });
   }
+  if (temp) sshTests.push({ src: temp.login, dst: [tag], accept: [temp.user] });
 
   const tests: Rule[] = [];
   if (ports.length > 0) tests.push({ src: owner, accept: ports.map((p) => `${tag}:${p}`) });
   for (const l of logins) tests.push({ src: l, accept: portsOf(l).map((p) => `${tag}:${p}`) });
+  if (tempGrant) tests.push({ src: tempLogin, accept: [`${tag}:22`] });
   tests.push({ src: tag, deny: OWNER_PORTS.map((p) => `${owner}:${p}`) });
   for (const l of logins) tests.push({ src: tag, deny: OWNER_PORTS.map((p) => `${l}:${p}`) });
 

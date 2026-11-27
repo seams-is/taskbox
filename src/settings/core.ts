@@ -4,6 +4,7 @@ import { type Accounts } from "../access.ts";
 import type { KeyChange } from "../approver.ts";
 import { type EngineName, ENGINES } from "../vm.ts";
 import { checkAccounts } from "./accounts.ts";
+import { type AdminSsh, adminSshProblem } from "./adminssh.ts";
 import { type AwaySettings, checkAway } from "./away.ts";
 import { type BudgetSettings, checkKind, checkLabels, checkSizes, IMAGE_PIN, type Kind, type KindSettings, type SizeSettings, V2_MAX_SLOTS, DEFAULT_TURN_IDLE_MINUTES } from "./kinds.ts";
 import { checkRunnerApp, type RunnerAppSettings } from "./connect.ts";
@@ -74,6 +75,7 @@ export interface Config extends BudgetSettings {
   // when it equals accounts.people; v2.7.0's code never reads it.
   screenSharingUsers?: string[];
   tailscaleTun?: string; // tailscaled's --tun: a fixed utun number, so pf can name it
+  adminSsh?: AdminSsh; // temporary admin SSH for one person, until a time (settings/adminssh.ts)
   tailnetTag?: string; // the box's own tag on the tailnet (config.ts tagOf); tag:taskbox when left out
   // v2.1.0: a second VM kind, an arm64 Ubuntu VM with Docker, for jobs labelled linux.label. The
   // top-level label, image and size are the macOS kind's, so an update run by v2.0's install code
@@ -92,6 +94,10 @@ export interface Config extends BudgetSettings {
   sources?: SourceSettings[];
   // v3: the runner App connect github made or adopted, kept in box.json (settings/connect.ts).
   runnerApp?: RunnerAppSettings;
+  // v3: this box's settings repo, as owner/name, kept in box.json (settings/repo.ts reads it).
+  settingsRepo?: string;
+  // Set by the layering when the settings come from the settings repo (settings/inforce.ts).
+  settingsIn?: { sha: string; held: string[]; overlayKeys: string[]; overlayProblem?: string; unknown: string[] };
   // Set by the layering (layers.ts), never in a file: the keys box.json sets, why it was set aside,
   // and each key it held that it may not.
   boxKeys?: string[];
@@ -118,7 +124,7 @@ export const LABEL_PREFIX_SHAPE = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
 const GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 export const PROJECT_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 // What the layering sets, never a file.
-const SET_BY_TASKBOX = ["kind", "base", "boxKeys", "boxProblem", "boxIgnored"];
+const SET_BY_TASKBOX = ["kind", "base", "boxKeys", "boxProblem", "boxIgnored", "settingsIn"];
 
 export function checkConfig(c: Config, warn: (line: string) => void = () => {}): Config {
   if (!Number.isInteger(c.appId) || c.appId <= 0) throw new Error("taskbox.json has no App ID yet");
@@ -150,6 +156,7 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
   checkLabels(c);
   checkScheduling(c, warn);
   checkRunnerApp(c);
+  if ("settingsRepo" in c && (typeof c.settingsRepo !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(c.settingsRepo))) throw new Error("taskbox.json: settingsRepo is this box's settings repo, as owner/name");
   checkAway(c, warn);
   checkTools(c);
   if ("turnIdleMinutes" in c && (!Number.isInteger(c.turnIdleMinutes) || c.turnIdleMinutes! < 1 || c.turnIdleMinutes! > 60)) throw new Error("taskbox.json: turnIdleMinutes is 1 to 60");
@@ -161,6 +168,10 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
   if ("softnetBlock" in c) throw new Error("taskbox.json: softnetBlock is gone: every VM is blocked from the box, its public address and the tailnet already");
   if ("noVMWhileLoggedIn" in c) throw new Error("taskbox.json: noVMWhileLoggedIn is gone: the box shares itself with jobs");
   checkAccounts(c);
+  if ("adminSsh" in c) {
+    const why = adminSshProblem(c.adminSsh, c.accounts);
+    if (why) throw new Error(`taskbox.json: ${why}`);
+  }
   if ("tailscaleTun" in c && (typeof c.tailscaleTun !== "string" || !/^utun\d{1,3}$/.test(c.tailscaleTun))) {
     throw new Error("taskbox.json: tailscaleTun is a utun name, such as utun99");
   }

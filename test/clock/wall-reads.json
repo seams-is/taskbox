@@ -160,8 +160,8 @@
     "why": "moved from cli.ts: the now the logins screen counts back from: display"
   },
   "cmd/status.ts": {
-    "reads": 2,
-    "why": "moved from cli.ts: the now for status's recent-logins line: display"
+    "reads": 3,
+    "why": "moved from cli.ts: the now for status's recent-logins line: display; whether the temporary admin SSH window is open: display"
   },
   "cmd/workspace.ts": {
     "reads": 2,
@@ -222,5 +222,33 @@
   "cmd/tool.ts": {
     "reads": 3,
     "why": "when a tool refresh was asked, and how long the command watches it: a step only stops watching sooner or later, and the refresh carries on"
+  },
+  "cmd/confirm.ts": {
+    "reads": 2,
+    "why": "the moment a confirm is judged at, and when an admin's yes was given: pending.ts lapses on the monotonic clock and the boot too"
+  },
+  "passes/settings.ts": {
+    "reads": 1,
+    "why": "when the settings repo was last read, for the hourly read: a step only moves the next read"
+  },
+  "rows/settings.ts": {
+    "reads": 3,
+    "why": "how long since the settings repo was read, and whether the temporary admin SSH window is open: display"
+  },
+  "settings/op.ts": {
+    "reads": 5,
+    "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot"
+  },
+  "settings/repo.ts": {
+    "reads": 2,
+    "why": "the settings op's now, and the wall part of a confirm's moment, judged with the monotonic clock and the boot (pending.ts)"
+  },
+  "cmd/policy.ts": {
+    "reads": 1,
+    "why": "whether the temporary admin SSH window is open, for the policy printed: a step moves its end by the step, and the check row warns while it is open"
+  },
+  "rows/accounts.ts": {
+    "reads": 1,
+    "why": "whether the temporary admin SSH window is open, for the rules compared: display"
   }
 }
