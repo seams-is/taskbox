@@ -1,0 +1,9 @@
+# Test fixtures that look like secrets but are not: a self-signed TLS key made for a loopback test,
+# GitHub's documented example App conversion, fake key shapes for the log scrubber's test, and a test JWT.
+# Each entry is one finding's fingerprint, so any new match still fails the check.
+25a1ca0939dc63b617cb510a31f74efb2d373278:test/jobs-identity.test.ts:aws-access-token:232
+9eed58e5117ba53ea28aaf5308a23670d948e16d:test/broker.test.ts:jwt:123
+e8e23c1afe7b071d147a7aca5b36fe8679bebeb0:test/fixtures/github/conversion.json:generic-api-key:42
+e8e23c1afe7b071d147a7aca5b36fe8679bebeb0:test/fixtures/github/conversion.json:generic-api-key:43
+ec4bd53abaaf1c2b18b51cec9eca8ba74fb37aa0:test/fixtures/tls/test.key:private-key:1
+ff976996c989fada2176b5e5ddfaaaa123c09fbf:test/jobs-identity.test.ts:aws-access-token:303
