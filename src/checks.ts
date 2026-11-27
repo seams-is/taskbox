@@ -404,7 +404,7 @@ export async function freeGB(sys: Sys): Promise<number | undefined> {
 
 // The loop's slots that hold a VM now, from its state file (v2.2.0). Unreadable counts as none: the
 // loop says for itself before each start, and this is only check's view.
-const VM_SLOTS = new Set(["starting a VM", "waiting for a job", "running a job", "proving Linux", "cleaning up"]);
+const VM_SLOTS = new Set(["starting a VM", "waiting for a job", "running a job", "proving Linux", "cleaning up", "baking tools"]);
 export function busySlots(loopState: string): number {
   const slots = readStateJson<{ slots?: unknown }>(loopState)?.slots;
   if (!slots || typeof slots !== "object" || Array.isArray(slots)) return 0;
