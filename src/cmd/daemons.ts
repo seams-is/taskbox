@@ -43,7 +43,7 @@ function loopService(c: Ctx): string {
   try {
     return boxNames(c.app).service;
   } catch {
-    return readRecord(join(c.root, "opt/taskbox-state/accounts.json")).service ?? V2_SERVICE;
+    return readRecord(join(c.root, "opt/taskbox-state/accounts.json")).inUse?.service ?? V2_SERVICE;
   }
 }
 
@@ -296,7 +296,11 @@ export const commands: CommandSpec[] = [
         const reader = keeper ? (await import("../queue.ts")).brokerQueueReader(sys, cfg, log, brokerSourceTokens(keeper)) : queueReaderFor(sys, cfg, p.actionsKeyDir, keyPath, cu, log);
         // v2.6.0: the test repo is read only while a load test session is on, and for 2 minutes after.
         if (reader instanceof QueueReader) reader.loadWanted = () => loadWanted(p, sys.now());
-        const source = sourceFor(cfg, reader, timingsOf(cfg).sourcePollSeconds * 1000);
+        // What the source sees waiting is kept for taskbox job list. No job runs yet, so no job file
+        // a loop before this one left stands (jobs.ts).
+        const { recordQueued, startJobFiles } = await import("../jobs.ts");
+        startJobFiles(p);
+        const source = recordQueued(sourceFor(cfg, reader, timingsOf(cfg).sourcePollSeconds * 1000), p);
         // Still under the old label: the next update writes the new LaunchAgent, and then this loop
         // restarts, once no job runs, so handOver moves it.
         const relabeled = relabelDue({ paths: p, log }, await underOldLabel({ sys, cfg }, uid, process.pid));
@@ -316,7 +320,9 @@ export const commands: CommandSpec[] = [
         };
         // Root's workspaces state, read when a slot asks, at most every few seconds (workspace/hold.ts).
         const workspaces = stateHold(p.workspaces, 0, () => sys.now(), { on: cfg.approverKey !== undefined /* not trust: whether a stale state is a problem */ });
-        return await runLoop({ sys, cfg, paths: p, gh, log, checks, slot: 1, source, relabel, workspaces });
+        // The job hooks read GitHub with the job source's token (core/hooks.ts TokenSource).
+        const tokens = reader instanceof QueueReader ? reader : undefined;
+        return await runLoop({ sys, cfg, paths: p, gh, log, checks, slot: 1, source, relabel, workspaces, tokens });
       } catch (e) {
         return loopStopped(p, log, e);
       }

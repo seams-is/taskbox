@@ -10,8 +10,8 @@ import { paths } from "../src/config.ts";
 import { CMD_DIR, loadRegistry, parseLine, registry, registryProblem } from "../src/registry.ts";
 import { renamed } from "../src/renames.ts";
 import { readEnvelopes } from "../src/schema.ts";
-import { readAnswer } from "../src/laptop/schema.ts";
-import { boxChecksBody } from "../src/laptop/screens.ts";
+import { readAnswer } from "../src/controller/schema.ts";
+import { boxChecksBody } from "../src/controller/screens.ts";
 import { FakeSys } from "./fake.ts";
 import { fakeLaunchd, healthyBox, quietBox, readAsRoot, tempRoot, testBox } from "./helpers.ts";
 
@@ -124,16 +124,18 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["check", "check --away", "check --away --json"], bad: ["check --away --away", "check away", "check --yes"] },
   { good: ["logins", "logins --all --json"], bad: ["logins --refused", "logins x"] },
   { good: ["hello", "hello --json --answers 4,3"], bad: ["hello x", "hello --answers"] },
+  { good: ["nonce box", "nonce rules --json", "nonce nova-1"], bad: ["nonce", "nonce Box", "nonce box rules", "nonce box --signed a.b", "nonce ../x"] },
   { good: ["size list", "size list --json"], bad: ["size", "size list small", "size list -n 5", "size list --force"] },
-  { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job timings --all", "job cancel"] },
+  { good: ["job list", "job list -n 50", "job list --tail 5 --all --json", "job list --state running --kind linux --since 2h -w", "job list --result passed --class merge --size small", "job timings --json"], bad: ["job", "job list 50", "job list -n x", "job list -n 0", "job list -n", "job list --state lost", "job list -w --json", "job timings --all", "job cancel"] },
+  { good: ["job show j_0123abcd", "job show job-j_0123abcd -w", "job logs j_0123abcd -f", "job show 3141592653 --json", "job logs 42 --tail 20 --json", "job cancel j_0123abcd", "job cancel 42 -y --json"], bad: ["job show", "job show j_0123ABCD", "job show ../x", "job show j_0123abcd -w --json", "job logs j_0123abcd -f --json", "job cancel j_0123abcd --json", "job cancel 0", "job cancel j_0123abcd --force", "job show j_0123abcd --net"] },
   { good: ["load status", "load report --session 3 --json", "load start --only --for 2h", "load stop"], bad: ["load report --session x", "load status --json", "load begin"] },
-  { good: ["template show box-check", "template show test-job", "template show load"], bad: ["template show", "template show watchdog", "template show load load"] },
+  { good: ["template show box-check", "template show test-job", "template show load", "template list", "template list --json"], bad: ["template show", "template show watchdog", "template show load load", "template list box-check"] },
   { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
   { good: ["stop", "start", "drain", "prune"], bad: ["stop --now", "start x", "drain --force", "prune --dry-run"] },
   { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
-  { good: ["rollback", "remove", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
-  { good: ["connect github", "connect github --jobs example-org/app", "connect status", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "connect github --new-key", "disconnect"] },
-  { good: ["install --bootstrap /tmp/x", "guard", "loop", "rollback-watch", "broker"], bad: ["install --bootstrap", "guard x"] },
+  { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
+  { good: ["connect github", "connect github --jobs example-org/app", "connect status", "connect listen", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "connect github --new-key", "disconnect"] },
+  { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch", "broker"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
   { good: [], bad: ["release nova-1"] },
 ];
@@ -167,11 +169,11 @@ describe("the command line", () => {
     expect(r.code).toBe(2);
     expect(r.said[0]).toMatch(/^No command frobnicate\.\nCommands: check, /);
     const noun = await run(["job"]);
-    expect([noun.code, noun.said[0]!.split("\n")[0]]).toEqual([2, "taskbox job takes list, timings."]);
+    expect([noun.code, noun.said[0]!.split("\n")[0]]).toEqual([2, "taskbox job takes list, show, logs, cancel, timings."]);
   });
 
   test("--help gives the command's line and usage, and taskbox --help the commands", async () => {
-    expect((await run(["job", "list", "--help"])).said).toEqual(["One line per job, newest first: 20, or -n N, or --all.", "Usage: taskbox job list [--all] [--json] [--tail N]"]);
+    expect((await run(["job", "list", "--help"])).said).toEqual(["One line per job, newest first: 20, or -n N, or --all.", "Usage: taskbox job list [--all] [--state STATE] [--kind KIND] [--size NAME] [--class NAME] [--result RESULT] [--json] [--tail N] [--since TIME] [--watch]"]);
     const all = await run(["--help"]);
     expect([all.code, all.said[0]]).toEqual([0, expect.stringMatching(/^Commands: .*and as your admin user: connect, /)]);
     expect(all.said[0]).not.toContain("guard");
@@ -190,7 +192,14 @@ describe("the command line", () => {
 
   test("a typed confirmation with no terminal is exit 2 before anything runs", async () => {
     const r = await run(["remove"], CALLERS["root via sudo"], { terminal: false });
-    expect([r.code, r.said]).toEqual([2, ["taskbox remove asks for a typed yes, and there is no terminal here. Run it at the box's own terminal."]]);
+    // remove needs a person at the box's terminal: no flag answers its typed name or its deletes.
+    expect([r.code, r.said]).toEqual([2, ["taskbox remove asks a person at the terminal, and there is no terminal here. Run it at the box's own terminal."]]);
+    expect((await run(["remove", "-y"], CALLERS["root via sudo"], { terminal: false })).code).toBe(2);
+    // unlock's fdesetup asks at the terminal, so it has no --yes.
+    const u = await run(["unlock"], CALLERS["root via sudo"], { terminal: false });
+    expect([u.code, u.said]).toEqual([2, ["taskbox unlock asks a person at the terminal, and there is no terminal here. Run it at the box's own terminal."]]);
+    // And -y can't stand in for the terminal: unlock takes no -y at all.
+    expect((await run(["unlock", "-y"], CALLERS["root via sudo"], { terminal: false })).code).toBe(2);
     const j = await run(["workspace", "clear", "nova"], CALLERS["root via sudo"], { terminal: false });
     expect(j.code).toBe(2);
   });
@@ -489,7 +498,7 @@ describe("--json: one envelope per command", () => {
     const read = readEnvelopes(r.said[0]!, { command: "job.list" });
     expect(read.ok).toBe(true);
     const e = JSON.parse(r.said[0]!);
-    expect([e.ok, e.changed, e.error, e.result]).toEqual([true, false, null, { jobs: [] }]);
+    expect([e.ok, e.changed, e.error, e.result]).toEqual([true, false, null, { jobs: [], live: [], queued: [], total: 0 }]);
     const text = await run(["job", "list"]);
     expect(e.lines).toEqual(text.said);
   });
@@ -512,8 +521,8 @@ describe("--json: one envelope per command", () => {
   });
 
   test("a command with no v3 answer still answers one envelope, from its text", async () => {
-    const r = await run(["template", "show", "test-job", "--json"]);
-    // template show takes no --json: refused, as one envelope.
+    const r = await run(["unlock", "--json"]);
+    // unlock takes no --json: refused, as one envelope.
     expect(r.code).toBe(2);
     expect(JSON.parse(r.said[0]!).error.code).toBe("usage");
     const h = await run(["hello", "--json"]);
@@ -562,5 +571,42 @@ describe("a v2.x handler's JSON line", () => {
     const { oneJsonLine } = await import("../src/cmdkit.ts");
     expect(oneJsonLine(['{"answers":3,"kind":"check","checks":[]}', ""])).toEqual({ answers: 3, kind: "check", checks: [] });
     for (const lines of [["FAIL Sleep: after 10 minutes", '{"answers":3}'], ["not json"], [], ["[1]"]]) expect(oneJsonLine(lines)).toBeUndefined();
+  });
+});
+
+describe("policy show --json, for the controller's --box all", () => {
+  const agentThere = (sys: FakeSys) =>
+    sys.responders.push((cmd, args) =>
+      cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : cmd === "/usr/bin/id" && args[0] === "-u" && args[1] === "taskbox-agent" ? { code: 0, stdout: "470\n", stderr: "" } : undefined,
+    );
+  const recorded = (p: ReturnType<typeof paths>) => {
+    mkdirSync(dirname(p.accountsRecord), { recursive: true });
+    writeFileSync(p.accountsRecord, JSON.stringify({ made: { "taskbox-agent": { role: "agent", uid: 470 } } }));
+  };
+  test("answers with the box's tag and rules, with the owner it was given, which the controller reads back whole", async () => {
+    const { policyOfAnswer, policyFor } = await import("../src/policy.ts");
+    const { validateAccounts } = await import("../src/access.ts");
+    const r = await run(["policy", "show", "--json", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere, prep: recorded });
+    expect(r.code).toBe(0);
+    const e = JSON.parse(r.said[0]!);
+    expect([e.result.tag, e.result.owners]).toEqual(["tag:taskbox", ["owner@example.com"]]);
+    expect(JSON.stringify(e.result)).not.toMatch(/"(OWNER|ADMIN)/);
+    // The controller reads it with the install ID it paired with, and its own owner.
+    const back = policyOfAnswer(e.result, "a".repeat(32), "owner@example.com");
+    if (typeof back === "string") throw new Error(back);
+    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { owner: "owner@example.com", admins: ["owner"] }).ssh);
+  });
+  test("--json without --owner is refused before anything is read: it would answer a placeholder", async () => {
+    const r = await run(["policy", "show", "--json"], CALLERS.ci);
+    expect(r.code).toBe(2);
+  });
+  test("an agent the settings name that taskbox didn't make refuses the policy; one not made yet is left out", async () => {
+    const refused = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere });
+    expect(refused.code).toBe(1);
+    expect(refused.said[0]).toMatch(/^taskbox-agent, the agent the settings name, isn't the account taskbox made, so no policy lets it in/);
+    const later = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)) });
+    expect(later.code).toBe(0);
+    expect(later.said.join("\n")).not.toContain('"accept"');
+    expect(later.said.join("\n")).toContain("taskbox-agent isn't made yet, so the policy leaves it out");
   });
 });

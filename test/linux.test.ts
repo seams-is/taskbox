@@ -139,7 +139,7 @@ describe("a Linux job", () => {
     const copy = sys.calls.find((c) => c.args.join(" ").includes("tar -xzf - -C /home/admin/taskbox-runner"));
     expect(copy).toBeDefined();
     const jit = sys.requests.find((r) => r.url.endsWith("generate-jitconfig"))!;
-    expect((jit.body as { labels: string[] }).labels).toEqual(["taskbox-linux"]);
+    expect((jit.body as { labels: string[] }).labels).toEqual(["taskbox-linux", "taskbox-1-linux"]);
     // The status file and the job line say Linux.
     const status = sys.calls.find((c) => c.stdin?.includes('"softnetBlock"'));
     expect(JSON.parse(status!.stdin!).vm).toEqual({ kind: "linux", cpus: 4, memoryMB: 8192 });
@@ -204,7 +204,7 @@ describe("a Linux job", () => {
     const d = linuxDeps(sys);
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("done");
     expect(sys.tartCalls()[0]).toBe(`clone ${CFG.image}`);
-    expect((sys.requests.find((r) => r.url.endsWith("generate-jitconfig"))!.body as { labels: string[] }).labels).toEqual(["taskbox-macos"]);
+    expect((sys.requests.find((r) => r.url.endsWith("generate-jitconfig"))!.body as { labels: string[] }).labels).toEqual(["taskbox-macos", "taskbox-1-macos"]);
     expect(sys.allArgs()).toContain("system/com.openssh.sshd");
     expect(sys.allArgs()).not.toContain("/usr/bin/docker");
     expect(sys.spawned.find((p) => p.args[0] === "exec")!.args.slice(3, 6)).toEqual(["/bin/zsh", "-l", "-c"]);
@@ -737,7 +737,7 @@ describe("the install", () => {
       const sys = new FakeSys();
       // The service is this test's own user, so the key's checks hold in a temp folder. The agent is
       // healthyBox's, made by the install.
-      sys.responders.push((cmd, args) => (cmd === "/usr/bin/id" && !args.includes("taskbox-agent") ? { code: 0, stdout: `${me}\n`, stderr: "" } : undefined));
+      sys.responders.push((cmd, args) => (cmd === "/usr/bin/id" && !args.some((a) => /^(taskbox-agent|_taskboxnet|_taskboxgh)$/.test(a)) && args[0] !== "-nu" ? { code: 0, stdout: `${me}\n`, stderr: "" } : undefined));
       healthyBox(sys);
       // The release's whole taskbox.json, read before the yes.
       githubRoutes(sys, { settings: { ...CFG } });

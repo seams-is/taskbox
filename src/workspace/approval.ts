@@ -9,6 +9,7 @@
 // nonce, which the box makes new at each change of phase, so it can't be used twice; and a time within
 // SIGNED_FOR_MS of the box's clock, so one left lying about goes stale. It travels as base64url, so
 // the agent shell's word filter is never loosened.
+import { skFlags as readFlags } from "../core/sshsig.ts";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { APPROVER_NAMESPACE, type Verifier } from "../approver.ts";
@@ -200,39 +201,5 @@ export function verifyFolder(path: string, o: { chown?: (path: string, uid: numb
 // reads them itself.
 // namespace: the one the signature must name, NAMESPACE unless a key change's.
 export function skFlags(armoured: Uint8Array, namespace: string = NAMESPACE): number | undefined {
-  const m = /^-----BEGIN SSH SIGNATURE-----\n([A-Za-z0-9+/=\n]+)-----END SSH SIGNATURE-----\n?$/.exec(new TextDecoder().decode(armoured));
-  if (!m) return undefined;
-  const b = Buffer.from(m[1]!.replace(/\n/g, ""), "base64");
-  let off = 0;
-  const take = (n: number) => {
-    if (off + n > b.length) throw new Error("short");
-    const v = b.subarray(off, off + n);
-    off += n;
-    return v;
-  };
-  const str = () => take(take(4).readUInt32BE(0));
-  try {
-    if (take(6).toString("latin1") !== "SSHSIG" || take(4).readUInt32BE(0) !== 1) return undefined;
-    str(); // public key
-    if (str().toString("latin1") !== namespace) return undefined;
-    str(); // reserved
-    str(); // hash
-    const sig = str();
-    if (off !== b.length) return undefined;
-    let o = 0;
-    const s1 = () => {
-      if (o + 4 > sig.length) throw new Error("short");
-      const n = sig.readUInt32BE(o);
-      if (o + 4 + n > sig.length) throw new Error("short");
-      const v = sig.subarray(o + 4, o + 4 + n);
-      o += 4 + n;
-      return v;
-    };
-    if (s1().toString("latin1") !== "sk-ecdsa-sha2-nistp256@openssh.com") return undefined;
-    s1(); // the ECDSA signature
-    if (o + 5 !== sig.length) return undefined;
-    return sig[o]!;
-  } catch {
-    return undefined;
-  }
+  return readFlags(armoured, namespace);
 }

@@ -3,7 +3,7 @@
 // LaunchDaemon runs `taskbox guard` every minute: it keeps pf on and the anchor loaded, then writes
 // what it found to a root-owned file that the service's loop and taskbox check read. The service can't read pf itself.
 // VMs never reach the box's 5900: Softnet blocks them from the box except for DNS (loop.ts).
-import { existsSync, lstatSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type Config, DEFAULT_TUN, GUARD_LABEL, type Installed, LAUNCHCTL_MS, type Paths, previousLabels, readJson, readStateJson, TAILSCALED_LABEL } from "./config.ts";
 import type { Sys } from "./sys.ts";
@@ -13,6 +13,7 @@ import { makePasses, type PassMaker, Passes } from "./core/passes.ts";
 import { type EventLog, eventLog, flushEvents, installTermFlush } from "./core/events.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import { rootStateOf } from "./core/paths.ts";
+import { writeOwnedText } from "./core/rootfile.ts";
 import { passMakers } from "./passes/index.ts";
 import { Log } from "./log.ts";
 import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
@@ -424,10 +425,10 @@ function withPasses(r: GuardRecord, passes: Passes): GuardRecord {
   return now.length ? { ...rest, passes: now.map((l) => l.replace(/[^\x20-\x7e]/g, " ").slice(0, 200)).slice(0, 20) } : rest;
 }
 
+// Through root's safe writer: /var/run is group-writable on macOS, so the new name is made with
+// O_EXCL and no link followed (core/rootfile.ts).
 export function writeGuard(p: Paths, r: GuardRecord): void {
-  const tmp = `${p.guardState}.new`;
-  writeFileSync(tmp, JSON.stringify(r), { mode: 0o644 });
-  renameSync(tmp, p.guardState);
+  writeOwnedText(p.guardState, JSON.stringify(r), { mode: 0o644 });
 }
 
 // What the guard last found, for anyone. Only a fresh, root-owned record that only root can change

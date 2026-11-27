@@ -134,6 +134,31 @@ describe("the copies every user reads", () => {
 });
 
 describe("ci's answers for a controller", () => {
+  test("template list --json: each template, whether its copy matches, and why", async () => {
+    const r = await run(["template", "list", "--json"], CALLERS.ci);
+    const e = JSON.parse(r.said[0]!);
+    expect(readEnvelopes(r.said[0]!, { command: "template.list" }).ok).toBe(true);
+    expect((e.result.templates as { name: string; matches: unknown }[]).map((t) => [t.name, t.matches])).toEqual([["box-check", null], ["test-job", null], ["load", null]]);
+  });
+
+  test("template show box-check --json gives the box's values alone, which a controller checks", async () => {
+    const { checkValues } = await import("../src/watchdog.ts");
+    const r = await run(["template", "show", "box-check", "--json"], CALLERS.ci);
+    const e = JSON.parse(r.said[0]!);
+    expect(typeof checkValues(e.result.values)).toBe("object");
+  });
+
+  test("check --away --json is version 4: command check, result.away, every row and the verdict's exit", async () => {
+    // Every row's system read fails: each reads SKIP or FAIL, and the envelope still carries them all.
+    const sys = new FakeSys();
+    sys.responders.push(() => ({ code: 1, stdout: "", stderr: "" }));
+    const r = await run(["check", "--away", "--json"], CALLERS.ci, { sys });
+    const e = JSON.parse(r.said[0]!);
+    expect(readEnvelopes(r.said[0]!, { command: "check" }).ok).toBe(true);
+    expect([e.answers, e.command, e.result.away, e.exit === r.code]).toEqual([4, "check", true, true]);
+    const names = (e.result.checks as { name: string }[]).map((k) => k.name);
+    for (const n of ["Guard beat", "Key broker beat", "Waiting for confirm", "Tailnet name", "Power losses", "KVM", "Job source", "Hourly box check", "Test job"]) expect(names).toContain(n);
+  });
   test("status --json and logs --json are one envelope each, with the box's lines and v3's fields as the result", async () => {
     for (const [cmd, kind] of [["status", "status"], ["logs", "log"]] as const) {
       const r = await run([cmd, "--json"], CALLERS.ci);

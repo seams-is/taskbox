@@ -9,10 +9,11 @@
 // - a request is unlinked before it is applied, so one that crashes root can't crash it twice;
 // - root never creates, renames into or changes anything in a spool.
 // A request carries its id, kind and time, and is good for 2 minutes either side of root's clock. Its
-// outcome is recorded by id (outcomes), which the asking command waits for about 2 s.
+// outcome is recorded by id (outcomes), which the asking command waits for (core/asker.ts).
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readdirSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Clock } from "../clock.ts";
+import { ERROR_CODES, type ErrorCode } from "../command.ts";
 import { readUpTo } from "../workspace/read.ts";
 import { isBootId } from "./boot.ts";
 import { isId, type Rand, realRand, idOf } from "./ids.ts";
@@ -116,6 +117,11 @@ export interface SpoolRules {
   requestMax?: number;
   // Who the spool belongs to, for the lines: "the agent account" by default.
   whose?: string;
+  // How old an entry is for the flood's cut, lower first: its mtime by default, which the asker sets.
+  age?: (e: Entry) => number;
+  // A request-named file root removed unread, so its asker can be told: the flood's cut, or one that
+  // waited past forMs.
+  dropped?: (name: string, why: "flood" | "expired") => void;
 }
 
 export interface SpoolMemory {
@@ -126,6 +132,7 @@ export const newSpoolMemory = (): SpoolMemory => ({ stuck: new Set() });
 export interface SpoolReport {
   did: string[];
   problems: string[];
+  closed?: string; // why the spool couldn't be read at all, when it couldn't
 }
 
 // One pass over a spool. take is called for each chosen request after it is unlinked, with what was
@@ -138,6 +145,7 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
   const why = spoolProblem(spool, r.owner, r.rootUid ?? 0, r.whose);
   if (why) {
     report.problems.push(`${why}, so the spool is closed`);
+    report.closed = why;
     return;
   }
   const all = listSpool(spool, r.scan ?? SCAN);
@@ -167,6 +175,7 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
   for (const e of old) {
     try {
       unlinkSync(join(spool, e.name));
+      if (r.isRequest(e.name)) r.dropped?.(e.name, "expired");
     } catch {
       mem.stuck.add(e.name);
     }
@@ -175,11 +184,13 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
   entries = entries.filter((x) => !old.includes(x));
   // A flood: the oldest past max go.
   if (entries.length > max) {
-    entries.sort((a, b) => a.mtimeMs - b.mtimeMs || (a.name < b.name ? -1 : 1));
+    const age = r.age ?? ((e: Entry) => e.mtimeMs);
+    entries.sort((a, b) => age(a) - age(b) || (a.name < b.name ? -1 : 1));
     const drop = entries.slice(0, entries.length - max);
     for (const e of drop) {
       try {
         unlinkSync(join(spool, e.name));
+        if (r.isRequest(e.name)) r.dropped?.(e.name, "flood");
       } catch {
         mem.stuck.add(e.name);
       }
@@ -209,10 +220,10 @@ export async function drainSpool(r: SpoolRules, mem: SpoolMemory, clock: Pick<Cl
 
 // v3's request files: <rq_ULID>.<kind>.json. The kind is in the name, so root can order requests
 // without opening them; the file's own id and kind must match its name.
-const NAME = /^(rq_[0-9A-HJKMNP-TV-Z]{26})\.([a-z][a-z-]{0,23})\.json$/;
+export const REQUEST_NAME = /^(rq_[0-9A-HJKMNP-TV-Z]{26})\.([a-z][a-z-]{0,23})\.json$/;
 export const requestFileName = (id: string, kind: string) => `${id}.${kind}.json`;
 export function parseRequestName(file: string, kinds: readonly string[]): { id: string; kind: string } | undefined {
-  const m = NAME.exec(file);
+  const m = REQUEST_NAME.exec(file);
   return m && kinds.includes(m[2]!) ? { id: m[1]!, kind: m[2]! } : undefined;
 }
 
@@ -235,7 +246,7 @@ export interface Request {
   body: Record<string, unknown>;
 }
 
-export type RequestRead = { ok: true; request: Request } | { ok: false; why: string };
+export type RequestRead = { ok: true; request: Request } | { ok: false; why: string; expired?: true };
 const refuse = (why: string): RequestRead => ({ ok: false, why });
 
 // A request from what root read, for the id and kind its name gave, at root's time. Strict: v, id,
@@ -263,7 +274,7 @@ export function readRequest(file: string, f: SpoolFile, o: { owner: number; now:
   if (v.id !== n.id) return refuse("the request's id isn't its file's");
   if (v.kind !== n.kind) return refuse("the request's kind isn't its file's");
   if (!time(v.at)) return refuse("the request's time isn't one taskbox reads");
-  if (Math.abs(o.now - (v.at as number)) > (o.forMs ?? REQUEST_FOR_MS)) return refuse("the request is more than 2 minutes old, or from the future");
+  if (Math.abs(o.now - (v.at as number)) > (o.forMs ?? REQUEST_FOR_MS)) return { ok: false, why: "the request is more than 2 minutes old, or from the future", expired: true };
   if (!isObj(v.body)) return refuse("the request's body isn't an object");
   const bad = o.kinds[n.kind]!(v.body);
   if (bad) return refuse(bad);
@@ -299,6 +310,7 @@ export interface Outcome {
   boot?: string; // the boot it was written in
   ok: boolean;
   said: string;
+  code?: ErrorCode; // why it was refused, as the envelope's error.code says it
   op?: string;
 }
 export const OUTCOME_KEEP_MS = 60 * 60_000;
@@ -307,7 +319,7 @@ const outcomeFile = (dir: string, id: string) => {
   return join(dir, `${id}.json`);
 };
 function outcomeProblem(o: unknown): string | undefined {
-  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) && (o.mono === undefined || Number.isSafeInteger(o.mono)) && (o.boot === undefined || isBootId(o.boot)) ? undefined : "it isn't an outcome taskbox reads";
+  return isObj(o) && isId("rq", o.id) && time(o.at) && typeof o.ok === "boolean" && plain(o.said, 240) && (o.op === undefined || isId("op", o.op)) && (o.code === undefined || (ERROR_CODES as readonly unknown[]).includes(o.code)) && (o.mono === undefined || Number.isSafeInteger(o.mono)) && (o.boot === undefined || isBootId(o.boot)) ? undefined : "it isn't an outcome taskbox reads";
 }
 // Records an outcome once: a request's first outcome stands. False when one was there.
 export function recordOutcome(dir: string, o: Outcome, w: Omit<WriteRules, "mode"> = {}): boolean {
@@ -341,7 +353,7 @@ export function readOutcome(dir: string, id: string, rootUid = 0): Read<Outcome>
 }
 // An outcome goes at whichever comes first: the wall clock an hour past it, a restart of the box, or,
 // in the same boot, an hour of the monotonic clock. A clock gone back keeps it; boot and mono still
-// end it. The asker waits about 2 s. The ids removed.
+// end it. The asker waits seconds for it. The ids removed.
 export function keepOutcomes(dir: string, at: number | { wall: number; mono?: number; boot?: string }): string[] {
   const m = typeof at === "number" ? { wall: at } as { wall: number; mono?: number; boot?: string } : at;
   const gone: string[] = [];

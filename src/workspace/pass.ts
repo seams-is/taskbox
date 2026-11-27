@@ -24,8 +24,8 @@
 import { randomBytes } from "node:crypto";
 import { lstatSync, renameSync, statfsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { POOL_USER, poolOf } from "../access.ts";
-import { readRecord, uidOf } from "../accounts.ts";
+import { poolNames, poolOf } from "../access.ts";
+import { isAgentRole, readRecord, uidOf } from "../accounts.ts";
 import { readInstallId } from "../answers.ts";
 import { trustedKey } from "../approver.ts";
 import { type Config, type Paths, vmsAtMostOf } from "../config.ts";
@@ -92,18 +92,24 @@ export interface PassReport {
 
 type PoolAccount = { name: string; uid: number };
 
-// The pool accounts to fence: those pool.json records. A pool.json that can't be read leaves only an
-// account named taskbox-ws1 with a hidden user ID, fenced but never given a workspace.
+// The pool accounts to fence: those pool.json records. A pool.json that can't be read leaves each
+// account the settings name (<pool>1 to <pool><size>) that has a hidden user ID, fenced but never
+// given a workspace.
 async function poolAccounts(d: WsDeps): Promise<{ list: PoolAccount[]; sure: boolean }> {
   const rec = readPoolRecord(d.p.poolRecord, d.rootUid ?? 0);
   if (rec !== "bad") return { list: Object.entries(rec.made).filter(([n]) => POOL_NAME.test(n)).map(([name, m]) => ({ name, uid: m.uid })), sure: true };
-  const uid = await uidOf(d.sys, POOL_USER).catch(() => undefined);
-  return { list: uid !== undefined && uid >= FIRST_HIDDEN_ID && uid <= LAST_HIDDEN_ID ? [{ name: POOL_USER, uid }] : [], sure: false };
+  const list: PoolAccount[] = [];
+  for (const name of poolNames(d.cfg.accounts)) {
+    const uid = await uidOf(d.sys, name).catch(() => undefined);
+    if (uid !== undefined && uid >= FIRST_HIDDEN_ID && uid <= LAST_HIDDEN_ID) list.push({ name, uid });
+  }
+  return { list, sure: false };
 }
 
-// The agent account's user ID: the one root's accounts.json records for accounts.agent, and only
-// while the account has that ID now.
-async function agentUid(d: WsDeps): Promise<number | undefined> {
+// The agent account's user ID: the one root's accounts.json records for accounts.agent, as made or
+// as a v2 agent taskbox took (placed), and only while the account has that ID now.
+// The agent spool's pass (passes/requests.ts) reads it the same way.
+export async function agentUid(d: Pick<WsDeps, "sys" | "cfg" | "p" | "rootUid">): Promise<number | undefined> {
   const name = d.cfg.accounts.agent;
   if (name === undefined) return undefined;
   try {
@@ -113,7 +119,7 @@ async function agentUid(d: WsDeps): Promise<number | undefined> {
     return undefined;
   }
   const m = readRecord(d.p.accountsRecord).made[name];
-  if (m?.role !== "agent") return undefined;
+  if (!m || !isAgentRole(m.role)) return undefined;
   return (await uidOf(d.sys, name).catch(() => undefined)) === m.uid ? m.uid : undefined;
 }
 
@@ -360,7 +366,7 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
   const ctx: Ctx = { now, nonce: () => randomBytes(16).toString("hex") };
   const pool = await poolAccounts(d);
   const trusted = trustedKey(cfg.approverKey, readPin(p.approverPin, root));
-  const names = pool.sure ? poolOf(trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
+  const names = pool.sure ? poolOf(cfg.accounts, trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
   const on = trusted !== undefined && cfg.accounts.agent !== undefined && names.length > 0;
   const uids = pool.list.map((a) => a.uid);
   const closeAll = async () => {
@@ -505,7 +511,7 @@ export async function fencePass(d: WsDeps, mem: WsMemory): Promise<PassReport> {
   const r: PassReport = { did: [], problems: [] };
   const pool = await poolAccounts(d);
   const trusted = trustedKey(d.cfg.approverKey, readPin(d.p.approverPin, d.rootUid ?? 0));
-  const names = pool.sure ? poolOf(trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
+  const names = pool.sure ? poolOf(d.cfg.accounts, trusted).filter((n) => pool.list.some((a) => a.name === n)) : [];
   const on = trusted !== undefined && d.cfg.accounts.agent !== undefined && names.length > 0;
   const read = readStateFile(d.p.workspaces, d.rootUid ?? 0);
   const f = await keepAnchor(d.sys, pool.list.map((a) => a.uid), on);

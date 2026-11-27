@@ -3,7 +3,17 @@
 // Two adapters: GitHub Actions, read as a read-only App the owner makes (queue.ts), and none, which
 // always answers that it can't see the queue, so the scheduler follows the jobs its own VMs take.
 import { type Config, sourceOf } from "./config.ts";
-import { queueWhy } from "./queue.ts";
+import { RATE_WAIT_MAX_MS } from "./ghfail.ts";
+import { QueueError, queueWhy } from "./queue.ts";
+
+export type SourceKind = "key" | "clock" | "gone" | "refused" | "rate" | "timeout" | "network" | "server";
+// A failed read's class: GitHub's answer as the runner chain classes it, a time limit, or the network.
+export function failureOf(e: unknown): { kind: SourceKind; waitMs?: number } {
+  if (e instanceof QueueError && e.failure) return { kind: e.failure.kind, ...(e.failure.kind === "rate" ? { waitMs: Math.min(RATE_WAIT_MAX_MS, e.failure.waitMs ?? 60_000) } : {}) };
+  if (e instanceof QueueError) return { kind: "refused" };
+  const name = (e as { name?: unknown } | null)?.name;
+  return { kind: name === "TimeoutError" || name === "AbortError" ? "timeout" : "network" };
+}
 
 export interface WaitingItem {
   key: string; // opaque, stable while it waits
@@ -19,7 +29,8 @@ export interface WaitingItem {
   repo?: string;
 }
 
-export type Snapshot = { known: true; at: number; items: WaitingItem[] } | { known: false; at: number; why: string };
+// kind: the runner chain's class for a failed read (ghfail.ts), and for rate, how long GitHub asked to wait.
+export type Snapshot = { known: true; at: number; items: WaitingItem[] } | { known: false; at: number; why: string; kind?: SourceKind; waitMs?: number };
 
 export interface JobSource {
   readonly id: string;
@@ -65,10 +76,12 @@ export class GitHubActionsSource implements JobSource {
     this.pending = true;
     const p = this.reader.items().finally(() => (this.pending = false)).then(
       (items): Snapshot => ({ known: true, at: now, items }),
-      // A failed read is kept for four polls, so an outage or a refusal isn't read again at every ask.
+      // A failed read is kept for four polls, so an outage or a refusal isn't read again at every ask;
+      // a rate limit until GitHub's reset.
       (e): Snapshot => {
-        if (this.last) this.last.at = now + 3 * this.pollMs;
-        return { known: false, at: now, why: queueWhy(e) };
+        const f = failureOf(e);
+        if (this.last) this.last.at = now + (f.kind === "rate" ? Math.max(this.pollMs, f.waitMs ?? 0) - this.pollMs : 3 * this.pollMs);
+        return { known: false, at: now, why: queueWhy(e), ...f };
       },
     );
     this.last = { at: now, p };

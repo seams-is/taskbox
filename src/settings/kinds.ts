@@ -58,11 +58,17 @@ export const MAX_SIZES = 4; // beside the default
 const SIZE_NAME = /^[a-z][a-z0-9-]{0,19}$/;
 
 // Every label this kind's VMs may register, its own label first. A waiting VM with no job in mind
-// registers all of them. From labels (v2.4.0), or else label and mergeLabel.
+// registers all of them. From labels (v2.4.0), or else label and mergeLabel; then the box's own,
+// <box>-<kind>, which no other box has, so the box's test job runs only here.
 export function labelsFor(cfg: Config, kind: Kind): string[] {
   const c = forKind(cfg, kind);
-  if (c.labels?.length) return [...c.labels];
-  return c.mergeLabel ? [c.label, c.mergeLabel] : [c.label];
+  const set = c.labels?.length ? [...c.labels] : c.mergeLabel ? [c.label, c.mergeLabel] : [c.label];
+  const own = boxLabelFor(cfg, kind);
+  return own && !set.some((l) => l.toLowerCase() === own) ? [...set, own] : set;
+}
+export function boxLabelFor(cfg: Config, kind: Kind): string | undefined {
+  const l = `${String((cfg.base ?? cfg).runnerNamePrefix ?? "").toLowerCase()}-${kind}`;
+  return /^[a-z0-9][a-z0-9-]{0,49}$/.test(l) && !l.startsWith("-") ? l : undefined;
 }
 
 // A label as GitHub takes it. GitHub's own runner labels are every runner's, so no kind names them.

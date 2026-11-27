@@ -89,7 +89,7 @@ async function connect(c: BoxCtx, which: "connect" | "disconnect"): Promise<numb
         };
         const stopWatch = sys.every(2000, () => (live() ? undefined : finish({ stop: "The connect ended (its deadline, or op cancel)." })));
         // In the admin's own session (launchctl asuser), as the admin, so the page reaches their screen.
-        const proc = sys.spawn("/bin/launchctl", asAdmin(["/opt/taskbox/bin/bun", "--no-install", "--no-env-file", "--cwd=/", "--config=/opt/taskbox/app/bunfig.run.toml", "/opt/taskbox/app/src/listen.ts"]), {
+        const proc = sys.spawn("/bin/launchctl", asAdmin(["/opt/taskbox/bin/bun", "--no-install", "--no-env-file", "--cwd=/", "--config=/opt/taskbox/app/bunfig.run.toml", "/opt/taskbox/app/src/cli.ts", "connect", "listen"]), {
           stdin: `${JSON.stringify(setup)}\n`,
           onLine: (l) => {
             try {
@@ -136,6 +136,14 @@ export const commands: CommandSpec[] = [
       return undefined;
     },
     run: (c) => connect(c, "connect"),
+  },
+  {
+    // Run by connect github in the admin's session, never by hand: its setup comes on stdin.
+    path: ["connect", "listen"],
+    summary: "connect github's listener on 127.0.0.1, as the person at the browser.",
+    who: ["admin", "owner"],
+    internal: true,
+    run: async () => (await import("../listen.ts")).listenMain(),
   },
   { path: ["disconnect", "github"], summary: "Uninstalls the job source App, keeps none as the source, and deletes its key.", who: ["owner", "admin"], root: true, did: "Ran disconnect github.", run: (c) => connect(c, "disconnect") },
 ];

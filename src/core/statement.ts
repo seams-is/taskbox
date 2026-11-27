@@ -13,7 +13,9 @@
 // So a signature works once, on one box, for one action with its arguments, within 5 minutes.
 // The presence flag is set by software on the signing Mac: it is checked, and never taken as
 // proof of a touch. Lasting changes wait for confirm at the box (pending.ts).
+import { createPublicKey, createHash, verify as ecVerify } from "node:crypto";
 import { fingerprint } from "../approver.ts";
+import { parseSshsig, rsOf, SK } from "./sshsig.ts";
 import { fromB64url, toB64url, verifySignature, type VerifyDeps } from "../workspace/approval.ts";
 import { badKey, isObj, safeParse } from "./rootfile.ts";
 import { NONCE, SUBJECT } from "./nonces.ts";
@@ -185,7 +187,10 @@ export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readon
   if (stale && budget.n >= VERIFY_PER_MINUTE) return refuse("stale-state", "The statement's nonce isn't the box's current one: another signed request applied first.");
   budget.n++;
   let signer: string | undefined;
-  for (const key of o.keys) {
+  // Only the pinned key the signature itself names is tried: one ssh-keygen run, never one per key.
+  // Only the pinned key the signature itself names is tried, and only once the signature checks in
+  // process: a forged one costs no ssh-keygen run. ssh-keygen as nobody stays the authority.
+  for (const key of o.keys.filter((k) => k.split(" ")[1] === signatureKey(parts.signature) && signsInProcess(k, parts.statement, parts.signature))) {
     const why = await verifySignature(d, { key, message: parts.statement, signature: parts.signature, namespace: CONTROL_NS }).catch(() => "failed");
     if (why === undefined) {
       signer = fingerprint(key);
@@ -196,4 +201,54 @@ export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readon
   const current = o.nonce(s.subject);
   if (current === undefined || current !== s.nonce) return { ...refuse("stale-state", "The statement's nonce isn't the box's current one: another signed request applied first."), signer: Verified.signer(signer) };
   return { ok: true, statement: s, signer };
+}
+
+// The public key an armoured SSH signature names, as base64 of its blob, the same as a key line's
+// second field; undefined when it isn't one taskbox reads. Only a hint for which pinned key to try.
+export const signatureKey = (armoured: string): string | undefined => parseSshsig(armoured)?.blob.toString("base64");
+
+// The args a command line signs: its own flags by name, the global flags that change what it does,
+// and its words. The box and the controller build them the same way from the box's own parse, so
+// the statement and the command agree. Flags that change only how the answer is shown or where it
+// goes aren't signed. No command that takes --signed has a flag named --words (registry.ts).
+const UNSIGNED_FLAGS = new Set(["json", "box", "signed", "watch", "follow", "detach", "yes"]);
+export function argsOf(p: { args: readonly string[]; opts: Record<string, string | true | string[]>; flags: Partial<Record<string, string | true>> }): Args {
+  const out: Args = {};
+  for (const [k, v] of Object.entries(p.flags)) if (v !== undefined && !UNSIGNED_FLAGS.has(k)) out[k] = v;
+  for (const [k, v] of Object.entries(p.opts)) out[k] = Array.isArray(v) ? [...v] : v;
+  if (p.args.length) out.words = [...p.args];
+  return canonical(out) as Args;
+}
+
+// A cheap first check of a security key's SSH signature, in process: the signature's key is this
+// pinned key, its namespace the one asked (taskbox-control by default), its presence flag set, and
+// its P-256 signature over the message holds (PROTOCOL.sshsig, PROTOCOL.u2f). It only ever refuses
+// early. What it passes, ssh-keygen -Y verify as nobody checks again, and that is what the box acts on.
+export function signsInProcess(key: string, message: string | Uint8Array, armoured: string, namespace: string = CONTROL_NS): boolean {
+  const p = parseSshsig(armoured);
+  if (!p || p.blob.toString("base64") !== key.split(" ")[1] || p.namespace !== namespace || (p.flags & 0x01) === 0) return false;
+  if (p.alg !== "sha512" && p.alg !== "sha256") return false;
+  try {
+    const k = { o: 0 };
+    const str = () => {
+      const n = p.blob.readUInt32BE(k.o);
+      if (k.o + 4 + n > p.blob.length) throw new Error("short");
+      const v = p.blob.subarray(k.o + 4, k.o + 4 + n);
+      k.o += 4 + n;
+      return v;
+    };
+    if (str().toString("latin1") !== SK || str().toString("latin1") !== "nistp256") return false;
+    const q = str();
+    const app = str();
+    if (q.length !== 65 || q[0] !== 4) return false;
+    const len = (v: Buffer) => Buffer.concat([Buffer.from([v.length >>> 24, (v.length >>> 16) & 255, (v.length >>> 8) & 255, v.length & 255]), v]);
+    const digest = createHash(p.alg).update(message).digest();
+    const signed = Buffer.concat([Buffer.from("SSHSIG"), len(Buffer.from(p.namespace, "latin1")), len(p.reserved), len(Buffer.from(p.alg)), len(digest)]);
+    const sk = Buffer.concat([createHash("sha256").update(app).digest(), Buffer.from([p.flags]), p.counter, createHash("sha256").update(signed).digest()]);
+    const pub = createPublicKey({ key: { kty: "EC", crv: "P-256", x: q.subarray(1, 33).toString("base64url"), y: q.subarray(33).toString("base64url") }, format: "jwk" });
+    const rs = rsOf(p.ecdsa);
+    return rs !== undefined && ecVerify("sha256", sk, { key: pub, dsaEncoding: "ieee-p1363" }, Buffer.concat([rs.r, rs.s]));
+  } catch {
+    return false;
+  }
 }

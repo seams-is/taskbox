@@ -17,6 +17,7 @@
 // its file. If neither happens by the deadline, the watcher takes the box back to v2.6.1 with
 // v2.6.1's own undo, so a v3 whose guard never starts is still undone. A failed undo leaves it in
 // place: it says so in taskbox check and tries again later.
+import { skFlags as readFlags } from "./core/sshsig.ts";
 import { bootOutListed } from "./core/child.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { createHash } from "node:crypto";
@@ -126,39 +127,7 @@ export function signersProblem(text: string): string | undefined {
 // armoured SSHSIG, or undefined when it isn't a security key's signature in that form. ssh-keygen -Y
 // verify accepts a signature whatever its flags, so taskbox reads them itself (from #15).
 export function skFlags(armoured: Uint8Array): number | undefined {
-  const m = /^-----BEGIN SSH SIGNATURE-----\n([A-Za-z0-9+/=\n]+)-----END SSH SIGNATURE-----\n?$/.exec(new TextDecoder().decode(armoured));
-  if (!m) return undefined;
-  const b = Buffer.from(m[1]!.replace(/\n/g, ""), "base64");
-  let off = 0;
-  const take = (n: number) => {
-    if (off + n > b.length) throw new Error("short");
-    const v = b.subarray(off, off + n);
-    off += n;
-    return v;
-  };
-  const str = () => take(take(4).readUInt32BE(0));
-  try {
-    if (take(6).toString("latin1") !== "SSHSIG" || take(4).readUInt32BE(0) !== 1) return undefined;
-    str(); // public key
-    str(); // namespace
-    str(); // reserved
-    str(); // hash
-    const sig = str();
-    if (off !== b.length) return undefined;
-    let o = 0;
-    const s1 = () => {
-      const n = sig.readUInt32BE(o);
-      const v = sig.subarray(o + 4, o + 4 + n);
-      o += 4 + n;
-      return v;
-    };
-    if (s1().toString("latin1") !== "sk-ecdsa-sha2-nistp256@openssh.com") return undefined;
-    s1(); // the ECDSA signature
-    if (o + 5 !== sig.length) return undefined;
-    return sig[o]!;
-  } catch {
-    return undefined;
-  }
+  return readFlags(armoured);
 }
 
 // The git tree object ID of an unpacked release: plain files only, mode 100755 when executable, as the
@@ -502,6 +471,14 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
 // a later release's own, which the install gone back to doesn't know.
 export const KNOWN_DAEMONS = [GUARD_LABEL, TAILSCALED_LABEL, `${LABEL_PREFIX}.tailscaled-reload`, ROLLBACK_LABEL];
 export const KNOWN_AGENTS = [AGENT_LABEL];
+
+// The daemons of v3 and later that an install keeps, from its install record's tag: guardwatch.
+// Only a tag that says v2 or older drops it; a missing or unreadable tag keeps it, so the guard is
+// never left unwatched (on a v2 install it fails each minute, which check shows).
+export function laterDaemons(tag: unknown): string[] {
+  const major = typeof tag === "string" ? Number(/^v(\d{1,3})\./.exec(tag)?.[1]) : NaN;
+  return major < 3 ? [] : [`${LABEL_PREFIX}.guardwatch`];
+}
 
 // agentsUid: whose gui domain the agents run in (ci's); with none, their plists still go.
 // v3's op jobs (core/child.ts) have their plists in root's ops folder, outside these folders, so with

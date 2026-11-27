@@ -1,4 +1,3 @@
-#!/usr/bin/env -S /opt/taskbox/bin/bun --no-install --no-env-file --cwd=/ --config=/opt/taskbox/app/bunfig.run.toml
 // taskbox connect github's listener. It runs as the person at the browser (the owner on the controller,
 // the admin at the box), never as root: root never parses HTTP. It reads its setup as one line of
 // JSON on stdin, so no token is on a command line, serves on 127.0.0.1 only, and writes JSON lines on
@@ -156,23 +155,26 @@ export function pidWatch(pid: number, kill: (pid: number, sig: 0) => void = (p, 
   };
 }
 
-if (import.meta.main) {
+// taskbox connect listen: the listener's run, as the person at the browser.
+export async function listenMain(): Promise<number> {
   const line = await new Response(Bun.stdin.stream()).text();
   let setup: ListenSetup;
   try {
     setup = JSON.parse(line.split("\n")[0]!) as ListenSetup;
   } catch {
-    process.exit(2);
+    return 2;
   }
-  if (setupProblem(setup)) process.exit(2);
+  if (setupProblem(setup)) return 2;
   endOnSignals();
   const out = (e: ListenEvent) => process.stdout.write(`${JSON.stringify(e)}\n`);
-  serveOnce(
-    setup,
-    (e) => {
-      out(e);
-      if (!("port" in e)) realClock.after(100, () => process.exit(0));
-    },
-    { parentAlive: setup.watch ? (() => { const a = parentWatch(); const b = pidWatch(setup.watch!); return () => a() && b(); })() : parentWatch() },
-  );
+  return new Promise<number>((resolve) => {
+    serveOnce(
+      setup,
+      (e) => {
+        out(e);
+        if (!("port" in e)) realClock.after(100, () => resolve(0));
+      },
+      { parentAlive: setup.watch ? (() => { const a = parentWatch(); const b = pidWatch(setup.watch!); return () => a() && b(); })() : parentWatch() },
+    );
+  });
 }

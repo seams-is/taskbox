@@ -10,3 +10,4 @@ Output of real commands on a box, with anything random or private replaced, kept
 - `policy/`: the policy files `taskbox policy show --whole` must give for each set of settings.
 - `release-key-trial.txt` and its `.sig`: a statement signed with a trial key, for the release check.
 - `github/conversion.json`: the example answer of `POST /app-manifests/{code}/conversions` from GitHub's OpenAPI description (github/rest-api-description, `integration-from-manifest`), its key replaced by the test. It has no `public` field.
+- `se-signature/`: a real Secure Enclave signature (Touch ID, 24 Nov 2026, namespace taskbox-release) over `message.txt`, with its own public key, for the in-process signature check against ssh-keygen.

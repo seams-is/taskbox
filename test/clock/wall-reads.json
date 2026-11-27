@@ -15,33 +15,25 @@
     "reads": 1,
     "why": "the watch screen's now: display"
   },
-  "laptop/commands.ts": {
-    "reads": 5,
-    "why": "when a status was read and a screen drawn: display"
+  "controller/forward.ts": {
+    "reads": 4,
+    "why": "the time on an envelope the controller makes, and when a status was read: display"
   },
-  "laptop/home.ts": {
+  "controller/home.ts": {
     "reads": 1,
     "why": "a temp file's unique name"
   },
-  "laptop/main.ts": {
-    "reads": 1,
-    "why": "the laptop's Clock: passed on to the lines here"
-  },
-  "laptop/owner.ts": {
-    "reads": 1,
-    "why": "the time a signed statement carries; the box judges its 5 minutes"
-  },
-  "laptop/pair.ts": {
-    "reads": 1,
-    "why": "when a box was paired: a label"
-  },
-  "laptop/screen.ts": {
-    "reads": 1,
-    "why": "how long a workspace has waited to save: display"
-  },
-  "laptop/update.ts": {
+  "controller/main.ts": {
     "reads": 4,
-    "why": "when the laptop last looked for an update: a step only looks sooner or later"
+    "why": "the controller's Clock, and the time on its own envelopes and events: labels"
+  },
+  "controller/pair.ts": {
+    "reads": 4,
+    "why": "when a box was paired, and the time on the controller's events: labels"
+  },
+  "controller/update.ts": {
+    "reads": 6,
+    "why": "when the controller last looked for an update, and the time on its events: a step only looks sooner or later"
   },
   "keys.ts": {
     "reads": 3,
@@ -64,8 +56,8 @@
     "why": "days until a date and recent logins: display"
   },
   "awaychecks.ts": {
-    "reads": 5,
-    "why": "how long ago the loop's last request and beat were: rows that say OK with a time"
+    "reads": 7,
+    "why": "how long ago the loop's last request and beat were: rows that say OK with a time; the power log's last 30 days, a WARN only; when a lasting change lapses, with mono and the boot beside it"
   },
   "checks.ts": {
     "reads": 5,
@@ -80,8 +72,8 @@
     "why": "the answers envelope's at, for a usage error, a rename and every answer: a label"
   },
   "ops.ts": {
-    "reads": 15,
-    "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h"
+    "reads": 21,
+    "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h. Remove's op record takes its start, end and phase times from it, for people to read; no deadline or lapse rests on them. A stale or stopped remove's end time, and the update lock's note of when remove took it, too."
   },
   "install.ts": {
     "reads": 6,
@@ -96,8 +88,8 @@
     "why": "the load command's now for its session's labels and freshness: display and a refusal to start"
   },
   "queue.ts": {
-    "reads": 2,
-    "why": "when the queue was read and a run's queued time when GitHub gives none: the scheduler's order"
+    "reads": 3,
+    "why": "when the queue was read and a run's queued time when GitHub gives none: the scheduler's order; a refusal's time, for its clock offset and a rate limit's wait when GitHub sends no Date"
   },
   "kinds.ts": {
     "reads": 8,
@@ -139,6 +131,10 @@
     "reads": 3,
     "why": "an op's end time and spawn time, and the 30 s a new job has to take its lease: a step only changes that grace; a free lease is the proof. Op deadlines are on mono"
   },
+  "guardwatch.ts": {
+    "reads": 2,
+    "why": "a beat's wall time and a log line's time, for people to read only: every age is judged on mono"
+  },
   "guard.ts": {
     "reads": 7,
     "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too"
@@ -148,7 +144,7 @@
     "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
   },
   "loop.ts": {
-    "reads": 103,
+    "reads": 101,
     "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both"
   },
   "cmd/daemons.ts": {
@@ -156,8 +152,8 @@
     "why": "moved from cli.ts: the load session's wanted read and the workspaces hold's freshness for the loop, which fails closed both ways. The guard's step-down proof reads no clock: a new guard record file"
   },
   "cmd/job.ts": {
-    "reads": 1,
-    "why": "moved from cli.ts: the now job timings' acceptance rows are read against: display"
+    "reads": 6,
+    "why": "the timings' now, --since back from now, how long a live job has run, which queued lines are fresh, and when a stop was asked: display and labels"
   },
   "cmd/logins.ts": {
     "reads": 1,
@@ -190,5 +186,17 @@
   "rows/connect.ts": {
     "reads": 1,
     "why": "how old the keeper's counts file is, for a WARN row: display"
+  },
+  "core/dispatch.ts": {
+    "reads": 1,
+    "why": "a request's 2 minutes and a signed statement's 5 minutes: times another machine wrote, which only the wall clock can judge; the nonce is what makes a signature work once"
+  },
+  "passes/requests.ts": {
+    "reads": 1,
+    "why": "a statement's 5 minutes and a request's time when the spool is over its cap, and a dropped request's outcome time: times another machine wrote, or a label; nothing is removed by it but what the spool's cap already removes"
+  },
+  "jobs.ts": {
+    "reads": 1,
+    "why": "when a stop was asked: a label in the stop's file"
   }
 }

@@ -149,7 +149,7 @@ describe("taskbox status", () => {
     const notCi = { ...d, uid: d.uid + 1 };
     expect(commandsFor(d, { remote: false, admin: false })).toBe(commandList());
     expect(commandList()).toBe("Commands: check, drain, job, load, logins, logs, policy, prune, size, connect, status, stop, start, template, workspace, queue, wait, progress, deny, signed, workspaces, and as your admin user: connect, disconnect, key, remove, rollback, unlock, update, workspace.");
-    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, hello, job, load, logins, logs, size, status, template, workspace, queue, wait, progress, deny, signed, workspaces.");
+    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, hello, job, load, logins, logs, nonce, size, status, template, workspace, queue, wait, progress, deny, signed, workspaces.");
     expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, job, load, logins, logs, policy, size, connect, status, template, workspaces, and connect, disconnect, key, remove, rollback, unlock, update, workspace.");
     expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, job, load, logins, logs, policy, size, connect, status, template, workspaces.");
     expect(commandsFor(notCi, undefined)).toBe(commandList());
@@ -315,7 +315,32 @@ describe("taskbox rollback", () => {
   });
 });
 
+describe("a guard with no watcher", () => {
+  test("status reads Needs you while the guard's LaunchDaemon has no guardwatch beside it", async () => {
+    const { stateNow } = await import("../src/ops.ts");
+    const { d, p } = ops({ running: true });
+    linked(p);
+    mkdirSync(join(p.guardPlist, ".."), { recursive: true });
+    writeFileSync(p.guardPlist, "<plist/>");
+    expect((await stateNow(d)).detail).toBe("guardwatch isn't installed, so nothing restarts the guard if it sticks");
+    writeFileSync(join(p.guardPlist, "..", "local.taskbox.guardwatch.plist"), "<plist/>");
+    expect((await stateNow(d)).detail).not.toContain("guardwatch");
+  });
+});
+
 describe("taskbox remove", () => {
+  test("guardwatch goes first, before the guard, so it never restarts the guard on its way out", async () => {
+    const { d, sys } = ops({ answers: ["yes"] });
+    const plist = join(d.paths.guardPlist, "..", "local.taskbox.guardwatch.plist");
+    mkdirSync(join(plist, ".."), { recursive: true });
+    writeFileSync(plist, "<plist/>");
+    await remove(d, { serviceUid: 502, people: [] });
+    const outs = sys.calls.filter((c) => c.cmd === "/bin/launchctl" && c.args[0] === "bootout").map((c) => c.args[1]);
+    expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeGreaterThanOrEqual(0);
+    expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeLessThan(outs.indexOf("system/local.taskbox.guard"));
+    expect(existsSync(plist)).toBe(false);
+  });
+
   test("no: nothing removed", async () => {
     const { d, p, said } = ops({ answers: ["no"] });
     expect(await remove(d, {})).toBe(1);
