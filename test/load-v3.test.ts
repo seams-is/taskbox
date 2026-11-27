@@ -223,28 +223,25 @@ describe("the test repo, through the owner's GitHub session", () => {
   test("load start writes the workflow when it differs; nothing when it matches", async () => {
     const f = fakeGh();
     const c = await repoChanges(f.gh, TEST.name, "main", v, false);
-    if (!Array.isArray(c)) throw new Error(c.stop);
-    expect(c.map((x) => x.what)).toEqual([`write .github/workflows/load.yml in ${TEST.name}, made from this box's settings`]);
-    expect(await c[0]!.apply()).toBeUndefined();
+    if ("stop" in c) throw new Error(c.stop);
+    expect(c.writes.map((x) => x.what)).toEqual([`write .github/workflows/load.yml in ${TEST.name}, made from this box's settings`]);
+    expect(await c.writes[0]!.apply()).toBeUndefined();
     const put = f.calls.at(-1)!;
     expect(put.args).toContain(`repos/${TEST.name}/contents/.github/workflows/load.yml`);
     expect(Buffer.from((put.body as { content: string }).content, "base64").toString()).toBe(loadYamlFrom(v));
-    expect(await repoChanges(fakeGh({ workflow: loadYamlFrom(v) }).gh, TEST.name, "main", v, false)).toEqual([]);
+    expect(await repoChanges(fakeGh({ workflow: loadYamlFrom(v) }).gh, TEST.name, "main", v, false)).toEqual({ writes: [], settings: [] });
   });
-  test("the merge pattern lets the repo's own token open pull requests, and turns on a merge queue that asks for taskbox-load, once", async () => {
+  test("the merge pattern's settings are only read: what isn't as it needs is said for the owner to set, and nothing changes them", async () => {
     const f = fakeGh({ workflow: loadYamlFrom(v) });
     const c = await repoChanges(f.gh, TEST.name, "main", v, true);
-    if (!Array.isArray(c)) throw new Error(c.stop);
-    expect(c).toHaveLength(2);
-    for (const x of c) expect(await x.apply()).toBeUndefined();
-    const perm = f.calls.find((x) => x.args.includes("PUT") && x.args.some((a) => a.endsWith("/actions/permissions/workflow")))!;
-    expect(perm.body).toEqual({ default_workflow_permissions: "read", can_approve_pull_request_reviews: true });
-    const rs = f.calls.find((x) => x.args.includes("POST") && x.args.some((a) => a.endsWith("/rulesets")))!.body as { name: string; rules: { type: string; parameters: Record<string, unknown> }[]; bypass_actors: unknown[] };
-    expect(rs.name).toBe(RULESET);
-    expect(rs.rules.map((r) => r.type)).toEqual(["merge_queue", "required_status_checks"]);
-    expect(rs.rules[1]!.parameters.required_status_checks).toEqual([{ context: CHECK }]);
-    expect(rs.bypass_actors).toHaveLength(1);
-    expect(await repoChanges(fakeGh({ workflow: loadYamlFrom(v), perms: true, rulesets: [RULESET] }).gh, TEST.name, "main", v, true)).toEqual([]);
+    if ("stop" in c) throw new Error(c.stop);
+    expect(c.writes).toEqual([]);
+    expect(c.settings).toEqual([
+      `In ${TEST.name}'s settings, Actions, General: allow GitHub Actions to create pull requests, for the throwaway ones. Turn it on only while no account but yours and the box's App can push to ${TEST.name}.`,
+      `In ${TEST.name}'s settings, Rules: a branch ruleset named "${RULESET}" on main, with a merge queue and the required check ${CHECK}.`,
+    ]);
+    expect(f.calls.filter((x) => x.args.includes("-X"))).toEqual([]);
+    expect(await repoChanges(fakeGh({ workflow: loadYamlFrom(v), perms: true, rulesets: [RULESET] }).gh, TEST.name, "main", v, true)).toEqual({ writes: [], settings: [] });
   });
   test("cancel takes the session's own runs and the merge queue's, waiting or running, and closes its throwaway pull requests", async () => {
     const runs = [
@@ -295,7 +292,7 @@ function paired() {
   w.standIns[ADDRESS] = box;
   const d = deps(w, ["yes"]);
   d.signerFor = () => async () => ({ ok: true, signature: "c2ln" });
-  writeConfig(d.home, controllerConfig([pairing()]));
+  writeConfig(d.home, controllerConfig([{ ...pairing(), loadRepo: TEST.name }]));
   box.sys.clock = NOW;
   d.now = () => box.sys.now();
   return { w, box, d, p, signed };
@@ -315,6 +312,39 @@ describe("taskbox load start and stop on the controller", () => {
     expect(dispatch.body).toEqual({ ref: "main", inputs: { pattern: "burst", session: "1" } });
     expect(currentSession(readLoad(t.p, false, ME), NOW + M)?.until).toBe(NOW + 60 * M);
   });
+  test("the test repo must be the one box add was told; settings it needs are the owner's; a write asks a yes at a terminal, after the session opens", async () => {
+    const other = paired();
+    writeConfig(other.d.home, controllerConfig([{ ...pairing(), loadRepo: "example-org/elsewhere" }]));
+    Object.assign(other.d, { gh: fakeGh().gh, tty: true });
+    const r1 = await runLine(other.d, ["load", "start", "--pattern", "day", "--detach"]);
+    expect(r1.lines[0]).toBe(`The box names ${TEST.name} as its test repo, and box add was told example-org/elsewhere, so nothing is changed.`);
+    expect(other.signed).toEqual([]);
+
+    const merge = paired();
+    const mf = fakeGh({ workflow: loadYamlFrom(loadValues(loadConfig(merge.p.app, merge.p.boxSettings))) });
+    Object.assign(merge.d, { gh: mf.gh, tty: true });
+    const r2 = await runLine(merge.d, ["load", "start", "--pattern", "merge", "--detach", "--yes"]);
+    expect(r2.code).toBe(1);
+    expect(r2.lines.at(-1)).toBe("Not started. Nothing changed. Type taskbox load start again once they are set.");
+    expect(merge.signed).toEqual([]);
+    expect(mf.calls.filter((c) => c.args.includes("-X"))).toEqual([]);
+
+    const away = paired();
+    Object.assign(away.d, { gh: fakeGh().gh, tty: false });
+    const r3 = await runLine(away.d, ["load", "start", "--pattern", "day", "--detach", "--yes"]);
+    expect(r3.lines[0]).toBe(`load start writes to ${TEST.name} first, which asks you to type yes, and there is no terminal here.`);
+    expect(away.signed).toEqual([]);
+
+    const no = paired();
+    const nf = fakeGh();
+    Object.assign(no.d, { gh: nf.gh, tty: true });
+    no.d.ask = async () => "no";
+    const r4 = await runLine(no.d, ["load", "start", "--pattern", "day", "--detach", "--yes"]);
+    expect(no.signed).toHaveLength(1);
+    expect(r4.lines).toContain(`Nothing in ${TEST.name} changed, and session 1 is on with no test runs.`);
+    expect(nf.calls.filter((c) => c.args.includes("-X"))).toEqual([]);
+  });
+
   test("without the owner's gh, nothing is signed; with a session on, a second start is refused", async () => {
     const t = paired();
     const r = await runLine(t.d, ["load", "start", "--pattern", "day"]);

@@ -39,7 +39,7 @@ const spec = (path: string[], summary: string, o: Partial<CommandSpec> = {}): Co
 
 // The controller's own commands. The box's are in src/cmd/, and run here with --box.
 export const CONTROLLER: CommandSpec[] = [
-  spec(["box", "add"], "Pairs a box tagged tag:taskbox in this controller's Tailscale, then reads what it still needs.", { args: { name: "NAME", min: 0, max: 1, check: NAME_WORD.check }, options: [{ name: "--agent", value: "ACCOUNT", check: (v) => agentProblem(v) === undefined }, { name: "--jobs-repo", value: "REPO", check: (v) => REPO.test(v) }], flags: ["yes"] }),
+  spec(["box", "add"], "Pairs a box tagged tag:taskbox in this controller's Tailscale, then reads what it still needs.", { args: { name: "NAME", min: 0, max: 1, check: NAME_WORD.check }, options: [{ name: "--agent", value: "ACCOUNT", check: (v) => agentProblem(v) === undefined }, { name: "--jobs-repo", value: "REPO", check: (v) => REPO.test(v) }, { name: "--load-repo", value: "REPO", check: (v) => REPO.test(v) }], flags: ["yes"] }),
   spec(["box", "list"], "The paired boxes: name, Tailscale ID, install ID, agent account, release, reachable.", { flags: ["json"] }),
   spec(["box", "show"], "One pairing, and its last status.", { args: NAME_WORD, flags: ["json"] }),
   spec(["box", "use"], "Sets the box a command goes to when it names none.", { args: NAME_WORD }),
@@ -105,7 +105,7 @@ function boxShow(d: Deps, sel: string): Screen & { result?: Record<string, unkno
 
 // box add: pairing, then what the box still needs, as the box's own commands.
 async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknown>, yes: boolean, io: { out: (l: string) => void; draw: (l: string[]) => void }): Promise<number> {
-  const p = await pair(d, { name: args[0], agent: typeof opts.agent === "string" ? opts.agent : undefined, yes, ...(typeof opts["jobs-repo"] === "string" ? { jobsRepo: opts["jobs-repo"] } : {}) });
+  const p = await pair(d, { name: args[0], agent: typeof opts.agent === "string" ? opts.agent : undefined, yes, ...(typeof opts["jobs-repo"] === "string" ? { jobsRepo: opts["jobs-repo"] } : {}), ...(typeof opts["load-repo"] === "string" ? { loadRepo: opts["load-repo"] } : {}) });
   if (!("box" in p)) {
     for (const l of p.lines) io.out(l);
     return p.code;
