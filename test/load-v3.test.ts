@@ -79,7 +79,7 @@ describe("the owner's signed session", () => {
     expect(await applyStart(one.c, { pattern: "burst", only: true }, OWNER)).toMatchObject({ ok: true });
   });
 
-  test("a v2 session the service account opened still reads, numbers on, and a stop at the box wins over root's file", async () => {
+  test("a session in the service account's own file opens nothing; root's numbers on past it, and a stop at the box wins over root's file", async () => {
     const { c, p } = ctx();
     mkdirSync(p.projectState, { recursive: true });
     const v2 = { v: 1, sessions: [{ n: 4, startedAt: NOW - 600 * M, until: NOW - 500 * M, only: false, checklist: ["Power"] }] };
@@ -88,10 +88,11 @@ describe("the owner's signed session", () => {
     expect((await applyStart(c, { pattern: "burst" }, OWNER)).said).toContain("session 5");
     const { loadOff } = await import("../src/load.ts");
     expect(loadOff(p, NOW + M, ME)?.n).toBe(5);
-    expect(readLoad(p, false, ME).sessions.map((s) => [s.n, s.endedAt ?? null, s.stoppedBy ?? null])).toEqual([
-      [4, null, null],
-      [5, NOW + M, "the service account, at the box"],
-    ]);
+    expect(readLoad(p, false, ME).sessions.map((s) => [s.n, s.endedAt ?? null, s.stoppedBy ?? null])).toEqual([[5, NOW + M, "the service account, at the box"]]);
+    // One the service account (or a job that escaped its VM) writes there now holds nothing.
+    const svc = JSON.parse(readFileSync(join(p.projectState, "load.json"), "utf8"));
+    writeFileSync(join(p.projectState, "load.json"), JSON.stringify({ ...svc, sessions: [{ n: 9, startedAt: NOW + 2 * M, until: NOW + 200 * M, only: true }] }));
+    expect(loadNow(p, NOW + 3 * M, ME)).toBeUndefined();
   });
 
   test("a root file that isn't root's, or isn't the sessions, is no session", async () => {

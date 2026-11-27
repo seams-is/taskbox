@@ -1,6 +1,7 @@
 // What workspace list, workspace status and status show of root's workspaces state. Every account
 // on the box reads the same: root's state is 644. Words an agent wrote carry no authority and are
 // shown as words only.
+import { holdOf } from "../update/auto.ts";
 import { clockOf, FINAL, fresh, quietFor, type Rules, SIZE_WORD, stateLine, type Workspace, type WsState } from "./model.ts";
 import { readStateFile } from "./read.ts";
 import type { StateRead } from "./store.ts";
@@ -104,5 +105,9 @@ export function statusBlock(s: WsState | undefined, now: number): string[] {
 export function workspacesBlock(path: string, now: number, rootUid = 0): string[] {
   const r = readStateFile(path, rootUid);
   const p = problem(r);
-  return p ? [`Workspaces: ${p}`] : statusBlock(stateOf(r), now);
+  if (p) return [`Workspaces: ${p}`];
+  const s = stateOf(r);
+  // A Whole or Heavy that holds the box's updates, and until when at the latest (update/auto.ts).
+  const h = s ? holdOf(s, now) : undefined;
+  return [...statusBlock(s, now), ...(h ? [`Updates:   held by ${h.line} until ${new Date(h.until).toISOString().slice(11, 16)} UTC at the latest`] : [])];
 }

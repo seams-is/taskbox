@@ -89,13 +89,12 @@ async function effect(d: ConfirmDeps, item: Pending, yes: boolean, now: number, 
   }
   if (item.kind === "signers") {
     const sha = (item.payload as { sha?: unknown } | null)?.sha;
-    if (yes) {
-      if (typeof sha !== "string") return { ok: false, said: "The waiting signer change names nothing to keep, so nothing changed.", code: "failed" };
-      const f = signerFiles(rootStateOf(d.p));
-      mkdirSync(f.work, { recursive: true, mode: 0o755 });
-      writeOwnedText(f.yes, `${JSON.stringify({ sha })}\n`, { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
-    }
-    return { ok: true, said: yes ? "Confirmed: the guard settles the release signers on its next look." : "Refused: the release signers stay as they are.", event: said(item.shows[0] ?? "a release signer change") };
+    // Both answers go to the update pass: a yes lets the removal apply, a no drops the change.
+    if (typeof sha !== "string") return { ok: false, said: "The waiting signer change names nothing, so nothing changed.", code: "failed" };
+    const f = signerFiles(rootStateOf(d.p));
+    mkdirSync(f.work, { recursive: true, mode: 0o755 });
+    writeOwnedText(f.yes, `${JSON.stringify({ sha, yes })}\n`, { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
+    return { ok: true, said: yes ? "Confirmed: the guard settles the release signers on its next look." : "Refused: that change is dropped and never taken again, and the release signers stay as they are.", event: said(item.shows[0] ?? "a release signer change") };
   }
   if (APPROVER.includes(item.kind)) {
     const k = { sys: d.sys, state: rootStateOf(d.p), rootUid: d.rootUid, ...(d.chown ? { chown: d.chown } : {}), events: d.events };

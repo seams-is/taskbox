@@ -68,6 +68,9 @@ export const RULES: readonly Rule[] = [
   { path: "publicRepo", tier: 1, why: "where the box's code comes from" },
   { path: "approverKey", tier: 1, why: "whose signature the box trusts" },
   { path: "approverKeyChange", tier: 1, why: "whose signature the box trusts" },
+  // It lifts the closure of VM starts while Screen Sharing is on, which the box otherwise lifts only
+  // by its own 100 clean starts or an admin's confirm. Taking it away narrows.
+  { path: "vmnetPfProven", tier: 1, why: "lets VMs start with Screen Sharing on whatever the guard's rules did", narrows: (_f, t) => t !== true },
   { path: "update.channel", tier: 1, why: "what installs by itself", narrows: (_f, t) => t === undefined || t === "stable" },
   // Second tier: more of the box, or less evidence.
   { path: "workspaces", tier: 2, why: "gives workspaces more of the box" },
@@ -120,14 +123,15 @@ export interface Change {
   narrows: boolean;
   from: unknown;
   to: unknown;
-  words: string; // one line, the box's own, for the Touch ID sheet, settings show and confirm
+  words: string; // the box's own words for it, whole, for the Touch ID sheet, settings show and confirm
 }
 
+// A change's words are never cut: confirm shows each one whole, wrapped to its lines. A change too
+// long to show whole, or a commit with more lines than confirm shows, is refused (core/pending.ts).
+export const WORDS_MAX = 2000;
 const shown = (v: unknown) => (v === undefined ? "nothing" : stable(v).replace(/[^\x20-\x7e]/g, " "));
-export const wordsOf = (path: string, from: unknown, to: unknown, why: string): string => {
-  const line = `${path}: ${shown(from)} to ${shown(to)} (${why})`;
-  return line.length <= 120 ? line : `${line.slice(0, 117)}...`;
-};
+export const wordsOf = (path: string, from: unknown, to: unknown, why: string): string => `${path}: ${shown(from)} to ${shown(to)} (${why})`;
+
 
 // Each guarded key that differs between the settings in force and a commit's.
 export function guardedChanges(from: Doc, to: Doc): Change[] {

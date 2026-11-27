@@ -403,6 +403,14 @@ export function socketDirOk(c: { sys: FakeSys; paths: { tailscaleSocketDir: stri
   c.sys.responders.unshift((cmd, args) => (cmd === "/bin/ls" && args[1] === c.paths.tailscaleSocketDir ? { code: 0, stdout: `drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:${c.paths.service} allow search\n`, stderr: "" } : undefined));
 }
 
+// The tailnet pinned, as the install's Tailscale step leaves it (tsrotate.ts pinTailnet).
+export function tailnetPinned(p: { installId: string }, tailnet = "example.ts.net"): void {
+  const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const { dirname, join } = require("node:path") as typeof import("node:path");
+  mkdirSync(dirname(p.installId), { recursive: true });
+  writeFileSync(join(dirname(p.installId), "tailnet.json"), JSON.stringify({ v: 1, tailnet }));
+}
+
 // The guard's record of VM starts, on trial, as its first pass leaves it (pfstarts.ts): without one
 // the loop reads the box as closed while Screen Sharing is on.
 export function pfOpen(p: { installId: string; guardState: string }): void {
@@ -414,4 +422,16 @@ export function pfOpen(p: { installId: string; guardState: string }): void {
   writeFileSync(markFile(p), JSON.stringify({ v: 1, seq: 1, firstAt: 0 }), { mode: 0o644 });
   writeFileSync(witnessFile(p), JSON.stringify({ v: 1, seq: 1 }), { mode: 0o644 });
   writeFileSync(beganFile(p), JSON.stringify({ v: 1, at: 0 }), { mode: 0o644 });
+}
+
+// An approver key pinned in approvers.json, as key trust approver leaves it: the box then makes and
+// keeps its pool accounts (core/approvers.ts poolTrust).
+export async function approverPinned(p: { installId: string }): Promise<void> {
+  const { mkdirSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { trustFirst, updateApprovers } = await import("../src/core/approvers.ts");
+  const { rootStateOf } = await import("../src/core/paths.ts");
+  const { keyPair } = await import("./sshsig.ts");
+  mkdirSync(dirname(p.installId), { recursive: true });
+  await updateApprovers(rootStateOf(p).approvers, { rootUid: process.getuid!() }, (a) => trustFirst(a, keyPair().key, 1_800_000_000_000, "screen"));
 }

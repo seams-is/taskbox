@@ -62,6 +62,8 @@ export function fakeGitHub(sys: FakeSys) {
       }
       const del = /^\/app\/installations\/(\d+)$/.exec(u.pathname);
       if (del && m === "DELETE") {
+        // An App whose uninstall GitHub won't take now (a 5xx or a rate limit).
+        if ((a as { stuck?: boolean }).stuck) return json({ message: "Server Error" }, 502);
         a.installs = a.installs.filter((i) => i.id !== Number(del[1]));
         return new Response(null, { status: 204 });
       }

@@ -136,3 +136,10 @@ export function updateApprovers(path: string, o: { rootUid?: number; chown?: Wri
     return { state: c.state, out: c };
   }, { mode: 0o644, owner, ...(o.chown ? { chown: o.chown } : {}) });
 }
+
+// The key whose pin lets the box make and keep pool accounts, and the tailnet policy name them: the
+// first key approvers.json pins, or undefined. v2's approver.json no longer decides it.
+export function poolTrust(path: string, rootUid = 0): string | undefined {
+  const a = readApprovers(path, rootUid);
+  return a.kind === "ok" ? pinnedKeys(a.value)[0] : undefined;
+}

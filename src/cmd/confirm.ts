@@ -8,6 +8,17 @@
 import type { BoxCtx, CommandSpec, Outcome } from "../command.ts";
 
 const PENDING_ID = /^pc_[0-9A-HJKMNP-TV-Z]{26}$/;
+const PAGE = 20;
+
+// Every line of a change, a page at a time: the yes comes only after the last line, so nothing that
+// applies goes unshown.
+export async function showAll(c: BoxCtx, lines: readonly string[], paged: boolean): Promise<void> {
+  for (let i = 0; i < lines.length; i += PAGE) {
+    for (const l of lines.slice(i, i + PAGE)) c.say(`  ${l}`);
+    const left = lines.length - i - PAGE;
+    if (paged && left > 0) await c.ask(`  (${left} more line${left === 1 ? "" : "s"} of this change. Press return to see them.) `);
+  }
+}
 
 // The closure of VM starts while Screen Sharing is on: shown, and on a yes put on trial. undefined
 // when the box isn't closed or --refuse names something else.
@@ -79,8 +90,8 @@ async function confirm(c: BoxCtx): Promise<Outcome> {
   let done = 0;
   let settings = false;
   for (const item of items) {
-    c.say(`${item.id}, asked by ${item.actor}:`);
-    for (const l of item.shows) c.say(`  ${l}`);
+    c.say(`${item.id}, asked by ${item.actor}${item.shows.length > PAGE ? `, ${item.shows.length} lines` : ""}:`);
+    await showAll(c, item.shows, !refuse);
     const yes = refuse ? false : (await c.ask("Type yes to make this change, anything else to leave it: ")).trim().toLowerCase() === "yes";
     if (!yes && !refuse) {
       c.say(`  Left waiting. taskbox confirm --refuse ${item.id} says no to it.`);

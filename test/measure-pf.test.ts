@@ -386,6 +386,9 @@ describe("at the loop and in check", () => {
     };
     expect((await pfStartsRow(ctx(true) as never)).status).toBe("FAIL");
     expect((await pfStartsRow(ctx(false) as never)).detail).toMatch(/^Screen Sharing is off, so VMs start\. closed:/);
+    // vmnetPfProven lifts the closure by a setting, so the row warns for as long as it is set.
+    const set = { ...ctx(true), cfg: { vmnetPfProven: true } };
+    expect(await pfStartsRow(set as never)).toMatchObject({ status: "WARN", detail: expect.stringMatching(/^vmnetPfProven is set.*guarded key/) });
   });
 });
 

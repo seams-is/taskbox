@@ -6,7 +6,7 @@
 // Pure: the callers read the bytes and verify the statement.
 import { createHash } from "node:crypto";
 import type { Statement } from "../release.ts";
-import type { SignerState } from "./signers.ts";
+import { type Pending, type SignerState, waitingOf } from "./signers.ts";
 
 export const REVOKES = "signers-revokes.json";
 export const REVOKES_MAX = 128 * 1024;
@@ -46,20 +46,26 @@ export function listOf(s: Statement, bytes: Uint8Array | undefined): RevokeList 
 
 // A list read: every sha in it is never taken again, and a change that waits with one of them is
 // dropped, when the statement's signer is a key the change keeps (as for a revoke on its own).
-// `at` marks a good read, which a key add waits for (signers.ts settle); any problem kept is cleared.
-export function takeList(s: SignerState, list: RevokeList, by: string | undefined, at: number): { state: SignerState; said?: string } {
-  const revoked = [...new Set([...(s.revoked ?? []), ...list.transitions])];
-  const { revokeProblem: _, ...rest } = s;
-  const p = s.pending;
-  if (p && list.transitions.includes(p.sha)) {
-    if (by !== undefined && p.kept.includes(by) && !p.addsDone && p.confirmed === undefined) {
-      const { pending: __, ...bare } = rest;
-      return { state: { ...bare, revoked: [...new Set([...revoked, p.sha])] }, said: "the signer change was revoked" };
+// `at` marks a good read for the change `sha` whose carrying release it came from, which that
+// change's key add waits for (signers.ts settle); any problem kept is cleared.
+export function takeList(s: SignerState, list: RevokeList, by: string | undefined, at: number, sha?: string): { state: SignerState; said?: string } {
+  const revoked = new Set([...(s.revoked ?? []), ...list.transitions]);
+  const { revokeProblem: _, waiting: __, pending: ___, ...rest } = s;
+  const said: string[] = [];
+  const kept: Pending[] = [];
+  for (const p of waitingOf(s)) {
+    if (list.transitions.includes(p.sha)) {
+      if (by !== undefined && p.kept.includes(by) && !p.addsDone && p.confirmed === undefined) {
+        said.push("the signer change was revoked");
+        continue;
+      }
+      // Named by a list whose signer the change doesn't keep: not a good read for the add's wait.
+      kept.push(p);
+      continue;
     }
-    // Named by a list whose signer the change doesn't keep: not a good read for the add's wait.
-    return { state: { ...rest, revoked } };
+    kept.push(sha === undefined || p.sha === sha ? { ...p, revokeReadAt: at } : p);
   }
-  return { state: { ...rest, ...(revoked.length ? { revoked } : {}), ...(p ? { pending: { ...p, revokeReadAt: at } } : {}) } };
+  return { state: { ...rest, ...(revoked.size ? { revoked: [...revoked] } : {}), ...(kept.length ? { waiting: kept } : {}) }, ...(said.length ? { said: said.join("; ") } : {}) };
 }
 
 // A list that couldn't be read: kept, so status says so, and a waiting add doesn't apply.

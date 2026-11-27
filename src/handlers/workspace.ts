@@ -21,11 +21,12 @@ import { duration } from "../command.ts";
 import { budgetOf } from "../config.ts";
 import { readLogicalCpus, readMemory } from "../memory.ts";
 import { onNow } from "../workspace/box.ts";
-import { CLAIM, checkProof, fingerprint, FINGERPRINT, parseProof } from "../workspace/claim.ts";
+import { CLAIM, type ClaimAction, CLAIMS_SUBJECT, checkProof, checkRequest, fingerprint, FINGERPRINT, parseProof, REQUEST_PROOF } from "../workspace/claim.ts";
+import { currentNonce, rotated, updateNonces } from "../core/nonces.ts";
 import { downsize, downsized, jump, pauseNow, reach, rush, thaw } from "../workspace/flows.ts";
 import { askClear } from "../workspace/signedclear.ts";
 import { approveByRule, askRule, deleteRule, matchRule, minuteOf, RULE_ID } from "../workspace/standing.ts";
-import { AGENT, approve, cleanWords, end, find, isFinal, isSize, NAME, pause, progress, put, request, resume, type Result, type Size, saved, STEP_MAX, deny as denyStep, type WsState, type Step } from "../workspace/model.ts";
+import { AGENT, approve, cleanWords, end, find, isFinal, isSize, NAME, ownWhole, pause, PERSON, progress, put, request, resume, type Result, type Size, saved, STEP_MAX, deny as denyStep, type WsState, type Step } from "../workspace/model.ts";
 import { readStateFile } from "../workspace/read.ts";
 import { rulesOf } from "../workspace/rules.ts";
 import { change } from "../workspace/write.ts";
@@ -75,19 +76,35 @@ function off(c: HandlerCtx): Answer | undefined {
 
 const agentActor = (agent: string) => `agent ${agent}`;
 
-// A request may carry its agent's claim key. One a standing rule matches (its agent, its claim key,
-// a size it covers, inside its window) is approved there and then, by the rule.
+// A request carries its agent's claim key and a proof by it, over the box's claims nonce
+// (workspace/claim.ts): so the workspace, and the pool account's files, are bound to a key whose
+// private half the asker holds, and a standing rule's key matches only a request its holder made. The
+// nonce moves on before the request applies, so a proof works once. One a standing rule matches (its
+// agent, its claim key, a size it covers, inside its window) is approved there and then, by the rule.
 const requestKind: UnsignedHandler = {
   kind: "workspace-request",
-  check: (b) => (keysIn(b, ["agent", "size", "why"], ["claim"]) && typeof b.agent === "string" && AGENT.test(b.agent) && isSize(b.size) && words(b.why) && (b.claim === undefined || (typeof b.claim === "string" && CLAIM.test(b.claim))) ? undefined : "a workspace request names its agent, a size and why, and may carry its claim key"),
+  check: (b) => (keysAre(b, ["agent", "size", "why", "claim", "proof"]) && typeof b.agent === "string" && AGENT.test(b.agent) && isSize(b.size) && words(b.why) && typeof b.claim === "string" && CLAIM.test(b.claim) && typeof b.proof === "string" && REQUEST_PROOF.test(b.proof) ? undefined : "a workspace request names its agent, a size and why, and carries its claim key and a proof by it"),
   async apply(c, r) {
     const no = off(c);
     if (no) return no;
-    const b = r.body as { agent: string; size: Size; why: string; claim?: string };
+    const b = r.body as { agent: string; size: Size; why: string; claim: string; proof: string };
+    const own = { rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) };
+    // Checked and the nonce moved on under the nonces' lock, before anything applies.
+    let proved: ReturnType<typeof checkRequest>;
+    try {
+      proved = await updateNonces(c.state.nonces, own, (n) => {
+        const ck = checkRequest(b.claim, b.agent, b.size, currentNonce(n, CLAIMS_SUBJECT), b.proof, c.now);
+        return { state: ck.ok ? rotated(n, CLAIMS_SUBJECT, c.now).state : n, out: ck };
+      });
+    } catch (e) {
+      c.log(`the claims nonce couldn't be used: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
+      return { ok: false, code: "failed", said: "The box's nonces can't be used now, so nothing changed. taskbox check at the box says why." };
+    }
+    if (!proved.ok) return { ok: false, code: proved.stale ? "stale-state" : "denied", said: `${proved.why[0]!.toUpperCase()}${proved.why.slice(1)}. Nothing changed.` };
     const pool = onNow({ cfg: c.cfg, p: c.p, rootUid: c.rootUid }).pool;
     return step(c, agentActor(b.agent), (s) => {
       const res = request(s, { agent: b.agent, size: b.size, why: b.why, rq: r.id }, rules(c), c.now);
-      if (!res.ok || b.claim === undefined) return res;
+      if (!res.ok) return res;
       const w = find(res.state, res.name)!;
       const st = put(res.state, { ...w, claim: { key: b.claim, n: 0 } });
       const rule = matchRule(st, { agent: b.agent, key: fingerprint(b.claim), size: b.size }, c.now, minuteOf(c.now));
@@ -99,12 +116,14 @@ const requestKind: UnsignedHandler = {
   },
 };
 
-// A workspace bound to a claim key takes its agent's steps only with a proof by that key, and keeps
-// the proof's counter, so a proof works once. Unbound ones (no key came with the request) take them as before.
-function claimed(s: WsState, name: string, proof: unknown, now: number): { ok: true; state: WsState } | { ok: false; why: string } {
+// A workspace's agent steps need a proof by its claim key, for that step, and keep the proof's
+// counter, so a proof works once. One with no claim key (the owner's own, or one from before claim
+// keys) takes no unsigned agent step: the owner ends it, signed.
+function claimed(s: WsState, name: string, action: ClaimAction, proof: unknown, now: number): { ok: true; state: WsState } | { ok: false; why: string } {
   const w = find(s, name);
-  if (!w?.claim) return { ok: true, state: s };
-  const ck = checkProof(w.claim, name, parseProof(proof), now);
+  if (!w) return { ok: true, state: s };
+  if (!w.claim) return { ok: false, why: `${name} isn't bound to an agent's claim key, so only a signed step from the controller changes it.` };
+  const ck = checkProof(w.claim, action, name, parseProof(proof), now);
   if (!ck.ok) return { ok: false, why: `${ck.why[0]!.toUpperCase()}${ck.why.slice(1)}.` };
   return { ok: true, state: put(s, { ...w, claim: { key: w.claim.key, n: ck.n } }) };
 }
@@ -117,7 +136,7 @@ const progressKind: UnsignedHandler = {
   async apply(c, r) {
     const b = r.body as { name: string; agent: string; text: string; step: { n: number; m: number } | null; saved: boolean; downsized?: boolean; proof?: string };
     return step(c, agentActor(b.agent), (s0) => {
-      const cl = claimed(s0, b.name, b.proof, c.now);
+      const cl = claimed(s0, b.name, "progress", b.proof, c.now);
       if (!cl.ok) return { ok: false, why: cl.why, code: "denied" as const };
       const s = cl.state;
       if (!b.saved) return progress(s, b, c.now);
@@ -135,7 +154,7 @@ const endKind: UnsignedHandler = {
   async apply(c, r) {
     const b = r.body as { name: string; agent: string; proof?: string };
     return step(c, agentActor(b.agent), (s0) => {
-      const cl = claimed(s0, b.name, b.proof, c.now);
+      const cl = claimed(s0, b.name, "end", b.proof, c.now);
       if (!cl.ok) return { ok: false, why: cl.why, code: "denied" as const };
       return end(cl.state, { name: b.name, by: "agent", agent: b.agent }, c.now);
     });
@@ -149,7 +168,7 @@ const connectKind: UnsignedHandler = {
   async apply(c, r) {
     const b = r.body as { name: string; agent: string; proof: string };
     return step(c, agentActor(b.agent), (s0) => {
-      const cl = claimed(s0, b.name, b.proof, c.now);
+      const cl = claimed(s0, b.name, "connect", b.proof, c.now);
       if (!cl.ok) return { ok: false, why: cl.why, code: "denied" as const };
       return reach(cl.state, b, c.now);
     });
@@ -251,12 +270,31 @@ export function handlersFor(o: { state: string; rootUid: number }) {
         },
         at,
       ),
+      ownRequest,
       clearHandler,
       ruleAdd,
       ruleDelete,
     ],
   };
 }
+
+// workspace request --size whole, signed: the owner's own Whole (scenario 19). The one touch signs
+// it and approves it. It runs in a person account from accounts.people: the one named with --user,
+// or the box's only person. Only a Whole is ever owner-signed; no pool workspace is.
+const OWN_ARGS = ["size", "why", "user"];
+const ownRequest: SignedHandler = {
+  action: "workspace.request",
+  subject: (a) => (a.words === undefined ? "box" : undefined),
+  check: (a) => (Object.keys(a).every((k) => OWN_ARGS.includes(k)) && a.size === "whole" && typeof a.why === "string" && words(a.why) && (a.user === undefined || (typeof a.user === "string" && PERSON.test(a.user))) ? undefined : "the owner's own request is --size whole with --why, and may name --user"),
+  async apply(c, r) {
+    const a = r.statement.args as { why: string; user?: string };
+    const people = c.cfg.accounts.people;
+    const user = a.user ?? (people.length === 1 ? people[0] : undefined);
+    if (!user) return { ok: false, code: "usage", said: people.length ? `The box has ${people.length} people: name the account with --user (${people.join(", ")}).` : "The box names no person in accounts.people, so the owner's own Whole has no account to run in." };
+    if (!people.includes(user)) return { ok: false, code: "usage", said: `${user} isn't one of the box's people (accounts.people).` };
+    return step(c, r.by.actor, (s) => ownWhole(s, { user, why: a.why, by: r.by.actor, rq: r.id }, rules(c), c.now));
+  },
+};
 
 // workspace clear AGENT, signed: the guard clears that agent's idle pool files on its next pass.
 // Its subject is the box: an agent's name has no nonce of its own.
@@ -275,7 +313,8 @@ const clearHandler: SignedHandler = {
 
 // workspace rule add, signed: a lasting change, so it waits for an admin's yes at the box (confirm),
 // which shows what the box itself read: the agent, its claim key's fingerprint, the size, the window
-// and the expiry. The claim key is the one named, else the one the agent's newest request carried.
+// and the expiry. The claim key is the one named (the controller names the one it keeps), else the
+// one the agent's requests carry, when they all carry one key.
 const RULE_ARGS = ["agent", "size", "window", "expires", "key"];
 const ruleAdd: SignedHandler = {
   action: "workspace.rule.add",
@@ -285,8 +324,11 @@ const ruleAdd: SignedHandler = {
     const a = r.statement.args as Record<string, string>;
     const cur = readStateFile(c.p.workspaces, c.rootUid);
     const st = cur.kind === "ok" ? cur.state : undefined;
-    const newest = st?.workspaces.filter((w) => w.agent === a.agent && w.claim).sort((x, y) => y.at - x.at)[0];
-    const key = a.key ?? (newest?.claim ? fingerprint(newest.claim.key) : undefined);
+    // With no --key, the key is the one the agent's requests carry, and only when they all carry the
+    // same one: with two keys under one name the box can't tell which is the agent's, so it asks for --key.
+    const keys = [...new Set((st?.workspaces ?? []).filter((w) => w.agent === a.agent && w.claim).map((w) => fingerprint(w.claim!.key)))];
+    if (a.key === undefined && keys.length > 1) return { ok: false, code: "usage", said: `${keys.length} different claim keys have asked as ${a.agent}, so the box can't tell which is the agent's. Name it: taskbox workspace rule add ... --key FINGERPRINT, from the controller that keeps the agent's key.` };
+    const key = a.key ?? keys[0];
     const asked = askRule({ agent: a.agent!, key, size: a.size!, window: a.window!, expiresMs: duration(a.expires!) ?? -1, by: r.by.actor, now: c.now });
     if (!asked.ok) return { ok: false, code: "usage", said: asked.why };
     const at = { wall: c.now, mono: await monoNow(c.sys), boot: await bootId(c.sys) };

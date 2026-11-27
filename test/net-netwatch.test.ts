@@ -117,6 +117,20 @@ describe("netwatch", () => {
     expect(ev.map((e) => [e.type, e.text])).toEqual([["net.capture-gap", "Network capture on bridge100 stopped and started again: 15 s with no capture."]]);
   });
 
+  test("a hello cut at the read's 1 MB cap is read whole on the next look, so its gap still counts", async () => {
+    const b = box();
+    await b.w.tick();
+    const ring = new Ring(b.np.dir, "bridge100", 8 << 20);
+    const hello = JSON.stringify({ t: b.sys.now(), k: "hello" });
+    // One long beat, so the second hello starts 10 bytes before the cap: its first look sees only
+    // the start of its line, too little to tell it is a hello.
+    const base = JSON.stringify({ t: b.sys.now() + 1, k: "beat", pad: "" }).length;
+    const beat = JSON.stringify({ t: b.sys.now() + 1, k: "beat", pad: "x".repeat(1024 * 1024 - 10 - (hello.length + 1) - 1 - base) });
+    ring.write([hello, beat, JSON.stringify({ t: b.sys.now() + 9000, k: "hello", n2: 15_000 })]);
+    await b.w.tick();
+    expect((await b.w.tick()).gapsToday).toBe(1);
+  });
+
   test("with _taskboxnet's uid unknown, no ring is read, so no file it linked is", async () => {
     const b = box({ noUid: true });
     await b.w.tick();

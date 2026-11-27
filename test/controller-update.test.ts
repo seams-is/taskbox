@@ -367,14 +367,14 @@ describe("the controller's release signers, as a box keeps them", () => {
     expect((await update(d)).code).toBe(0);
     expect(d.printed).toContain(`Release signers: release signers change: removes ${fp(other)} (waits for your yes at taskbox self update).`);
     let st = JSON.parse(readFileSync(join(d.home.dir, "signers.json"), "utf8")) as SignerState;
-    expect(st.pending?.removes).toEqual([fp(other)]);
+    expect(st.waiting?.[0]?.removes).toEqual([fp(other)]);
     expect(st.pinned).toContain(other.line.trim());
     // The next self update asks for the yes, and the pin moves.
     publish(d, "v2.3.0");
     expect((await update(d)).code).toBe(0);
     expect(d.asked).toContain("Type yes to confirm the removal on this controller: ");
     st = JSON.parse(readFileSync(join(d.home.dir, "signers.json"), "utf8")) as SignerState;
-    expect(st.pending).toBeUndefined();
+    expect(st.waiting).toBeUndefined();
     expect(st.pinned.trim()).toBe(OWNER.line.trim());
     // --auto never confirms a removal.
   }, CEILING);
@@ -392,7 +392,7 @@ describe("the controller's release signers, as a box keeps them", () => {
     expect(d.printed).toContain("Release signers: FAIL 2.2.0's revoke list can't be read. No key is added until it can be read.");
     const st = JSON.parse(readFileSync(join(d.home.dir, "signers.json"), "utf8")) as SignerState;
     expect(st.pinned.trim()).toBe(OWNER.line.trim());
-    expect(st.pending?.adds).toEqual([fp(other)]);
+    expect(st.waiting?.[0]?.adds).toEqual([fp(other)]);
   }, CEILING);
 
   test("a release whose revoke list is gone or isn't its statement's isn't installed", async () => {

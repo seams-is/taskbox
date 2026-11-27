@@ -9,13 +9,14 @@ import type { Answer } from "../core/dispatch.ts";
 import type { EventLog } from "../core/events.ts";
 import { begin, end, listOps, type Op, opEvent, readOp, toPhase, writeOp } from "../core/ops.ts";
 import type { Gate } from "../update/gate.ts";
-import { drop, type Moment, raise, readPending, updatePending, waiting as live } from "../core/pending.ts";
+import { createHash } from "node:crypto";
+import { drop, LAPSE_MS, type Moment, raise, readPending, showLines, SHOWS_MAX, updatePending, waiting as live } from "../core/pending.ts";
 import type { RootState } from "../core/paths.ts";
 import type { WriteRules } from "../core/rootfile.ts";
 import { opType } from "../optypes/index.ts";
 import { type AdminSsh, adminSshWhenProblem } from "./adminssh.ts";
 import { docProblem, findSettingsRepo, validateCommit } from "./commit.ts";
-import { type Change, guardedChanges, holdBack, stable } from "./guarded.ts";
+import { type Change, guardedChanges, holdBack, stable, WORDS_MAX } from "./guarded.ts";
 import { type InForce, readInForce, readState, readValidated, REPO, type SettingsFiles, type SettingsState, updateState, type Validated, type Waiting, writeInForce, writeValidated } from "./inforce.ts";
 
 type Doc = Record<string, unknown>;
@@ -85,18 +86,33 @@ function inForceOf(v: Validated, doc: Doc, held: string[], now: number): InForce
   return { v: 1, sha: v.sha, at: now, held, doc, overlayKeys: v.overlay ? Object.keys(v.overlay) : [], overlayIgnored: v.overlayIgnored, ...(v.overlayProblem ? { overlayProblem: v.overlayProblem } : {}), unknown: v.unknown };
 }
 
-// The confirm item a waiting commit raises: the box's own words for each change, and what applies on
-// the yes. Nothing secret is in settings.
-async function raiseConfirm(d: SettingsDeps, v: Validated, changes: Change[], actor: string, op: string): Promise<string | undefined> {
-  const shows = [`Settings commit ${short(v.sha)} from ${v.repo}:`, ...changes.map((c) => c.words)].slice(0, 10);
+// What confirm shows for a commit's waiting changes: a header, then each change's words whole. Its
+// digest goes in the confirm item and in what waits, and a yes applies only when the same words come
+// out of the commit and the settings in force at that moment (takeConfirmed).
+export const confirmShows = (v: Pick<Validated, "sha" | "repo">, changes: readonly Change[]): string[] => showLines([`Settings commit ${short(v.sha)} from ${v.repo}:`, ...changes.map((c) => c.words)]);
+const shownOf = (lines: readonly string[]) => createHash("sha256").update(lines.join("\n")).digest("hex");
+// Why a commit's waiting changes can't be confirmed as they stand, or undefined: confirm shows every
+// change whole, so one that can't be shown is refused, never cut.
+export function confirmTooBig(v: Pick<Validated, "sha" | "repo">, changes: readonly Change[]): string | undefined {
+  const long = changes.find((c) => c.words.length > WORDS_MAX);
+  if (long) return `its change to ${long.path} takes ${long.words.length} characters to say, and confirm shows a change of at most ${WORDS_MAX} whole. Make that change in smaller commits`;
+  const n = confirmShows(v, changes).length;
+  return n > SHOWS_MAX ? `its guarded changes take ${n} lines to show, and confirm shows at most ${SHOWS_MAX}. Make them in smaller commits` : undefined;
+}
+
+// The confirm item a waiting commit raises: the box's own words for each change, every line of them,
+// and what applies on the yes. Nothing secret is in settings.
+async function raiseConfirm(d: SettingsDeps, v: Validated, changes: Change[], actor: string, op: string): Promise<{ id: string; shown: string } | undefined> {
+  const shows = confirmShows(v, changes);
+  const shown = shownOf(shows);
   const at = await d.moment();
   return updatePending(d.state.pending, w(d), (s) => {
-    const r = raise(s, { kind: "settings", subject: "settings", shows, actor, op, payload: { sha: v.sha, paths: changes.map((c) => c.path) } }, at);
+    const r = raise(s, { kind: "settings", subject: "settings", shows, actor, op, payload: { sha: v.sha, paths: changes.map((c) => c.path), shown } }, at);
     if (!r.ok) {
       d.log(`settings: the confirm for ${short(v.sha)} couldn't be raised: ${r.why}`);
       return { state: s, out: undefined };
     }
-    return { state: r.state, out: r.item.id };
+    return { state: r.state, out: { id: r.item.id, shown } };
   });
 }
 
@@ -136,6 +152,8 @@ export async function takeCommit(d: SettingsDeps, a: { repo: string; sha: string
   if (sshWhy) return refuse(d, op, a, now, sshWhy);
   writeValidated(d.files, v, w(d));
   const widening = guardedChanges(base.doc, v.doc).filter((x) => !x.narrows);
+  const big = widening.length ? confirmTooBig(v, widening) : undefined;
+  if (big) return refuse(d, op, a, now, big);
   const held = widening.map((x) => x.path);
   const composed = holdBack(v.doc, base.doc, held);
   // With the guarded keys held back the settings must still pass; if they don't, nothing applies
@@ -148,7 +166,8 @@ export async function takeCommit(d: SettingsDeps, a: { repo: string; sha: string
     await updateState(d.files, w(d), (s) => ({ state: { ...s, repo: a.repo, head: { sha: v.sha, ...(a.etag ? { etag: a.etag } : {}), readAt: now }, problem: undefined, waiting: undefined, passed: undefined, deferred: { sha: v.sha, op: op.id, held } }, out: undefined }));
     return await takeDeferred(d);
   }
-  if (stands) applyInForce(d, v, base.doc, composed, held, now, op.id);
+  if (stands && widening.length) await applyOrDefer(d, v, base.doc, composed, held, now, op.id, true, base.first);
+  else if (stands) applyInForce(d, v, base.doc, composed, held, now, op.id);
   if (!widening.length) {
     endOp(d, op.id, "succeeded", { result: { sha: v.sha } });
     await updateState(d.files, w(d), (s) => ({ state: { ...s, repo: a.repo, head: { sha: v.sha, ...(a.etag ? { etag: a.etag } : {}), readAt: now }, inUse: v.sha, problem: undefined, waiting: undefined, passed: undefined }, out: undefined }));
@@ -158,7 +177,7 @@ export async function takeCommit(d: SettingsDeps, a: { repo: string; sha: string
   let wait: Waiting = { sha: v.sha, op: op.id, phase: "needs-owner", changes: all, first: base.first };
   if (base.first) {
     const id = await raiseConfirm(d, v, all, "taskbox", op.id);
-    wait = { ...wait, phase: "needs-confirm", ...(id ? { pending: id } : {}) };
+    wait = { ...wait, phase: "needs-confirm", askedAt: now, ...(id ? { pending: id.id, shown: id.shown } : {}) };
     op = phase(d, op, "needs-confirm", `${all.length} guarded change${all.length === 1 ? "" : "s"}: taskbox confirm at the box`);
   } else op = phase(d, op, "needs-owner", `${all.length} guarded change${all.length === 1 ? "" : "s"}: taskbox settings apply ${short(v.sha)}`);
   d.events.write({ type: "settings.waiting", actor: "taskbox", subject: "settings", op: op.id, text: `Settings commit ${short(v.sha)} changes ${all.length} guarded key${all.length === 1 ? "" : "s"} (${all.map((x) => x.path).join(", ")}): ${base.first ? "taskbox confirm at the box" : `taskbox settings apply ${v.sha}`}.`.slice(0, 240), data: { sha: v.sha, paths: all.map((x) => x.path) } });
@@ -170,6 +189,20 @@ function applyInForce(d: SettingsDeps, v: Validated, before: Doc, composed: Doc,
   writeInForce(d.files, inForceOf(v, composed, held, now), w(d));
   const keys = changedKeys(before, composed);
   d.events.write({ type: "settings.applied", actor: "taskbox", subject: "settings", op, text: `Settings commit ${short(v.sha)} applied${keys.length ? `: ${keys.join(", ")}` : ", with nothing new"}${held.length ? `; ${held.length} guarded held back` : ""}.`.slice(0, 240), data: { sha: v.sha, keys, held } });
+}
+
+// What applies now, unless it changes a job VM: then it waits for the update window and a drain as
+// any commit does (takeDeferred), whoever let it through, the owner's apply and confirm included.
+// keep: the op goes on after, for first-tier keys still waiting.
+async function applyOrDefer(d: SettingsDeps, v: Validated, before: Doc, composed: Doc, held: string[], now: number, op: string, keep: boolean, first = false): Promise<boolean> {
+  const g = d.hold && !first ? d.hold.gate(changedKeys(before, composed), d.hold.drained()) : { phase: "applying" as const };
+  if (g.phase === "applying") {
+    applyInForce(d, v, before, composed, held, now, op);
+    return true;
+  }
+  await updateState(d.files, w(d), (x) => ({ state: { ...x, deferred: { sha: v.sha, op, held, ...(keep ? { keep: true } : {}) } }, out: undefined }));
+  await takeDeferred(d);
+  return false;
 }
 
 // A deferred commit, each tick: its window, then its drain, then it applies and the box resumes.
@@ -204,7 +237,8 @@ export async function takeDeferred(d: SettingsDeps): Promise<string> {
   const ready = phase(d, op, "applying");
   applyInForce(d, val.value, base.doc, composed, df.held, now, ready.id);
   if (df.drained && d.hold) await d.hold.resume(df.op);
-  endOp(d, op.id, "succeeded", { result: { sha: df.sha } });
+  if (!df.keep) endOp(d, op.id, "succeeded", { result: { sha: df.sha } });
+  else if (s.waiting?.op === op.id) phase(d, readSettingsOp(d, op.id) ?? ready, s.waiting.phase);
   await updateState(d.files, w(d), (x) => ({ state: { ...x, inUse: df.sha, deferred: undefined }, out: undefined }));
   return `settings: commit ${short(df.sha)} applied after its window and drain`;
 }
@@ -269,18 +303,28 @@ export async function readHead(d: SettingsDeps): Promise<string> {
   return takeCommit(d, { repo, sha: got.sha!, ...(got.etag ? { etag: got.etag } : {}), ...(got.product !== undefined ? { product: got.product } : {}), ...(got.overlay !== undefined ? { overlay: got.overlay } : {}) });
 }
 
-// A confirm that lapsed while its commit still waits is raised again.
+// A confirm that went while its commit still waits, inside the 24 hours from its first ask (a
+// restart, or an answer whose write didn't land), is raised again. Past them the commit lapses: its
+// op ends, and it is passed over until a newer one comes.
 async function reraise(d: SettingsDeps): Promise<void> {
   const s = readStateOr(d);
   const wt = s.waiting;
   if (!wt || wt.phase !== "needs-confirm") return;
+  const now = d.now();
+  if (wt.askedAt !== undefined && (now - wt.askedAt >= LAPSE_MS || now < wt.askedAt)) {
+    await dropConfirm(d, wt.pending);
+    endOp(d, wt.op, "failed", { why: "it waited 24 hours for confirm at the box and lapsed" });
+    d.events.write({ type: "settings.lapsed", actor: "taskbox", subject: "settings", op: wt.op, text: `Settings commit ${short(wt.sha)} waited 24 hours for confirm at the box and lapsed; a newer commit asks again.`, data: { sha: wt.sha } });
+    await updateState(d.files, w(d), (x) => ({ state: x.waiting?.sha === wt.sha ? { ...x, waiting: undefined, passed: wt.sha } : x, out: undefined }));
+    return;
+  }
   const p = readPending(d.state.pending, d.rootUid);
   const at = await d.moment();
   if (p.kind === "ok" && live(p.value, at).some((x) => x.id === wt.pending)) return;
   const v = readValidated(d.files, wt.sha, d.rootUid);
   if (v.kind !== "ok") return;
   const id = await raiseConfirm(d, v.value, wt.changes.filter((c) => !wt.appliedBy || c.tier === 1), wt.appliedBy ?? "taskbox", wt.op);
-  if (id) await updateState(d.files, w(d), (x) => ({ state: x.waiting?.sha === wt.sha ? { ...x, waiting: { ...x.waiting, pending: id } } : x, out: undefined }));
+  if (id) await updateState(d.files, w(d), (x) => ({ state: x.waiting?.sha === wt.sha ? { ...x, waiting: { ...x.waiting, pending: id.id, shown: id.shown, askedAt: x.waiting.askedAt ?? now } } : x, out: undefined }));
 }
 
 // The owner's signed settings apply: the commit's second-tier keys apply now, and its first-tier
@@ -304,21 +348,25 @@ export async function applySigned(d: SettingsDeps, sha: string, actor: string): 
   }
   const now = d.now();
   const through = wt.changes.filter((c) => !held.includes(c.path));
+  let now_ = true;
   if (through.length) {
-    writeInForce(d.files, inForceOf(v.value, next, held, now), w(d));
     d.events.write({ type: "settings.applied", actor, subject: "settings", op: wt.op, text: `Settings commit ${short(sha)}: an approver applied ${through.map((c) => c.path).join(", ")}.`.slice(0, 240), data: { sha, paths: through.map((c) => c.path) } });
+    if (!held.length) await updateState(d.files, w(d), (x) => ({ state: { ...x, waiting: undefined }, out: undefined }));
+    now_ = await applyOrDefer(d, v.value, base.doc, next, held, now, wt.op, held.length > 0);
   }
   if (!held.length) {
-    endOp(d, wt.op, "succeeded", { result: { sha } });
-    await updateState(d.files, w(d), (x) => ({ state: { ...x, inUse: sha, waiting: undefined }, out: undefined }));
-    return { ok: true, said: `Applied settings commit ${short(sha)}: ${second.map((c) => c.path).join(", ")}.`.slice(0, 240), op: wt.op };
+    if (now_) {
+      endOp(d, wt.op, "succeeded", { result: { sha } });
+      await updateState(d.files, w(d), (x) => ({ state: { ...x, inUse: sha, waiting: undefined }, out: undefined }));
+    }
+    return { ok: true, said: `${now_ ? "Applied" : "Approved; it applies in the update window, after a drain:"} settings commit ${short(sha)}: ${second.map((c) => c.path).join(", ")}.`.slice(0, 240), op: wt.op };
   }
   const waitFor = wt.changes.filter((c) => held.includes(c.path));
   const id = await raiseConfirm(d, v.value, waitFor, actor, wt.op);
   if (!id) return { ok: false, code: "failed", said: "The change couldn't wait for confirm: too many wait already. Type taskbox confirm at the box.", op: wt.op };
   const op = readSettingsOp(d, wt.op);
   if (op?.state === "running") phase(d, op, "needs-confirm", `${waitFor.length} first-tier change${waitFor.length === 1 ? "" : "s"}: taskbox confirm at the box`);
-  await updateState(d.files, w(d), (x) => ({ state: { ...x, ...(through.length ? { inUse: sha } : {}), waiting: { ...wt, phase: "needs-confirm", pending: id, appliedBy: actor, changes: waitFor } }, out: undefined }));
+  await updateState(d.files, w(d), (x) => ({ state: { ...x, ...(through.length ? { inUse: sha } : {}), waiting: { ...wt, phase: "needs-confirm", pending: id.id, shown: id.shown, askedAt: now, appliedBy: actor, changes: waitFor } }, out: undefined }));
   return { ok: false, code: "needs-confirm", said: `${through.length ? `Applied ${through.map((c) => c.path).join(", ")}. ` : ""}${waitFor.map((c) => c.path).join(", ")} wait${waitFor.length === 1 ? "s" : ""} for confirm at the box: taskbox confirm there.`.slice(0, 240), op: wt.op };
 }
 
@@ -349,11 +397,32 @@ export async function takeConfirmed(d: SettingsDeps): Promise<string[]> {
       next = { ...next, waiting: undefined, problem: { sha: c.sha, why: `it can't apply: ${why}`.slice(0, 240), at: now } };
       continue;
     }
-    writeInForce(d.files, inForceOf(v.value, v.value.doc, [], now), w(d));
+    // The yes is to the words confirm showed. The same words must come out of the commit and what is
+    // in force now, or nothing applies and confirm asks again with the words as they now stand.
+    const now_ = guardedChanges(baselineOf(d).doc, v.value.doc).filter((x) => !x.narrows);
+    if (!wt.shown || shownOf(confirmShows(v.value, now_)) !== wt.shown) {
+      const id = now_.length && !confirmTooBig(v.value, now_) ? await raiseConfirm(d, v.value, now_, wt.appliedBy ?? "taskbox", wt.op) : undefined;
+      if (!id) {
+        endOp(d, wt.op, "failed", { why: `commit ${short(c.sha)} changed against the settings in force after confirm showed it` });
+        next = { ...next, waiting: undefined, passed: c.sha };
+        lines.push(`settings: commit ${short(c.sha)} no longer matches what confirm showed, so nothing applied`);
+        continue;
+      }
+      d.events.write({ type: "settings.waiting", actor: "taskbox", subject: "settings", op: wt.op, text: `Settings commit ${short(c.sha)} changes something other than confirm showed, since the settings in force moved. Nothing applied; taskbox confirm asks again.`, data: { sha: c.sha, paths: now_.map((x) => x.path) } });
+      next = { ...next, waiting: { ...wt, changes: now_, pending: id.id, shown: id.shown } };
+      lines.push(`settings: commit ${short(c.sha)} no longer matches what confirm showed; it asks again`);
+      continue;
+    }
     d.events.write({ type: "settings.applied", actor: c.by, subject: "settings", op: wt.op, text: `Settings commit ${short(c.sha)}: confirmed at the box, ${wt.changes.map((x) => x.path).join(", ")} applied.`.slice(0, 240), data: { sha: c.sha, paths: wt.changes.map((x) => x.path) } });
-    endOp(d, wt.op, "succeeded", { result: { sha: c.sha } });
-    next = { ...next, waiting: undefined, inUse: c.sha, problem: undefined };
-    lines.push(`settings: commit ${short(c.sha)} confirmed and applied`);
+    await updateState(d.files, w(d), (x) => ({ state: { ...x, waiting: undefined, confirmed: undefined }, out: undefined }));
+    if (await applyOrDefer(d, v.value, baselineOf(d).doc, v.value.doc, [], now, wt.op, false, wt.first)) {
+      endOp(d, wt.op, "succeeded", { result: { sha: c.sha } });
+      next = { ...next, waiting: undefined, inUse: c.sha, problem: undefined };
+      lines.push(`settings: commit ${short(c.sha)} confirmed and applied`);
+    } else {
+      next = { ...next, waiting: undefined, problem: undefined };
+      lines.push(`settings: commit ${short(c.sha)} confirmed; it applies in the update window, after a drain`);
+    }
   }
   await updateState(d.files, w(d), (x) => ({ state: { ...x, confirmed: undefined, waiting: next.waiting, ...(next.inUse ? { inUse: next.inUse } : {}), ...(next.passed ? { passed: next.passed } : {}), ...(next.problem !== s.problem ? { problem: next.problem } : {}) }, out: undefined }));
   return lines;

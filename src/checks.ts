@@ -772,6 +772,11 @@ export function homeProblem(home: string, rootUid: number): string | undefined {
 // tailscaled is signed in, with Tailscale SSH on and MagicDNS's answers off (install.ts), and runs
 // with taskbox's own LaunchDaemon, whose switches refuse every forward and SFTP.
 export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  // While a key rotate tailscale holds tailscaled's socket, only root reaches it (tssocket.ts).
+  const { lockPath, readLock } = await import("./tssocket.ts");
+  const { rootStateOf } = await import("./core/paths.ts");
+  const lock = readLock(lockPath(rootStateOf(c.paths).dir), c.rootUid ?? 0, c.sys.now());
+  if (lock) return { status: "WARN", detail: `a key rotate tailscale (${lock.op}) holds tailscaled's socket, so only root reaches it until it ends. taskbox op show ${lock.op} follows it.` };
   // Its socket's folder lets in root and the service account only (tssocket.ts); anyone may look.
   const sock = await socketDirProblem(c.sys, c.paths, c.rootUid ?? 0);
   if (sock) return fail(`${sock}, so other accounts on the box may reach tailscaled. If it stays so after a minute, as your admin user, type taskbox update.`);
@@ -816,6 +821,9 @@ export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">
   if (serve.code !== 0 || !served || typeof served !== "object") extra.push("what it serves couldn't be read");
   else if (["TCP", "Web", "Services", "AllowFunnel", "Foreground"].some((k) => served![k] && Object.keys(served![k] as object).length)) extra.push("Tailscale Serve or Funnel is on");
   if (extra.length) return fail(`on the tailnet, ${extra.join(", ")}. Nothing to do: agents fix it.`);
+  // The tailnet the install signed in to, pinned: a key rotation that lands on another logs out of it.
+  const { readTailnetPin, tailnetPinPath } = await import("./tsrotate.ts");
+  if (!readTailnetPin(tailnetPinPath(rootStateOf(c.paths).dir), c.rootUid ?? 0)) return fail("the box's tailnet isn't pinned, so a sign-in to another tailnet couldn't be told apart. As your admin user, type taskbox update.");
   const loose = "so Tailscale SSH may allow file copying or forwards";
   // Between the first update to the new labels and the second, tailscaled runs under its old name,
   // from the old-named plist, which must match the install's own copy under that name.

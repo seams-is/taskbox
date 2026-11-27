@@ -86,11 +86,11 @@ async function signerLines(c: C): Promise<string[]> {
   const { readOwnedJson } = await import("../core/rootfile.ts");
   const { rootStateOf } = await import("../core/paths.ts");
   const { updateFiles } = await import("../update/box.ts");
-  const { changeLine, parseSignerState } = await import("../release/signers.ts");
+  const { changeLine, parseSignerState, waitingOf } = await import("../release/signers.ts");
   const r = readOwnedJson(updateFiles(rootStateOf(c.p)).signers, { owner: c.deps.rootUid ?? 0, max: 64 * 1024 }, (v) => parseSignerState(v) ?? "out of shape");
   if (r.kind !== "ok") return [];
   const clean = (t: string) => t.replace(/[^\x20-\x7e]/g, " ");
-  return [...(r.value.pending ? [`Signers:   ${clean(changeLine(r.value.pending))}.`] : []), ...(r.value.revokeProblem ? [`Signers:   FAIL ${clean(r.value.revokeProblem)}. No update installs and no key is added until it can be read.`] : [])];
+  return [...waitingOf(r.value).map((p) => `Signers:   ${clean(changeLine(p))}.`), ...(r.value.revokeProblem ? [`Signers:   FAIL ${clean(r.value.revokeProblem)}. No update installs and no key is added until it can be read.`] : [])];
 }
 
 // The box's timings line, as check shows it, or null when the settings or the jobs can't be read.

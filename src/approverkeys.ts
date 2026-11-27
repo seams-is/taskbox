@@ -164,10 +164,14 @@ async function raiseApprover(c: RaiseCtx, how: "rotate" | "add", newB64: string,
   const shows = how === "rotate"
     ? ["Rotate the approver key.", `From: ${from}`, `To:   ${fp}`, "Asked by the controller that holds the old key, signed with it.", "Check the new fingerprint is the one your controller shows."]
     : ["Add a second controller's approver key.", `New:         ${fp}`, `Approved by: ${from}`, "Its controller offered it to this box; a paired controller signed it in.", "Check the new fingerprint is the one the new controller shows."];
-  const r = await updatePending<Raised>(c.state.pending, w(c), (s) => {
+  const r = await updatePending<Raised | { busy: true }>(c.state.pending, w(c), (s) => {
     const x = raise(s, { kind: how === "rotate" ? "approver-rotate" : "approver-add", subject: how === "rotate" ? from : fp, shows, actor, op: b.op.id, payload: { from, key } }, m);
+    // Another approver key change waits already: the same one attaches, a different one is busy, so
+    // nothing waits that no op or event names.
+    if (b.kind === "attach" && x.ok && !x.again) return { state: s, out: { busy: true } };
     return x.ok ? { state: x.state, out: x } : { state: s, out: x };
   });
+  if ("busy" in r) return { ok: false, code: "busy", said: `Another approver key change (${b.op.id}) waits for confirm at the box. Answer it there with taskbox confirm, or taskbox op cancel ${b.op.id}, then ask again.`, op: b.op.id };
   if (!r.ok) return { ok: false, code: "failed", said: r.why };
   const opId = r.item.op ?? b.op.id;
   if (b.kind === "start" && !r.again) {

@@ -218,8 +218,12 @@ export class Netwatch {
     const f = ringFiles(this.np.dir, b);
     const r = readOwned(f.now, this.uid, w.offset, 1024 * 1024);
     if (r.size < w.offset) w.offset = 0;
-    w.offset = Math.min(r.size, w.offset + Buffer.byteLength(r.text));
-    for (const line of r.text.split("\n")) {
+    // Up to the last whole line only: one cut at the read's cap is read whole on the next look. A
+    // read with no newline in it at all (a line longer than the cap) is skipped, so it can't stall.
+    const end = r.text.lastIndexOf("\n");
+    const whole = end >= 0 ? r.text.slice(0, end + 1) : Buffer.byteLength(r.text) >= 1024 * 1024 ? r.text : "";
+    w.offset = Math.min(r.size, w.offset + Buffer.byteLength(whole));
+    for (const line of whole.split("\n")) {
       const t = /^\{"t":(\d{10,15}),"k":"([a-z]+)"/.exec(line);
       if (!t) continue;
       w.lastAt = Number(t[1]);

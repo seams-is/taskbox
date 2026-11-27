@@ -7,8 +7,8 @@ import { basename, join } from "node:path";
 import { relink } from "../layout.ts";
 import { compareVersions, describeStatement, parseStatement, signerLines, signerPrints as releaseSignerPrints, signersProblem, type Statement, type Verdict, verifyRelease } from "../release.ts";
 import { listOf, listProblem, REVOKES, REVOKES_MAX, takeList } from "../release/revokes.ts";
-import { changeLine, confirm, meet, removalShows, type SignerState, TRANSITION, TRANSITION_SIG } from "../release/signers.ts";
-import { pinFile, readCarrying, readPin, savePin, type SignedCheck, settled } from "./signers.ts";
+import { changeLine, confirm, meet, removalShows, type SignerState, TRANSITION, TRANSITION_SIG, waitingOf } from "../release/signers.ts";
+import { clockNow, pinFile, readCarrying, readPin, savePin, type SignedCheck, settled } from "./signers.ts";
 import type { Deps } from "./reach.ts";
 import { appendEvent } from "./events.ts";
 import { type Home, readConfig, readSmall, setUpController, type Source, writePrivateFile } from "./home.ts";
@@ -277,7 +277,7 @@ export async function update(d: UpdateDeps, a: UpdateAsk = {}): Promise<Screen> 
 // removal confirmed by the owner's typed yes at this terminal; then the pin moves as settle says.
 async function signerSteps(d: UpdateDeps, a: UpdateAsk, source: Source, s0: SignerState): Promise<SignerState> {
   let s = s0;
-  if (s.pending) {
+  if (waitingOf(s).length) {
     const work = mkdtempSync(join(d.home.dir, "signers-"));
     try {
       const r = await readCarrying(d, source, s, work, d.now());
@@ -287,18 +287,18 @@ async function signerSteps(d: UpdateDeps, a: UpdateAsk, source: Source, s0: Sign
       rmSync(work, { recursive: true, force: true });
     }
   }
-  const p = s.pending;
-  if (p && p.removes.length && !p.removesDone && p.confirmed === undefined && d.tty && !a.auto) {
+  for (const p of waitingOf(s)) {
+    if (!p.removes.length || p.removesDone || p.confirmed !== undefined || !d.tty || a.auto) continue;
     for (const l of removalShows(p)) d.out(l);
     if ((await d.ask("Type yes to confirm the removal on this controller: ")).trim().toLowerCase() === "yes") {
       const c = confirm(s, p.sha, d.now());
       if (typeof c !== "string") s = c;
     } else d.out("The removal still waits. taskbox self update asks again.");
   }
-  const st = settled(s, d.now());
+  const st = settled(s, await clockNow(d));
   for (const l of st.said) d.out(`Release signers: this controller ${l}.`);
   const here = (l: string) => l.replace("taskbox confirm at the box", "your yes at taskbox self update");
-  if (st.state.pending) d.out(`Release signers: ${here(changeLine(st.state.pending))}.`);
+  for (const p of waitingOf(st.state)) d.out(`Release signers: ${here(changeLine(p))}.`);
   if (st.state.revokeProblem) d.out(`Release signers: FAIL ${st.state.revokeProblem}. No key is added until it can be read.`);
   savePin(d.home, st.state);
   return st.state;
@@ -313,14 +313,14 @@ async function carriedKeys(d: UpdateDeps, app: string, s: SignerState, version: 
   } catch {}
   if (signersProblem(carried)) throw new Refused("its signers file isn't one taskbox reads");
   const same = (x: string, y: string) => signerLines(x).sort().join("\n") === signerLines(y).sort().join("\n");
-  if (same(carried, s.pinned) || (s.pending && same(carried, s.pending.newText))) return s;
+  if (same(carried, s.pinned) || waitingOf(s).some((p) => same(carried, p.newText))) return s;
   const t = join(app, TRANSITION);
   const sig = join(app, TRANSITION_SIG);
   if (!existsSync(t) || !existsSync(sig)) throw new Refused("it pins other release keys and carries no signed transition");
   const text = readFileSync(t, "utf8");
   const ok = await d.signed({ message: new TextEncoder().encode(text), signature: new Uint8Array(readFileSync(sig)), pinned: s.pinned, workRoot: work }).catch(() => undefined);
   if (!ok?.ok) throw new Refused("its signer transition isn't signed by a pinned release key");
-  const m = meet(s, text, version, d.now());
+  const m = meet(s, text, version, await clockNow(d));
   if ("why" in m) throw new Refused(m.why);
   if (m.said) d.out(`Release signers: ${m.said.replace("taskbox confirm at the box", "your yes at taskbox self update")}.`);
   return m.state;

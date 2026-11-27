@@ -189,7 +189,16 @@ export async function opShow(c: BoxCtx, o: { interrupt?: Interrupt } = {}): Prom
     return { exit: EXIT.failed, error: err("not-found", line) };
   }
   for (const l of opLines(first)) c.say(l);
-  if (c.flags.watch === undefined) return { exit: EXIT.ok, result: { op: opJson(first) } };
+  if (c.flags.watch === undefined) {
+    // A Tailscale rotation's link, sealed to the asking controller's key: ciphertext only (keyops.ts).
+    if (first.type === "key-rotate-tailscale" && first.state === "running") {
+      const { linkPath, readLink } = await import("./keyops.ts");
+      const { rootStateOf } = await import("./core/paths.ts");
+      const sealed = readLink(linkPath(rootStateOf(c.own).dir), first.id, c.deps.rootUid ?? 0);
+      if (sealed) return { exit: EXIT.ok, result: { op: opJson(first), sealed } };
+    }
+    return { exit: EXIT.ok, result: { op: opJson(first) } };
+  }
   // -w: every change until it ends. Ctrl-C stops the watching only.
   const limit = typeof c.flags.timeout === "string" ? duration(c.flags.timeout)! : 0;
   const interrupt = o.interrupt ?? onInterrupt();

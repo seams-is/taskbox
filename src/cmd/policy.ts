@@ -28,8 +28,7 @@ export const commands: CommandSpec[] = [
       const { adminsOf, adminState } = await import("../elevate.ts");
       const { named, poolOf } = await import("../access.ts");
       const { ownAccess, readRecord, uidOf } = await import("../accounts.ts");
-      const { trustedKey } = await import("../approver.ts");
-      const { readPin, readPoolRecord } = await import("../pin.ts");
+      const { readPoolRecord } = await import("../pin.ts");
       const { policyAnswer, policyEntries, policyFor, policyText } = await import("../policy.ts");
       const owner = typeof c.opts.owner === "string" ? c.opts.owner : undefined;
       const extra = Array.isArray(c.opts.admin) ? c.opts.admin : [];
@@ -42,8 +41,10 @@ export const commands: CommandSpec[] = [
         return 1;
       }
       const admins = new Set([...listed, ...extra]);
-      // The pool account only while the box trusts a key: the settings' key, pinned at the box.
-      const named0 = poolOf(cfg.accounts, trustedKey(cfg.approverKey, readPin(c.p.approverPin)));
+      // The pool account only while the box pins an approver key (approvers.json).
+      const { poolTrust } = await import("../core/approvers.ts");
+      const { rootStateOf } = await import("../core/paths.ts");
+      const named0 = poolOf(cfg.accounts, poolTrust(rootStateOf(c.p).approvers));
       // Only the accounts taskbox made get SSH accept: a settings name alone gives nothing.
       const own = await ownAccess(c.ops.sys, cfg.accounts.agent, named0, readRecord(c.p.accountsRecord), readPoolRecord(c.p.poolRecord));
       if ("refuse" in own) {

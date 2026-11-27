@@ -3,7 +3,7 @@
 {"file": "away.ts", "reads": 2, "why": "days until a date and recent logins: display"}
 {"file": "awaychecks.ts", "reads": 7, "why": "how long ago the loop's last request and beat were: rows that say OK with a time; the power log's last 30 days, a WARN only; when a lasting change lapses, with mono and the boot beside it"}
 {"file": "broker.ts", "reads": 3, "why": "the hour the GitHub key keeper's counts are kept under, and GitHub's Date against the box's for the clock guard: display and a reason"}
-{"file": "checks.ts", "reads": 5, "why": "the guard's and the workspaces state's freshness (a stale read FAILs, so a step fails closed) and how recent a loss or a moved log is: display"}
+{"file": "checks.ts", "reads": 6, "why": "the guard's and the workspaces state's freshness (a stale read FAILs, so a step fails closed) and how recent a loss or a moved log is: display and whether a key rotate tailscale's lock is still live (past its time it is the guard's to settle)"}
 {"file": "cli.ts", "reads": 4, "why": "the answers envelope's at, for a usage error, a rename and every answer: a label; a streamed line's at: a label"}
 {"file": "clock.ts", "reads": 1, "why": "the real Clock itself: every other read goes through it or Sys"}
 {"file": "cmd/confirm.ts", "reads": 2, "why": "the id of the declined event, made before the admin's entry that names it: a label; and the moment the waiting changes are judged at, by the box's boot and monotonic clock as well, so a step either way lapses an item, never keeps one"}
@@ -25,12 +25,13 @@
 {"file": "controller/connect.ts", "reads": 2, "why": "how long the controller watches a connect it began: the op carries on at the box whatever a step does, and the polls are counted too"}
 {"file": "controller/forward.ts", "reads": 7, "why": "the time on an envelope the controller makes, a signed statement's time (the box judges its 5 minutes), a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter, and when a status was read: display, and the time on the policy envelope the controller makes: display"}
 {"file": "controller/home.ts", "reads": 1, "why": "a temp file's unique name"}
-{"file": "controller/keys.ts", "reads": 5, "why": "a statement's time, which the box judges within 5 minutes, and the controller's own waits: a step only ends a wait"}
+{"file": "controller/keys.ts", "reads": 7, "why": "a statement's time, which the box judges within 5 minutes, and the controller's own waits: a step only ends a wait; the wait for a Tailscale rotation's sealed link only ends watching"}
 {"file": "controller/main.ts", "reads": 5, "why": "the controller's Clock, and the time on its own envelopes and events: labels; the time on a flow's one --json envelope: a label"}
 {"file": "controller/notify.ts", "reads": 2, "why": "when a box was first not reached, when each note was last said, and the hold lease's times: a step only moves when a note is said again"}
 {"file": "controller/pair.ts", "reads": 4, "why": "when a box was paired, and the time on the controller's events: labels"}
+{"file": "controller/signers.ts", "reads": 1, "why": "the wall part of the controller's clock for a release signer change: an add's 7 days count on the monotonic clock too, so a step can't end them"}
 {"file": "controller/trials.ts", "reads": 1, "why": "the time a trial's result is recorded: a label"}
-{"file": "controller/update.ts", "reads": 11, "why": "when the controller last looked for an update, and the time on its events: a step only looks sooner or later. The release signers' wait, as at a box: when a change was first seen, a revoke list read and a removal confirmed, judged by signers.ts"}
+{"file": "controller/update.ts", "reads": 9, "why": "when the controller last looked for an update, and the time on its events: a step only looks sooner or later. The release signers' wait, as at a box: a revoke list read and a removal confirmed, judged by signers.ts"}
 {"file": "core/child.ts", "reads": 3, "why": "an op's end time and spawn time, and the 30 s a new job has to take its lease: a step only changes that grace; a free lease is the proof. Op deadlines are on mono"}
 {"file": "core/dispatch.ts", "reads": 1, "why": "a request's 2 minutes and a signed statement's 5 minutes: times another machine wrote, which only the wall clock can judge; the nonce is what makes a signature work once"}
 {"file": "core/events.ts", "reads": 5, "why": "an event's time and id, and the minute windows of its rate limits: a step only shortens or lengthens a window"}
@@ -38,14 +39,14 @@
 {"file": "core/spool.ts", "reads": 4, "why": "a stale temp name in a spool (removing it early costs a resend) and the spool pass's time budget (a step leaves requests for the next pass)"}
 {"file": "gate.ts", "reads": 2, "why": "the workspaces gate's now: the state must be within 3 minutes either way, so a step fails closed"}
 {"file": "github.ts", "reads": 5, "why": "a GitHub App JWT's iat, for the loop and connect, the offset GitHub reports, and a failure's time for a status line"}
-{"file": "guard.ts", "reads": 7, "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too"}
+{"file": "guard.ts", "reads": 8, "why": "the guard record's time, its full pass timer, and the freshness readers check (a stale record fails closed). A VM start judges a loss by mono and the boot too; a Tailscale rotation's lock past its time, which only makes the guard settle it and open the socket again"}
 {"file": "guardwatch.ts", "reads": 2, "why": "a beat's wall time and a log line's time, for people to read only: every age is judged on mono"}
 {"file": "hooks/net.ts", "reads": 4, "why": "network diagnostics: the netwatch record's age, a job's window end and the detail files' age; nothing but a diagnostics file past keepDays is removed on it"}
 {"file": "install.ts", "reads": 6, "why": "installedAt labels, the lock's time, and the wait for Tailscale to start: a step only waits less or more"}
 {"file": "jobs.ts", "reads": 1, "why": "when a stop was asked: a label in the stop's file"}
 {"file": "keychild.ts", "reads": 1, "why": "a rotation's deadline when its record has none: the guard ends the child on mono time"}
 {"file": "keycmd.ts", "reads": 3, "why": "when an op began, a listener's minutes and a key's age: labels, and a wait the op's mono deadline bounds"}
-{"file": "keyops.ts", "reads": 3, "why": "an op's start, its deadline and a refused op's end: the child's limit runs on mono time (child.ts)"}
+{"file": "keyops.ts", "reads": 2, "why": "an op's start, its deadline and a refused op's end: the child's limit runs on mono time (child.ts)"}
 {"file": "keyrotate.ts", "reads": 2, "why": "when an App was retired, a label, and the code wait: a step only ends a wait"}
 {"file": "keys.ts", "reads": 3, "why": "a GitHub App JWT's iat and the clock offset GitHub reports: GitHub judges the JWT"}
 {"file": "kinds.ts", "reads": 8, "why": "the scheduler's now: when slots became ready or busy, an idle VM's turn, and when a VM was told to give way: a step only reorders a choice, gives an idle VM's turn away or ends a wait for a VM to go; no running job is ended"}
@@ -79,14 +80,15 @@
 {"file": "rows/net.ts", "reads": 1, "why": "whether netwatch's record is fresh, for the Network diagnostics row only"}
 {"file": "rows/settings.ts", "reads": 3, "why": "how long since the settings repo was read, and whether the temporary admin SSH window is open: display"}
 {"file": "settings/check.ts", "reads": 1, "why": "when update --check asked for the read, so only a problem from that read is said: display"}
-{"file": "settings/op.ts", "reads": 6, "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot"}
+{"file": "settings/op.ts", "reads": 7, "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot, and a commit's 24 hours waiting for it are judged on the wall clock, stepped back counting as lapsed"}
 {"file": "settings/repo.ts", "reads": 2, "why": "the settings op's now, and the wall part of a confirm's moment, judged with the monotonic clock and the boot (pending.ts)"}
 {"file": "shell.ts", "reads": 1, "why": "the agent shell's refusal envelope's at: a label"}
 {"file": "tools/bake.ts", "reads": 3, "why": "the bake's wait for its guest to shut down, and the base record's time: a step only ends a wait sooner or later, and the time is a label"}
 {"file": "tools/inloop.ts", "reads": 6, "why": "a baking slot's beat and times, as every slot's are written, and a refresh op's end time: labels and beats"}
 {"file": "tools/pass.ts", "reads": 3, "why": "when the store's hashes were last checked and when a failed fetch or bake is tried again: a step only checks sooner or later"}
-{"file": "tsrotate.ts", "reads": 3, "why": "the waits for the sign-in and for the box to be online: a step only ends a wait sooner or later"}
-{"file": "update/box.ts", "reads": 13, "why": "labels in the install record, the marks and the watch file (whose placedAt and deadline v2.6.1's watcher reads; v3's counts mono), the deadline put on the monotonic clock's scale and moved later within the watch's cap, and whether a job or a proof came after the swap, and when a revoke list was read, which a key add's 7-day wait is judged against (signers.ts)"}
+{"file": "tsbox.ts", "reads": 3, "why": "the socket lock's time, written and judged on the wall clock: a step only makes the lock end sooner (the guard opens the socket again) or later (bounded by the op's mono limit, then settled)"}
+{"file": "tsrotate.ts", "reads": 8, "why": "the waits for the job VMs, tailscaled's restart, the sign-in, the box online and the old sign-in put back: a step only ends a wait sooner or later, and the op's limit and the guard's settling run on mono"}
+{"file": "update/box.ts", "reads": 14, "why": "labels in the install record, a workspace hold's bound (a clock step only ends it sooner, so an update goes ahead), the marks and the watch file (whose placedAt and deadline v2.6.1's watcher reads; v3's counts mono), the deadline put on the monotonic clock's scale and moved later within the watch's cap, and whether a job or a proof came after the swap, and when a revoke list was read, which a key add's 7-day wait is judged against (signers.ts)"}
 {"file": "update/cmd.ts", "reads": 1, "why": "the 7-day line about the release check, for display"}
 {"file": "update/gate.ts", "reads": 2, "why": "the update window for a settings commit is the box's own wall time: a step moves the window, never a limit"}
 {"file": "update/signerwatch.ts", "reads": 2, "why": "when an admin's yes for a signer removal was given: the record's label; the 7-day wait is judged by signers.ts on the time it was first seen, and when the revoke list was read: a key add applies only after a read past its 7 days"}
@@ -94,6 +96,6 @@
 {"file": "watchdog.ts", "reads": 3, "why": "a JWT, and whether the hourly workflows check and the last run are recent: a row's SKIP and display"}
 {"file": "workspace/caps.ts", "reads": 1, "why": "the memory caps' 60 s over the size, on the guard's 2 s tick: a step forward asks a save or warns a minute early, a step back late; the stop at 150% reads no clock"}
 {"file": "workspace/clear.ts", "reads": 1, "why": "workspace clear's name for the folder moved aside: unique by a counter, so a step only renames it"}
-{"file": "workspace/cmd.ts", "reads": 8, "why": "the workspace commands' now: freshness and quiet shown in list and status (display), and wait's --timeout, which gives up and changes nothing; a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter; rule list's live or expired, display"}
+{"file": "workspace/cmd.ts", "reads": 9, "why": "the workspace commands' now: freshness and quiet shown in list and status (display), and wait's --timeout, which gives up and changes nothing; a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter, and a request proof's, which also names the box's nonce; rule list's live or expired, display"}
 {"file": "workspace/handover.ts", "reads": 1, "why": "the moved-aside folder's name, from the caller's now: unique by a counter, so a step only renames it"}
 {"file": "workspace/pass.ts", "reads": 2, "why": "the workspaces pass's now: its beat, the time rules (expiry, quiet, saves) and a failed proof's retry, all timers either way of a step; and when a clear's delete ended, for its op record"}

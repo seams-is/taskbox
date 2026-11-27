@@ -107,16 +107,17 @@ describe("the rules on the box", () => {
 describe("claim keys", () => {
   test("a proof by the key, for its workspace, newer and on time, is taken once", () => {
     const k = makeClaim();
-    const p = signProof(k.pem, "nova-3", 10, T);
+    const p = signProof(k.pem, "progress", "nova-3", 10, T);
     expect(parseProof(proofWord(p))).toEqual(p);
-    expect(checkProof({ key: k.pub, n: 0 }, "nova-3", p, T)).toEqual({ ok: true, n: 10 });
-    expect(checkProof({ key: k.pub, n: 10 }, "nova-3", p, T)).toMatchObject({ ok: false, why: expect.stringContaining("used before") });
-    expect(checkProof({ key: k.pub, n: 0 }, "nova-4", p, T)).toMatchObject({ ok: false, why: expect.stringContaining("isn't by") });
-    expect(checkProof({ key: makeClaim().pub, n: 0 }, "nova-3", p, T)).toMatchObject({ ok: false });
-    expect(checkProof({ key: k.pub, n: 0 }, "nova-3", p, T + 5 * MIN + 1)).toMatchObject({ ok: false, why: expect.stringContaining("5 minutes") });
-    expect(checkProof({ key: k.pub, n: 0 }, "nova-3", undefined, T)).toMatchObject({ ok: false, why: expect.stringContaining("no proof") });
-    // A signature over other text doesn't pass.
-    expect(claimText("nova-3", 1, T)).toBe(`taskbox-claim v1\nnova-3\n1\n${T}\n`);
+    expect(checkProof({ key: k.pub, n: 0 }, "progress", "nova-3", p, T)).toEqual({ ok: true, n: 10 });
+    expect(checkProof({ key: k.pub, n: 10 }, "progress", "nova-3", p, T)).toMatchObject({ ok: false, why: expect.stringContaining("used before") });
+    expect(checkProof({ key: k.pub, n: 0 }, "progress", "nova-4", p, T)).toMatchObject({ ok: false, why: expect.stringContaining("isn't by") });
+    expect(checkProof({ key: k.pub, n: 0 }, "end", "nova-3", p, T)).toMatchObject({ ok: false, why: expect.stringContaining("for end") });
+    expect(checkProof({ key: makeClaim().pub, n: 0 }, "progress", "nova-3", p, T)).toMatchObject({ ok: false });
+    expect(checkProof({ key: k.pub, n: 0 }, "progress", "nova-3", p, T + 5 * MIN + 1)).toMatchObject({ ok: false, why: expect.stringContaining("5 minutes") });
+    expect(checkProof({ key: k.pub, n: 0 }, "progress", "nova-3", undefined, T)).toMatchObject({ ok: false, why: expect.stringContaining("no proof") });
+    // A signature over other text doesn't pass: the step is in it.
+    expect(claimText("connect", "nova-3", 1, T)).toBe(`taskbox-claim v2\nconnect\nnova-3\n1\n${T}\n`);
     for (const bad of ["1.2", "0.1." + "A".repeat(86), "x"]) expect(parseProof(bad)).toBeUndefined();
   });
   test("the requesting side keeps one key per box and agent at 0600, and counts up", () => {
@@ -128,11 +129,11 @@ describe("claim keys", () => {
     expect(lstatSync(path).mode & 0o777).toBe(0o600);
     expect(lstatSync(join(home, ".taskbox", "claims", "taskbox-1")).mode & 0o777).toBe(0o700);
     expect(claimKept(home, "taskbox-1", "orion")).toBeUndefined();
-    const p1 = nextProof(home, "taskbox-1", "nova-3", T)!;
-    const p2 = nextProof(home, "taskbox-1", "nova-3", T)!;
+    const p1 = nextProof(home, "taskbox-1", "end", "nova-3", T)!;
+    const p2 = nextProof(home, "taskbox-1", "end", "nova-3", T)!;
     expect(p2.n).toBeGreaterThan(p1.n);
-    expect(checkProof({ key: a.pub, n: p1.n }, "nova-3", p2, T)).toEqual({ ok: true, n: p2.n });
-    expect(nextProof(home, "taskbox-1", "orion-4", T)).toBeUndefined();
+    expect(checkProof({ key: a.pub, n: p1.n }, "end", "nova-3", p2, T)).toEqual({ ok: true, n: p2.n });
+    expect(nextProof(home, "taskbox-1", "end", "orion-4", T)).toBeUndefined();
     expect(readFileSync(path, "utf8")).toContain("PRIVATE KEY");
     expect(() => claimFor(home, "../x", "nova")).toThrow();
   });

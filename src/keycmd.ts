@@ -92,13 +92,19 @@ export async function keyRotate(c: BoxCtx): Promise<Outcome> {
   if ("why" in opened) return fail(c, opened.why, "busy");
   const { op, send } = opened;
   const read = opReader(ops, op.id);
-  const live = () => read()?.state === "running";
+  let interrupted = false;
+  const live = () => !interrupted && read()?.state === "running";
   c.say(`Rotating the ${which} key (${op.id}). The old key works until the new one is proved. taskbox op cancel ${op.id} ${which === "tailscale" ? "before reconnecting" : "before switching"} stops it.`);
   process.on("SIGINT", () => {
+    // A Tailscale rotation stops at its next look, and puts back the old sign-in, the socket and the box.
+    if (which === "tailscale") {
+      interrupted = true;
+      return;
+    }
     try {
       send({ end: { state: "failed", why: "stopped at the box with Ctrl-C" } });
     } catch {}
-    c.say(which === "tailscale" ? "Stopped. If Tailscale waits for a sign-in, type taskbox key rotate tailscale again." : "Stopped. The old key is still in use; a new App made already is finished by the next taskbox key rotate.");
+    c.say("Stopped. The old key is still in use; a new App made already is finished by the next taskbox key rotate.");
     process.exit(130);
   });
   const phase = (ph: string, text?: string) => send({ phase: ph, ...(text ? { progress: { text: text.slice(0, 120) } } : {}) });
@@ -106,18 +112,18 @@ export async function keyRotate(c: BoxCtx): Promise<Outcome> {
   let exit = 1;
   try {
     if (which === "tailscale") {
-      const { draftTailscale, followTailscale, tailnetPinPath } = await import("./tsrotate.ts");
+      const { rotateTailscale, tailnetPinPath } = await import("./tsrotate.ts");
+      const { tsBox } = await import("./tsbox.ts");
       const { loadConfig, tagOf } = await import("./config.ts");
       const cfg = loadConfig(c.p.app, c.p.boxSettings);
-      const d = { sys, tailscale: c.p.tailscale, socket: c.p.tailscaleSocket, tag: tagOf(cfg), hostname: cfg.runnerNamePrefix, pinFile: tailnetPinPath(state.dir), chown: c.chown, say: c.say, phase, event, live };
-      const r = await draftTailscale(d);
-      if ("why" in r) c.say(`Not rotated: ${r.why}.`);
-      else {
+      const root = c.deps.rootUid ?? 0;
+      const box = tsBox({ sys, p: c.p, state, rootUid: root, chown: c.chown, op: op.id, event: (type, text) => event(type, text), log: c.say });
+      const d = { sys, tailscale: c.p.tailscale, socket: c.p.tailscaleSocket, tag: tagOf(cfg), hostname: cfg.runnerNamePrefix, pinFile: tailnetPinPath(state.dir), rootUid: root, chown: c.chown, say: c.say, phase, event, live, ...box };
+      exit = await rotateTailscale(d, (url) => {
         // The link is said here, on the admin's own terminal, and nowhere else.
         c.say("Open this link in a browser signed in to your Tailscale account, and approve the box. Whoever opens it first takes the box, so open it now and share it with nobody:");
-        c.say(`  ${r.url}`);
-        exit = await followTailscale(d, r.node);
-      }
+        c.say(`  ${url}`);
+      });
     } else exit = await rotateAtBox(c, which, a, { op: op.id, since: op.startedAt, deadline: op.deadline!, live, phase, event, confirmSwitching: () => recorded({ sys, read }, "switching") });
   } finally {
     if (live()) send({ end: exit === 0 ? { state: "succeeded" } : { state: "failed", why: "the rotation stopped; the command said why" } });
@@ -281,7 +287,7 @@ export async function keyRows(c: Pick<BoxCtx, "p" | "deps" | "ops" | "uid">): Pr
   // A controller's offer, for a paired controller to approve: its base64 is public, as any key's.
   if (offer) rows.push({ key: "approver", fingerprint: fingerprint(offer.key), offered: offer.key.split(" ")[1]!, note: "offered by a controller and waiting: a paired controller approves it with taskbox key add approver" });
   const tn = readTailnetPin(tailnetPinPath(state.dir), rootUid);
-  rows.push({ key: "tailscale", ...(tn ? { note: `pinned to its tailnet` } : { note: "its tailnet is pinned at the first rotation" }), ...(rotation("tailscale") ? { rotation: rotation("tailscale")! } : {}) });
+  rows.push({ key: "tailscale", ...(tn ? { note: `pinned to its tailnet` } : { note: "its tailnet isn't pinned: at the box, taskbox update pins it" }), ...(rotation("tailscale") ? { rotation: rotation("tailscale")! } : {}) });
   return rows;
 }
 

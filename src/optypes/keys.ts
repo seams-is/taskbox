@@ -2,8 +2,8 @@
 // no return. The owner (from the controller, signed) or an admin at the box starts each.
 // - runner and source: a new App by manifest. Cancelled before switching, the new App is dropped
 //   as connect's cancel drops one (connectflow.ts cancelPending), and the old App stays in use.
-// - tailscale: a re-auth. Cancelled before reconnecting, the op ends; Tailscale keeps its old key
-//   until a sign-in is approved.
+// - tailscale: a re-auth. Cancelled before reconnecting, the op ends and the old sign-in is put back
+//   (tsrotate.ts, or the guard's settling in tsbox.ts).
 // - approver: a lasting change waiting for confirm. Cancelled before confirm, the wait is dropped.
 import type { OpDecl } from "./decl.ts";
 

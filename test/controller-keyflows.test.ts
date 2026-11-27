@@ -95,6 +95,12 @@ function keyBox() {
       const r = readOp({ dir: state.ops, owner: me }, ws[2]!);
       if (r.kind !== "ok") return { stdout: env("op.show", { exit: 1 }), code: 0 };
       let op = r.value;
+      // A Tailscale rotation's child signs in again and seals the link it gets to the controller's key.
+      if (op.type === "key-rotate-tailscale" && op.state === "running") {
+        const { linkPath, readLink, writeLink } = await import("../src/keyops.ts");
+        if (!readLink(linkPath(state.dir), op.id, me)) writeLink(linkPath(state.dir), op.id, String(op.params.seal), "https://login.tailscale.com/a/abcdef123456", { rootUid: me });
+        return { stdout: env("op.show", { result: { op: opJson(op), sealed: readLink(linkPath(state.dir), op.id, me) } }), code: 0 };
+      }
       // The child, at its making phase, says what the controller's browser makes.
       if (op.state === "running" && !op.progress) writeOp({ dir: state.ops, owner: me }, (op = withProgress(toPhase(op, "making"), { text: "make runner example-org-taskbox-1-runners-1f2e" })));
       return { stdout: env("op.show", { result: { op: opJson(op) } }), code: 0 };

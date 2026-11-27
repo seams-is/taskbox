@@ -7,8 +7,8 @@
 // Three files, each with one writer, so none can undo another's change:
 // - root's load.json (/opt/taskbox-state, 0644): the sessions the owner opened and stopped, written
 //   by the guard's signed handlers (handlers/load.ts);
-// - the service's load.json: v2's sessions, kept for their reports, and each `taskbox load stop` the
-//   service account typed at the box;
+// - the service's load.json: v2's sessions, which no longer open one (only root's do), and each
+//   `taskbox load stop` the service account typed at the box;
 // - the service's load-seen.json: what the job source last listed and each session's numbers,
 //   written by the loop.
 // The service's two are copied for every user like the loop's state; root's is readable as it is.
@@ -161,12 +161,13 @@ function readSeenFile(file: string): SeenFile {
   return { v: 1, ...(seen ? { seen } : {}), stats };
 }
 
-// The sessions as the commands wrote them, before the loop's numbers: v2's, then root's, with the
-// service's stops at the box. A number root's file has wins over v2's.
+// The sessions as the commands wrote them, before the loop's numbers: root's alone, with the
+// service's stops at the box. The service account's own file (v2's) can hold a stop, which only ends
+// a session, never a session: one written there, by the service or a job that escaped its VM, would
+// hold the box for load jobs with nobody's signature.
 function sessionsOf(dir: string, p: Pick<Paths, "installId">, rootUid: number): LoadSession[] {
   const sf = readServiceFile(join(dir, "load.json"));
-  const mine = readRootSessions(p, rootUid);
-  const all = [...sf.sessions.filter((s) => !mine.some((m) => m.n === s.n)), ...mine].sort((a, b) => a.n - b.n);
+  const all = readRootSessions(p, rootUid).sort((a, b) => a.n - b.n);
   return all.map((s) => {
     const stop = sf.stops.find((x) => x.n === s.n);
     if (!stop || (s.endedAt !== undefined && s.endedAt <= stop.at)) return s;
@@ -343,7 +344,9 @@ export function openSession(p: Paths, now: number, o: { forMs?: number; only: bo
     const cur = currentSession(f, now);
     if (cur) return { state: mine, out: `session ${cur.n} is on until ${new Date(cur.until).toISOString().slice(11, 16)} UTC` };
     const forMs = Math.max(LOAD_MIN_MS, Math.min(LOAD_MAX_MS, o.forMs ?? LOAD_MAX_MS));
-    const n = Math.min(999_999, Math.max(0, ...f.sessions.map((x) => x.n), ...mine.map((x) => x.n)) + 1);
+    // Numbered past v2's sessions in the service's file too, so no session's numbers mix with an old one's.
+    const v2 = readServiceFile(join(p.shared, "load.json")).sessions.map((x) => x.n);
+    const n = Math.min(999_999, Math.max(0, ...f.sessions.map((x) => x.n), ...mine.map((x) => x.n), ...v2) + 1);
     const s: LoadSession = { n, startedAt: now, until: now + forMs, only: o.only, pattern: o.pattern, by: clean(o.by, 80), ...(f.seen?.reads !== undefined ? { readsAtStart: f.seen.reads } : {}) };
     return { state: [...mine, s], out: s };
   });

@@ -162,9 +162,9 @@ const gateLine = () => readFileSync(join(repo, "src/gate.ts"), "utf8").split("\n
 
 // The gate's own first line, then a body that runs the real gate with this box's paths. Only the
 // paths, the clock, the boot and the user ID are the test's: the gate's code is the box's.
-function runGate(b: ReturnType<typeof plantedBox>, args: string[], o: { line?: string; nproc?: number; body?: string } = {}) {
+function runGate(b: ReturnType<typeof plantedBox>, args: string[], o: { line?: string; nproc?: number; body?: string; nice?: number | "undefined" } = {}) {
   const shebang = (o.line ?? gateLine()).replace("/opt/taskbox/bin/bun", process.execPath).replace("/opt/taskbox/app/bunfig.run.toml", join(repo, "bunfig.run.toml"));
-  const over = `{ uid: ${POOL_UID}, rootUid: ${me}, state: ${JSON.stringify(b.stateFile)}, poolRecord: ${JSON.stringify(b.poolRecord)}, approvers: ${JSON.stringify(b.approvers)}, home: () => ${JSON.stringify(b.home)}, boot: () => ${JSON.stringify(BOOT1)}, floorGB: () => 1, now: () => ${T}, nproc: ${o.nproc ?? GATE_NPROC} }`;
+  const over = `{ uid: ${POOL_UID}, rootUid: ${me}, state: ${JSON.stringify(b.stateFile)}, poolRecord: ${JSON.stringify(b.poolRecord)}, approvers: ${JSON.stringify(b.approvers)}, home: () => ${JSON.stringify(b.home)}, boot: () => ${JSON.stringify(BOOT1)}, floorGB: () => 1, now: () => ${T}, nproc: ${o.nproc ?? GATE_NPROC}, nice: () => ${o.nice === undefined ? 10 : o.nice} }`;
   const body = o.body ?? `import { gate } from ${JSON.stringify(join(repo, "src/gate.ts"))};\nprocess.exit(await gate(process.argv.slice(2), ${over}));\n`;
   const script = join(b.dir, "gate");
   writeFileSync(script, `${shebang}\n${body}`, { mode: 0o755 });
@@ -224,6 +224,17 @@ describe("the gate, run for real", () => {
     expect(env).toContain(`HOME=${b.home}`);
     expect(env).toContain("USER=taskbox-ws1");
     expect(ran).toBe(false);
+  });
+});
+
+describe("the size's nice, from the first process", () => {
+  test.serial("the gate sets its own nice to the size's before the shell starts, absolute; a nice it can't read opens nothing", () => {
+    const b = plantedBox(inPhase("ready"));
+    const { r, out } = runGate(b, ["-c", "/bin/ps -o nice= -p $$"], { nproc: nprocNow() - 1 });
+    expect(r.exitCode).toBe(0);
+    expect(Number(out.trim())).toBe(10);
+    const none = runGate(b, ["-c", "id"], { nice: "undefined" });
+    expect(none.out).toBe("taskbox: the account's priority can't be set to its size's, so it opens no shell.\n");
   });
 });
 

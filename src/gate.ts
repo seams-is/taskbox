@@ -19,6 +19,7 @@ import { lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { realClock } from "./clock.ts";
 import { loadConfig } from "./config.ts";
+import { workspacesOf } from "./settings/workspaces.ts";
 import { FIRST_HIDDEN_ID, LAST_HIDDEN_ID, type PoolRecord, readPoolRecord } from "./pin.ts";
 import { pinnedKeys, readApprovers } from "./core/approvers.ts";
 import { floorWhy, NO_KEY, openFor, parseBoot, POOL_USER, type Workspace } from "./workspace/model.ts";
@@ -120,6 +121,34 @@ function floorNow(app: string): number | undefined {
   }
 }
 
+// The size's nice, as settings give it: Light 10 and Heavy 5 by default, a Whole 0.
+function niceNow(app: string, size: Workspace["size"]): number | undefined {
+  try {
+    const n = workspacesOf(loadConfig(app)).sizes[size].nice;
+    return Number.isSafeInteger(n) && n >= 0 && n <= 20 ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// This process's nice set to the size's, absolute, before the shell starts, so every process the
+// session starts runs at it from its first moment (setpriority, PRIO_PROCESS, this process), and
+// read back. A nice can only go up for an account that isn't root, so the shell can't lower it.
+const PRIO_PROCESS = 0;
+export function setNice(nice: number): boolean {
+  try {
+    const lib = dlopen("/usr/lib/libSystem.B.dylib", { setpriority: { args: [FFIType.i32, FFIType.u32, FFIType.i32], returns: FFIType.i32 }, getpriority: { args: [FFIType.i32, FFIType.u32], returns: FFIType.i32 } });
+    try {
+      if (lib.symbols.setpriority(PRIO_PROCESS, 0, nice) !== 0) return false;
+      return lib.symbols.getpriority(PRIO_PROCESS, 0) === nice;
+    } finally {
+      lib.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
 // Lowers the soft and hard RLIMIT_NPROC to at most max, and reads it back. False when it can't.
 export function lowerNproc(max: number): boolean {
   try {
@@ -168,6 +197,8 @@ export interface GateEnv {
   now: () => number;
   nproc: number;
   shell: string;
+  nice: (size: Workspace["size"]) => number | undefined;
+  setNice: (nice: number) => boolean;
 }
 
 const boxEnv = (): GateEnv => ({
@@ -182,6 +213,8 @@ const boxEnv = (): GateEnv => ({
   now: () => realClock.now(),
   nproc: GATE_NPROC,
   shell: SHELL,
+  nice: (size) => niceNow(APP, size),
+  setNice,
 });
 
 // The login shell's arguments: "-c <command>" for one command, nothing (or only login flags) for a
@@ -210,6 +243,11 @@ export async function gate(argv: readonly string[], over: Partial<GateEnv> = {})
   }
   if (!lowerNproc(e.nproc)) {
     console.log("taskbox: the account's process limit can't be lowered, so it opens no shell.");
+    return 1;
+  }
+  const nice = e.nice(d.ws.size);
+  if (nice === undefined || (nice > 0 && !e.setNice(nice))) {
+    console.log("taskbox: the account's priority can't be set to its size's, so it opens no shell.");
     return 1;
   }
   // The account's own environment from here on: its home, its name, and plain system paths.

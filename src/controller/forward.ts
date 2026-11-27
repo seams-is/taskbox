@@ -21,7 +21,7 @@ import { boxChecksBody, footer, header, jobsBody, logBody, nextFor, nowLine, sta
 import { keySigner } from "./signer.ts";
 import { boxCall, remoteLine, sendable } from "./ssh.ts";
 import { dirname } from "node:path";
-import { claimFor, nextProof, proofWord } from "../workspace/claim.ts";
+import { CLAIM_ACTIONS, CLAIMS_SUBJECT, claimFor, claimKept, fingerprint, nextProof, proofWord, signRequest } from "../workspace/claim.ts";
 import { controllerStatus as statusFile, save } from "./statusline.ts";
 
 export const ANSWER_MS = 90_000;
@@ -147,7 +147,9 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
     const why = line === undefined ? "Those words have characters the box's shell doesn't take." : (commandFor(line) as { no?: string }).no ?? "The box's shell doesn't take those words.";
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [cleanLine(why)], { code: "usage", message: cleanLine(why), fix: null, who: null }) };
   }
-  const signed = !spec.raw && (spec.flags ?? []).includes("signed") && spec.who.includes("owner") && p.flags.signed === undefined;
+  // workspace request is the agent's, unsigned, unless it is the owner's own Whole: no --as.
+  const ownRequest = spec.path.join(" ") === "workspace request";
+  const signed = !spec.raw && (spec.flags ?? []).includes("signed") && spec.who.includes("owner") && p.flags.signed === undefined && (!ownRequest || p.opts.as === undefined);
   // The box streams logs -f and op show -w. status -w the controller draws again itself, so every box answers it.
   const stream = !spec.raw && spec.streams === true && (p.flags.follow === true || (p.flags.watch === true && spec.path[0] !== "status"));
   if (stream && cut.sel === "all") {
@@ -188,21 +190,51 @@ async function oldBox(d: Deps, c: Connected, a: Ask): Promise<One> {
 }
 
 // The agent's claim key for a box lives here, on the controller, in the agents user's home: a
-// request sends its public half, and progress and end a proof by it (workspace/claim.ts). The box
-// binds the workspace and its files to the key, so another agent can't end it or claim its files.
-export function withClaim(d: Pick<Deps, "home">, box: string, a: Pick<Ask, "spec" | "parsed" | "words">, now: number): string[] {
+// request sends its public half and a proof by it over the box's claims nonce, and progress, end and
+// connect a proof by it for that step (workspace/claim.ts). The box binds the workspace and its files
+// to the key, so another agent can't end it or claim its files. Anything that goes wrong here stops
+// the command: nothing goes to the box unbound.
+const claimHome = (d: Pick<Deps, "home">) => dirname(dirname(dirname(d.home.dir)));
+export async function withClaim(d: Pick<Deps, "home">, box: string, a: Pick<Ask, "spec" | "parsed" | "words">, now: number, nonce: () => Promise<string | Stop>): Promise<string[] | Stop> {
   const verb = a.spec.path.join(" ");
-  const userHome = dirname(dirname(dirname(d.home.dir)));
+  const userHome = claimHome(d);
   const dir = lower(box);
+  const no = (why: string): Stop => ({ stop: `The agent's claim key for ${box} can't be used here (${why}), so nothing was sent.`, next: "Check that the agents user's ~/.taskbox/claims folder is its own, at 700." });
   try {
-    if (verb === "workspace request" && a.parsed.opts.claim === undefined && typeof a.parsed.opts.as === "string") return [...a.words, "--claim", claimFor(userHome, dir, a.parsed.opts.as).pub];
-    if ((verb === "workspace progress" || verb === "workspace end" || verb === "workspace connect") && a.parsed.opts.proof === undefined && a.parsed.flags.signed === undefined) {
+    if (verb === "workspace request" && a.parsed.opts.claim === undefined && a.parsed.opts.proof === undefined && typeof a.parsed.opts.as === "string") {
+      const k = claimFor(userHome, dir, a.parsed.opts.as);
+      const n = await nonce();
+      if (typeof n !== "string") return n;
+      const size = typeof a.parsed.opts.size === "string" ? a.parsed.opts.size : "light";
+      return [...a.words, "--claim", k.pub, "--proof", signRequest(k.pem, a.parsed.opts.as, size, n, now)];
+    }
+    const action = CLAIM_ACTIONS.find((x) => verb === `workspace ${x}`);
+    if (action && a.parsed.opts.proof === undefined && a.parsed.flags.signed === undefined) {
       const id = a.parsed.args[0] ?? "";
-      const p = nextProof(userHome, dir, id, now);
+      const p = nextProof(userHome, dir, action, id, now);
       if (p) return [...a.words, "--proof", proofWord(p)];
     }
-  } catch {}
+  } catch (e) {
+    return no(String((e as Error)?.message ?? e).replace(/[^\x20-\x7e]/g, " ").slice(0, 120));
+  }
   return a.words;
+}
+
+// rule add with no --key names the agent's claim key kept on this controller, so the key is in the
+// signed statement and on the Touch ID sheet, and the fingerprint is printed to compare at confirm.
+export function withRuleKey(d: Pick<Deps, "home" | "out">, box: string, a: Ask): Ask {
+  if (a.spec.path.join(" ") !== "workspace rule add" || a.parsed.opts.key !== undefined || typeof a.parsed.opts.agent !== "string") return a;
+  const k = (() => {
+    try {
+      return claimKept(claimHome(d), lower(box), a.parsed.opts.agent as string);
+    } catch {
+      return undefined;
+    }
+  })();
+  if (!k) return a;
+  const fp = fingerprint(k.pub);
+  d.out(`The rule names ${a.parsed.opts.agent}'s claim key ${fp}, kept on this controller. confirm at the box shows the same fingerprint; say no there if it differs.`);
+  return { ...a, words: [...a.words, "--key", fp], parsed: { ...a.parsed, opts: { ...a.parsed.opts, key: fp } } };
 }
 
 // An envelope from a line, or the stop that says why not.
@@ -221,7 +253,8 @@ async function call(d: Deps, c: Connected, line: string, limitMs = ANSWER_MS): P
 // The owner's command, signed: the box's nonce for the handler's subject, the statement the box's own
 // statement.ts makes, the approval signer, then the line with --signed. A nonce that moved on while
 // the owner touched is fetched and signed again, once (spec 3.5).
-async function signedOnBox(d: Deps, c: Connected, a: Ask): Promise<One> {
+async function signedOnBox(d: Deps, c: Connected, asked: Ask): Promise<One> {
+  const a = withRuleKey(d, c.box.name, asked);
   const back = (s: Stop, exit: number = EXIT.failed): One => ({ box: c.box, stop: s, exit });
   const action = a.spec.path.join(".");
   const args = argsOf(a.parsed);
@@ -319,18 +352,37 @@ async function onBox(d: Deps, c: Connected, a: Ask): Promise<One> {
   }
   if (a.signed) return signedOnBox(d, c, a);
   const name = c.box.name;
-  let r: Awaited<ReturnType<typeof boxCall>>;
-  try {
-    r = await boxCall(sshDeps(d), c.target, lineFor(a.spec, withClaim(d, c.box.name, a, d.now()), c.hello.answers), ANSWER_MS);
-  } catch {
-    return { box: c.box, stop: { stop: `${name} can't be asked taskbox ${a.spec.path.join(" ")} over ssh.`, next: "Run it at the box." }, exit: EXIT.failed };
+  const nonce = async (): Promise<string | Stop> => {
+    const n = await call(d, c, remoteLine(["nonce", CLAIMS_SUBJECT, "--json", "--answers", String(c.hello.answers)]));
+    if (isStop(n)) return n;
+    const v = n.at(-1)?.result?.nonce;
+    return typeof v === "string" && NONCE.test(v) ? v : { stop: `${name} gave no nonce for the claim key's proof.`, next: "Type taskbox check at the box." };
+  };
+  let r: Awaited<ReturnType<typeof boxCall>> | undefined;
+  // A request whose nonce moved on (another request applied first) is signed again, once.
+  for (let i = 0; i < 2; i++) {
+    const words = await withClaim(d, name, a, d.now(), nonce);
+    if (isStop(words)) return { box: c.box, stop: words, exit: EXIT.failed };
+    try {
+      r = await boxCall(sshDeps(d), c.target, lineFor(a.spec, words, c.hello.answers), ANSWER_MS);
+    } catch {
+      return { box: c.box, stop: { stop: `${name} can't be asked taskbox ${a.spec.path.join(" ")} over ssh.`, next: "Run it at the box." }, exit: EXIT.failed };
+    }
+    if (!r.ok || a.spec.path.join(" ") !== "workspace request" || !r.stdout.includes('"stale-state"')) break;
   }
+  if (!r) return { box: c.box, stop: { stop: `${name} wasn't asked.`, next: "Try again." }, exit: EXIT.failed };
   if (!r.ok) return { box: c.box, stop: sshStop(name, r.why, ANSWER_MS), exit: EXIT.failed };
   // The agent's own verbs answer in their own shape: their lines, cleaned, and the box's exit.
   if (a.spec.raw) return { box: c.box, raw: r.stdout.split("\n").filter((l) => l !== "").slice(0, 1000).map(cleanLine), exit: r.code };
   const e = readEnvelopes(r.stdout, { installId: c.box.installId, stream: true });
   if (!e.ok) return { box: c.box, stop: { stop: `${name}'s answer doesn't match what taskbox reads (${e.detail}), so the command stopped.`, next: "Update taskbox on this controller and on the box. If they match, agents look." }, exit: EXIT.failed };
-  return { box: c.box, envelopes: e.envelopes, exit: e.envelopes.at(-1)!.exit };
+  // The owner's own Whole: Screen Sharing over Tailscale, to the account the box names.
+  const last = e.envelopes.at(-1)!;
+  const r0 = last.result as Record<string, unknown> | undefined;
+  if (a.spec.path.join(" ") === "workspace connect" && a.parsed.opts.screen === true && last.exit === 0 && r0?.screen === true && typeof r0.user === "string" && /^[a-z_][a-z0-9_.-]{0,31}$/.test(r0.user) && /^[0-9a-f.:]{3,45}$/i.test(c.target.address)) {
+    await d.run(["/usr/bin/open", `vnc://${r0.user}@${c.target.address.includes(":") ? `[${c.target.address}]` : c.target.address}`], { limitMs: 10_000, maxBytes: 4096 }).catch(() => undefined);
+  }
+  return { box: c.box, envelopes: e.envelopes, exit: last.exit };
 }
 
 export function show(d: Deps, a: Ask, list: One[]): Shown {

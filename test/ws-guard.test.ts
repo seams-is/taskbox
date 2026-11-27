@@ -157,6 +157,11 @@ describe("workspaces off", () => {
     expect(r.did.join(" ")).toContain("moved the workspaces state");
     expect(readdirSync(dirname(b.p.workspaces)).some((f) => f.startsWith("workspaces.json.bad-"))).toBe(true);
     expect(b.state().workspaces).toEqual([]);
+    // Who used each account is lost: every one is cleared before its next agent, and ids go on past
+    // any the lost state could have given.
+    expect(Object.values(b.state().accounts).map((a) => a.agent)).toEqual(Object.keys(b.state().accounts).map(() => "taskbox"));
+    expect(Object.keys(b.state().accounts).length).toBeGreaterThan(0);
+    expect(b.state().nameSeq).toBeGreaterThan(1000);
   });
 });
 
@@ -364,7 +369,7 @@ describe("handing an account to another agent", () => {
     const h = { sys, usersDir: users, rootUid: me, chown: () => {}, now: () => T };
     const a = { user: "taskbox-ws1", uid: me, gid: 20 };
     expect(moveAside(h, a)).toBeUndefined();
-    expect(readdirSync(home)).toEqual([]);
+    expect(readdirSync(home)).toEqual(["Library"]);
     const dir = clearedDir(h)!;
     expect(dir).toBe(join(users, CLEARED));
     const st = lstatSync(dir);

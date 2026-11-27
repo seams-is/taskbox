@@ -45,6 +45,8 @@ import { adoptSource } from "./connectflow.ts";
 import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, isAgentRole, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, recordedIds, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
+import { poolTrust } from "./core/approvers.ts";
+import { adminState } from "./elevate.ts";
 import { readActionsKey } from "./queue.ts";
 import { placeTailscaledLog } from "./logins.ts";
 import { asNobody, keyChangeVerifier, verifyFolder } from "./workspace/approval.ts";
@@ -337,7 +339,9 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if ("refuse" in approver) throw new Stop(approver.refuse, true);
   // The pool account, while the box trusts the release's key, or pins it at this yes. One taskbox
   // didn't make is left alone.
-  const trusted = "key" in approver ? approver.key : undefined;
+  // approvers.json alone decides it: v2's approver.json, which a release's settings could still
+  // write through the update's yes, no longer makes or keeps a pool account.
+  const trusted = poolTrust(rootStateOf(d.paths).approvers, d.rootUid ?? 0);
   // The rest of the accounts: the pool, taskbox's own two, people to make, and the agent named before.
   const step = await planAccountsStep(d.sys, d.paths, relAccounts, poolOf(relAccounts, trusted), d.paths.agent, REMOTE_SHELL, d.rootUid ?? 0);
   // Screen Sharing's list of users, from accounts.people, with any person made after the yes.
@@ -1049,6 +1053,14 @@ const printable = (t: string) => t.replace(/[^\x20-\x7e]/g, " ").trim();
 // default rule for a user's own devices, which allows root. Its key doesn't expire. The owner opens the link it prints.
 // MagicDNS's answers stay off the box (--accept-dns=false): the box's DNS is what every VM asks, and
 // no VM learns the tailnet's names. The box's tailnet name is never written to GitHub.
+// The tailnet the box signed in to, pinned once (tsrotate.ts): a later sign-in to another, by a key
+// rotation, logs out of it. One not pinned yet is the Tailscale row's to say.
+async function pinHere(d: InstallDeps): Promise<void> {
+  const { pinTailnet, tailnetPinPath } = await import("./tsrotate.ts");
+  const { rootStateOf } = await import("./core/paths.ts");
+  await pinTailnet({ sys: d.sys, tailscale: d.paths.tailscale, socket: d.paths.tailscaleSocket, pinFile: tailnetPinPath(rootStateOf(d.paths).dir), rootUid: d.rootUid ?? 0, chown: d.chown }).catch(() => undefined);
+}
+
 export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string = TAILNET_TAG): Promise<void> {
   const ts = (args: string[]) => d.sys.run(d.paths.tailscale, [`--socket=${d.paths.tailscaleSocket}`, ...args], { timeoutMs: 20_000 });
   // tailscaled may have restarted a moment ago, for this update. Wait while it is still starting, so a
@@ -1083,6 +1095,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
     // cli/up.go acceptRouteDefault, read).
     const set = await ts(["set", "--ssh", "--accept-dns=false", ...TAILSCALE_OFF, "--webclient=false"]);
     if (set.code !== 0) d.say(`Tailscale's settings didn't change (${printable(set.stderr).slice(0, 120)}). Type taskbox update again.`);
+    await pinHere(d);
     return;
   }
   // Tailscale refuses the tag until the policy names its owner (tailscale.com/kb/1068), so that
@@ -1110,7 +1123,10 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
     },
   });
   const code = await p.exited;
-  if (code === 0) d.say("The box is on the tailnet, with Tailscale SSH.");
+  if (code === 0) {
+    d.say("The box is on the tailnet, with Tailscale SSH.");
+    await pinHere(d);
+  }
   else if (retag) d.say(`The box didn't move to ${tag} on the tailnet: Tailscale may not take a new tag on a box already signed in. Check that "tagOwners" has "${tag}", then type taskbox update again. If it stays so, sign the box out of Tailscale's admin console (Machines), and update again to sign it in with ${tag}.`);
   else d.say(`The box didn't sign in to Tailscale. Check that "tagOwners" has "${tag}", then type taskbox update again${asked ? ", and open the link it prints" : approve ? ", once the box is approved" : ""}.`);
 }
