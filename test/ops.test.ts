@@ -112,7 +112,7 @@ describe("taskbox status", () => {
     linked(p);
     expect(await status(d)).toBe(0);
     expect(said[0]).toBe("app: Ready. Waiting for a job.");
-    expect(said.join("\n")).toContain("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, resume, settings, withdraw, size, connect, start, status, stop, template, tool");
+    expect(said.join("\n")).toContain("Commands: check, drain, image, job, key, load, logins, logs, op, pause, policy, prune, resume, settings, withdraw, size, connect, start, status, stop, template, tool");
     expect(tail(said)).toEqual(["Now: Ready. Waiting for a job.", "Did: Nothing changed.", "Next: Nothing to do."]);
   });
 
@@ -155,6 +155,7 @@ describe("taskbox status", () => {
       "drain",
       "image",
       "job",
+      "key",
       "load",
       "logins",
       "logs",
@@ -189,6 +190,7 @@ describe("taskbox status", () => {
       "hello",
       "image",
       "job",
+      "key",
       "load",
       "logins",
       "logs",
@@ -211,6 +213,7 @@ describe("taskbox status", () => {
       "check",
       "image",
       "job",
+      "key",
       "load",
       "logins",
       "logs",
@@ -237,6 +240,7 @@ describe("taskbox status", () => {
       "check",
       "image",
       "job",
+      "key",
       "load",
       "logins",
       "logs",

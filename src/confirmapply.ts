@@ -1,15 +1,17 @@
 // An admin's answer at the box to a lasting change waiting in root's pending.json (core/pending.ts).
 // taskbox confirm, at the box's own screen, sends the answer through root's admin spool; the guard,
-// the one writer of root's state, takes the item out and applies it here. Two kinds apply: a standing
-// rule (workspace/standing.ts), and a settings commit, whose answer is left in the settings state for
-// the settings pass, the one writer of what is in force (settings/op.ts takeConfirmed). Which admin
+// the one writer of root's state, takes the item out and applies it here. These kinds apply: a standing
+// rule (workspace/standing.ts); a rotated or second approver key (approverkeys.ts); and a settings
+// commit, whose answer is left in the settings state for the settings pass, the one writer of what is
+// in force (settings/op.ts takeConfirmed). Which admin
 // answered goes in root's private record, under the id of the event that says "an admin".
 import type { ErrorCode } from "./command.ts";
+import { applyApprover, endApproverOp } from "./approverkeys.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import { appendAdmin, type EventLog } from "./core/events.ts";
 import { idOf } from "./core/ids.ts";
 import { rootStateOf } from "./core/paths.ts";
-import { answer, type Pending, updatePending } from "./core/pending.ts";
+import { answer, lapse, type Moment, type Pending, updatePending } from "./core/pending.ts";
 import type { Paths } from "./config.ts";
 import { SHA, settingsFiles, updateState } from "./settings/inforce.ts";
 import type { Sys } from "./sys.ts";
@@ -18,7 +20,8 @@ import { change } from "./workspace/write.ts";
 
 export const CONFIRM = "confirm";
 // The kinds this release applies on a yes.
-export const APPLIES: readonly Pending["kind"][] = ["rule", "settings"];
+export const APPLIES: readonly Pending["kind"][] = ["approver-add", "approver-rotate", "rule", "settings"];
+const APPROVER: readonly Pending["kind"][] = ["approver-add", "approver-rotate"];
 
 export function confirmProblem(b: Record<string, unknown>): string | undefined {
   if (Object.keys(b).sort().join(",") !== "admin,id,yes") return "a confirm names the change's id, the answer and the admin";
@@ -69,6 +72,17 @@ export async function applyConfirm(d: ConfirmDeps, b: { id: string; yes: boolean
     said({ type: b.yes ? "confirm.confirmed" : "confirm.refused", subject: item.subject, ...(item.op ? { op: item.op } : {}), text: `An admin at the box ${b.yes ? "confirmed" : "refused"} settings commit ${sha.slice(0, 12)}.` });
     return { ok: true, said: b.yes ? "Confirmed: the guard applies it on its next tick." : "Refused: it won't apply, and the rest of that commit stays in force." };
   }
+  if (APPROVER.includes(item.kind)) {
+    const k = { sys: d.sys, state: rootStateOf(d.p), rootUid: d.rootUid, ...(d.chown ? { chown: d.chown } : {}), events: d.events };
+    if (!b.yes) {
+      endApproverOp(k, item.op, "failed", "refused at the box by an admin");
+      said({ type: "confirm.refused", subject: item.subject, ...(item.op ? { op: item.op } : {}), text: `An admin at the box said no to: ${item.shows[0] ?? item.kind}`.slice(0, 240) });
+      return { ok: true, said: "Refused: the approver keys stay as they were." };
+    }
+    said({ type: "confirm.confirmed", subject: item.subject, ...(item.op ? { op: item.op } : {}), text: `An admin at the box confirmed: ${item.shows[0] ?? item.kind}`.slice(0, 240) });
+    const r = await applyApprover({ ...k, actor: "an admin" }, item);
+    return r.ok ? { ok: true, said: r.said } : { ok: false, said: `Not applied: ${r.said}`, code: "failed" };
+  }
   if (!b.yes) {
     said({ type: "confirm.refused", subject: item.subject, text: `An admin at the box said no to: ${item.shows[0] ?? item.kind}`.slice(0, 240) });
     return { ok: true, said: "Left as it was: nothing changed." };
@@ -90,4 +104,21 @@ export async function applyConfirm(d: ConfirmDeps, b: { id: string; yes: boolean
     return { ok: true, said: `Rule ${added} is on: ${ask.agent}'s matching requests approve themselves until ${new Date(ask.expiresAt).toISOString().slice(0, 10)}.` };
   }
   return { ok: false, said: "Nothing changed.", code: "failed" };
+}
+
+// The guard's housekeeping: what waited 24 hours, or across a restart or a clock step, lapses under
+// pending.json's lock, so an answer at the same time is never undone. Each kind's op ends with it.
+export async function lapseWaiting(d: ConfirmDeps, at: Moment): Promise<Pending[]> {
+  const lapsed = await updatePending(rootStateOf(d.p).pending, { rootUid: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) }, (p) => {
+    const l = lapse(p, at);
+    return { state: l.lapsed.length ? l.state : p, out: l.lapsed };
+  });
+  const k = { sys: d.sys, state: rootStateOf(d.p), rootUid: d.rootUid, ...(d.chown ? { chown: d.chown } : {}), events: d.events };
+  for (const p of lapsed) {
+    try {
+      if (APPROVER.includes(p.kind)) endApproverOp(k, p.op, "failed", "it waited 24 hours for confirm and lapsed");
+      d.events.write({ type: "confirm.lapsed", subject: p.subject, actor: "taskbox", text: `A ${p.kind} waited 24 hours for confirm at the box and lapsed.`, ...(p.op ? { op: p.op } : {}) });
+    } catch {}
+  }
+  return lapsed;
 }

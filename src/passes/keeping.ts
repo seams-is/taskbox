@@ -13,7 +13,6 @@ import { keepOutcomes } from "../core/spool.ts";
 import { keepOps } from "../core/ops.ts";
 import { everyPass, type PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
-import { lapse, updatePending } from "../core/pending.ts";
 import { GUARD_FULL_MS } from "../guard.ts";
 
 export const keepingPass: PlacedMaker = {
@@ -36,15 +35,9 @@ export const keepingPass: PlacedMaker = {
       const at = { wall: now, mono, boot };
       // Under pending.json's lock, so a confirm answered at the same time is never undone (rootfile.ts).
       try {
-        const lapsed = await updatePending(s.pending, { rootUid: root }, (p) => {
-          const l = lapse(p, at);
-          return { state: l.lapsed.length ? l.state : p, out: l.lapsed };
-        });
-        for (const p of lapsed) {
-          try {
-            events.write({ type: "confirm.lapsed", subject: p.subject, actor: "taskbox", text: `A ${p.kind} waited 24 hours for confirm at the box and lapsed.`, ...(p.op ? { op: p.op } : {}) });
-          } catch {}
-        }
+        // By dynamic import: confirmapply.ts reaches the op types, which reach the pass list.
+        const { lapseWaiting } = await import("../confirmapply.ts");
+        await lapseWaiting({ sys: c.sys, p: c.p, rootUid: root, events }, at);
       } catch (e) {
         problems.push(`the changes waiting for confirm can't be read: ${String((e as Error).message).replace(/^.*can't be read: /, "")}`);
       }

@@ -54,6 +54,7 @@ import type { Log } from "./log.ts";
 import type { Sys } from "./sys.ts";
 import { sshChangeLines, sshPeopleOf } from "./policy.ts";
 import { keepSocket, newSocketMemory } from "./tssocket.ts";
+import { TAILSCALE_OFF } from "./tsrotate.ts";
 
 export interface InstallDeps {
   sys: Sys;
@@ -169,8 +170,8 @@ async function fetchPinned(d: InstallDeps, name: string, pin: Pin, dir: string, 
 
 const uidOf = (d: Pick<InstallDeps, "sys">, user: string) => accountUid(d.sys, user);
 
-// Tailscale's ways for the box to take or offer routes, which taskbox keeps off (v2.1.1).
-export const TAILSCALE_OFF = ["--accept-routes=false", "--exit-node=", "--advertise-routes=", "--advertise-exit-node=false", "--advertise-connector=false"];
+// Tailscale's ways for the box to take or offer routes, which taskbox keeps off (v2.1.1): tsrotate.ts.
+export { TAILSCALE_OFF };
 
 // The service account (v2.7.0): taskbox makes it when it isn't there, after the owner's yes, and
 // gives it the disk unlock. An account that is there is checked and used. accounts.ts does each step.

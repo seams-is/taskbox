@@ -1,3 +1,4 @@
+{"file": "approverkeys.ts", "reads": 7, "why": "when a key was pinned and when an offer came, and the moment a lasting change is judged at (with mono and the boot, pending.ts): labels, and an offer's hour, where the admin's yes against the fingerprint is the gate"}
 {"file": "availability.ts", "reads": 1, "why": "the time label in controlNow's wall: control.json's since and the op's times, for people to read. A forced deadline is on this boot's mono (forceAt), and the break-glass stop's wait is counted"}
 {"file": "away.ts", "reads": 2, "why": "days until a date and recent logins: display"}
 {"file": "awaychecks.ts", "reads": 7, "why": "how long ago the loop's last request and beat were: rows that say OK with a time; the power log's last 30 days, a WARN only; when a lasting change lapses, with mono and the boot beside it"}
@@ -18,6 +19,7 @@
 {"file": "connectflow.ts", "reads": 9, "why": "when a connect began, and the waits for GitHub, a code and the keeping phase: a step only ends a wait, which changes nothing and says so"}
 {"file": "controller/forward.ts", "reads": 6, "why": "the time on an envelope the controller makes, a signed statement's time (the box judges its 5 minutes), a claim proof's time, which the box takes within 5 minutes of its own clock and only once, by its counter, and when a status was read: display"}
 {"file": "controller/home.ts", "reads": 1, "why": "a temp file's unique name"}
+{"file": "controller/keys.ts", "reads": 5, "why": "a statement's time, which the box judges within 5 minutes, and the controller's own waits: a step only ends a wait"}
 {"file": "controller/main.ts", "reads": 4, "why": "the controller's Clock, and the time on its own envelopes and events: labels"}
 {"file": "controller/notify.ts", "reads": 2, "why": "when a box was first not reached, when each note was last said, and the hold lease's times: a step only moves when a note is said again"}
 {"file": "controller/pair.ts", "reads": 4, "why": "when a box was paired, and the time on the controller's events: labels"}
@@ -33,6 +35,10 @@
 {"file": "guardwatch.ts", "reads": 2, "why": "a beat's wall time and a log line's time, for people to read only: every age is judged on mono"}
 {"file": "install.ts", "reads": 6, "why": "installedAt labels, the lock's time, and the wait for Tailscale to start: a step only waits less or more"}
 {"file": "jobs.ts", "reads": 1, "why": "when a stop was asked: a label in the stop's file"}
+{"file": "keychild.ts", "reads": 1, "why": "a rotation's deadline when its record has none: the guard ends the child on mono time"}
+{"file": "keycmd.ts", "reads": 3, "why": "when an op began, a listener's minutes and a key's age: labels, and a wait the op's mono deadline bounds"}
+{"file": "keyops.ts", "reads": 3, "why": "an op's start, its deadline and a refused op's end: the child's limit runs on mono time (child.ts)"}
+{"file": "keyrotate.ts", "reads": 2, "why": "when an App was retired, a label, and the code wait: a step only ends a wait"}
 {"file": "keys.ts", "reads": 3, "why": "a GitHub App JWT's iat and the clock offset GitHub reports: GitHub judges the JWT"}
 {"file": "kinds.ts", "reads": 8, "why": "the scheduler's now: when slots became ready or busy, an idle VM's turn, and when a VM was told to give way: a step only reorders a choice, gives an idle VM's turn away or ends a wait for a VM to go; no running job is ended"}
 {"file": "loadcmd.ts", "reads": 1, "why": "the load command's now for its session's labels and freshness: display and a refusal to start"}
@@ -52,6 +58,7 @@
 {"file": "rows/accounts.ts", "reads": 1, "why": "whether the temporary admin SSH window is open, for the rules compared: display"}
 {"file": "rows/connect.ts", "reads": 1, "why": "how old the keeper's counts file is, for a WARN row: display"}
 {"file": "rows/guard.ts", "reads": 1, "why": "the guard's record's freshness: a stale read FAILs, so a step fails closed"}
+{"file": "rows/keys.ts", "reads": 2, "why": "how long a retired App is listed, and each key's age for the Keys row: a step only shows it a little longer or shorter"}
 {"file": "rows/settings.ts", "reads": 3, "why": "how long since the settings repo was read, and whether the temporary admin SSH window is open: display"}
 {"file": "settings/check.ts", "reads": 1, "why": "when update --check asked for the read, so only a problem from that read is said: display"}
 {"file": "settings/op.ts", "reads": 5, "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot"}
@@ -60,6 +67,7 @@
 {"file": "tools/bake.ts", "reads": 3, "why": "the bake's wait for its guest to shut down, and the base record's time: a step only ends a wait sooner or later, and the time is a label"}
 {"file": "tools/inloop.ts", "reads": 6, "why": "a baking slot's beat and times, as every slot's are written, and a refresh op's end time: labels and beats"}
 {"file": "tools/pass.ts", "reads": 3, "why": "when the store's hashes were last checked and when a failed fetch or bake is tried again: a step only checks sooner or later"}
+{"file": "tsrotate.ts", "reads": 3, "why": "the waits for the sign-in and for the box to be online: a step only ends a wait sooner or later"}
 {"file": "watch.ts", "reads": 1, "why": "the watch screen's now: display"}
 {"file": "watchdog.ts", "reads": 3, "why": "a JWT, and whether the hourly workflows check and the last run are recent: a row's SKIP and display"}
 {"file": "workspace/caps.ts", "reads": 1, "why": "the memory caps' 60 s over the size, on the guard's 2 s tick: a step forward asks a save or warns a minute early, a step back late; the stop at 150% reads no clock"}

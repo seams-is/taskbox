@@ -28,7 +28,7 @@ const TYPE = /^[a-z][a-z0-9-]{0,31}$/;
 const PHASE = /^[a-z][a-z0-9-]{0,31}$/;
 
 // Ops that never run beside each other on one box, whatever their subject.
-export const BOX_EXCLUSIVE = ["update", "rollback", "remove", "stop", "settings-apply", "key-rotate", "migrate-v3"] as const;
+export const BOX_EXCLUSIVE = ["update", "rollback", "remove", "stop", "settings-apply", "key-rotate-runner", "key-rotate-source", "key-rotate-tailscale", "migrate-v3"] as const;
 
 export interface Progress {
   done?: number;

@@ -16,6 +16,7 @@ import { BEAT_ROWS } from "./away.ts";
 import { CLOCK_ROWS } from "./clock.ts";
 import { CONNECT_ROWS } from "./connect.ts";
 import { GUARD_ROWS } from "./guard.ts";
+import { KEY_ROWS } from "./keys.ts";
 import { OP_ROWS } from "./ops.ts";
 import { SETTINGS_ROWS } from "./settings.ts";
 import { SIZE_ROWS } from "./sizes.ts";
@@ -45,6 +46,7 @@ export function allRows(): Row[] {
     ...CLOCK_ROWS,
     ...CONNECT_ROWS,
     ...GUARD_ROWS,
+    ...KEY_ROWS,
     ...OP_ROWS,
     ...SETTINGS_ROWS,
     ...SIZE_ROWS,

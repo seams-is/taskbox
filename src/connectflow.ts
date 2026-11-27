@@ -85,14 +85,14 @@ const check = (d: Pick<FlowDeps, "live">) => {
   if (d.live && !d.live()) throw new Ended("the connect op ended");
 };
 
-type Pending = { appId: number; slug: string; replacing?: number; op?: string };
-type PendingFile = { v: 1; apps: Partial<Record<AppRole, Pending>> };
+export type Pending = { appId: number; slug: string; replacing?: number; op?: string };
+export type PendingFile = { v: 1; apps: Partial<Record<AppRole, Pending>> };
 
 const rand = (d: Pick<FlowDeps, "rand">, n: number) => (d.rand ?? randomBytes)(n);
 const owner = (d: Pick<FlowDeps, "rootUid">) => d.rootUid ?? 0;
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-function readPendingFile(d: Pick<FlowDeps, "pendingFile" | "rootUid">): PendingFile {
+export function readPendingFile(d: Pick<FlowDeps, "pendingFile" | "rootUid">): PendingFile {
   const r = readOwnedJson(d.pendingFile, { owner: owner(d), max: 64 * 1024 }, (v) => (isObj(v) && v.v === 1 && isObj(v.apps) ? (v as unknown as PendingFile) : "not a pending connect"));
   const apps: PendingFile["apps"] = {};
   if (r.kind === "ok") {
@@ -104,7 +104,7 @@ function readPendingFile(d: Pick<FlowDeps, "pendingFile" | "rootUid">): PendingF
   return { v: 1, apps };
 }
 
-function writePendingFile(d: Pick<FlowDeps, "pendingFile" | "rootUid" | "chown">, f: PendingFile): void {
+export function writePendingFile(d: Pick<FlowDeps, "pendingFile" | "rootUid" | "chown">, f: PendingFile): void {
   if (!f.apps.runner && !f.apps.source) return void rmSync(d.pendingFile, { force: true });
   writeOwnedText(d.pendingFile, `${JSON.stringify(f)}\n`, { mode: 0o600, owner: owner(d), ...(d.chown ? { chown: d.chown } : {}) });
 }
@@ -136,13 +136,13 @@ export function wantsOf(cfg: Config, o: { jobs?: string; load?: LoadRepo | "off"
   return { jobs: o.jobs ?? servedRepos(cfg)[0]!.name, ...(load ? { load } : {}) };
 }
 // The runner App: the settings repo, and the v2 release repo while a v2 install may read it.
-const repoWants = (d: Pick<FlowDeps, "cfg">, role: AppRole, w: Wants): { want: string[]; may: string[] } =>
+export const repoWants = (d: Pick<FlowDeps, "cfg">, role: AppRole, w: Wants): { want: string[]; may: string[] } =>
   role === "runner" ? { want: [settingsRepoOf(d.cfg)], may: d.cfg.releaseRepo ? [`${d.cfg.org}/${d.cfg.releaseRepo}`] : [] } : { want: [w.jobs, ...(w.load ? [w.load.name] : [])], may: [] };
 
 // key: GitHub refuses the key. clock: it refuses because the box's clock is off. fewer: the App lacks
 // a right its manifest has.
 export type Proof = { ok: true; slug: string; installation: number } | (InstallFail & { ok: false; key?: true; clock?: true; fewer?: true });
-const fixable = (p: Proof) => !p.ok && (p.grew || p.waiting === true || p.fewer === true);
+export const fixable = (p: Proof) => !p.ok && (p.grew || p.waiting === true || p.fewer === true);
 
 // The clock guard from v2: a clock far off gets a 401 for every key, a good one too.
 function refused(r: Response, now: number): Proof {
@@ -188,8 +188,8 @@ export async function proveApp(d: Pick<FlowDeps, "sys" | "log" | "cfg">, role: A
   return { ok: true, slug, installation: one.id };
 }
 
-const heldKey = (d: Pick<FlowDeps, "keys">, role: AppRole, id: number, pending = false) => readHeldKey(d.keys.dir, d.keys.ownerUid, role, id, pending);
-const clientFor = (d: Pick<FlowDeps, "sys" | "log">, id: number, pem: string) => {
+export const heldKey = (d: Pick<FlowDeps, "keys">, role: AppRole, id: number, pending = false) => readHeldKey(d.keys.dir, d.keys.ownerUid, role, id, pending);
+export const clientFor = (d: Pick<FlowDeps, "sys" | "log">, id: number, pem: string) => {
   d.log.secret(pem);
   return new AppClient(d.sys, d.log, id, pem);
 };
@@ -201,7 +201,7 @@ async function slugOf(app: AppClient): Promise<string | undefined> {
 }
 
 // Waits while the owner can fix it on GitHub; each new reason is said once. A refused key ends it.
-async function waitTrue(d: FlowDeps, role: AppRole, app: AppClient, w: Wants, first: Proof): Promise<Proof> {
+export async function waitTrue(d: FlowDeps, role: AppRole, app: AppClient, w: Wants, first: Proof): Promise<Proof> {
   const until = d.sys.now() + WAIT_MS;
   let said = "";
   let p = first;
@@ -218,7 +218,7 @@ async function waitTrue(d: FlowDeps, role: AppRole, app: AppClient, w: Wants, fi
   }
 }
 
-function fixPage(d: FlowDeps, slug: string, p: Proof): string {
+export function fixPage(d: FlowDeps, slug: string, p: Proof): string {
   if (p.ok || p.where === "install" || p.where === undefined) return installPage(slug);
   return p.where === "permissions" ? permissionsPage(d.cfg.org, slug) : `${appPage(d.cfg.org, slug)}/installations`;
 }
@@ -227,7 +227,7 @@ const repoLine = (d: FlowDeps, role: AppRole, w: Wants) => repoWants(d, role, w)
 
 // Making one App: the manifest, the code, the conversion and its checks, then the pending record and
 // the key handed over. A code GitHub doesn't take is passed over when another may come.
-async function makeApp(d: FlowDeps, role: AppRole, other: number | undefined, replacing?: number): Promise<{ id: number; slug: string; pem: string } | undefined> {
+export async function makeApp(d: FlowDeps, role: AppRole, other: number | undefined, replacing?: number): Promise<{ id: number; slug: string; pem: string } | undefined> {
   const phase = role === "runner" ? "making-runner" : "making-source";
   const name = appName(d.cfg.org, d.box, role, rand(d, 2).toString("hex"));
   const state = rand(d, 32).toString("hex");
@@ -363,7 +363,7 @@ async function trueApp(d: FlowDeps, role: AppRole, w: Wants, other?: number): Pr
 }
 
 // Uninstalls an App with its own key. Whether every installation went.
-async function uninstallAll(app: AppClient): Promise<boolean> {
+export async function uninstallAll(app: AppClient): Promise<boolean> {
   const r = await app.installations().catch(() => undefined);
   if (!r?.ok) return false;
   let all = true;
@@ -374,7 +374,7 @@ async function uninstallAll(app: AppClient): Promise<boolean> {
   return all;
 }
 
-const sourceSettings = (id: number, slug: string, w: Wants): SourceSettings => ({ type: "github-actions", appId: id, app: slug, repos: [w.jobs, ...(w.load ? [w.load] : [])] });
+export const sourceSettings = (id: number, slug: string, w: Wants): SourceSettings => ({ type: "github-actions", appId: id, app: slug, repos: [w.jobs, ...(w.load ? [w.load] : [])] });
 const sameSource = (a: SourceSettings, b: SourceSettings) =>
   a.type === "github-actions" && b.type === "github-actions" && a.appId === b.appId && a.app === b.app && JSON.stringify(a.repos.map((r) => (typeof r === "string" ? r : [r.name, r.runnerGroup]))) === JSON.stringify(b.repos.map((r) => (typeof r === "string" ? r : [r.name, r.runnerGroup])));
 
