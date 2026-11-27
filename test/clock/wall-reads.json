@@ -184,8 +184,8 @@
     "why": "when a stop was asked: a label in the stop's file"
   },
   "pfstarts.ts": {
-    "reads": 2,
-    "why": "the time on the guard's record of starts when it changes, and a lock file's age: a step only makes a lock look stale or fresh sooner, and the record's order is its sequence number"
+    "reads": 3,
+    "why": "the time on the guard's record of starts when it changes, a lock file's age, and the id of an event made before the admin's entry that names it: a step only makes a lock look stale or fresh sooner, the record's order is its sequence number, and an id's time is a label"
   },
   "passes/control.ts": {
     "reads": 1,
@@ -210,5 +210,9 @@
   "cmd/tool.ts": {
     "reads": 3,
     "why": "when a tool refresh was asked, and how long the command watches it: a step only stops watching sooner or later, and the refresh carries on"
+  },
+  "cmd/confirm.ts": {
+    "reads": 1,
+    "why": "the id of the declined event, made before the admin's entry that names it: a label"
   }
 }

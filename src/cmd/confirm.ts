@@ -15,6 +15,7 @@ export const commands: CommandSpec[] = [
     did: "Ran confirm.",
     async run(c) {
       const { appendAdmin, eventLog } = await import("../core/events.ts");
+      const { idOf } = await import("../core/ids.ts");
       const { rootStateOf } = await import("../core/paths.ts");
       const { atBoxScreen } = await import("../ops.ts");
       const { CONFIRM_ID, closureShows, reopen } = await import("../pfstarts.ts");
@@ -38,24 +39,25 @@ export const commands: CommandSpec[] = [
           c.say(`Nothing named ${refuse} waits. ${CONFIRM_ID} does. Nothing changed.`);
           return 1;
         }
-        // The event says "an admin"; which one goes in root's private record beside it.
-        const e = events.write({ type: "confirm.refused", actor: "an admin", subject: CONFIRM_ID, text: "An admin refused to lift the closure to VM starts while Screen Sharing is on." });
-        appendAdmin(rootStateOf(c.p).admins, { id: e.id, name: by });
-        c.say("Left closed. VMs start while Screen Sharing is off, and the closure lifts by itself at 100 clean starts.");
+        // Which admin first, in root's private record under the event's id; then the event, which says "an admin".
+        const id = idOf("ev", c.ops.sys.now());
+        appendAdmin(rootStateOf(c.p).admins, { id, name: by });
+        events.write({ id, type: "confirm.declined", actor: "an admin", subject: CONFIRM_ID, text: "An admin declined to put the box on trial, so it stays closed to VM starts while Screen Sharing is on." });
+        c.say("Left closed. VMs start while Screen Sharing is off. At the box's screen, taskbox confirm puts it on trial; then 100 clean starts with Screen Sharing on lift it.");
         return 0;
       }
       c.say(`${CONFIRM_ID}:`);
       for (const l of shows) c.say(`  ${l}`);
-      if ((await c.ask("Type yes to lift it: ")).trim().toLowerCase() !== "yes") {
+      if ((await c.ask("Type yes to put the box on trial: ")).trim().toLowerCase() !== "yes") {
         c.say("Nothing changed.");
         return 1;
       }
       try {
         const done = await reopen({ sys: c.ops.sys, paths: c.p, rootUid: root, ...(c.cu !== undefined ? { serviceUid: c.cu } : {}), by, events });
-        c.say(done ? "Lifted. VMs start again with Screen Sharing on; a loss at a start closes the box again." : "It had lifted already. Nothing changed.");
+        c.say(done ? "On trial. VMs start with Screen Sharing on; 100 clean starts lift the restriction, and a loss at a start closes the box again." : "The box isn't closed. Nothing changed.");
         return 0;
       } catch (e) {
-        c.say(`It wasn't lifted: ${String((e as Error)?.message ?? e).replace(/[^\x20-\x7e]/g, " ").slice(0, 120)}. Nothing changed.`);
+        c.say(`It stays closed: ${String((e as Error)?.message ?? e).replace(/[^\x20-\x7e]/g, " ").slice(0, 120)}. Nothing changed.`);
         return 1;
       }
     },

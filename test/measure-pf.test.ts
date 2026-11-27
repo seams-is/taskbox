@@ -82,10 +82,19 @@ describe("the guard sees the VMs itself", () => {
     const ps = [`11 501 ${TART} run ${vmN(1)} --no-graphics --net-softnet`, `12 0 ${TART} run ${vmN(2)} --no-graphics`, `13 501 /bin/sh -c echo ${TART} run ${vmN(3)}`, `14 501 /opt/taskbox/bin/tart.app/Contents/MacOS/tart run ${vmN(4)}`, `15 501 ${TART} run ${vmN(5)}`].join("\n");
     // 12 is root's; 13 and 14 aren't the pinned Tart, whatever they say; 15's executable can't be read.
     expect(runningVms(ps, 501, TART, (pid) => exe[pid])).toEqual([vmN(1)]);
+    // The real Tart, but run isn't its subcommand: exec into a running VM with run job-... after it.
+    exe[16] = TART;
+    exe[17] = TART;
+    const exec = [`16 501 ${TART} exec ${vmN(1)} sleep 60 run ${vmN(6)}`, `17 501 ${TART} run ${vmN(7)}x`].join("\n");
+    expect(runningVms(exec, 501, TART, (pid) => exe[pid])).toEqual([]);
+    // A VM with no folder in Tart's home isn't one Tart runs.
+    expect(runningVms(`11 501 ${TART} run ${vmN(1)} --no-graphics`, 501, TART, (pid) => exe[pid], () => false)).toEqual([]);
   });
   test("forged entries in the service's file never count: a VM the guard didn't see, or saw at another time", async () => {
     const b = box();
     writeAll3(b.p, rec({ seq: 1, judged: AT - 1 }));
+    // Job 1's VM is Tart's own, with its folder; 9 isn't the pinned Tart.
+    mkdirSync(`${b.p.tartHome}/vms/${vmN(1)}`, { recursive: true });
     b.ps(`4242 501 /x/tart run ${vmN(1)} --no-graphics\n4343 501 /x/tart run ${vmN(9)}\n`);
     await b.tick(AT + 1_000);
     for (const s of [start(AT, 1), start(AT + 1, 9), start(AT + 400_000, 1)]) recordStart(b.p, s, me);
@@ -245,6 +254,28 @@ describe("confirm", () => {
     // Which admin, in root's private record beside the event, as the admin spool's ops keep it.
     expect(readFileSync(rootStateOf(b.p).admins, "utf8").trim()).toBe(JSON.stringify({ id: e[0]!.id, name: "admin1" }));
     expect(await reopen({ sys: b.sys, paths: b.p, rootUid: me, by: "admin1", events: log })).toBe(false);
+  });
+  test("a damaged marker keeps the box closed through the guard's passes, and confirm lands it in trial", async () => {
+    const b = box();
+    writeAll3(b.p, rec({ seq: 3, mode: "closed", judged: AT }));
+    writeFileSync(beganFile(b.p), "{ damaged");
+    expect(pfState(b.p, me)).toMatchObject({ kind: "broken", why: `the guard's marker that it began the record (${beganFile(b.p)}) is gone or damaged` });
+    b.guard({ at: AT + 10_000 });
+    await b.tick(AT + 10_000);
+    expect(pfState(b.p, me).kind).toBe("broken");
+    const log = eventLog("guard", { dir: rootStateOf(b.p).events, owner: me }, b.sys);
+    expect(await reopen({ sys: b.sys, paths: b.p, rootUid: me, by: "admin1", events: log })).toBe(true);
+    expect(pfState(b.p, me)).toMatchObject({ kind: "ok", rec: { mode: "trial", clean: 0 } });
+  });
+  test("the admin's entry goes first, then the event that names it, then the record", async () => {
+    const b = box();
+    writeAll3(b.p, rec({ seq: 2, mode: "closed" }));
+    // The admins file can't be written: neither the event nor the record changes.
+    mkdirSync(rootStateOf(b.p).admins, { recursive: true });
+    const log = eventLog("guard", { dir: rootStateOf(b.p).events, owner: me }, b.sys);
+    await expect(reopen({ sys: b.sys, paths: b.p, rootUid: me, by: "admin1", events: log })).rejects.toThrow();
+    expect(b.events().filter((e) => e.type === "guard.pf-reopened")).toEqual([]);
+    expect(pfState(b.p, me)).toMatchObject({ rec: { mode: "closed", seq: 2 } });
   });
   test("an event that can't be written changes nothing", async () => {
     const b = box();

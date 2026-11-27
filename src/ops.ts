@@ -31,7 +31,7 @@ import { adminState } from "./elevate.ts";
 import { activePull, clean as noControl, pullLine, readPull } from "./progress.ts";
 import { type Config, forKind, KIND_WORD, kindsOf, loadConfig, loadRepoOf, MACOS_MAX, sourceOf, vmsAtMostOf } from "./config.ts";
 import { LAST_CLASS } from "./classes.ts";
-import { pfLine } from "./pfstarts.ts";
+import { pfFiles, pfLine } from "./pfstarts.ts";
 import { readRate } from "./sourcerate.ts";
 import { timingsLine } from "./timings.ts";
 import { readJobs } from "./jobs.ts";
@@ -926,6 +926,9 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
     [d.paths.installId, "the install ID"],
     // The approver key the box trusted: a box installed again pins its key again, at its screen.
     [d.paths.approverPin, "the pinned approver key"],
+    // The guard's record of VM starts with Screen Sharing on, its mark, marker, lock and witness: a box
+    // installed again starts afresh (pfstarts.ts).
+    ...pfFiles(d.paths).map((f) => [f, "the guard's record of VM starts"] as const),
     // Both Apps' keys and root's folder for them. The Apps themselves stay on GitHub.
     [d.paths.actionsKeyDir, "the Apps' keys"],
     // The box's own settings, and an App connect made and didn't finish.
