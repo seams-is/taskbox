@@ -121,6 +121,7 @@ export const commands: CommandSpec[] = [
     summary: "Makes the box's two GitHub Apps true: makes, asks for rights or repos, installs, proves, keeps.",
     who: ["owner", "admin"],
     root: true,
+    flags: ["json"],
     did: "Ran connect github.",
     options: [
       { name: "--jobs", value: "REPO", check: (v) => REPO.test(v) },
@@ -144,6 +145,50 @@ export const commands: CommandSpec[] = [
     who: ["admin", "owner"],
     internal: true,
     run: async () => (await import("../listen.ts")).listenMain(),
+  },
+  {
+    // The controller's connect github, signed: the hash of each App's state, and the jobs repo.
+    path: ["connect", "begin"],
+    summary: "Starts a connect github the controller's browser runs.",
+    who: ["owner"],
+    flags: ["json", "signed"],
+    options: [
+      { name: "--runner", value: "HASH", check: (v) => /^[0-9a-f]{64}$/.test(v) },
+      { name: "--source", value: "HASH", check: (v) => /^[0-9a-f]{64}$/.test(v) },
+      { name: "--jobs", value: "REPO", check: (v) => REPO.test(v) },
+      { name: "--load", value: "REPO", check: (v) => v === "off" || REPO.test(v) },
+      { name: "--group", value: "NAME", check: (v) => /^[\x20-\x7e]{1,64}$/.test(v) },
+    ],
+    shell: true,
+    internal: true,
+    run: async (c) => {
+      c.say("taskbox connect begin is signed from a paired controller: there, taskbox connect github --box NAME.");
+      return 1;
+    },
+  },
+  {
+    // The code GitHub sent the controller's browser for the connect's App.
+    path: ["connect", "code"],
+    summary: "Gives the box the code GitHub sent the controller for a connect's App.",
+    who: ["anyone"],
+    flags: ["json"],
+    args: { name: "OP", min: 1, max: 1, check: (v) => /^op_[0-9A-HJKMNP-TV-Z]{26}$/.test(v) },
+    options: [
+      { name: "--state", value: "STATE", check: (v) => /^[0-9a-f]{64}$/.test(v) },
+      { name: "--code", value: "CODE", check: (v) => /^[A-Za-z0-9_-]{1,100}$/.test(v) },
+    ],
+    shell: true,
+    internal: true,
+    run: async (c) => {
+      const { ask, askDeps } = await import("../core/asker.ts");
+      const { CODE_KIND } = await import("../connectflow.ts");
+      if (typeof c.opts.state !== "string" || typeof c.opts.code !== "string") return (c.say("connect code takes --state and --code."), 2);
+      const r = await ask(askDeps(c.root, c.uid, c.ops.sys, c.deps.rootUid), CODE_KIND, { op: c.args[0]!, state: c.opts.state, code: c.opts.code });
+      if ("no" in r) return (c.say(r.no), 1);
+      if (!r.outcome) return (c.say(`The box's guard hasn't answered the code (${r.id}). taskbox check says why.`), 1);
+      c.say(r.outcome.said);
+      return r.outcome.ok ? { exit: 0, changed: true, result: { request: r.id } } : 1;
+    },
   },
   { path: ["disconnect", "github"], summary: "Uninstalls the job source App, keeps none as the source, and deletes its key.", who: ["owner", "admin"], root: true, did: "Ran disconnect github.", run: (c) => connect(c, "disconnect") },
 ];

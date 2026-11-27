@@ -111,7 +111,7 @@ const GAPS = [
   // prune, remove, connect github and disconnect github lack the global flags.
   "prune: missing --dry-run", "prune: missing --yes", "prune: missing --json",
   "remove: missing --yes", "remove: missing --detach", "remove: missing --json",
-  "connect github: missing --timeout", "connect github: missing --detach", "connect github: missing --json",
+  "connect github: missing --timeout", "connect github: missing --detach",
   "disconnect github: missing --yes", "disconnect github: missing --json",
   // policy show names the login --login.
   "policy show: missing --owner", "policy show: extra --login",

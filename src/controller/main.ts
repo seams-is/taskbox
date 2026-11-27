@@ -214,6 +214,12 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     if (!argv.includes("--json")) return run(ld, argv, io);
     return asOneEnvelope(d, `load.${argv[1]}`, io, (jio) => run(ld, argv, jio));
   }
+  // connect github from here: this controller's browser makes the box's Apps (connect.ts).
+  if (argv[0] === "connect" && argv[1] === "github" && !argv.includes("--help")) {
+    const { connectFromController } = await import("./connect.ts");
+    if (!argv.includes("--json")) return connectFromController(d, argv, io.out);
+    return asOneEnvelope(d, "connect.github", io, (jio) => connectFromController(d, argv, jio.out));
+  }
   // workspace connect --screen opens Screen Sharing here, from the account the box names.
   if (argv[0] === "workspace" && argv[1] === "connect" && argv.includes("--screen") && !argv.includes("--help")) {
     const p = parse(registry(), argv);

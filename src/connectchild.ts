@@ -62,7 +62,8 @@ export async function runConnectChild(c: ChildRun): Promise<number> {
     open: (url) => c.send({ progress: { text: askText({ open: url }).slice(0, 120) } }),
   };
   const jobs = typeof p2.jobs === "string" ? p2.jobs : undefined;
-  const exit = await connectGithub(d, jobs ? { jobs } : {});
+  const load = p2.load === "off" ? ("off" as const) : typeof p2.load === "string" && typeof p2.group === "string" ? { name: p2.load, role: "load" as const, runnerGroup: p2.group } : undefined;
+  const exit = await connectGithub(d, { ...(jobs ? { jobs } : {}), ...(load ? { load } : {}) });
   if (live()) c.send({ end: exit === 0 ? { state: "succeeded" } : { state: "failed", why: "an App couldn't be made true; the op's log says why" } });
   return exit;
 }

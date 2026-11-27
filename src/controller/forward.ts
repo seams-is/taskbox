@@ -435,3 +435,31 @@ export async function forward(d: Deps, argv: readonly string[], io: ForwardIo): 
   for (const l of a.json ? s.json : s.lines) io.out(l);
   return s.exit;
 }
+
+// The paired boxes a key flow runs on, each as a BoxLink (keys.ts): its own command line, sent with
+// --json in the version hello agreed, and its last envelope back. undefined when it can't be reached.
+export async function linksFor(d: Deps, sel: string | undefined, all: boolean): Promise<import("./keys.ts").BoxLink[] | Stop> {
+  const cfg = configOrStop(d);
+  if (isStop(cfg)) return cfg;
+  const chosen = chooseBoxes(cfg.config, sel, all);
+  if (isStop(chosen)) return chosen;
+  const ts = await tailnetOrStop(d);
+  if (isStop(ts)) return ts;
+  return chosen.map((box) => {
+    let c: Connected | Stop | undefined;
+    return {
+      name: box.name,
+      installId: box.installId,
+      paired: box,
+      async run(words: string[]) {
+        c ??= await connectBox(d, box, ts.state);
+        if (isStop(c)) return undefined;
+        const signed = words.includes("--signed");
+        const e = await call(d, c, remoteLine([...words.filter((w) => w !== "--json"), "--json", "--answers", String(c.hello.answers)]), signed ? SIGNED_MS : ANSWER_MS);
+        if (isStop(e)) return undefined;
+        const last = e.at(-1);
+        return last ? { exit: last.exit, result: last.result, error: last.error, lines: last.lines } : undefined;
+      },
+    };
+  });
+}

@@ -16,6 +16,7 @@ export type Answer = { exit: number; result?: Record<string, unknown> | null; er
 export interface BoxLink {
   name: string;
   installId: string;
+  paired?: import("./home.ts").Paired; // the pairing it reaches, for a signer chosen per box
   run(words: string[]): Promise<Answer | undefined>; // undefined: the box can't be reached
 }
 export interface Deps {
