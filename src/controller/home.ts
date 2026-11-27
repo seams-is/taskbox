@@ -44,11 +44,13 @@ export interface Home {
   updateCheck: string; // when taskbox last looked for a newer release
   events: string; // the controller's own event log, one file a day
   status: string; // the last status read of each box, for the status line
+  approver: string; // the approver key's handle and public key, 0700
+  notify: string; // what the notifier keeps between runs
 }
 
 export function home(userHome: string): Home {
   const dir = join(userHome, "Library", "Application Support", "taskbox");
-  return { dir, config: join(dir, "config.json"), knownHostsDir: join(dir, "known_hosts.d"), releases: join(dir, "releases"), current: join(dir, "current"), bin: join(dir, "bin"), updateCheck: join(dir, "update-check.json"), events: join(dir, "events"), status: join(dir, "status.json") };
+  return { dir, config: join(dir, "config.json"), knownHostsDir: join(dir, "known_hosts.d"), releases: join(dir, "releases"), current: join(dir, "current"), bin: join(dir, "bin"), updateCheck: join(dir, "update-check.json"), events: join(dir, "events"), status: join(dir, "status.json"), approver: join(dir, "approver"), notify: join(dir, "notify.json") };
 }
 
 // A GitHub owner or repo name.

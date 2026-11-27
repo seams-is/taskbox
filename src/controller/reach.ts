@@ -5,6 +5,7 @@
 // ID. A mismatch stops the command and names the cause; only a person re-pairing at a terminal changes it.
 import { type Config, type ConfigRead, findBox, type Home, knownHostsFor, type Paired, readConfig, writeKnownHosts } from "./home.ts";
 import type { Runner } from "./run.ts";
+import type { Signer } from "./signer.ts";
 import { type Answer, type Hello, type Kind, READS, readAnswer } from "./schema.ts";
 import { rememberAnswers } from "./versions.ts";
 import { boxCall, type SshFailure, type Target } from "./ssh.ts";
@@ -23,6 +24,8 @@ export interface Deps {
   tailscaleApp?: string; // tests: a fake app folder
   sshPath?: string; // tests: a fake ssh
   exists?: (path: string) => boolean;
+  uid?: number; // this user's uid: only its own approver key signs
+  signerFor?: (box: Paired) => Signer; // tests: a fake approval signer
 }
 
 // Why a command stopped: one line, and the next step.

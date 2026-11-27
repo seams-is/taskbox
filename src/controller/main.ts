@@ -1,6 +1,7 @@
 // taskbox on the controller, run by bin/taskbox as the owner's user. One grammar with the box: box
 // commands go through forward.ts with --box; box, self, statusline and mcp are the controller's own.
-import { homedir } from "node:os";
+import { existsSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { type CommandSpec, EXIT, type GlobalFlag, parse, usage } from "../command.ts";
 import { realClock } from "../clock.ts";
@@ -8,13 +9,17 @@ import { envelope } from "../envelope.ts";
 import { commandList, registry, shellCommands, firstWords } from "../registry.ts";
 import { verifyRelease } from "../release.ts";
 import { check } from "./check.ts";
+import { makeKey } from "./signer.ts";
+import { ghAt, notifyOnce, postArgv } from "./notify.ts";
+import { ownerScreen } from "./screen.ts";
+import { agentShellArgv, setup } from "./setup.ts";
 import { eventLine, readEvents } from "./events.ts";
 import { asciiJson, forward } from "./forward.ts";
 import { agentProblem, findBox, GITHUB_NAME, home, NAME, ownVersion } from "./home.ts";
 import { readLines, serve } from "./mcp.ts";
 import { AFTER, boxRemove, boxUse, pair } from "./pair.ts";
 import { configOrStop, connectBox, type Deps, isStop, tailnetOrStop } from "./reach.ts";
-import { realRun } from "./run.ts";
+import { ENV, realRun } from "./run.ts";
 import { footer, header, type Screen } from "./screens.ts";
 import { readSaved, statusLine } from "./statusline.ts";
 import { rollback, update, type UpdateDeps, updateNote } from "./update.ts";
@@ -43,7 +48,10 @@ export const CONTROLLER: CommandSpec[] = [
   spec(["self", "rollback"], "Back to the release kept beside the one in use."),
   spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing.", { flags: ["json"] }),
   spec(["self", "events"], "This controller's own event log: pairings, defaults, self updates.", { flags: ["since", "json"] }),
+  spec(["self", "setup"], "Sets up the agents user, the projects folder, their sign-ins and notifications. Re-run, it resumes."),
+  spec(["agent", "shell"], "A terminal as the agents user, in the projects folder. With -- COMMAND, that command."),
   spec(["statusline"], "One line for Claude Code's status line, from the last status read."),
+  spec(["notify"], "One run of the notifier: what to post. launchd runs it with --post.", { internal: true, options: [{ name: "--post" }] }),
   spec(["mcp"], "The stdio MCP server for Claude Code.", { internal: true }),
   spec(["install"], "The first install, from install-controller.sh.", { internal: true, options: [{ name: "--from", value: "REPO" }, { name: "--bootstrap", value: "FOLDER" }] }),
 ];
@@ -101,6 +109,16 @@ async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknow
     for (const l of p.lines) io.out(l);
     return p.code;
   }
+  // key: the approver key, made once with Touch ID, and its fingerprint, which the box pins at its own
+  // screen. The box shows what it received there; nothing is pinned from this controller's word.
+  io.out("key: the approver key, which signs the owner's commands.");
+  const k = await makeKey({ run: d.run, home: d.home, uid: d.uid ?? -1, say: io.out });
+  if ("why" in k) {
+    io.out(`${k.why} Owner commands can't be signed until it is made; the rest goes on.`);
+  } else {
+    io.out(`Approver key: ${k.fingerprint}`);
+    io.out(`trusting: ${p.box.name} takes signed commands once it pins this key at its own screen. Check its screen shows ${k.fingerprint.slice(7, 15)} before an admin types yes there.`);
+  }
   let exit = 0;
   let ran = 0;
   for (const step of AFTER) {
@@ -122,17 +140,32 @@ export interface Io {
   out: (line: string) => void;
   draw: (lines: string[]) => void;
   rounds?: number;
+  keys?: AsyncIterator<string>; // key presses, at a terminal: the owner's screen reads them
+}
+
+// What self setup, agent shell and notify need beyond the rest.
+export interface More {
+  user: string;
+  term(argv: string[]): Promise<number>;
+  exists(path: string): boolean;
 }
 
 // The controller's own answer as an envelope, for --json.
 const own = (d: Deps, command: string, s: Screen & { result?: Record<string, unknown> }) => asciiJson(envelope({ command, box: null, at: d.now(), exit: s.code, lines: s.lines, result: s.result ?? {} }));
 
-export async function dispatch(d: UpdateDeps, argv: string[], io: Io): Promise<number> {
+export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io: Io): Promise<number> {
   const print = (s: Screen) => {
     for (const l of s.lines) io.out(l);
     return s.code;
   };
-  if (!argv.length) return forward(d, ["status", "-w", "--box", "all"], io);
+  if (!argv.length) return ownerScreen(d, io);
+  // agent shell takes its command after --, word for word.
+  if (argv[0] === "agent" && argv[1] === "shell") {
+    const cut = argv.indexOf("--");
+    if ((cut < 0 ? argv.length : cut) !== 2) return io.out("taskbox agent shell takes -- and a command, or nothing."), EXIT.usage;
+    if (!d.term) return io.out("taskbox agent shell needs a terminal."), EXIT.usage;
+    return d.term(agentShellArgv(cut < 0 ? [] : argv.slice(cut + 1)));
+  }
   if (argv[0] === "--version") return io.out(`taskbox ${d.version}`), EXIT.ok;
   if (argv[0] === "help" || argv[0] === "--help") {
     for (const l of help(d.version)) io.out(l);
@@ -174,13 +207,29 @@ export async function dispatch(d: UpdateDeps, argv: string[], io: Io): Promise<n
     case "self rollback":
       return print(rollback(d));
     case "self check":
-      return answer(await check(d));
+      return answer(await check(d, d.term && d.user && d.exists ? { run: d.run, home: d.home, user: d.user, uid: d.uid ?? -1, userHome: d.userHome, term: d.term, exists: d.exists, say: io.out } : undefined));
     case "self events": {
       const since = sinceMs(f("since"), d.now());
       if (since === undefined) return io.out("--since takes a time or a duration, such as 1d."), EXIT.usage;
       const list = readEvents(d.home, since);
       if (json) for (const e of list) io.out(JSON.stringify(e));
       else for (const l of list.length ? list.map(eventLine) : ["No events on this controller yet."]) io.out(l);
+      return EXIT.ok;
+    }
+    case "self setup": {
+      if (!d.term || !d.user || !d.exists) return io.out("taskbox self setup needs a terminal."), EXIT.usage;
+      return setup({ run: d.run, home: d.home, user: d.user, uid: d.uid ?? -1, userHome: d.userHome, term: d.term, exists: d.exists, say: io.out }, d.ask, d.tty);
+    }
+    case "notify": {
+      const gh = d.exists ? ghAt(d.exists) : undefined;
+      const notes = await notifyOnce({ ...d, ...(gh ? { gh: async (args: string[], stdin?: string) => {
+        const r = await d.run([gh, ...args], { limitMs: 30_000, maxBytes: 200_000, env: { HOME: d.userHome }, ...(stdin !== undefined ? { stdin: new TextEncoder().encode(stdin) } : {}) });
+        return { code: r.code ?? 1, stdout: r.stdout, stderr: r.stderr };
+      } } : {}) });
+      for (const n of notes) {
+        if (p.opts.post) await d.run(postArgv(n), { limitMs: 10_000, maxBytes: 4_000 });
+        else io.out(asciiJson(n));
+      }
       return EXIT.ok;
     }
     case "statusline":
@@ -223,7 +272,18 @@ export function realDeps(): UpdateDeps {
     fetch: (url, init) => fetch(url, init),
     verify: (o) => verifyRelease(keygen, o),
     arch: process.arch,
+    uid: process.getuid?.() ?? -1,
   };
+}
+
+// Key presses from a terminal in raw mode, one each, until the screen quits.
+async function* rawKeys(): AsyncGenerator<string> {
+  process.stdin.setRawMode(true);
+  try {
+    for await (const chunk of process.stdin) yield String(chunk);
+  } finally {
+    process.stdin.setRawMode(false);
+  }
 }
 
 export async function controllerMain(argv: string[]): Promise<number> {
@@ -250,7 +310,15 @@ export async function controllerMain(argv: string[]): Promise<number> {
   // When taskbox starts, it looks for a newer release alongside the command, and says so after.
   const quiet = !argv.length || ["self", "install", "statusline"].includes(argv[0]!) || argv.includes("--json") || watching;
   const note = quiet ? Promise.resolve(undefined) : updateNote(d).catch(() => undefined);
-  const code = await dispatch(d, argv, { out: (l) => console.log(l), draw });
+  const more: More = {
+    user: userInfo().username,
+    exists: (p) => existsSync(p),
+    // A program with this terminal, with the controller's fixed environment and nothing more.
+    term: async (a) => await Bun.spawn(a, { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: { ...ENV, HOME: d.userHome } }).exited,
+  };
+  // The owner's screen reads key presses at a terminal.
+  const keys = !argv.length && process.stdin.isTTY ? rawKeys() : undefined;
+  const code = await dispatch({ ...d, ...more }, argv, { out: (l) => console.log(l), draw, ...(keys ? { keys } : {}) });
   const n = await note;
   if (n) console.log(n);
   return code;

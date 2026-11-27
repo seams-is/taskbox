@@ -5,8 +5,10 @@
 import type { HandlerFile } from "../core/dispatch.ts";
 import * as availability from "./availability.ts";
 import * as op from "./op.ts";
+import * as poll from "./poll.ts";
 
 export const handlerFiles: readonly HandlerFile[] = [
   { file: "availability.ts", handlers: availability.handlers },
   { file: "op.ts", handlers: op.handlers },
+  { file: "poll.ts", handlers: poll.handlers },
 ];
