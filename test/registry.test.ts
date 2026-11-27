@@ -140,8 +140,8 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["stop", "start", "drain", "prune", "pause", "resume", "pause --reason upgrades", "drain --timeout 30m --force --detach", "stop --force -y --timeout 1h"], bad: ["stop --now", "start x", "drain --now", "prune --dry-run", "pause x", "resume --force", "pause --reason", "start --force"] },
   { good: ["update", "update v3.0.0-rc.1", "update --to v2.6.1"], bad: ["update main", "update v2.0", "update v2.6.1 --to v2.6.1", "update --to main"] },
   { good: ["rollback", "remove", "remove --keep-images", "unlock", "key reset approver", "workspace clear nova"], bad: ["rollback --to 2.6.1", "remove box-1", "remove -y", "remove --yes", "unlock -y", "unlock ci", "key reset", "key reset approver x", "workspace clear", "workspace clear ../x"] },
-  { good: ["connect github", "connect github --new-key", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "disconnect"] },
-  { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch"], bad: ["install --bootstrap", "guard x"] },
+  { good: ["connect github", "connect github --jobs example-org/app", "connect status", "connect listen", "connect github --load example-org/load --group taskbox-load", "connect github --load off", "disconnect github"], bad: ["connect", "connect gitlab", "connect github --load example-org/load", "connect github --new-key", "disconnect"] },
+  { good: ["install --bootstrap /tmp/x", "guard", "guardwatch", "loop", "rollback-watch", "broker"], bad: ["install --bootstrap", "guard x"] },
   // The agent's release is under the workspace noun, so a release list can register.
   { good: [], bad: ["release nova-1"] },
 ];

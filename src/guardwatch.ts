@@ -36,7 +36,8 @@ export function watchPaths(p: { guardState: string; guardPlist: string }) {
   const daemons = dirname(p.guardPlist);
   return {
     guardBeat: join(run, "taskbox-guard.beat"),
-    brokerBeat: join(dirname(run), "db/taskbox-broker/broker.beat"),
+    // The keeper's own folder: it runs as _taskboxgh, which can't write root's (keys.ts brokerPaths).
+    brokerBeat: join(dirname(run), "db/taskbox-broker/beat/broker.beat"),
     record: join(run, "taskbox-guardwatch.json"),
     plist: join(daemons, `${GUARDWATCH_LABEL}.plist`),
     brokerPlist: join(daemons, `${BROKER_LABEL}.plist`),
