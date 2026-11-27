@@ -1,21 +1,23 @@
 // The guard's passes from v2, moved onto the registry as they were: the workspaces pass every tick,
 // first before the guard's first pf pass; the loop's watch every full pass; the Tailscale SSH logins
 // record every full pass, and sooner once tailscaled's log grows fast; tailscaled's watch every tick.
-import { everyPass, type GuardPass, type PassMaker } from "../core/passes.ts";
+import { everyPass, type GuardPass, type PlacedMaker } from "../core/passes.ts";
 import { GUARD_FULL_MS, settler, tailscaledWatch, workspaceRunner } from "../guard.ts";
 import { FAST_GROWTH, LoginsKeeper } from "../logins.ts";
 import { newLoopWatch, watchLoop } from "../loopwatch.ts";
 
-export const workspacesPass: PassMaker = {
+export const workspacesPass: PlacedMaker = {
   name: "workspaces",
+  order: 200,
   make(c) {
     const run = c.ws ?? workspaceRunner({ sys: c.sys, cfg: c.cfg, p: c.p }, c.log);
     return { name: "workspaces", at: "before", start: () => run, next: () => run };
   },
 };
 
-export const loopWatchPass: PassMaker = {
+export const loopWatchPass: PlacedMaker = {
   name: "loop-watch",
+  order: 210,
   make(c) {
     const lw = newLoopWatch();
     const settle = settler(c.sys, c.p, c.log);
@@ -29,8 +31,9 @@ export const loopWatchPass: PassMaker = {
   },
 };
 
-export const loginsPass: PassMaker = {
+export const loginsPass: PlacedMaker = {
   name: "logins",
+  order: 220,
   make(c): GuardPass {
     const keeper = new LoginsKeeper(c.sys, c.p, c.cfg);
     let err: string | undefined;
@@ -67,12 +70,12 @@ export const loginsPass: PassMaker = {
   },
 };
 
-export const tailscaledPass: PassMaker = {
+export const tailscaledPass: PlacedMaker = {
   name: "tailscaled",
+  order: 230,
   make(c) {
     const run = tailscaledWatch(c.sys, c.p, c.log);
     return { name: "tailscaled", at: "tick", next: () => run };
   },
 };
 
-export const v2Passes = (): PassMaker[] => [workspacesPass, loopWatchPass, loginsPass, tailscaledPass];
