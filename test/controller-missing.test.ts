@@ -149,7 +149,10 @@ describe("taskbox box install", () => {
     const asset = (n: string) => `https://github.com/example-org/taskbox/releases/download/v3.0.0/${n}`;
     d.web.set(api, { status: 200, body: JSON.stringify({ tag_name: "v3.0.0", draft: false, prerelease: false, assets: ["statement.json", "statement.json.sig", "taskbox-v3.0.0.tar.gz"].map((name) => ({ name, browser_download_url: asset(name) })) }) });
     for (const n of ["statement.json", "statement.json.sig", "taskbox-v3.0.0.tar.gz"]) d.web.set(asset(n), { status: 200, body: "x" });
-    const r = await runLine(d, ["box", "install", "admin@mac-mini"]);
+    const settings = JSON.stringify({ org: "example-org" });
+    Object.assign(d, { gh: async (args: string[]) => (args.includes("repos/example-org/settings/contents/taskbox.json") ? { code: 0, stdout: JSON.stringify({ encoding: "base64", content: Buffer.from(settings).toString("base64") }), stderr: "" } : { code: 1, stdout: "", stderr: "HTTP 404" }) });
+    expect((await runLine(d, ["box", "install", "admin@mac-mini"])).code).toBe(2);
+    const r = await runLine(d, ["box", "install", "admin@mac-mini", "--settings", "example-org/settings"]);
     expect(r.code).toBe(1);
     // Verified, it copies, installs under ssh -t with the settings repo, and turns Remote Login off.
     d.verdict = { ok: true } as never;
@@ -159,7 +162,8 @@ describe("taskbox box install", () => {
     expect(ok.code).toBe(0);
     expect(terms.map((t) => t[0])).toEqual(["/usr/bin/ssh", "/usr/bin/scp", "/usr/bin/ssh", "/usr/bin/ssh"]);
     expect(terms[2]).toContain("-t");
-    expect(terms[2]!.at(-1)).toBe("cd taskbox-install && /bin/rm -rf taskbox && /usr/bin/tar -xzf taskbox-v3.0.0.tar.gz && /bin/sh taskbox/install.sh --settings example-org/settings");
+    expect(terms[2]!.at(-1)).toBe("cd taskbox-install && /bin/rm -rf taskbox && /usr/bin/tar -xzf taskbox-v3.0.0.tar.gz && /bin/mv taskbox.json taskbox/taskbox.json && /bin/sh taskbox/install.sh --settings example-org/settings");
+    expect(terms[1]!.some((a) => a.endsWith("/taskbox.json"))).toBe(true);
     expect(terms[3]!.at(-1)).toContain("launchctl disable system/com.openssh.sshd");
     expect(ok.lines.join("\n")).toContain("Remote Login is off at mac-mini.");
     terms.length = 0;

@@ -47,6 +47,12 @@ export async function install(c: BoxCtx, first: boolean, tag?: string): Promise<
     return 1;
   }
   const now = readJson<Installed>(p.installed);
+  // The settings repo the install was named, kept in box.json, where the guard reads it from.
+  if (first && typeof c.opts.settings === "string") {
+    const { writeBoxKeys } = await import("../connectflow.ts");
+    writeBoxKeys({ boxFile: p.boxSettings, rootUid: c.deps.rootUid ?? 0, chown: c.chown, say }, { settingsRepo: c.opts.settings });
+    say(`  This box reads its settings from ${c.opts.settings} from now on.`);
+  }
   for (const l of footer(await stateNow(c.ops), `Installed ${now.tag ? `${now.tag}, ` : ""}#${now.pr} ${now.title}.`, first ? `Log in as ${c.S}, then type taskbox status -w.` : "Nothing to do. The loop moves to it once the current job or download ends.")) say(l);
   return 0;
 }
@@ -57,7 +63,7 @@ export const commands: CommandSpec[] = [
     summary: "The first install, from install.sh.",
     who: ["admin"],
     internal: true,
-    options: [{ name: "--bootstrap", value: "FOLDER" }],
+    options: [{ name: "--bootstrap", value: "FOLDER" }, { name: "--settings", value: "ORG/REPO", check: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(v) }],
     // The settings are the downloaded folder's at the first install.
     namesFrom: (c) => (typeof c.opts.bootstrap === "string" ? c.opts.bootstrap : undefined),
     run: (c) => install(c, true),

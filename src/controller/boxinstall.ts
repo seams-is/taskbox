@@ -16,6 +16,8 @@ import { footer } from "./screens.ts";
 import { SSH, sshPath } from "./ssh.ts";
 import { currentTag, pinFile, signersIn, type UpdateDeps } from "./update.ts";
 import { existsSync } from "node:fs";
+import { type Gh, printable } from "../hold.ts";
+import { ownerGh } from "./load.ts";
 
 // ADMIN@HOST: a macOS short name, and a LAN name or address.
 export const HOST = /^([a-z_][a-z0-9_-]{0,31})@([A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*)$/;
@@ -30,6 +32,26 @@ export function lanOptions(knownHosts: string): string[] {
 
 export interface InstallDeps extends UpdateDeps {
   term?(argv: string[]): Promise<number>; // a program with this terminal
+  gh?: Gh; // the owner's own gh; ownerGh's when absent
+}
+
+// The settings repo's taskbox.json at its default branch's head, through the owner's own GitHub
+// session: the Mac can't read a private repo before it has an App. Checked as JSON of a sane size;
+// the install validates every key itself.
+export async function settingsFile(gh: Gh, repo: string): Promise<{ text: string } | { why: string }> {
+  const r = await gh(["api", `repos/${repo}/contents/taskbox.json`]);
+  if (r.code !== 0) return { why: /HTTP 404/.test(r.stderr) ? `${repo} has no taskbox.json, or your GitHub session can't read it` : `GitHub answered: ${printable(r.stderr, 120)}` };
+  try {
+    const v = JSON.parse(r.stdout) as { content?: unknown; encoding?: unknown };
+    if (typeof v.content !== "string" || v.encoding !== "base64") return { why: "GitHub's answer for taskbox.json had no content" };
+    const text = Buffer.from(v.content, "base64").toString("utf8");
+    if (text.length > 512_000) return { why: "taskbox.json is larger than taskbox takes" };
+    const o = JSON.parse(text) as unknown;
+    if (!o || typeof o !== "object" || Array.isArray(o)) return { why: "taskbox.json isn't a JSON object" };
+    return { text };
+  } catch {
+    return { why: "taskbox.json isn't JSON" };
+  }
 }
 
 export async function boxInstall(d: InstallDeps, host: string, settings: string | undefined, out: (l: string) => void): Promise<number> {
@@ -39,7 +61,7 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
   };
   const m = HOST.exec(host);
   if (!m) return stop("taskbox box install takes the Mac's admin and its LAN name, such as admin@mac-mini.", "Type it again.", EXIT.usage);
-  if (settings !== undefined && !REPO.test(settings)) return stop("--settings takes the settings repo, as ORG/REPO.", "Type it again.", EXIT.usage);
+  if (settings === undefined || !REPO.test(settings)) return stop("taskbox box install takes --settings, the settings repo, as ORG/REPO.", "Type it again.", EXIT.usage);
   if (!d.tty || !d.term) return stop("taskbox box install runs in your terminal: ssh and the install ask for passwords there.", "Type it in Terminal.", EXIT.usage);
   const c = readConfig(d.home);
   if (!c.ok || !c.config.source) return stop("taskbox isn't installed for a controller on this Mac.", "Install taskbox for a controller, from its release page.");
@@ -63,6 +85,12 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
   try {
     const v = await d.verify({ statement: files[STATEMENT]!, signature: files[SIGNATURE]!, tarball: files[tarballName(tag)]!, workRoot: work, installed: null, signers, want: tag, channel: c.config.channel });
     if (!v.ok) return stop(`Not installed: ${v.why.replace(/[^\x20-\x7e]/g, "").slice(0, 160)}.`, "Nothing to do: agents look.");
+    const gh = d.gh ?? ownerGh(d);
+    if (!gh) return stop("box install reads the settings repo through your own GitHub session, and gh isn't on this Mac.", "Install gh with Homebrew and sign in once: gh auth login.");
+    out(`settings: taskbox.json from ${settings}, through your GitHub session.`);
+    const sf = await settingsFile(gh, settings);
+    if ("why" in sf) return stop(`The settings weren't read: ${sf.why}.`, "Type gh auth status: gh must be signed in as someone who can read the settings repo.");
+    files["taskbox.json"] = new TextEncoder().encode(sf.text);
     for (const [name, data] of Object.entries(files)) writeFileSync(join(work, name), data, { mode: 0o600 });
 
     const lan = lanOptions(join(d.home.dir, "known_hosts.lan"));
@@ -76,7 +104,7 @@ export async function boxInstall(d: InstallDeps, host: string, settings: string 
     // installing: the install's own steps, every prompt in this terminal.
     out("installing: install.sh at the Mac, as its admin. It verifies the release again with the signers inside it.");
     const t = tarballName(tag);
-    const run = `cd ${FOLDER} && /bin/rm -rf taskbox && /usr/bin/tar -xzf ${t} && /bin/sh taskbox/install.sh${settings ? ` --settings ${settings}` : ""}`;
+    const run = `cd ${FOLDER} && /bin/rm -rf taskbox && /usr/bin/tar -xzf ${t} && /bin/mv taskbox.json taskbox/taskbox.json && /bin/sh taskbox/install.sh --settings ${settings}`;
     const code = await term([SSH, "-t", ...lan, host, run]);
     if (code !== 0) {
       appendEvent(d.home, d.now(), "box.install-failed", `box install on ${m[2]} stopped at the install.`, { host: m[2]!, tag });

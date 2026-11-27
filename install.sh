@@ -9,6 +9,23 @@ set -eu
 BUN_URL="https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-darwin-aarch64.zip"
 BUN_SHA256="c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510"
 
+# --settings ORG/REPO names this box's settings repo, which the box then reads itself. taskbox box
+# install from the controller puts that repo's taskbox.json beside this file first.
+settings=""
+if [ "${1:-}" = --settings ]; then
+  case "${2:-}" in
+    */*/*|*[!A-Za-z0-9._/-]*|/*|*/|-*|"") echo "--settings takes the settings repo, as ORG/REPO."; exit 2 ;;
+    */*) ;;
+    *) echo "--settings takes the settings repo, as ORG/REPO."; exit 2 ;;
+  esac
+  settings=$2
+  shift 2
+fi
+if [ $# -gt 0 ]; then
+  echo "install.sh takes --settings ORG/REPO, or nothing."
+  exit 2
+fi
+
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 self="$here/$(basename -- "$0")"
 if [ "$(basename -- "$self")" != install.sh ] || [ ! -f "$self" ]; then
@@ -16,6 +33,10 @@ if [ "$(basename -- "$self")" != install.sh ] || [ ! -f "$self" ]; then
   exit 1
 fi
 # The box's own settings come from this copy of taskbox. The public repo has none.
+if [ ! -f "$here/taskbox.json" ] && [ -n "$settings" ]; then
+  echo "This copy of taskbox has no taskbox.json from $settings. From the controller, taskbox box install fetches it through your GitHub session and puts it here."
+  exit 1
+fi
 if [ ! -f "$here/taskbox.json" ]; then
   echo "This copy of taskbox has no taskbox.json. Copy taskbox.example.json to taskbox.json in your private copy, fill in your values (the README's First setup), then download that copy again."
   exit 1
@@ -28,6 +49,9 @@ if [ "$(id -u)" != 0 ]; then
     exit 1
   fi
   echo "The install needs your admin password."
+  if [ -n "$settings" ]; then
+    exec /usr/bin/sudo -p "Password for %u: " -- /bin/sh "$self" --settings "$settings"
+  fi
   exec /usr/bin/sudo -p "Password for %u: " -- /bin/sh "$self"
 fi
 if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = root ]; then
@@ -54,4 +78,4 @@ fi
 
 /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/root TMPDIR="$work" \
   SUDO_USER="$SUDO_USER" BUN_INSTALL_CACHE_DIR="$work/cache" \
-  "$work/bun-darwin-aarch64/bun" --no-install --no-env-file --cwd=/ --config="$here/bunfig.run.toml" "$here/src/cli.ts" install --bootstrap "$here"
+  "$work/bun-darwin-aarch64/bun" --no-install --no-env-file --cwd=/ --config="$here/bunfig.run.toml" "$here/src/cli.ts" install --bootstrap "$here" ${settings:+--settings "$settings"}

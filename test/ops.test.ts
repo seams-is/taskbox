@@ -189,6 +189,7 @@ describe("taskbox status", () => {
     ]));
     expect(commandsFor(notCi, { remote: true, admin: false })).toBe(says([
       "check",
+      "connect",
       "drain",
       "events",
       "hello",
@@ -210,7 +211,6 @@ describe("taskbox status", () => {
       "settings",
       "withdraw",
       "size",
-      "connect",
       "start",
       "status",
       "stop",
