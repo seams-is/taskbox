@@ -20,6 +20,8 @@ It fetches the signed release and checks it, reads `taskbox.json` through your o
 
 At the Mac's screen instead, as your admin user: download `statement.json`, `statement.json.sig` and `taskbox-vX.Y.Z.tar.gz` from the release page into one folder, unpack the tarball there, and type `sh taskbox/install.sh --settings ORG/REPO`. It reads a public settings repo itself; a private one goes through `taskbox box install`. Then, from the controller, `taskbox box add` and `taskbox connect github`.
 
+## Update
+
 - A box updates itself, inside its update window, to the newest signed release on its channel (`update.channel`: `stable` or `beta`).
 - `taskbox update [VERSION]`, as the admin at the box, installs one now. `taskbox rollback` goes back to a kept install.
 - A box on v2.6.1 moves to v3 with `taskbox update v3.0.0-rc.1`. The steps are in the [release notes](docs/release-v3.0.0-rc.1.md).
