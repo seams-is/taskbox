@@ -370,7 +370,7 @@ describe("an approver identity this controller didn't make", () => {
 });
 
 describe("box add's key and trusting phases", () => {
-  test("the whole fingerprint, grouped as the box shows it, and a wait while it is compared", async () => {
+  test("the whole fingerprint, grouped as the box shows it, then the key offered to the box", async () => {
     const owner = keyPair();
     const w = new World();
     const d = deps(w, ["1", "yes", ""]);
@@ -390,6 +390,7 @@ describe("box add's key and trusting phases", () => {
     const r = await runLine(d, ["box", "add"]);
     const fp = (await import("../src/approver.ts")).fingerprint(owner.key);
     expect(r.lines).toContain(`Approver key: ${grouped(fp)}`);
-    expect(d.asked.at(-1)).toBe("Press Return once you have compared the fingerprint at the box, or now to do it later: ");
+    // The fake box is v2.6.1's, with no key offer, so the trusting phase says the offer didn't reach it.
+    expect(r.lines).toContain("taskbox-1 didn't take the offer: it can't be reached");
   }, CEILING);
 });

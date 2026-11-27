@@ -31,6 +31,9 @@ export interface SignerDeps {
   say: (line: string) => void;
   ask?: (q: string) => Promise<string>; // makeKey's typed yes before it replaces an identity
   tty?: boolean;
+  // makeKey's Secure Enclave label: a rotation makes the new key under the other label, so the two
+  // identities are told apart until the old one is deleted (keyflows.ts).
+  label?: string;
 }
 
 // The identity hash this controller made with -t bio, kept beside the key.
@@ -142,13 +145,14 @@ export function pointHash(key: string): string {
 // The approver key, made once: a Secure Enclave identity with Touch ID on each use (-t bio), then
 // its handle and public key from ssh-keygen -K, kept in the approver folder.
 export async function makeKey(d: SignerDeps): Promise<Key | { why: string }> {
+  const LABEL = d.label ?? KEY_LABEL;
   const have = signingKey(d.home, d.uid);
   if ("key" in have) return have;
   mkdirSync(d.home.approver, { recursive: true, mode: 0o700 });
   chmodSync(d.home.approver, 0o700);
   const list = async () => {
     const r = await d.run([SC_AUTH, "list-ctk-identities"], { limitMs: 30_000, maxBytes: 200_000 });
-    return r.code === 0 ? labelHashes(r.stdout) : undefined;
+    return r.code === 0 ? labelHashes(r.stdout, LABEL) : undefined;
   };
   // An export a crash left behind goes first.
   for (const f of readdirSync(d.home.approver)) if (/^export-/.test(f)) rmSync(join(d.home.approver, f), { recursive: true, force: true });
@@ -160,8 +164,8 @@ export async function makeKey(d: SignerDeps): Promise<Key | { why: string }> {
   const mine = madeHash(d.home);
   const strangers = ids.filter((h) => h !== mine);
   if (strangers.length) {
-    d.say(`The Secure Enclave holds ${strangers.length === 1 ? "an identity" : `${strangers.length} identities`} labelled ${KEY_LABEL} that this controller didn't make, so its Touch ID setting can't be trusted.`);
-    if (!d.tty || !d.ask || (await d.ask(`Type yes to delete ${strangers.length === 1 ? "it" : "them"} and make the key again with Touch ID: `)).trim() !== "yes") return { why: `No approver key was made: a ${KEY_LABEL} identity this controller didn't make is in the way.` };
+    d.say(`The Secure Enclave holds ${strangers.length === 1 ? "an identity" : `${strangers.length} identities`} labelled ${LABEL} that this controller didn't make, so its Touch ID setting can't be trusted.`);
+    if (!d.tty || !d.ask || (await d.ask(`Type yes to delete ${strangers.length === 1 ? "it" : "them"} and make the key again with Touch ID: `)).trim() !== "yes") return { why: `No approver key was made: a ${LABEL} identity this controller didn't make is in the way.` };
     for (const h of strangers) {
       const del = await d.run([SC_AUTH, "delete-ctk-identity", "-h", h], { limitMs: 30_000, maxBytes: 64_000 });
       if (del.code !== 0) return { why: `sc_auth couldn't delete the identity ${h}.` };
@@ -170,15 +174,15 @@ export async function makeKey(d: SignerDeps): Promise<Key | { why: string }> {
   }
   if (!ids.length) {
     d.say("macOS makes the approver key in the Secure Enclave, with Touch ID on each use. Touch ID may ask.");
-    const made = await d.run([SC_AUTH, "create-ctk-identity", "-l", KEY_LABEL, "-k", "p-256-ne", "-t", "bio"], { limitMs: SIGN_MS, maxBytes: 64_000 });
+    const made = await d.run([SC_AUTH, "create-ctk-identity", "-l", LABEL, "-k", "p-256-ne", "-t", "bio"], { limitMs: SIGN_MS, maxBytes: 64_000 });
     if (made.code !== 0) return { why: `sc_auth couldn't make the key: ${scrub(made.stderr || made.stdout, 160) || `exit ${made.code}`}` };
     const after = (await list()) ?? [];
     const fresh = after.filter((h) => !ids!.includes(h));
-    if (fresh.length !== 1) return { why: `sc_auth made the key, but lists ${after.length} identities labelled ${KEY_LABEL}.` };
+    if (fresh.length !== 1) return { why: `sc_auth made the key, but lists ${after.length} identities labelled ${LABEL}.` };
     writeFileSync(join(d.home.approver, "made"), `${fresh[0]}\n`, { mode: 0o600 });
     ids = fresh;
   }
-  if (ids.length !== 1) return { why: `sc_auth lists ${ids.length} identities labelled ${KEY_LABEL}, and taskbox uses one.` };
+  if (ids.length !== 1) return { why: `sc_auth lists ${ids.length} identities labelled ${LABEL}, and taskbox uses one.` };
   const want = ids[0]!;
   // ssh-keygen -K writes every key the provider has into the folder it runs in: a fresh one, so
   // nothing is written over. Only the pair whose point is that identity's is kept.
@@ -193,7 +197,7 @@ export async function makeKey(d: SignerDeps): Promise<Key | { why: string }> {
         const line = readFileSync(join(tmp, f), "utf8").trim().split(/\s+/).slice(0, 2).join(" ");
         return !approverKeyProblem(line) && pointHash(line) === want;
       });
-    if (found.length !== 1) return { why: `ssh-keygen gave ${found.length} keys for the ${KEY_LABEL} identity, so taskbox kept none.` };
+    if (found.length !== 1) return { why: `ssh-keygen gave ${found.length} keys for the ${LABEL} identity, so taskbox kept none.` };
     const to = join(d.home.approver, `${KEY_LABEL}-${want.slice(0, 8).toLowerCase()}`);
     renameSync(join(tmp, found[0]!.slice(0, -4)), to);
     renameSync(join(tmp, found[0]!), `${to}.pub`);
