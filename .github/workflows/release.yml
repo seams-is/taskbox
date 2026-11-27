@@ -1,6 +1,6 @@
-# A taskbox release, as a draft: run by hand on main after the owner merges the release PR, with the
-# version. It makes the tag first, at the run's commit, so a tag GitHub refuses fails here rather
-# than at the owner's publish (as build-tailscale.yml does). Then the tarball (git archive of the
+# A taskbox release, as a draft: run by hand on main after the owner merges the release PR and makes
+# the tag vX.Y.Z at that commit, with the version. The owner approves the run (the release
+# environment). It checks the tag is at the run's commit. Then the tarball (git archive of the
 # tag under one top folder), the Tailscale build (two hosts, compared), and the statement, unsigned,
 # all attached to a draft release. CI holds no signing key and can't publish: taskbox sign on the
 # signing Mac checks every file, signs the statement and publishes it.
@@ -36,6 +36,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: release
     permissions:
       contents: write
       pull-requests: read
@@ -62,11 +63,14 @@ jobs:
           echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
-      - name: The tag, made first
+      - name: The tag, at this commit
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GH_REPO}/git/refs" -f ref="refs/tags/v${VERSION}" -f sha="$GITHUB_SHA" > /dev/null
+          # The repo's tag rule lets only the owner make v* tags, so the owner makes it on main first.
+          # A tag at another commit, or none, stops the run here.
+          at=$(gh api "repos/${GH_REPO}/git/ref/tags/v${VERSION}" --jq .object.sha 2>/dev/null || true)
+          [ "$at" = "$GITHUB_SHA" ] || { echo "::error::make the tag v${VERSION} at ${GITHUB_SHA} on main first, then run this again"; exit 1; }
       - name: The tarball, the tag's tree under one top folder
         shell: bash
         run: |
