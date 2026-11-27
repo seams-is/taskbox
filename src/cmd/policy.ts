@@ -21,6 +21,8 @@ export const commands: CommandSpec[] = [
     // The controller reads --json, and its answer must name the real owner, never a placeholder.
     check: ({ opts, flags }) => (flags.json !== undefined && typeof opts.login !== "string" ? "policy show --json needs --login with your Tailscale login, which the controller passes." : undefined),
     did: "Printed the policy. Nothing changed.",
+    // The controller asks each box for --json, checks it, and makes the text to paste itself.
+    shell: true,
     async run(c) {
       const { loadConfig, tagOf } = await import("../config.ts");
       const { adminsOf, adminState } = await import("../elevate.ts");
