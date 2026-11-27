@@ -515,3 +515,15 @@ export function brokerHere(socket: string): boolean {
     return false;
   }
 }
+
+// The keeper's beat, in its own folder (keys.ts brokerPaths beat), written as guardwatch reads the
+// guard's: whole by one rename, 644, the keeper's own. The writer, for a timer.
+export async function keeperBeat(sys: Pick<Sys, "run" | "now">, file: string, uid: number, pid: number): Promise<() => Promise<void>> {
+  const { beatNow, writeBeat } = await import("./guardwatch.ts");
+  const { bootId } = await import("./core/boot.ts");
+  const boot = await bootId(sys);
+  return async () => {
+    const b = await beatNow(sys, pid, boot);
+    if (b) writeBeat(file, b, uid);
+  };
+}

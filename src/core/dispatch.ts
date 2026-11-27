@@ -61,6 +61,10 @@ export interface UnsignedHandler {
   kind: string; // the request file's kind: connect-code, poll
   check(body: Record<string, unknown>): string | undefined;
   apply(c: HandlerCtx, r: { id: string; body: Record<string, unknown>; by: Verified }): Promise<Answer>;
+  // Whether this body is one the owner's step could be (a connect code with its op's state), checked
+  // with no network: the requests pass keeps it past a flood and outside the window, as it keeps the
+  // owner's signed requests.
+  vouched?(c: HandlerCtx, body: Record<string, unknown>): boolean;
 }
 
 export interface Handlers {

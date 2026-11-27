@@ -744,8 +744,28 @@ describe("the controller's code, bound to the op's state", () => {
     expect(readCodeInbox(o.inbox, me)).toEqual({ v: 1, op: opened.op.id, role: "runner", code: "real" });
     expect(await codeWaiter({ sys, rootUid: me }, o.inbox, opened.op.id, sys.now() + 3000)("runner")).toEqual({ code: "real" });
     expect(fetched).toBe(0);
-    const h = await CONNECT_CODE_HANDLER.apply({ state: { dir, ops }, rootUid: me }, { body: { op: opened.op.id, state: "c".repeat(64), code: "x" } });
+    // Through the dispatcher's handler: a refusal is a guard.refused event with no code or state in it.
+    const refused: unknown[] = [];
+    const ctx = { state: { dir, ops }, rootUid: me, events: { refused: (e: unknown) => (refused.push(e), e) } } as never;
+    const h = await CONNECT_CODE_HANDLER.apply(ctx, { id: "rq_1", body: { op: opened.op.id, state: "c".repeat(64), code: "secretcode" }, by: {} as never });
     expect(h).toMatchObject({ ok: false, code: "denied" });
+    expect(refused).toEqual([{ type: "guard.refused", text: "A connect code was refused: that code doesn't carry this connect's state.", data: { request: "rq_1", kind: "connect-code", code: "denied" } }]);
+    expect(JSON.stringify(refused)).not.toMatch(/secretcode|cccc/);
+  });
+
+  test("the handler vouches only for a code this connect would take, so it outlives a flood", () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-vouch-"));
+    const ops = join(dir, "ops");
+    mkdirSync(ops);
+    const opened = openControllerConnect({ ops: { dir: ops, owner: me }, now: SINCE, actor: "owner", params: {}, stateHashes: HASHES });
+    if (!("op" in opened)) throw new Error(opened.why);
+    const rec = JSON.parse(readFileSync(join(ops, `${opened.op.id}.json`), "utf8"));
+    writeFileSync(join(ops, `${opened.op.id}.json`), JSON.stringify({ ...rec, phase: "making-runner" }));
+    const ctx = { state: { dir, ops }, rootUid: me } as never;
+    expect(CONNECT_CODE_HANDLER.vouched!(ctx, { op: opened.op.id, state: RS, code: "real" })).toBe(true);
+    expect(CONNECT_CODE_HANDLER.vouched!(ctx, { op: opened.op.id, state: SS, code: "real" })).toBe(false);
+    expect(CONNECT_CODE_HANDLER.vouched!(ctx, { op: opened.op.id, state: "a".repeat(64), code: "x" })).toBe(false);
+    expect(CONNECT_CODE_HANDLER.vouched!(ctx, { code: "x" })).toBe(false);
   });
 
   test("the child converts its one code once: a code GitHub refuses ends the op, with nothing kept", async () => {

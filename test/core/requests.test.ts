@@ -384,6 +384,33 @@ describe("what the agent account can plant in the spool", () => {
   });
 });
 
+describe("an unsigned request its handler vouches for", () => {
+  test(
+    "a flood of junk of every kind, the owner's code last: it is never dropped, never waits on the window, and applies",
+    async () => {
+      const taken: unknown[] = [];
+      const t = testHandlers();
+      const code: Handlers["unsigned"][number] = {
+        kind: "code",
+        check: (b) => (typeof b.state === "string" ? undefined : "a code has a state"),
+        vouched: (_c, b) => b.state === "the-real-one",
+        async apply(_c, r) {
+          taken.push(r.body.state);
+          return { ok: true, said: "Taken." };
+        },
+      };
+      const b = await box({ handlers: { signed: t.handlers.signed, unsigned: [...t.handlers.unsigned, code] } });
+      for (let i = 0; i < 70; i++) writeSpoolFile(b.s.agentSpool, "poll", { pairing: `p${i}` }, b.sys);
+      for (let i = 0; i < 70; i++) writeSpoolFile(b.s.agentSpool, "code", { state: `junk${i}` }, b.sys);
+      const real = writeSpoolFile(b.s.agentSpool, "code", { state: "the-real-one" }, b.sys).id;
+      await b.job();
+      expect(readOutcome(b.d.outcomes, real, me)).toMatchObject({ kind: "ok", value: { ok: true, said: "Taken." } });
+      expect(taken).toContain("the-real-one");
+    },
+    SLOW,
+  );
+});
+
 describe("the spool itself", () => {
   test("the guard makes a missing spool, the agent account's at 700, in root's folder alone", async () => {
     const b = await box();

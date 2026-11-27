@@ -16,7 +16,7 @@ const out = (stdout: string) => ({ code: 0, stdout, stderr: "" });
 const me = process.getuid!();
 
 describe("the keeper's folders", () => {
-  test("each made at its mode, the ACLs cleared first, then set: keys and log get none", async () => {
+  test("each made at its mode, the ACLs cleared first, then set: keys, log and beat get none", async () => {
     const dir = join(mkdtempSync(join(tmpdir(), "taskbox-bf-")), "taskbox-broker");
     const b = brokerPathsIn(dir);
     const sys = new FakeSys();
@@ -24,11 +24,12 @@ describe("the keeper's folders", () => {
     const chowned: string[] = [];
     const why = await brokerFoldersProblem({ sys, chown: (p, u) => void chowned.push(`${p.slice(dir.length) || "/"} ${u}`), rootUid: me }, b, { brokerUid: 300, brokerGid: 301, brokerName: "_taskboxgh", serviceName: "taskbox" });
     expect(why).toBeUndefined();
-    expect(chowned).toEqual([`/ ${me}`, "/keys 300", "/log 300", `/run ${me}`, `/guard ${me}`]);
-    for (const [p, mode] of [[dir, 0o755], [b.keys, 0o700], [b.log, 0o700], [b.run, 0o700], [b.guard, 0o700]] as const) expect(statSync(p).mode & 0o777).toBe(mode);
+    expect(chowned).toEqual([`/ ${me}`, "/keys 300", "/log 300", "/beat 300", `/run ${me}`, `/guard ${me}`]);
+    for (const [p, mode] of [[dir, 0o755], [b.keys, 0o700], [b.log, 0o700], [b.beatDir, 0o755], [b.run, 0o700], [b.guard, 0o700]] as const) expect(statSync(p).mode & 0o777).toBe(mode);
     expect(sys.calls.map((c) => c.args.join(" "))).toEqual([
       `-N ${b.keys}`,
       `-N ${b.log}`,
+      `-N ${b.beatDir}`,
       `-N ${b.run}`,
       `+a user:_taskboxgh allow list,add_file,delete_child,search ${b.run}`,
       `+a user:taskbox allow search ${b.run}`,
@@ -105,5 +106,30 @@ describe("the old keys, and the keeper's counts", () => {
     expect(events[0]).toMatchObject({ type: "key.used", data: { hour: "2026-11-26T14", "jit-config": 3, "source-token": 1 } });
     expect(usedToEvents(o, w)).toEqual([]);
     expect(events).toHaveLength(2);
+  });
+});
+
+describe("the keeper's beat, as guardwatch reads it", () => {
+  test("written in the keeper's own folder by its own uid; read by guardwatch; stale or missing restarts it", async () => {
+    const { keeperBeat } = await import("../src/broker.ts");
+    const { judge, readBeat, rootPaths, STALE_MS } = await import("../src/guardwatch.ts");
+    const root = mkdtempSync(join(tmpdir(), "taskbox-beat-"));
+    const w = rootPaths(root);
+    const b = brokerPathsIn(join(root, "private/var/db/taskbox-broker"));
+    expect(w.brokerBeat).toBe(b.beat);
+    mkdirSync(b.beatDir, { recursive: true, mode: 0o755 });
+    const sys = new FakeSys();
+    const beat = await keeperBeat(sys, b.beat, me, 4242);
+    await beat();
+    expect(statSync(b.beat).uid).toBe(me);
+    expect(statSync(b.beat).mode & 0o777).toBe(0o644);
+    const got = readBeat(w.brokerBeat, me);
+    expect(got).toMatchObject({ pid: 4242 });
+    const now = { boot: got!.boot, mono: got!.mono };
+    expect(judge(got, now, 4242, now.mono, [], "the key broker")).toEqual({ act: "none" });
+    expect(judge(got, { ...now, mono: now.mono + STALE_MS + 61_000 }, 4242, now.mono, [], "the key broker")).toMatchObject({ act: "restart" });
+    expect(judge(undefined, { ...now, mono: now.mono + STALE_MS + 1 }, 4242, now.mono, [], "the key broker")).toMatchObject({ act: "restart" });
+    // Another uid's file isn't the keeper's beat.
+    expect(readBeat(w.brokerBeat, me + 1)).toBeUndefined();
   });
 });

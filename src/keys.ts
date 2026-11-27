@@ -306,6 +306,8 @@ export interface BrokerPaths {
   dir: string; // /var/db/taskbox-broker: root's, 755
   keys: string; // the keeper's, 700, no ACL
   log: string; // the keeper's, 700: used.jsonl, the counts it handed out
+  beatDir: string; // the keeper's, 755: its beat, which guardwatch and the beat row read
+  beat: string;
   run: string; // root's, 700, ACL: the keeper makes the socket, the service account reaches it
   guard: string; // root's, 700, ACL: the keeper only. The guard's socket
   socket: string;
@@ -316,7 +318,7 @@ export interface BrokerPaths {
 export const brokerPaths = (root: string): BrokerPaths => brokerPathsIn(join(root, "var/db/taskbox-broker"));
 export const brokerPathsOf = (p: { loginsSeen: string }): BrokerPaths => brokerPathsIn(join(dirname(p.loginsSeen), "taskbox-broker"));
 export function brokerPathsIn(dir: string): BrokerPaths {
-  return { dir, keys: join(dir, "keys"), log: join(dir, "log"), run: join(dir, "run"), guard: join(dir, "guard"), socket: join(dir, "run/broker.sock"), guardSocket: join(dir, "guard/broker.sock"), used: join(dir, "log/used.jsonl") };
+  return { dir, keys: join(dir, "keys"), log: join(dir, "log"), beatDir: join(dir, "beat"), beat: join(dir, "beat/broker.beat"), run: join(dir, "run"), guard: join(dir, "guard"), socket: join(dir, "run/broker.sock"), guardSocket: join(dir, "guard/broker.sock"), used: join(dir, "log/used.jsonl") };
 }
 
 const KEY_NAME = /^(runner|source)-([1-9][0-9]{0,11})(\.pending)?\.pem$/;
@@ -460,7 +462,7 @@ export function readAdoptedKey(path: string, serviceUid: number): string | undef
 }
 
 // The keeper's folders, made or put right by root: the folder 755 root's; keys and log 700 the
-// keeper's; run and guard 700 root's, each with its ACL. chmod -N first, so no other entry stays, on
+// keeper's, beat 755 the keeper's; run and guard 700 root's, each with its ACL. chmod -N first, so no other entry stays, on
 // keys too, so no key inherits one.
 export async function brokerFoldersProblem(d: { sys: Pick<InstallDeps["sys"], "run">; chown: (path: string, uid: number, gid: number) => void; rootUid?: number }, b: BrokerPaths, o: { brokerUid: number; brokerGid: number; brokerName: string; serviceName: string }): Promise<string | undefined> {
   const root = d.rootUid ?? 0;
@@ -473,14 +475,15 @@ export async function brokerFoldersProblem(d: { sys: Pick<InstallDeps["sys"], "r
     const st = lstatSync(path);
     if (st.isSymbolicLink() || !st.isDirectory()) return `${path} isn't a folder`;
     d.chown(path, uid, gid);
-    chmodSync(path, path === b.dir ? 0o755 : 0o700);
+    chmodSync(path, path === b.dir || path === b.beatDir ? 0o755 : 0o700);
     return undefined;
   };
-  const why = folder(b.dir, root, 0) ?? folder(b.keys, o.brokerUid, o.brokerGid) ?? folder(b.log, o.brokerUid, o.brokerGid) ?? folder(b.run, root, 0) ?? folder(b.guard, root, 0);
+  const why = folder(b.dir, root, 0) ?? folder(b.keys, o.brokerUid, o.brokerGid) ?? folder(b.log, o.brokerUid, o.brokerGid) ?? folder(b.beatDir, o.brokerUid, o.brokerGid) ?? folder(b.run, root, 0) ?? folder(b.guard, root, 0);
   if (why) return why;
   const acl: [string, string[]][] = [
     [b.keys, []],
     [b.log, []],
+    [b.beatDir, []],
     [b.run, [`user:${o.brokerName} allow list,add_file,delete_child,search`, `user:${o.serviceName} allow search`]],
     [b.guard, [`user:${o.brokerName} allow list,add_file,delete_child,search`]],
   ];

@@ -117,8 +117,22 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
       }
       return owners;
     };
+    // An unsigned request its handler vouches for, such as the owner's connect code: read once a pass,
+    // kept last past the cap, and taken outside the window, at most SIGNED_PER_PASS a pass.
+    const vouchedNames = new Map<string, boolean>();
+    const vouched = (name: string): boolean => {
+      const kind = REQUEST_NAME.exec(name)?.[2];
+      const h = d.handlers.unsigned.find((u) => u.kind === kind);
+      if (!h?.vouched || !kind) return false;
+      if (vouchedNames.has(name)) return vouchedNames.get(name)!;
+      const f = readSpoolFile(join(s.agentSpool, name), agent!);
+      const rr = f ? readRequest(name, f, { owner: agent!, now, kinds: { [kind]: (b) => h.check(b) } }) : undefined;
+      const v = rr?.ok === true && h.vouched({ ...dd.ctx, now }, rr.request.body);
+      vouchedNames.set(name, v);
+      return v;
+    };
     const BIG = 1e12;
-    const age = (e: Entry): number => (REQUEST_NAME.exec(e.name)?.[2] !== SIGNED ? firstSeen(e) : firstSeen(e) + (ranked().has(e.name) ? BIG : -BIG));
+    const age = (e: Entry): number => (REQUEST_NAME.exec(e.name)?.[2] !== SIGNED ? firstSeen(e) + (vouched(e.name) ? BIG : 0) : firstSeen(e) + (ranked().has(e.name) ? BIG : -BIG));
     const note = (name: string, code: "busy" | "expired", said: string) => {
       const id = REQUEST_NAME.exec(name)?.[1];
       if (!id) return;
@@ -140,16 +154,22 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
       const sorted = entries
         .map((e) => ({ e, m: REQUEST_NAME.exec(e.name) }))
         .filter((x) => x.m !== null)
-        .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
+        .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || Number(vouched(b.e.name)) - Number(vouched(a.e.name)) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
       let left = Math.max(0, perPass);
       let signedLeft = SIGNED_PER_PASS;
       let otherLeft = Math.max(0, PER_WINDOW - window.taken);
+      let vouchedLeft = SIGNED_PER_PASS;
       const out: string[] = [];
       for (const x of sorted) {
-        if (left === 0) break;
+        if (left === 0 && !(vouchedLeft > 0 && x.m![2] !== SIGNED && vouched(x.e.name))) continue;
         if (x.m![2] === SIGNED) {
           if (signedLeft === 0) continue;
           signedLeft--;
+        } else if (vouched(x.e.name)) {
+          if (vouchedLeft === 0) continue;
+          vouchedLeft--;
+          out.push(x.e.name);
+          continue;
         } else {
           if (otherLeft === 0) continue;
           otherLeft--;
@@ -162,7 +182,7 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     const late: string[] = [];
     const report: SpoolReport = { did: [], problems: [] };
     await drainSpool({ dir: s.agentSpool, owner: agent, rootUid: root, isRequest: (n) => REQUEST_NAME.test(n), order, age, dropped, whose: "the agent account", ...(d.perPass ? { perPass: d.perPass } : {}) }, mem, c.sys, report, async (name, f) => {
-      if (REQUEST_NAME.exec(name)?.[2] !== SIGNED) window.taken++;
+      if (REQUEST_NAME.exec(name)?.[2] !== SIGNED && !vouched(name)) window.taken++;
       const o = await takeRequest(dd, name, f);
       if (!o) return;
       if (o.code === "timeout") late.push(o.said);

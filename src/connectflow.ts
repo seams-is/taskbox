@@ -10,6 +10,7 @@ import type { Config, LoadRepo, Paths, SourceSettings } from "./config.ts";
 import { jobLabel, leasePath, progressPath, type Report, reporter, reportsPath } from "./core/child.ts";
 import { begin, listOps, type Op, type OpFolder, type OpType, readOp, writeOp } from "./core/ops.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "./core/rootfile.ts";
+import type { UnsignedHandler } from "./core/dispatch.ts";
 import type { Json } from "./core/statement.ts";
 import { CLOCK_LIMIT_S, clockOffsetS } from "./ghfail.ts";
 import { AppClient, apiCall, bodyOf, revokeToken, runnerGroupsOf, tokenCall, tokenRepos } from "./github.ts";
@@ -740,12 +741,21 @@ export function applyCodeRequest(o: { inbox: string; ops: Pick<OpFolder, "dir" |
 
 // The agent spool's connect-code handler, in the shape of the shared dispatcher's unsigned handlers
 // (core/dispatch.ts on its branch): its handlers list adds this one line once it lands.
-export const CONNECT_CODE_HANDLER = {
+// A refused code writes guard.refused, with why and never the code or state.
+export const CONNECT_CODE_HANDLER: UnsignedHandler = {
   kind: CODE_KIND,
   check: codeRequestProblem,
-  async apply(c: { state: { dir: string; ops: string }; rootUid: number; chown?: (p: string, u: number, g: number) => void }, r: { body: Record<string, unknown> }) {
+  async apply(c, r) {
     const why = applyCodeRequest({ inbox: join(c.state.dir, "connect-code.json"), ops: { dir: c.state.ops, owner: c.rootUid }, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) }, r.body);
-    return why ? { ok: false as const, said: why, code: "denied" as const } : { ok: true as const, said: "The box took the code." };
+    if (!why) return { ok: true, said: "The box took the code." };
+    c.events.refused({ type: "guard.refused", text: `A connect code was refused: ${why}.`, data: { request: r.id, kind: CODE_KIND, code: "denied" } }, r.by);
+    return { ok: false, said: why, code: "denied" };
+  },
+  // The one this connect would take: a state of its hash, for the open op making that App.
+  vouched(c, body) {
+    if (codeRequestProblem(body)) return false;
+    const t = takeConnectCode(listOps({ dir: c.state.ops, owner: c.rootUid }).ops, readCodeInbox(join(c.state.dir, "connect-code.json"), c.rootUid), { op: body.op as string, state: body.state as string, code: body.code as string });
+    return "inbox" in t;
   },
 };
 

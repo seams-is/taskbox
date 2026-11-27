@@ -25,6 +25,12 @@ export const commands: CommandSpec[] = [
         return 1;
       }
       const log = new Log();
+      // Its beat, in its own folder, as the guard writes its own: every 30 s, well inside guardwatch's
+      // two minutes, and once at the start.
+      const { keeperBeat } = await import("../broker.ts");
+      const beat = await keeperBeat(sys, brokerPathsOf(c.p).beat, c.uid, process.pid);
+      await beat();
+      sys.every(30_000, () => void beat().catch(() => {}));
       runBroker({ sys, log, settings: () => loadConfig(c.p.app, c.p.boxSettings), keysDir: b.keys, ownerUid: c.uid }, { socket: b.socket, guardSocket: b.guardSocket, usedFile: b.used });
       await new Promise<never>(() => {});
       return 0;
