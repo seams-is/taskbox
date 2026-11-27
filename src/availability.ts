@@ -389,11 +389,6 @@ export function applyControl(s: Control, r: ControlRequest, now: ControlNow): Ap
   }
 }
 
-// The verb that cancels an availability op (the one cancel grammar), and the way back each op type
-// names once it is past its point of no return.
-export const CANCEL_VERB: Partial<Record<string, Action>> = { drain: "resume", stop: "start" };
-export const WAY_BACK: Record<string, string> = { update: "taskbox rollback undoes it once it ends.", rollback: "It can only finish.", remove: "It can only finish." };
-
 // The jobs the loop's slots run now, by its own state: each one's name, cleaned and cut.
 export function running(slots: unknown): string[] {
   if (!slots || typeof slots !== "object" || Array.isArray(slots)) return [];

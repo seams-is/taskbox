@@ -1,11 +1,12 @@
 // taskbox op list, op show and op cancel: the box's long operations (core/ops.ts), root's and the
 // loop's. Anyone reads them: each record is 644, read only when its writer owns it. op cancel is
 // the guard's to apply, as every root op has one writer: the owner's is signed (handlers/op.ts); the
-// service account's cancels a drain or a stop through the service spool, as resume and start do.
-import { CANCEL_VERB, WAY_BACK } from "./availability.ts";
+// service account's comes through the service spool, an admin's, as root at the box, through root's admin
+// spool; the op's type says who may cancel it and how (src/optypes/).
+import { declOf } from "./optypes/index.ts";
 import type { BoxCtx, ErrorBody, Outcome } from "./command.ts";
 import { duration, EXIT } from "./command.ts";
-import { listOps, type Op, readOp } from "./core/ops.ts";
+import { listOps, type Op, pastNoReturn, readOp } from "./core/ops.ts";
 import { loopState, rootState } from "./core/paths.ts";
 import { type Interrupt, onInterrupt } from "./availabilitycmd.ts";
 
@@ -54,8 +55,17 @@ export function opLines(o: Op): string[] {
     ...(o.progress?.text ? [`Progress: ${clean(o.progress.text)}.`] : []),
     ...(o.why ? [`Why: ${clean(o.why, 240)}.`] : []),
     ...(o.result ? [`Result: ${clean(JSON.stringify(o.result), 200)}.`] : []),
-    ...(o.state === "running" ? [o.pointOfNoReturn && o.phases.indexOf(o.phase) >= o.phases.indexOf(o.pointOfNoReturn) ? `It is past ${o.pointOfNoReturn}, so it can't be cancelled. ${WAY_BACK[o.type] ?? "It can only finish."}` : o.cancellable ? `taskbox ${CANCEL_VERB[o.type] ?? `op cancel ${o.id}`} cancels it.` : "It can't be cancelled."] : []),
+    ...(o.state === "running" ? [cancelLine(o)] : []),
   ];
+}
+
+// How a running op is cancelled, by its type's declaration.
+function cancelLine(o: Op): string {
+  const d = declOf(o.type);
+  if (!d) return "It can't be cancelled: this release doesn't declare its type.";
+  if (!d.cancel || !o.cancellable) return `It can't be cancelled. ${d.wayBack}`;
+  if (pastNoReturn(o)) return `It is past ${o.pointOfNoReturn}, so it can't be cancelled. ${d.wayBack}`;
+  return `taskbox op cancel ${o.id} cancels it. ${d.wayBack}`;
 }
 
 function sinceOf(c: BoxCtx): number | undefined {
@@ -126,8 +136,8 @@ export async function opShow(c: BoxCtx, o: { interrupt?: Interrupt } = {}): Prom
   }
 }
 
-// op cancel at the box, as the service account: a drain or a stop is cancelled by resume or start
-// through the service spool; any other op is the owner's to cancel from the controller.
+// op cancel at the box: the service account's request in the service spool, an admin's (run as
+// root, as the cli elevates it) in root's admin spool. The guard applies it as the op's type declares.
 export async function opCancel(c: BoxCtx): Promise<Outcome> {
   const id = c.args[0]!;
   const op = findOp(c, id);
@@ -140,11 +150,17 @@ export async function opCancel(c: BoxCtx): Promise<Outcome> {
     c.say(`The ${clean(op.type, 20)} has ended already: ${op.state}.`);
     return { exit: EXIT.ok, changed: false, result: { op: opJson(op) } };
   }
-  const verb = CANCEL_VERB[op.type];
-  if (!verb || op.writer !== "guard") {
-    const line = `A ${clean(op.type, 20)} is cancelled from the controller, which signs it: taskbox op cancel ${id} --box NAME.`;
+  if (op.writer !== "guard") {
+    const line = `The loop's ${clean(op.type, 20)} is cancelled by its own command.`;
     c.say(line);
-    return { exit: EXIT.failed, error: err("denied", line, "from-away") };
+    return { exit: EXIT.failed, error: err("failed", line) };
+  }
+  const admin = c.uid !== c.cu && (c.uid === 0 || c.uid === (c.deps.rootUid ?? 0));
+  const name = c.env.SUDO_USER;
+  if (admin && (!name || name === "root" || !/^[a-z_][a-z0-9_.-]{0,31}$/.test(name))) {
+    const line = "Log in as your admin user, then type taskbox op cancel.";
+    c.say(line);
+    return { exit: EXIT.failed, error: err("denied", line, "at-the-box") };
   }
   if (c.flags.yes === undefined) {
     if (c.deps.terminal?.() === false) {
@@ -152,12 +168,36 @@ export async function opCancel(c: BoxCtx): Promise<Outcome> {
       c.say(line);
       return { exit: EXIT.usage, error: err("usage", line, "at-the-box") };
     }
-    const a = (await c.ask(`Cancel the ${op.type} ${id}? It does what taskbox ${verb} does. Type yes to go on: `)).trim().toLowerCase();
+    const a = (await c.ask(`Cancel the ${clean(op.type, 20)} ${id}? Type yes to go on: `)).trim().toLowerCase();
     if (a !== "yes") {
       c.say("Not cancelled. Nothing changed.");
       return { exit: EXIT.failed, did: "Nothing changed." };
     }
   }
-  const { availabilityRun } = await import("./availabilitycmd.ts");
-  return availabilityRun({ ...c, args: [], opts: {}, flags: { ...(c.flags.json ? { json: true as const } : {}) } }, verb);
+  const { ask } = await import("./core/asker.ts");
+  const { spoolProblem } = await import("./core/spool.ts");
+  const s = rootState(c.root);
+  const rootUid = c.deps.rootUid ?? 0;
+  if (!admin && c.uid !== c.cu) {
+    const line = `Run taskbox op cancel as ${c.S} or as your admin user at the box, or from the controller, which signs it.`;
+    c.say(line);
+    return { exit: EXIT.failed, error: err("denied", line, "at-the-box") };
+  }
+  const spool = admin ? s.adminSpool : s.serviceSpool;
+  const sp = spoolProblem(spool, admin ? rootUid : c.uid, rootUid, admin ? "root" : "the service account");
+  if (sp) {
+    const line = `The request goes through ${admin ? "root's admin spool" : "the service spool"}, and ${sp}. The guard makes it; taskbox check says why it hasn't.`;
+    c.say(line);
+    return { exit: EXIT.failed, error: err("failed", line, "at-the-box") };
+  }
+  const r = await ask({ spool, outcomes: s.outcomes(admin ? "admin" : "service"), nonces: s.nonces, uid: admin ? rootUid : c.uid, rootUid, clock: c.ops.sys, sleep: (ms) => c.ops.sys.sleep(ms) }, "op-cancel", { words: [id], ...(admin ? { admin: name! } : {}) });
+  if ("no" in r || !r.outcome) {
+    const line = "no" in r ? r.no : `The box's guard hasn't answered the op cancel (${r.id}), so it may be down. taskbox check says why.`;
+    c.say(line);
+    return { exit: EXIT.failed, error: err("failed", line, "at-the-box") };
+  }
+  const o = r.outcome;
+  c.say(o.said);
+  if (!o.ok) return { exit: EXIT.failed, result: { op: id }, error: err(o.code ?? "failed", o.said) };
+  return { exit: EXIT.ok, changed: true, result: { op: id }, did: `Cancelled the ${clean(op.type, 20)}.` };
 }

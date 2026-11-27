@@ -29,7 +29,7 @@ export const commands: CommandSpec[] = [
   {
     path: ["op", "cancel"],
     summary: "Cancels an operation, or names the way back once it is past its point of no return.",
-    who: ["owner", "service"],
+    who: ["owner", "service", "admin"],
     flags: ["json", "yes", "signed"],
     args: { name: "ID", min: 1, max: 1, check: OP_ID },
     shell: true,

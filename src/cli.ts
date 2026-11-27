@@ -260,6 +260,12 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
       return sc.json ? answer(sc, name) : text(sc, say);
     }
     if (uid !== cu && uid !== 0) {
+      // One an admin may run at the box goes through sudo, as root's commands do.
+      if (spec.who.includes("admin") && !deps.env.SSH_CONNECTION && (await isAdmin(sys, deps.user()))) {
+        const e = elevation(pathOf(spec), words.slice(spec.path.length), true);
+        (c.json ? err : say)(e.say);
+        return e.argv ? deps.tty(e.argv) : EXIT.failed;
+      }
       const line = `taskbox ${pathOf(spec)} from here needs the owner's signature: run it from the controller.`;
       say(c.json ? errorJson(c, spec.path.join("."), EXIT.failed, { code: "denied", message: line, fix: null, who: null }, "usage") : line);
       return EXIT.failed;

@@ -1,6 +1,6 @@
 // taskbox op list, op show and op cancel (opcmd.ts, handlers/op.ts), over root's ops store.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { changeControl, readControl, requestOf } from "../src/availability.ts";
 import { type CliDeps, main } from "../src/cli.ts";
@@ -11,7 +11,10 @@ import { rootStateOf } from "../src/core/paths.ts";
 import { Verified } from "../src/core/statement.ts";
 import { watchPaths, writeBeat } from "../src/guardwatch.ts";
 import { handlers } from "../src/handlers/op.ts";
+import { cancelOp, endAsCancelled } from "../src/opcancel.ts";
 import { opShow } from "../src/opcmd.ts";
+import type { OpDecl } from "../src/optypes/decl.ts";
+import { declOf, opDecls, opTypeFiles } from "../src/optypes/index.ts";
 import { controlJob } from "../src/passes/control.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
@@ -19,6 +22,7 @@ import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
 const me = process.getuid!();
 const T = Date.UTC(2026, 10, 27, 12, 0, 0);
 const SLOW = 30_000;
+const REMOVE = { type: "remove", phases: ["confirm", "services"], pointOfNoReturn: "services", cancellable: false, onBoot: () => "fail" as const };
 const UPDATE = { type: "update", phases: ["downloading", "draining", "swap", "proving"], pointOfNoReturn: "swap", onBoot: () => "fail" as const };
 
 async function box() {
@@ -42,13 +46,21 @@ async function box() {
     writeOp(f, op);
     return op;
   };
+  const remove = (): Op => {
+    const b = begin([], REMOVE, { subject: "box", params: {}, actor: "admin" }, sys.now());
+    if (b.kind !== "start") throw new Error("no remove");
+    writeOp(f, b.op);
+    return b.op;
+  };
+  const ctx = () => ({ sys, cfg: CFG, p, state: s, rootUid: me, events, log: () => {}, now: sys.now() });
   const drain = async () => (await changeControl({ sys, state: s, rootUid: me, events, log: () => {} }, requestOf("drain", {}, "service"))).op!;
   const op = (id: string) => {
     const r = readOp(f, id);
     return r.kind === "ok" ? r.value : undefined;
   };
   // The cli as the service account; each wait runs the guard's pass and an after step.
-  const cli = async (argv: string[], o: { uid?: number; terminal?: boolean; answer?: string; after?: (n: number) => void } = {}) => {
+  // admin: the line as root, as the cli elevates an admin's.
+  const cli = async (argv: string[], o: { uid?: number; terminal?: boolean; answer?: string; admin?: boolean; after?: (n: number) => void } = {}) => {
     mkdirSync(p.app, { recursive: true });
     writeFileSync(join(p.app, "taskbox.json"), readFileSync(join(import.meta.dir, "../taskbox.example.json"), "utf8"));
     quietBox(sys);
@@ -65,10 +77,10 @@ async function box() {
       beat();
     };
     const said: string[] = [];
-    const deps: CliDeps = { sys: () => sys, uid: o.uid ?? me, serviceUid: async () => me, env: { HOME: "/var/empty" }, tty: () => 0, user: () => "taskbox", ask: async () => o.answer ?? "yes", say: (l) => void said.push(l), err: () => {}, terminal: () => o.terminal ?? true, hostname: () => "taskbox-1.local", root, chown: () => {}, rootUid: me };
+    const deps: CliDeps = { sys: () => sys, uid: o.uid ?? (o.admin ? 0 : me), serviceUid: async () => me, env: { HOME: "/var/empty", ...(o.admin ? { SUDO_USER: "pat" } : {}) }, tty: () => 0, user: () => "taskbox", ask: async () => o.answer ?? "yes", say: (l) => void said.push(l), err: () => {}, terminal: () => o.terminal ?? true, hostname: () => "taskbox-1.local", root, chown: () => {}, rootUid: me };
     return { code: await main(argv, deps), said };
   };
-  return { root, p, s, sys, f, update, drain, op, cli, events };
+  return { root, p, s, sys, f, update, remove, drain, op, cli, events, ctx };
 }
 
 describe("op list", () => {
@@ -103,9 +115,9 @@ describe("op show", () => {
       const d = await b.drain();
       const r = await b.cli(["op", "show", d]);
       expect(r.code).toBe(0);
-      expect(r.said.slice(0, 4)).toEqual([`${d}: a drain, running.`, "Phase: draining, 1 of 2 (draining, forcing).", "By: service. Started 2026-11-27 12:00 UTC.", "taskbox resume cancels it."]);
-      const u = b.update("swap");
-      expect((await b.cli(["op", "show", u.id])).said).toContain("It is past swap, so it can't be cancelled. taskbox rollback undoes it once it ends.");
+      expect(r.said.slice(0, 4)).toEqual([`${d}: a drain, running.`, "Phase: draining, 1 of 2 (draining, forcing).", "By: service. Started 2026-11-27 12:00 UTC.", `taskbox op cancel ${d} cancels it. taskbox resume ends it.`]);
+      const rm = b.remove();
+      expect((await b.cli(["op", "show", rm.id])).said).toContain("It can't be cancelled. It can only finish: taskbox remove again carries on from where it stopped.");
       expect((await b.cli(["op", "show", "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ"])).code).toBe(1);
       expect((await b.cli(["op", "show", "x"])).code).toBe(2);
       expect((await b.cli(["op", "show", d, "--timeout", "1m"])).code).toBe(2);
@@ -151,7 +163,7 @@ describe("op show", () => {
 
 describe("op cancel", () => {
   test(
-    "at the box, the service account cancels a drain as resume does, after a typed yes",
+    "at the box, the service account cancels a drain as its type declares, after a typed yes",
     async () => {
       const b = await box();
       const d = await b.drain();
@@ -159,7 +171,8 @@ describe("op cancel", () => {
       expect((await b.cli(["op", "cancel", d], { terminal: false })).code).toBe(2);
       const r = await b.cli(["op", "cancel", d, "-y"]);
       expect(r.code).toBe(0);
-      expect(b.op(d)).toMatchObject({ state: "cancelled" });
+      expect(r.said).toContain("Drain cancelled: the box takes new jobs again.");
+      expect(b.op(d)).toMatchObject({ state: "cancelled", why: "cancelled by service" });
       expect(readControl(b.s.control, me)).toMatchObject({ value: { availability: "active" } });
       expect(await b.cli(["op", "cancel", d, "-y"])).toMatchObject({ code: 0 });
     },
@@ -167,40 +180,85 @@ describe("op cancel", () => {
   );
 
   test(
-    "another op at the box is the controller's to cancel; an agent's unsigned one is refused",
+    "a remove is an admin's: the service account is refused; an admin through sudo hears it can't be cancelled, and the way back",
     async () => {
       const b = await box();
-      const u = b.update();
-      const r = await b.cli(["op", "cancel", u.id, "-y", "--json"]);
-      expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", who: "from-away" } });
-      const a = await b.cli(["op", "cancel", u.id, "-y", "--json"], { uid: me + 1 });
-      expect(JSON.parse(a.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
-      expect(b.op(u.id)?.state).toBe("running");
+      const rm = b.remove();
+      const svc = await b.cli(["op", "cancel", rm.id, "-y", "--json"]);
+      expect(JSON.parse(svc.said.at(-1)!)).toMatchObject({ exit: 1, error: { code: "denied", message: "A remove is cancelled by an admin at the box, as it is started." } });
+      const adm = await b.cli(["op", "cancel", rm.id, "-y"], { admin: true });
+      expect(adm.code).toBe(1);
+      expect(adm.said).toContain("The remove can't be cancelled. It can only finish: taskbox remove again carries on from where it stopped.");
+      expect(readFileSync(b.s.admins, "utf8")).toContain('"name":"pat"');
+      expect(b.op(rm.id)?.state).toBe("running");
+      // A drain is the owner's or the service account's to start, so an admin's cancel is refused.
+      const d = await b.drain();
+      expect((await b.cli(["op", "cancel", d, "-y"], { admin: true })).code).toBe(1);
     },
     SLOW,
   );
 
   test(
-    "signed: an op before its point of no return is cancelled by the guard; past it, the way back is named; a drain resumes",
+    "an agent's unsigned cancel is refused",
+    async () => {
+      const b = await box();
+      const d = await b.drain();
+      const a = await b.cli(["op", "cancel", d, "-y", "--json"], { uid: me + 1 });
+      expect(JSON.parse(a.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
+      expect(b.op(d)?.state).toBe("running");
+    },
+    SLOW,
+  );
+
+  test(
+    "signed: the owner cancels a drain; a type that declares no cancel, or none at all, can't be cancelled",
     async () => {
       const b = await box();
       const h = handlers.signed[0]!;
-      const ctx = { sys: b.sys, cfg: CFG, p: b.p, state: b.s, rootUid: me, events: b.events, log: () => {}, now: b.sys.now() };
       const by = Verified.signer(`SHA256:${"a".repeat(43)}`);
-      const u = b.update();
-      expect(h.check!({ words: [u.id] })).toBeUndefined();
       expect(h.check!({ words: ["x"] })).toBe("op cancel takes one op id");
-      expect(h.check!({ words: [u.id], force: true })).toBe("op cancel takes one op id");
+      expect(h.check!({ words: ["op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ"], force: true })).toBe("op cancel takes one op id");
       const st = (id: string) => ({ v: 1, ns: "taskbox-control", box: "x", action: "op.cancel", args: { words: [id] }, subject: "box", nonce: "n", at: "" }) as never;
-      expect(await h.apply(ctx as never, { id: "rq_1", statement: st(u.id), by })).toMatchObject({ ok: true });
-      expect(b.op(u.id)).toMatchObject({ state: "cancelled", why: `cancelled by ${by.actor}` });
-      const v = b.update("swap");
-      expect(await h.apply(ctx as never, { id: "rq_2", statement: st(v.id), by })).toMatchObject({ ok: false, code: "failed", said: "The update is past swap, so it can't be cancelled. taskbox rollback undoes it once it ends." });
       const d = await b.drain();
-      expect(await h.apply(ctx as never, { id: "rq_3", statement: st(d), by })).toMatchObject({ ok: true, said: expect.stringContaining("Drain cancelled") });
+      expect(await h.apply(b.ctx() as never, { id: "rq_1", statement: st(d), by })).toMatchObject({ ok: true, said: expect.stringContaining("Drain cancelled") });
       expect(readControl(b.s.control, me)).toMatchObject({ value: { availability: "active", actor: by.actor } });
+      const rm = b.remove();
+      expect(await h.apply(b.ctx() as never, { id: "rq_2", statement: st(rm.id), by })).toMatchObject({ ok: false, code: "denied" });
+      const u = b.update();
+      expect(await h.apply(b.ctx() as never, { id: "rq_3", statement: st(u.id), by })).toMatchObject({ ok: false, code: "failed", said: "The update can't be cancelled: this release doesn't declare it." });
+    },
+    SLOW,
+  );
+
+  test(
+    "a type that cancels by ending its op: refused past its point of no return with the way back, else cancelled",
+    async () => {
+      const b = await box();
+      const decls: OpDecl[] = [{ type: "update", who: ["owner", "admin"], wayBack: "taskbox rollback undoes it once it ends.", cancel: (c, op, actor) => endAsCancelled(c, op, actor) }];
+      const past = b.update("swap");
+      expect(await cancelOp(b.ctx() as never, past.id, "owner", "owner", decls)).toMatchObject({ ok: false, said: "The update is past swap, so it can't be cancelled. taskbox rollback undoes it once it ends." });
+      const u = b.update();
+      expect(await cancelOp(b.ctx() as never, u.id, "owner", "owner", decls)).toMatchObject({ ok: true });
+      expect(b.op(u.id)).toMatchObject({ state: "cancelled", why: "cancelled by owner" });
+      expect(await cancelOp(b.ctx() as never, u.id, "service", "service", decls)).toMatchObject({ ok: true, said: expect.stringContaining("ended already") });
       expect(readEvents([{ dir: b.s.events, owner: me, writer: "guard" }]).events.map((e) => e.type)).toContain("op.cancelled");
     },
     SLOW,
   );
+
+  test("every op type in src is declared, with who may start it and its way back", () => {
+    const src = join(import.meta.dir, "../src");
+    const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
+    const types = new Set<string>();
+    for (const f of files(src)) for (const m of readFileSync(f, "utf8").matchAll(/OpType = \{ type: "([a-z][a-z0-9-]*)"/g)) types.add(m[1]!);
+    expect([...types].sort()).toEqual(["drain", "remove", "stop"]);
+    for (const t of types) expect({ t, declared: declOf(t) !== undefined }).toEqual({ t, declared: true });
+    for (const d of opDecls()) {
+      expect(d.who.length).toBeGreaterThan(0);
+      expect(d.wayBack).toMatch(/\.$/);
+    }
+    // The index names every file in src/optypes/ but decl.ts and itself.
+    const listed = readdirSync(join(src, "optypes")).filter((f) => f !== "decl.ts" && f !== "index.ts").sort();
+    expect(opTypeFiles.map((f) => f.file).sort()).toEqual(listed);
+  });
 });

@@ -15,6 +15,7 @@ export interface RootState {
   admins: string; // root's, 600: which admin did what, by event id (events.ts)
   agentSpool: string; // the agent account's, 700 (spool.ts)
   serviceSpool: string; // the service account's, 700
+  adminSpool: string; // root's, 700: an admin's requests at the box, run as root
   poolSpool: (n: number) => string; // each pool account's, 700
 }
 
@@ -30,7 +31,7 @@ export function rootStateIn(dir: string): RootState {
     pending: join(dir, "pending.json"),
     control: join(dir, "control.json"),
     outcomes: (spool: string) => {
-      if (!/^(agent|service|pool-[1-9][0-9]?)$/.test(spool)) throw new Error("not a spool's name");
+      if (!/^(agent|service|admin|pool-[1-9][0-9]?)$/.test(spool)) throw new Error("not a spool's name");
       return join(dir, "outcomes", spool);
     },
     ops: join(dir, "ops"),
@@ -38,6 +39,7 @@ export function rootStateIn(dir: string): RootState {
     admins: join(dir, "admins.jsonl"),
     agentSpool: join(dir, "agent-spool"),
     serviceSpool: join(dir, "service-spool"),
+    adminSpool: join(dir, "admin-spool"),
     poolSpool: (n: number) => {
       if (!Number.isSafeInteger(n) || n < 1 || n > 99) throw new Error("not a pool account's number");
       return join(dir, "pool-spool", String(n));
