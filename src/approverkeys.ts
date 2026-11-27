@@ -238,3 +238,35 @@ export const hasPinned = (s: Pick<RootState, "approvers">, rootUid: number) => {
   return a.kind === "ok" && pinnedKeys(a.value).length > 0;
 };
 export type { Op };
+
+// ---- key trust release FILE, at the box ----
+// Every pinned release key lost: the admin pins the key in a file the owner checked by eye (a signers
+// file, or one public key line), after the box shows each fingerprint. It replaces the whole pinned
+// set, and drops a signer change waiting, as a first install's trust does.
+export async function trustRelease(d: AtBox & { file: string; signersFile: string }): Promise<number> {
+  const { signersProblem, signerPrints } = await import("./release.ts");
+  const { lstatSync, readFileSync: read } = await import("node:fs");
+  let text: string;
+  try {
+    const st = lstatSync(d.file);
+    if (!st.isFile() || st.size > 4096) return (d.say(`${d.file} isn't a plain file of at most 4 KB.`), 1);
+    text = read(d.file, "utf8");
+  } catch {
+    return (d.say(`${d.file} can't be read.`), 1);
+  }
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  const signers = `${lines.map((l) => (l.startsWith("taskbox-release ") ? l : `taskbox-release namespaces="taskbox-release" ${l.split(/\s+/).slice(0, 2).join(" ")}`)).join("\n")}\n`;
+  const why = signersProblem(signers);
+  if (why) return (d.say(`Not pinned: ${why}. The file holds a release key's public line, or a signers file.`), 1);
+  const fps = signerPrints(signers);
+  d.say("The release keys in that file:");
+  for (const fp of fps) d.say(`  ${grouped(fp)}`);
+  d.say("Pin them only if they are the fingerprints the signing Mac shows. They replace every release key this box pins, and every update is checked against them.");
+  if (!d.yes && (await d.ask("Type yes to pin them: ")).trim().toLowerCase() !== "yes") return (d.say("Not pinned. Nothing changed."), 1);
+  const { readSigners } = await import("./update/box.ts");
+  const was = readSigners(d.signersFile, signers, d.rootUid);
+  writeOwnedText(d.signersFile, `${JSON.stringify({ v: 1, pinned: signers, ...(was.revoked ? { revoked: was.revoked } : {}) })}\n`, { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
+  d.events.write({ type: "key.trusted", actor: `admin ${d.admin}`, subject: "box", text: `Pinned release ${fps.length === 1 ? "key" : "keys"} ${fps.join(", ")} at the box.`, data: { key: "release", fingerprints: fps } });
+  d.say(`Pinned ${fps.join(", ")}.`);
+  return 0;
+}

@@ -60,7 +60,7 @@ async function run(argv: string[], who: Caller, o: { root?: string; sys?: FakeSy
 
 describe("the root commands", () => {
   // Each as it is typed: workspace clear names the agent.
-  const typed = (cmd: string) => [...cmd.split(" "), ...(cmd === "workspace clear" ? ["builder"] : [])];
+  const typed = (cmd: string) => [...cmd.split(" "), ...(cmd === "workspace clear" ? ["builder"] : cmd === "key trust release" ? ["/Users/boss/release.pub"] : [])];
   test("an admin's command runs again through sudo, which asks for the admin's password", async () => {
     for (const cmd of rootPaths()) {
       const r = await run(typed(cmd), CALLERS.admin);

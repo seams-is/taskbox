@@ -3,7 +3,7 @@
 // owner types no key material. The flows themselves are keys.ts's; this file joins them to this
 // controller's pairings (forward.ts linksFor), its signer and its browser.
 import { randomBytes } from "node:crypto";
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXIT } from "../command.ts";
 import { serveOnce } from "../listen.ts";
@@ -15,8 +15,20 @@ import type { Home } from "./home.ts";
 
 export const isKeyFlow = (argv: readonly string[]) => argv[0] === "key" && (argv[1] === "rotate" || argv[1] === "add");
 
-const flowDeps = (d: Deps, out: (l: string) => void, home: Home = d.home): FlowDeps => ({ signer: keySigner({ run: d.run, home, uid: d.uid ?? -1, say: out }), say: out, now: d.now, sleep: d.sleep });
-const openUrl = (d: Deps) => (url: string) => void d.run(["/usr/bin/open", url], { limitMs: 15_000, maxBytes: 4_000 });
+// Tests and the v4.0.0 app put their own browser and key maker here, as Deps.signerFor does the signer.
+export interface KeyHooks {
+  makeApp?: typeof makeApp;
+  open?: (url: string) => void;
+  makeNewKey?: (home: Home, label: string) => Promise<{ key: string } | { why: string }>;
+}
+const hooks = (d: Deps) => d as Deps & KeyHooks;
+const flowDeps = (d: Deps, out: (l: string) => void, box?: BoxLink): FlowDeps => ({
+  signer: d.signerFor && box?.paired ? d.signerFor(box.paired, out) : keySigner({ run: d.run, home: d.home, uid: d.uid ?? -1, say: out }),
+  say: out,
+  now: d.now,
+  sleep: d.sleep,
+});
+const openUrl = (d: Deps) => hooks(d).open ?? ((url: string) => void d.run(["/usr/bin/open", url], { limitMs: 15_000, maxBytes: 4_000 }));
 
 // The next key's folder, beside the approver folder, kept until every box pins the new key.
 const nextHome = (h: Home): Home => ({ ...h, approver: `${h.approver}-next` });
@@ -38,17 +50,18 @@ export async function keyMain(d: Deps, argv: readonly string[], io: { out: (l: s
   const all = verb === "rotate" && which === "approver";
   const links = await linksFor(d, all && cut.sel === undefined ? "all" : cut.sel, all);
   if (isStop(links)) return (io.out(links.stop), io.out(links.next), EXIT.failed);
-  if (verb === "add") return (await approveSecond({ ...flowDeps(d, io.out), box: links[0]! })) ? EXIT.ok : EXIT.failed;
+  if (verb === "add") return (await approveSecond({ ...flowDeps(d, io.out, links[0]), box: links[0]! })) ? EXIT.ok : EXIT.failed;
   if (which === "approver") return rotateHere(d, links, io.out);
   if (which === "tailscale") {
-    const r = await rotateTailscale({ ...flowDeps(d, io.out), box: links[0]!, open: openUrl(d) });
+    const r = await rotateTailscale({ ...flowDeps(d, io.out, links[0]), box: links[0]!, open: openUrl(d) });
     return "why" in r ? (io.out(`Not rotated: ${r.why}.`), EXIT.failed) : EXIT.ok;
   }
   const box = links[0]!;
   const list = await box.run(["key", "list", "--json"]);
   const org = typeof list?.result?.org === "string" ? list.result.org : undefined;
   if (!org) return (io.out(`${box.name} didn't say its org, so the new App can't be made from here. At the box: taskbox key rotate ${which}.`), EXIT.failed);
-  const ok = await rotateAppKey({ ...flowDeps(d, io.out), box, role: which as "runner" | "source", open: openUrl(d), make: (role, appName, state) => makeApp(role, org, appName, state, io.out) });
+  const make = hooks(d).makeApp ?? makeApp;
+  const ok = await rotateAppKey({ ...flowDeps(d, io.out, box), box, role: which as "runner" | "source", open: openUrl(d), make: (role, appName, state) => make(role, org, appName, state, io.out) });
   return ok ? EXIT.ok : EXIT.failed;
 }
 
@@ -75,11 +88,12 @@ async function rotateHere(d: Deps, links: BoxLink[], out: (l: string) => void): 
   const cur = signingKey(d.home, d.uid ?? -1);
   if ("why" in cur) return (out(cur.why), EXIT.failed);
   const r = await rotateApprover({
-    ...flowDeps(d, out),
+    ...flowDeps(d, out, links[0]),
     boxes: links,
     makeNew: async () => {
-      const k = await makeKey({ run: d.run, home: next, uid: d.uid ?? -1, say: out, ask: d.ask, tty: d.tty, label });
+      const k = hooks(d).makeNewKey ? await hooks(d).makeNewKey!(next, label) : await makeKey({ run: d.run, home: next, uid: d.uid ?? -1, say: out, ask: d.ask, tty: d.tty, label });
       if ("why" in k) return k;
+      mkdirSync(next.approver, { recursive: true, mode: 0o700 });
       writeFileSync(join(next.approver, "label"), `${label}\n`, { mode: 0o600 });
       return { key: k.key };
     },
@@ -112,5 +126,5 @@ async function rotateHere(d: Deps, links: BoxLink[], out: (l: string) => void): 
 export async function trustingPhase(d: Deps, boxName: string, key: string, out: (l: string) => void): Promise<boolean> {
   const links = await linksFor(d, boxName, false);
   if (isStop(links)) return (out(`${links.stop} ${links.next}`), false);
-  return offerAndWait({ ...flowDeps(d, out), box: links[0]!, key, ...(d.tty ? {} : { waitMs: 0 }) });
+  return offerAndWait({ ...flowDeps(d, out, links[0]), box: links[0]!, key, ...(d.tty ? {} : { waitMs: 0 }) });
 }

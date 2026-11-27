@@ -77,6 +77,16 @@ export const commands: CommandSpec[] = [
     run: async (c) => (await import("../keycmd.ts")).keyTrust(c),
   },
   {
+    path: ["key", "trust", "release"],
+    summary: "Pins the release keys in a file the owner checked, when every pinned release key is lost. At the box only.",
+    who: ["admin"],
+    flags: ["json", "yes"],
+    args: { name: "FILE", min: 1, max: 1, check: (v) => /^\/[\x21-\x7e]{1,255}$/.test(v) && !v.includes("..") },
+    root: true,
+    typed: true,
+    run: async (c) => (await import("../keycmd.ts")).keyTrustRelease(c),
+  },
+  {
     path: ["key", "reset", "approver"],
     summary: "Clears every approver key this box trusts, for a lost controller. At the box only.",
     who: ["admin"],

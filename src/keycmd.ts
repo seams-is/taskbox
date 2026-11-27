@@ -52,6 +52,16 @@ export async function keyTrust(c: BoxCtx): Promise<Outcome> {
   return { exit: code, changed: code === 0, did: code === 0 ? "Pinned the approver key." : "Nothing changed." };
 }
 
+export async function keyTrustRelease(c: BoxCtx): Promise<Outcome> {
+  const g = await gate(c, "key trust release");
+  if ("out" in g) return g.out;
+  const { trustRelease } = await import("./approverkeys.ts");
+  const { updateFiles } = await import("./update/box.ts");
+  const d = await atBoxDeps(c, g.admin.name);
+  const code = await trustRelease({ ...d, file: c.args[0]!, signersFile: updateFiles(d.state).signers });
+  return { exit: code, changed: code === 0, did: code === 0 ? "Pinned the release keys." : "Nothing changed." };
+}
+
 export async function keyReset(c: BoxCtx): Promise<Outcome> {
   const g = await gate(c, "key reset approver");
   if ("out" in g) return g.out;

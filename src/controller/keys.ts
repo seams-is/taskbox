@@ -16,6 +16,7 @@ export type Answer = { exit: number; result?: Record<string, unknown> | null; er
 export interface BoxLink {
   name: string;
   installId: string;
+  paired?: import("./home.ts").Paired; // the pairing it reaches, for a signer chosen per box
   run(words: string[]): Promise<Answer | undefined>; // undefined: the box can't be reached
 }
 export interface Deps {
@@ -102,8 +103,10 @@ export async function offerAndWait(d: Deps & { box: BoxLink; key: string; waitMs
   d.say(fresh.pinned.length
     ? `${d.box.name} pins another controller's key. On that controller: taskbox key add approver --box ${d.box.name}. Then at the box, as your admin user: taskbox confirm, and check it shows ${fp}.`
     : `At the box, as your admin user: taskbox key trust approver. Check its screen shows ${fp} before you type yes.`);
-  const until = d.now() + (d.waitMs ?? 30 * 60_000);
-  while (d.now() < until) {
+  const limit = d.waitMs ?? 30 * 60_000;
+  const until = d.now() + limit;
+  // Counted as well as timed, so a clock that stands still never holds it.
+  for (let polls = 0; d.now() < until && polls * 5_000 < limit; polls++) {
     await d.sleep(5_000);
     const p = await pins(d.box);
     if (p?.pinned.includes(fp)) return (d.say(`${d.box.name} pins ${fp}.`), true);
@@ -162,10 +165,11 @@ export async function rotateAppKey(d: Deps & { box: BoxLink; role: "runner" | "s
   if ("why" in a) return (d.say(`Not rotated: ${a.why}`), false);
   const op = a.result?.op;
   if (a.exit !== 0 || typeof op !== "string") return (d.say(a.error?.message ?? "The box started no rotation."), false);
-  const until = d.now() + (d.waitMs ?? 60 * 60_000);
+  const limit = d.waitMs ?? 60 * 60_000;
+  const until = d.now() + limit;
   let gave = false;
   let opened = "";
-  while (d.now() < until) {
+  for (let polls = 0; d.now() < until && polls * 3_000 < limit; polls++) {
     const s = await d.box.run(["op", "show", op, "--json"]);
     const rec = s?.result?.op as Record<string, unknown> | undefined;
     if (rec && rec.state !== "running") return (d.say(`The ${d.role} rotation ${rec.state}.`), rec.state === "succeeded");

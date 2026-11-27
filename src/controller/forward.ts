@@ -450,6 +450,7 @@ export async function linksFor(d: Deps, sel: string | undefined, all: boolean): 
     return {
       name: box.name,
       installId: box.installId,
+      paired: box,
       async run(words: string[]) {
         c ??= await connectBox(d, box, ts.state);
         if (isStop(c)) return undefined;
