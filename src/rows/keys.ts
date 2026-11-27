@@ -17,7 +17,7 @@ type Out = Omit<Check, "name">;
 export async function approverRow(c: CheckContext): Promise<Out> {
   const a = readApprovers(rootStateOf(c.paths).approvers, c.rootUid ?? 0);
   if (a.kind === "bad") return { status: "FAIL", detail: `approvers.json can't be read (${a.why}), so no signed request applies. At the box: as your admin user, taskbox key reset approver, then taskbox key trust approver` };
-  if (a.kind === "missing" || !a.value.keys.length) return { status: "SKIP", detail: "no approver key is pinned, so owner-signed commands and workspaces wait. At the box: as your admin user, taskbox key trust approver" };
+  if (a.kind === "missing" || !a.value.keys.length) return { status: "SKIP", detail: "no approver key is pinned, so signed commands and workspaces wait. At the box: as your admin user, taskbox key trust approver" };
   return { status: "OK", detail: `${a.value.keys.length} pinned: ${a.value.keys.map((k) => k.fingerprint).join(", ")}` };
 }
 

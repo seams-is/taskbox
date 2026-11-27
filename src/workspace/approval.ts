@@ -61,7 +61,7 @@ export async function verifySignature(d: VerifyDeps, o: { key: string; message: 
   if (!APPROVER_KEY.test(o.key)) return "No approver key is pinned on this box yet, so nothing can be approved.";
   if (!ARMOUR.test(o.signature)) return "The signature isn't one taskbox reads.";
   const flags = skFlags(new TextEncoder().encode(o.signature), o.namespace);
-  if (flags === undefined || (flags & 0x01) === 0) return "The signature doesn't show the owner was present.";
+  if (flags === undefined || (flags & 0x01) === 0) return "The signature doesn't show its signer was present.";
   const bad = tmpProblem(d.tmp);
   if (bad) return `taskbox's folder for checking signatures ${bad}.`;
   const dir = mkdtempSync(join(d.tmp, "verify-"));
@@ -74,7 +74,7 @@ export async function verifySignature(d: VerifyDeps, o: { key: string; message: 
     chmodSync(signers, 0o644);
     chmodSync(sig, 0o644);
     const r = await d.run(SSH_KEYGEN, ["-Y", "verify", "-f", signers, "-I", PRINCIPAL, "-n", o.namespace, "-s", sig], { stdin: o.message, timeoutMs: 20_000 });
-    if (r.code !== 0) return "The statement isn't signed by the owner's approver key.";
+    if (r.code !== 0) return "The statement isn't signed by the approver key.";
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

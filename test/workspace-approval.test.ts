@@ -22,11 +22,11 @@ describe("verifySignature, with the real ssh-keygen", () => {
   test("another key, other text, another namespace, or no user presence is refused", async () => {
     const other = approver();
     const rows: [string, Promise<string | undefined>, string][] = [
-      ["another key", check(other.sign(MSG)), "isn't signed by the owner's approver key"],
-      ["the wrong text", check(owner.sign(`${MSG} `)), "isn't signed by the owner's approver key"],
-      ["a release signature", check(owner.sign(MSG, { namespace: "taskbox-release" })), "owner was present"],
-      ["the retired workspace namespace", check(owner.sign(MSG, { namespace: "taskbox-workspace" })), "owner was present"],
-      ["no user presence", check(owner.sign(MSG, { flags: 0 })), "owner was present"],
+      ["another key", check(other.sign(MSG)), "isn't signed by the approver key"],
+      ["the wrong text", check(owner.sign(`${MSG} `)), "isn't signed by the approver key"],
+      ["a release signature", check(owner.sign(MSG, { namespace: "taskbox-release" })), "signer was present"],
+      ["the retired workspace namespace", check(owner.sign(MSG, { namespace: "taskbox-workspace" })), "signer was present"],
+      ["no user presence", check(owner.sign(MSG, { flags: 0 })), "signer was present"],
       ["not armour", check("not armour"), "isn't one taskbox reads"],
       ["a key that isn't a security key's", check(owner.sign(MSG), { key: "ssh-ed25519 AAAA" }), "No approver key"],
     ];
@@ -36,13 +36,13 @@ describe("verifySignature, with the real ssh-keygen", () => {
   test("a signature made with no presence, its flags byte then set to 1, is refused by ssh-keygen itself", async () => {
     const forged = withFlags(owner.sign(MSG, { flags: 0 }), 1);
     expect(skFlags(new TextEncoder().encode(forged), NS)).toBe(1);
-    expect(await check(forged)).toBe("The statement isn't signed by the owner's approver key.");
+    expect(await check(forged)).toBe("The statement isn't signed by the approver key.");
   }, SLOW);
 
   test("ssh-keygen's -n refuses text signed under another namespace, even when skFlags passes it", async () => {
     const forged = owner.sign(MSG, { namespace: "taskbox-release", blobNamespace: NS });
     expect(skFlags(new TextEncoder().encode(forged), NS)).toBe(5);
-    expect(await check(forged)).toBe("The statement isn't signed by the owner's approver key.");
+    expect(await check(forged)).toBe("The statement isn't signed by the approver key.");
     let args: string[] = [];
     const seen = { tmp: verifyDeps().tmp, run: async (cmd: string, a: string[], o?: { stdin?: string | Uint8Array }) => ((args = a), realKeygen(cmd, a, o)) };
     expect(await check(owner.sign(MSG), { d: seen })).toBeUndefined();

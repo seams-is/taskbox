@@ -41,7 +41,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Tart and Softnet
 
-The box runs Tart, the VM engine, and Softnet, the VM packet filter. taskbox never bundles either. The install downloads each from its own GitHub release, at the version and SHA-256 pinned in `versions.json`, and unpacks it on the box. Each comes under its own licence, the Functional Source License 1.1 with the Apache 2.0 future licence (FSL-1.1-ALv2). The box's owner uses them under that licence. Read the `LICENSE` in each project's repo before you install taskbox.
+The box runs Tart, the VM engine, and Softnet, the VM packet filter. taskbox never bundles either. The install downloads each from its own GitHub release, at the version and SHA-256 pinned in `versions.json`, and unpacks it on the box. Each comes under its own licence, the Functional Source License 1.1 with the Apache 2.0 future licence (FSL-1.1-ALv2). Whoever runs the box uses them under that licence. Read the `LICENSE` in each project's repo before you install taskbox.
 
 ## Other downloads
 

@@ -134,7 +134,7 @@ describe("tailscaled's probe", () => {
     const s = rootStateOf(g.p);
     mkdirSync(s.ops, { recursive: true });
     const id = "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ";
-    writeOp({ dir: s.ops, owner: me }, { v: 1, id, type: "key-rotate-tailscale", subject: "box", state: "running", phase: "drafting", actor: "owner (signed, key 3f9a)", params: {}, startedAt: g.sys.now(), endedAt: null, deadline: null, cancellable: true, pointOfNoReturn: null, phases: ["drafting"], progress: null, result: null });
+    writeOp({ dir: s.ops, owner: me }, { v: 1, id, type: "key-rotate-tailscale", subject: "box", state: "running", phase: "drafting", actor: "approver (signed, key 3f9a)", params: {}, startedAt: g.sys.now(), endedAt: null, deadline: null, cancellable: true, pointOfNoReturn: null, phases: ["drafting"], progress: null, result: null });
     for (let i = 0; i < 4; i++) await g.minute();
     expect(g.st.kicks).toBe(0);
     const u = guard({ loaded: false });

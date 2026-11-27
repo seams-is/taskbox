@@ -68,7 +68,7 @@ describe("lasting changes waiting for confirm", () => {
     expect((await confirmRow(b.c)).status).toBe("OK");
     const at = { wall: b.sys.now(), mono: b.mono(), boot: b.sys.bootUuid };
     await updatePending(rootStateOf(b.p).pending, { rootUid: me }, (s) => {
-      const r = raise(s, { kind: "approver-add", subject: "approvers", shows: ["the key SHA256:abc"], actor: "owner (signed, key 3f9a)", payload: { k: 1 } }, at);
+      const r = raise(s, { kind: "approver-add", subject: "approvers", shows: ["the key SHA256:abc"], actor: "approver (signed, key 3f9a)", payload: { k: 1 } }, at);
       if (!r.ok) throw new Error(r.why);
       return { state: r.state, out: undefined };
     });

@@ -357,15 +357,15 @@ describe("an install run to the end", () => {
     expect(said.at(-1)).toBe("Installed. The loop restarts on the new commit once the current job or the image download ends.");
   });
 
-  // To do: a LaunchDaemon that won't load is said, then the install goes on and ends with
-  // "Installed." (and cli.ts's "Next: Nothing to do."), so the owner reads two answers. The guard
-  // stays loaded on the new code either way.
-  test.todo("an update whose tailscaled won't load doesn't end with Installed.", async () => {
+  // A LaunchDaemon that won't load is said, and the install ends without Installed., so the admin
+  // reads one answer. The guard stays loaded on the new code either way.
+  test.serial("an update whose tailscaled won't load doesn't end with Installed.", async () => {
     const { d, loaded, out, said } = await updateFromLastRelease({ failBootstrap: TAILSCALED_LABEL });
     expect(loaded.has(GUARD_LABEL)).toBe(true);
     expect(basename(linkTarget(d.paths.opt)!)).toMatch(/^taskbox-beef000def56-/);
     expect(said).toContain("tailscaled didn't start (Bootstrap failed: 5: Input/output error). Type taskbox update again.");
-    expect(out).not.toBe("installed");
+    expect(out).toBe("The update isn't finished: tailscaled didn't start. Type taskbox update again.");
+    expect(said.some((l) => l.startsWith("Installed."))).toBe(false);
   });
 
   test.serial("the same commit installed again keeps the install kept for undo", async () => {
@@ -506,7 +506,7 @@ describe("the service account", () => {
     await expect(install(d, { first: true })).rejects.toThrow(/You typed "no"/);
     expect(said).toContain("  It also makes the account taskbox, which runs jobs. You type its password, then your admin name and password, then its password again, so it can unlock the disk.");
     // A first install says the tagOwners entry before the yes, since the sign-in needs it saved.
-    expect(said).toContain('    "tag:taskbox": ["OWNER"]');
+    expect(said).toContain('    "tag:taskbox": ["YOUR_LOGIN"]');
     expect(ran).toEqual([]);
     expect(sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl" && c.args[0] === "-addUser")).toBe(false);
   });

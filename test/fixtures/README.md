@@ -1,6 +1,6 @@
 # Fixtures
 
-Output of real commands on a box, with anything random or private replaced, kept for tests of the code that reads it.
+Output of real commands, with anything random or private replaced, for the code that reads it.
 
 - `launchctl-print-running.txt`, `ps-softnet.txt`: captured on macOS 27.2.
 - `tailscaled-ssh.log`, `last-libxo.json`: made up, in the shape the real tools print (for `src/logins.ts`).
@@ -8,6 +8,6 @@ Output of real commands on a box, with anything random or private replaced, kept
 - `old/`, `v2.6.1-shell.ts`: copies of earlier releases' code, for tests of the update from them.
 - `v2.6.1/`: v2.6.1's hop() and the code it runs, from c7d2414, for the hop contract test, and `pins.json`, its tool pins, for the move's check that v3 runs on the tools v2.6.1 copied. log.ts, the plists and the signers file are whole. Each other file is cut to what hop() runs, its parts unchanged; its imports and any part marked New are not v2.6.1's.
 - `policy/`: the policy files `taskbox policy show --whole` must give for each set of settings.
-- `release-key-trial.txt` and its `.sig`: a statement signed with a trial key, for the release check.
+- `release-key-trial.txt`, its `.sig` and `.signers`: a trial file signed with a Secure Enclave key, and a signers file that pins that key, for the release check.
 - `github/conversion.json`: the example answer of `POST /app-manifests/{code}/conversions` from GitHub's OpenAPI description (github/rest-api-description, `integration-from-manifest`), its key replaced by the test. It has no `public` field.
-- `se-signature/`: a real Secure Enclave signature (Touch ID, 24 Nov 2026, namespace taskbox-release) over `message.txt`, with its own public key, for the in-process signature check against ssh-keygen.
+- `se-signature/`: a real Secure Enclave signature (Touch ID, namespace taskbox-release) over `message.txt`, with its own public key, for the in-process signature check against ssh-keygen.

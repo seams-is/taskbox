@@ -1,21 +1,20 @@
 #!/bin/bash
-# taskbox red-team tests run from the owner's laptop against the box over Tailscale (TB-SSH-1, TB-SSH-3,
-# TB-SSH-4, TB-POL-1's laptop part). Read-only: nothing here changes the box. Each test prints what it
-# ran, what it should do, and what happened. Send the whole output to taskbox.
+# taskbox red-team tests run from the controller against the box over Tailscale. Read-only: nothing
+# here changes the box. Each test prints what it ran, what it should do, and what happened.
 # SSH3-i and SSH3-k try a local and a dynamic forward. Each says inconclusive, never its pass value,
-# unless ssh connected and its laptop port answered. Read SSH3-i with POL1-b: it counts only when
-# Screen Sharing is open. TASKBOX_AGENT names the agent account, remote by default.
+# unless ssh connected and its local port answered. Read SSH3-i with POL1-b: it counts only when
+# Screen Sharing is open. TASKBOX_AGENT names the agent account, taskbox-agent by default.
 #
-#   bash test/redteam/from-laptop.sh taskbox-1 <box admin's short name> [<your own account on the box>]
+#   bash test/redteam/from-controller.sh taskbox-1 <box admin's short name> [<your own account on the box>]
 #
 # The lines for your own account run only when you name it. They use Tailscale SSH's check mode: if
 # Tailscale asks you to sign in in the browser, do. The agent-forwarding test runs with a fresh,
 # empty ssh-agent of its own, so your real agent never reaches the box.
 set -u
-H="${1:?usage: from-laptop.sh <box> <admin user>}"
-ADMIN="${2:?usage: from-laptop.sh <box> <admin user>}"
+H="${1:?usage: from-controller.sh <box> <admin user>}"
+ADMIN="${2:?usage: from-controller.sh <box> <admin user>}"
 PERSON="${3:-}"
-A="${TASKBOX_AGENT:-remote}"
+A="${TASKBOX_AGENT:-taskbox-agent}"
 TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
 F="$(mktemp -t taskbox-rt)"
 echo "red-team test file" > "$F"
@@ -33,12 +32,12 @@ t() { # id, should, command...
   printf '%s\n' "$out" | head -8 | sed 's/^/out:    /'
 }
 up() { nc -z -G 1 localhost "$1" 2>/dev/null; }
-fwd() { # id, should, laptop port, ssh forward flag, its spec, probe command...
+fwd() { # id, should, local port, ssh forward flag, its spec, probe command...
   local id="$1" should="$2" port="$3" flag="$4" spec="$5"; shift 5
   echo "=== $id"
   echo "ran:    ssh -N $flag $spec $A@$H, then $*"
   echo "should: $should"
-  if up "$port"; then echo "out:    inconclusive: laptop port $port is already in use"; return; fi
+  if up "$port"; then echo "out:    inconclusive: local port $port is already in use"; return; fi
   ssh "${O[@]}" -N -o ExitOnForwardFailure=yes "$flag" "$spec" "$A@$H" < /dev/null > /dev/null 2>&1 &
   local pid=$! i=0 ok=""
   PIDS+=("$pid")
@@ -59,7 +58,7 @@ fwd() { # id, should, laptop port, ssh forward flag, its spec, probe command...
   PIDS=()
 }
 
-echo "taskbox red-team from the laptop, $(date -u +%Y-%m-%dT%H:%MZ)"
+echo "taskbox red-team from the controller, $(date -u +%Y-%m-%dT%H:%MZ)"
 t SSH1-a "fail: sftp disabled"                 sftp "${O[@]}" -b /dev/null "$A@$H"
 t SSH1-b "fail: sftp disabled"                 scp "${O[@]}" "$F" "$A@$H:/tmp/rt-scp"
 t SSH1-c "fail: the shell refuses scp"         scp -O "${O[@]}" "$F" "$A@$H:/tmp/rt-scpO"

@@ -21,7 +21,7 @@ function setup() {
   const evDir = { dir: join(root, "events"), owner: uid };
   const lines: string[] = [];
   const d = { sys, ops, events: eventLog("guard", evDir, sys), log: (l: string) => lines.push(l), boot: "boot-1" };
-  const b = begin([], update, { subject: "box", params: { to: "3.0.1" }, actor: "owner (signed, key SHA256:abc)" }, sys.now());
+  const b = begin([], update, { subject: "box", params: { to: "3.0.1" }, actor: "approver (signed, key SHA256:abc)" }, sys.now());
   if (b.kind !== "start") throw new Error();
   return { sys, d, op: b.op, lines, events: () => readEvents([{ ...evDir, writer: "guard" }]).events };
 }

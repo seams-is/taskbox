@@ -1,5 +1,5 @@
-// v2.4.2: the Softnet-as-root check halted taskbox-1. It read every Softnet on the box, and with two
-// VMs at once it caught the other VM's Softnet in the moment it runs as root before it drops to ci.
+// Before v2.4.2, the Softnet-as-root check halted a box. It read every Softnet on the box, and with two
+// VMs at once it caught the other VM's Softnet in the moment it runs as root before it drops to the service account.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { computeState, softnetFix } from "../src/state.ts";

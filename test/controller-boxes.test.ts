@@ -244,7 +244,7 @@ describe("the config", () => {
   }, CEILING);
 });
 
-describe("the independent review's findings", () => {
+describe("the box list's limits and pairing's edges", () => {
   test("a 33rd box is refused before anything is asked, and a config past the limit is never written", async () => {
     const w = new World();
     w.peers = [peer2()];

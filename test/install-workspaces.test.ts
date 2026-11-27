@@ -85,7 +85,7 @@ describe("the update's yes screen and the approver key", () => {
     const u = update({ approverKey: A });
     expect(await u.run()).toMatch(/You typed "no"/);
     const lines = u.before()!;
-    expect(lines).toContain(`  Approver key: ${fingerprint(A)}, new. It turns workspaces on and signs every workspace step. Check it is the fingerprint taskbox approver showed on your laptop.`);
+    expect(lines).toContain(`  Approver key: ${fingerprint(A)}, new. It turns workspaces on and signs every workspace step. Check it is the fingerprint taskbox approver showed on the controller.`);
     expect(lines.some((l) => l.startsWith(`  It also makes ${POOL_USER}, the account a workspace runs in`))).toBe(true);
     // Nothing is pinned or made before the yes.
     expect(readPin(u.d.paths.approverPin, process.getuid!())).toEqual({ state: "none" });
@@ -113,7 +113,7 @@ describe("the update's yes screen and the approver key", () => {
     const asked: string[] = [];
     const u = update({ approverKey: B, approverKeyChange: change }, [fingerprint(B).slice(-6), "no"], { pin: A, verify: async (o) => (asked.push(o.key), o.key === A) });
     expect(await u.run()).toMatch(/You typed "no"/);
-    expect(u.before()).toContain(`  Approver key: from ${fingerprint(A)} to ${fingerprint(B)}, signed by the old key. Check the new one is the fingerprint taskbox approver showed on your laptop: the next question asks for its last 6 characters.`);
+    expect(u.before()).toContain(`  Approver key: from ${fingerprint(A)} to ${fingerprint(B)}, signed by the old key. Check the new one is the fingerprint taskbox approver showed on the controller: the next question asks for its last 6 characters.`);
     expect(asked).toEqual([A]);
     // Its own question first, then the install's yes.
     expect(u.asked).toEqual([ROTATE_ASK, "Type yes to install v2.0.0: "]);
@@ -156,7 +156,7 @@ describe("the update's yes screen and the approver key", () => {
       });
 
     test(
-      "the laptop's --rotate block passes, at the pinned generation, and the folder is root's 755",
+      "the controller's --rotate block passes, at the pinned generation, and the folder is root's 755",
       async () => {
         const old = approver();
         const next = approver();
@@ -165,7 +165,7 @@ describe("the update's yes screen and the approver key", () => {
         const u = update({ approverKey: block.approverKey, approverKeyChange: block.approverKeyChange }, [fingerprint(next.key).slice(-6), "no"], { pin: old.key, gen: 3 });
         asNobodyReal(u.sys, seen);
         expect(await u.run()).toMatch(/You typed "no"/);
-        expect(u.before()).toContain(`  Approver key: from ${fingerprint(old.key)} to ${fingerprint(next.key)}, signed by the old key. Check the new one is the fingerprint taskbox approver showed on your laptop: the next question asks for its last 6 characters.`);
+        expect(u.before()).toContain(`  Approver key: from ${fingerprint(old.key)} to ${fingerprint(next.key)}, signed by the old key. Check the new one is the fingerprint taskbox approver showed on the controller: the next question asks for its last 6 characters.`);
         expect(seen.length).toBe(1);
         expect(seen[0]!.slice(0, 3)).toEqual(["/usr/bin/ssh-keygen", "-Y", "verify"]);
         expect(seen[0]!.slice(-6, -2)).toEqual(["-I", "taskbox-approve", "-n", "taskbox-approver"]);
@@ -225,7 +225,7 @@ describe("the update's yes screen and the approver key", () => {
   });
 
   test("a bad key in the release is refused before the yes", async () => {
-    const u = update({ approverKey: `${A} owner@laptop` }, "yes");
+    const u = update({ approverKey: `${A} pat@controller` }, "yes");
     expect(await u.run()).toMatch(/can't turn workspaces on \(approverKey is one ssh public key line/);
     expect(u.before()).toBeUndefined();
   });

@@ -25,7 +25,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DOWNLOAD_LIMIT_MS } from "./ghfail.ts";
+import { DOWNLOAD_LIMIT_MS, GitHubError } from "./ghfail.ts";
 import { readInstallId } from "./answers.ts";
 import { removeRequests } from "./requests.ts";
 import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from "./checks.ts";
@@ -92,6 +92,8 @@ export const CANT_REACH = "taskbox can't reach GitHub. Check the box's network, 
 const NET_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EAI_AGAIN", "ConnectionRefused", "ConnectionClosed", "FailedToOpenSocket", "UND_ERR_CONNECT_TIMEOUT"]);
 
 export function cantReach(e: unknown): boolean {
+  // GitHub's client classes a failed connection as its own error (ghfail.ts).
+  if (e instanceof GitHubError && (e.kind === "network" || e.kind === "timeout")) return true;
   for (let x = e as { code?: unknown; name?: unknown; cause?: unknown } | undefined, n = 0; x && n < 4; x = x.cause as typeof x, n++) {
     if (typeof x.code === "string" && NET_CODES.has(x.code)) return true;
     if (x.name === "TimeoutError") return true;
@@ -291,7 +293,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // this uses that commit, so a tag moved meanwhile changes nothing.
   const rel = await gh.release(token, opts.tag).catch(missing("releases"));
   if (!rel) {
-    throw new Stop(opts.tag ? `There is no release ${opts.tag} of taskbox. Nothing was installed. Check the release in the update line you typed.` : "taskbox has no release yet, so nothing was installed. Publish the first release (README, A new owner, step 6), then run this again.", opts.tag !== undefined);
+    throw new Stop(opts.tag ? `There is no release ${opts.tag} of taskbox. Nothing was installed. Check the release in the update line you typed.` : "taskbox has no release yet, so nothing was installed. Publish the first release (README, First setup, step 6), then run this again.", opts.tag !== undefined);
   }
   // A v3 release is taken only by name, and only by the hop, signed: never as the newest v2 release.
   if (hopTag(rel.tag)) throw new Stop(`${rel.tag} is a v3 release, so it is installed by name: type taskbox update ${clean(rel.tag).slice(0, 24)}. Nothing was installed.`, true);
@@ -383,8 +385,8 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   }
   // Tailscale refuses the box's tag until the policy names its owner, so the owner saves it first.
   if (opts.first) {
-    d.say(`  Before you type yes: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
-    d.say(`    "${tagOf(relCfg ?? {})}": ["OWNER"]`);
+    d.say(`  Before you type yes: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of YOUR_LOGIN, and save:`);
+    d.say(`    "${tagOf(relCfg ?? {})}": ["YOUR_LOGIN"]`);
   }
   // A new tag moves the box onto other rules of the tailnet's, so it is said before the yes.
   const relTag = typeof relSettings.tailnetTag === "string" && TAILNET_TAG_SHAPE.test(relSettings.tailnetTag) ? relSettings.tailnetTag : TAILNET_TAG;
@@ -600,11 +602,16 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
       if (i) await d.sys.sleep(2000);
       boot = await d.sys.run("/bin/launchctl", ["bootstrap", "system", d.paths.guardPlist], { timeoutMs: LAUNCHCTL_MS });
     }
-    if (boot.code !== 0) d.say(`The guard didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Keep Screen Sharing off, and type taskbox update again.`);
+    // A daemon that didn't start is said at once, and the install ends without Installed.
+    const notStarted: string[] = [];
+    if (boot.code !== 0) {
+      d.say(`The guard didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Keep Screen Sharing off, and type taskbox update again.`);
+      notStarted.push("the guard");
+    }
     // guardwatch, which restarts a guard whose beat has stood still (guardwatch.ts), after the guard.
-    await loadDaemon(d, GUARDWATCH_LABEL, watchPaths(d.paths).plist, "guardwatch");
+    if (!(await loadDaemon(d, GUARDWATCH_LABEL, watchPaths(d.paths).plist, "guardwatch"))) notStarted.push("guardwatch");
     // Network capture (net/place.ts): its folders, then netwatch, which follows the VMs' bridges.
-    if (await placeNetFolders(d)) await loadDaemon(d, NETWATCH_LABEL, netPaths(d.paths).plist, "network capture");
+    if ((await placeNetFolders(d)) && !(await loadDaemon(d, NETWATCH_LABEL, netPaths(d.paths).plist, "network capture"))) notStarted.push("network capture");
 
     // tailscaled, loaded again so it runs the new binary. Its state stays in root's folder. A reload
     // LaunchDaemon an undo left (ops.ts, reloadPlist) goes first, so it can't load tailscaled again
@@ -615,7 +622,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     mkdirSync(d.paths.tailscaleState, { recursive: true, mode: 0o700 });
     const sockWhy = await keepSocket(d.sys, d.paths, newSocketMemory(), d.rootUid ?? 0).catch((e: Error) => e.message);
     if (sockWhy) d.say(`  tailscaled's socket folder: ${sockWhy}. The guard puts it right on its next pass, and taskbox check says so.`);
-    await loadDaemon(d, TAILSCALED_LABEL, d.paths.tailscaledPlist, "tailscaled");
+    if (!(await loadDaemon(d, TAILSCALED_LABEL, d.paths.tailscaledPlist, "tailscaled"))) notStarted.push("tailscaled");
     await tailscaleUp(d, cfg.runnerNamePrefix, tagOf(cfg));
 
     // 7. The service's home, then, unless the update placed them, the keys in root's folder.
@@ -629,6 +636,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     // The agent named before, last: the new release is in place and its services run.
     for (const l of await applyOldAgentStep(accountDeps(d), d.paths, step, { ...(d.paths.agent !== undefined ? { oldAgentHome: agentHomeFor(d, d.paths.agent) } : {}), event: accountEvent(d) })) d.say(`  ${l}`);
     if (cfg.accounts.agent !== undefined) d.say(`  Agents and the controller reach the box as ${cfg.accounts.agent}: the controller pairs with that name.`);
+    if (notStarted.length) throw new Stop(`The ${opts.first ? "install" : "update"} isn't finished: ${notStarted.join(" and ")} didn't start. Type taskbox update again.`, true);
     d.say(opts.first ? `Installed. Now log in as ${d.paths.service}. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -648,7 +656,7 @@ export async function settleBox(d: InstallDeps, cfg: Config): Promise<void> {
     ["firewall on", () => run(fw, ["--setglobalstate", "on"])],
     ["stealth mode on", () => run(fw, ["--setstealthmode", "on"])],
     ["never sleeps, display off after 10 min", () => run("/usr/bin/pmset", ["-a", "sleep", "0", "displaysleep", "10"])],
-    // Desktops only: a laptop's pmset has no autorestart.
+    // Desktops only: a portable Mac's pmset has no autorestart.
     ["starts after a power cut", async () => (/^\s*autorestart\s/m.test(pm.stdout) ? run("/usr/bin/pmset", ["-a", "autorestart", "1"]) : undefined)],
     // systemsetup exits 0 even when it refuses ("You need administrator access...", ran in a Tart
     // test Mac), so the step counts only when it reads back on.
@@ -1082,8 +1090,8 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
   }
   // Tailscale refuses the tag until the policy names its owner (tailscale.com/kb/1068), so that
   // entry goes in first. The rest of the policy comes after the sign-in: taskbox policy show prints it.
-  d.say(`Before the box signs in: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
-  d.say(`  "${tag}": ["OWNER"]`);
+  d.say(`Before the box signs in: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of YOUR_LOGIN, and save:`);
+  d.say(`  "${tag}": ["YOUR_LOGIN"]`);
   // A line for the owner only when Tailscale gives a link: a box that signs in without one needs nothing.
   let asked = false;
   let approve = false;
@@ -1091,7 +1099,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
     onLine: (l) => {
       const login = LOGIN_LINK.exec(l)?.[0];
       if (login) {
-        if (!asked) d.say("Sign the box in to Tailscale: open the link below on your laptop. This waits up to 15 minutes.");
+        if (!asked) d.say("Sign the box in to Tailscale: open the link below on another device you trust. This waits up to 15 minutes.");
         asked = true;
         d.say(`  ${login}`);
         return;
@@ -1099,7 +1107,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
       const admin = APPROVE_LINK.exec(l)?.[0];
       if (admin && !approve) {
         approve = true;
-        d.say("Approve the box in Tailscale's admin console, on your laptop. This waits up to 15 minutes.");
+        d.say("Approve the box in Tailscale's admin console, on another device you trust. This waits up to 15 minutes.");
         d.say(`  ${admin}`);
       }
     },
@@ -1111,7 +1119,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
 }
 
 // Writes a LaunchDaemon's plist from the install and loads it again, so it runs the new code.
-async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what: string): Promise<void> {
+async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what: string): Promise<boolean> {
   const text = plist(readFileSync(join(d.paths.app, "launchd", `${label}.plist`), "utf8"));
   mkdirSync(dirname(plistPath), { recursive: true });
   writeFileSync(plistPath, text, { mode: 0o644 });
@@ -1123,6 +1131,7 @@ async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what
     boot = await d.sys.run("/bin/launchctl", ["bootstrap", "system", plistPath], { timeoutMs: LAUNCHCTL_MS });
   }
   if (boot.code !== 0) d.say(`${what} didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Type taskbox update again.`);
+  return boot.code === 0;
 }
 
 // /opt/taskbox-state and its project folder. A link or someone else's folder in either place stops
@@ -1247,7 +1256,7 @@ export async function setSetuid(sys: Sys, path: string, expectRoot = true): Prom
   const st = lstatSync(path);
   const mode = st.mode & 0o7777;
   if (!st.isFile() || mode !== 0o4755 || (expectRoot && (st.uid !== 0 || st.gid !== 0))) {
-    throw new Stop(`${path} is not a root-owned file with mode 4755 (mode ${mode.toString(8)}, owner ${st.uid}:${st.gid}). Nothing was swapped in.`);
+    throw new Stop(`${path} is not a root-owned file with mode 4755 (mode ${mode.toString(8)}, owned by ${st.uid}:${st.gid}). Nothing was swapped in.`);
   }
 }
 

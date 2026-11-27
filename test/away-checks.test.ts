@@ -123,7 +123,7 @@ describe("the FileVault row before every VM", () => {
     const row = PRESTART.find(([n]) => n === "FileVault")![1];
     const off = (cmd: string) => (cmd === "/usr/bin/fdesetup" ? { code: 0, stdout: "false\n" } : undefined);
     expect((await row(ctx({ respond: off }))).status).toBe("FAIL");
-    expect(await row(ctx({ away: { restartPlan: "filevault-off" }, respond: off }))).toEqual({ status: "OK", detail: "off, by the owner's restart plan" });
+    expect(await row(ctx({ away: { restartPlan: "filevault-off" }, respond: off }))).toEqual({ status: "OK", detail: "off, by the restart plan in taskbox.json" });
     expect((await row(ctx({ away: { restartPlan: "kvm" }, respond: off }))).status).toBe("FAIL");
   });
 });

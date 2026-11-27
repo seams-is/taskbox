@@ -121,7 +121,7 @@ export async function restartPlanRow(c: CheckContext): Promise<Row> {
   if (fv.stdout.trim() === "true") return fail("the plan is FileVault off, but FileVault is on. At the box, as your admin user: System Settings, Privacy & Security, FileVault, turn it off");
   const auto = await c.sys.run("/usr/bin/defaults", ["read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"], { timeoutMs: 10_000 }).catch(() => ({ code: 1, stdout: "" }));
   if (auto.code !== 0 || auto.stdout.trim() !== c.paths.service) return fail(`the plan is FileVault off, but ${c.paths.service} doesn't log in by itself, so a restart stops at the login window. At the box, as your admin user: System Settings, Users & Groups, "Automatically log in as": ${c.paths.service}`);
-  return ok(`FileVault is off by the owner's choice, and ${c.paths.service} logs in by itself after a restart`);
+  return ok(`FileVault is off, as the restart plan in taskbox.json chooses, and ${c.paths.service} logs in by itself after a restart`);
 }
 
 // In taskbox check (CHECK_EXTRA) and taskbox check --away. The restart plan is in taskbox check --away only: a box

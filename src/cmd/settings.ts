@@ -10,7 +10,7 @@ const clean = (v: unknown, n = 100) => {
   return t.length <= n ? t : `${t.slice(0, n - 3)}...`;
 };
 const owners = (c: BoxCtx, what: string): Outcome => {
-  const line = `taskbox ${what} is the owner's: run it from the controller, which signs it with Touch ID.`;
+  const line = `taskbox ${what} needs an approver key's signature: run it from the controller, which signs it with Touch ID.`;
   c.say(line);
   return { exit: 1, error: { code: "denied", message: line, fix: null, who: "from-away" } };
 };
@@ -32,7 +32,7 @@ async function show(c: BoxCtx): Promise<Outcome> {
   if (s?.problem) c.say(`${s.problem.sha ? `Commit ${s.problem.sha.slice(0, 12)} isn't used: ` : ""}${clean(s.problem.why, 200)}.`);
   if (s?.waiting) {
     const wt = s.waiting;
-    c.say(`Commit ${wt.sha.slice(0, 12)} waits for ${wt.phase === "needs-confirm" ? "confirm at the box" : "the owner's settings apply"} (${wt.op}):`);
+    c.say(`Commit ${wt.sha.slice(0, 12)} waits for ${wt.phase === "needs-confirm" ? "confirm at the box" : "settings apply from the controller"} (${wt.op}):`);
     for (const x of wt.changes) c.say(`  ${x.tier === 1 ? "first tier" : "second tier"}: ${x.words}`);
     c.say(wt.phase === "needs-confirm" ? "Next: taskbox confirm, at the box." : `Next: from the controller, taskbox settings apply ${wt.sha}`);
   } else if (pending) c.say("Nothing waits.");

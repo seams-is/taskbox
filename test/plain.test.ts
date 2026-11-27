@@ -5,6 +5,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CheckContext, LINK_FIX, LINK_FIX_FULL, otherUsers, PRESTART, runChecks } from "../src/checks.ts";
+import { GitHubError } from "../src/ghfail.ts";
 import { CANT_REACH, cantReach, Stop } from "../src/install.ts";
 import { AGENTS_THEN_UPDATE, computeState, headline } from "../src/state.ts";
 import { screen } from "../src/watch.ts";
@@ -332,6 +333,9 @@ describe("an update that can't reach GitHub", () => {
     expect(cantReach(refused)).toBe(true);
     for (const code of ["ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "ConnectionRefused"]) expect(cantReach(Object.assign(new Error("x"), { code }))).toBe(true);
     expect(cantReach(new Error("x", { cause: Object.assign(new Error("y"), { code: "ENOTFOUND" }) }))).toBe(true);
+    // GitHub's client classes a failed connection as its own error (ghfail.ts).
+    for (const kind of ["network", "timeout"] as const) expect(cantReach(new GitHubError(kind, null, "x"))).toBe(true);
+    expect(cantReach(new GitHubError("refused", 403, "x"))).toBe(false);
     expect(cantReach(new DOMException("t", "TimeoutError"))).toBe(true);
   });
 

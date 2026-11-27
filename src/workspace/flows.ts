@@ -13,7 +13,7 @@ export function downsize(s: WsState, o: { name: string }, r: Rules, now: number)
   if (w.state !== "ready") return no(`${w.name} is ${w.state}. --to light is for a ready workspace.`);
   if (w.size === "light") return no(`${w.name} is Light already.`);
   const st = put(s, move(w, "saving", now, { saveAskedAt: now, pausedBy: "owner", to: "light" }));
-  return { ok: true, state: st, name: w.name, said: `Asked ${w.agent} to drop ${w.name} to Light. CI gets the rest by ${clockOf(now + r.progressMs + r.saveMs)} at the latest.`, steps: [{ name: w.name, type: "saving", text: `${w.name} asked to drop to Light, by the owner` }] };
+  return { ok: true, state: st, name: w.name, said: `Asked ${w.agent} to drop ${w.name} to Light. CI gets the rest by ${clockOf(now + r.progressMs + r.saveMs)} at the latest.`, steps: [{ name: w.name, type: "saving", text: `${w.name} asked to drop to Light, by an approver` }] };
 }
 
 // The workspace at Light, ready again in the same account: its hold shrinks and CI gets the rest.
@@ -76,7 +76,7 @@ export function jump(s: WsState, o: { name: string }): Result {
   if (w.state !== "approved") return no(`${w.name} is ${w.state}. Jump moves an approved workspace up its queue.`);
   const ahead = queued(s).filter((x) => (x.order ?? 0) < (w.order ?? 0));
   if (!ahead.length) return { ok: true, state: s, name: w.name, said: `${w.name} is first in the queue already.`, steps: [] };
-  return { ok: true, state: front(s, w.name), name: w.name, said: `${w.name} is first in the queue now, ahead of ${ahead.map((x) => x.name).join(", ")}. Nothing running was interrupted.`, steps: [{ name: w.name, type: "jumped", text: `${w.name} moved to the front of the queue, by the owner` }] };
+  return { ok: true, state: front(s, w.name), name: w.name, said: `${w.name} is first in the queue now, ahead of ${ahead.map((x) => x.name).join(", ")}. Nothing running was interrupted.`, steps: [{ name: w.name, type: "jumped", text: `${w.name} moved to the front of the queue, by an approver` }] };
 }
 
 // The live workspaces that stand in a workspace's way: a Whole needs every one; anything else needs
@@ -111,7 +111,7 @@ export function rush(s: WsState, o: { name: string; force: boolean }, r: Rules, 
   if (w.state !== "approved") return no(`${w.name} is ${w.state}. Rush is for an approved workspace waiting in its queue.`);
   let st = front(s, w.name);
   st = put(st, { ...find(st, w.name)!, rush: { force: o.force, at: now } });
-  const steps: Step[] = [{ name: w.name, type: "rushed", text: `${w.name} rushed by the owner${o.force ? ", with CI's jobs in its way stopped" : ""}` }];
+  const steps: Step[] = [{ name: w.name, type: "rushed", text: `${w.name} rushed from the controller${o.force ? ", with CI's jobs in its way stopped" : ""}` }];
   const asked: string[] = [];
   for (const x of inWay(st, find(st, w.name)!, r)) {
     const cur = find(st, x.name)!;

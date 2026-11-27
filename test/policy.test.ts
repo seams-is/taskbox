@@ -62,8 +62,8 @@ describe("policyFor", () => {
   });
 
   test("the owner's login and the admins replace the placeholders", () => {
-    const t = policyText(policyFor(cases[0]![1], { owner: "owner@example.com", admins: ["boss", "deputy"] }));
-    expect(t).not.toContain("OWNER");
+    const t = policyText(policyFor(cases[0]![1], { owner: "me@example.com", admins: ["boss", "deputy"] }));
+    expect(t).not.toContain("YOUR_LOGIN");
     expect(t).not.toContain("ADMIN");
     expect(t).toContain('"deny": ["root", "taskbox", "boss", "deputy"]');
   });
@@ -175,7 +175,7 @@ describe("one block for every paired box", () => {
     ]));
     const lines = t.split("\n");
     expect(lines[0]).toBe('In "tagOwners":');
-    expect(lines.slice(1, 5)).toEqual(["  // taskbox:box-a", '  "tag:taskbox-a": ["OWNER"],', "  // taskbox:box-b", '  "tag:taskbox-b": ["OWNER"],']);
+    expect(lines.slice(1, 5)).toEqual(["  // taskbox:box-a", '  "tag:taskbox-a": ["YOUR_LOGIN"],', "  // taskbox:box-b", '  "tag:taskbox-b": ["YOUR_LOGIN"],']);
     expect(lines.filter((l) => l.startsWith("In "))).toEqual(['In "tagOwners":', 'In "grants":', 'In "ssh":', 'In "sshTests":', 'In "tests":']);
     expect(lines.filter((l) => l.includes("autogroup:self"))).toHaveLength(1);
     const whole = policyText(policyFor(a, { tag: "tag:taskbox-a" })) + policyText(policyFor(a, { tag: "tag:taskbox-b" }));
@@ -192,13 +192,13 @@ describe("one block for every paired box", () => {
 describe("taskbox policy show's arguments", () => {
   test("an owner, admins and --whole", () => {
     expect(policyArgs([])).toEqual({ admins: [], whole: false });
-    expect(policyArgs(["--owner", "you@example.com", "--admin", "boss", "--admin", "deputy", "--whole"])).toEqual({ owner: "you@example.com", admins: ["boss", "deputy"], whole: true });
+    expect(policyArgs(["--login", "you@example.com", "--admin", "boss", "--admin", "deputy", "--whole"])).toEqual({ owner: "you@example.com", admins: ["boss", "deputy"], whole: true });
   });
   test("anything else is refused with one line, before anything is read", () => {
-    expect(policyArgs(["--owner"])).toMatch(/--owner needs your Tailscale login/);
-    expect(policyArgs(["--owner", "not a login"])).toMatch(/--owner needs/);
+    expect(policyArgs(["--login"])).toMatch(/--login needs your Tailscale login/);
+    expect(policyArgs(["--login", "not a login"])).toMatch(/--login needs/);
     expect(policyArgs(["--admin", "a b"])).toMatch(/--admin needs/);
-    expect(policyArgs(["--apply"])).toMatch(/^taskbox policy show \[--owner/);
+    expect(policyArgs(["--apply"])).toMatch(/^taskbox policy show \[--login/);
   });
 });
 
@@ -206,16 +206,16 @@ describe("the entries to add", () => {
   test("name each list and leave out an empty one", () => {
     const t = policyEntries(policyFor({ service: "taskbox", people: [] }));
     expect(t).toBe(`In "tagOwners" (the install asked for this before the box signed in; add it only if it isn't there):
-  "tag:taskbox": ["OWNER"]
+  "tag:taskbox": ["YOUR_LOGIN"]
 
 In "grants", add:
   { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] }
 
 In "sshTests", add:
-  { "src": "OWNER", "dst": ["tag:taskbox"], "deny": ["root", "taskbox", "ADMIN"] }
+  { "src": "YOUR_LOGIN", "dst": ["tag:taskbox"], "deny": ["root", "taskbox", "ADMIN"] }
 
 In "tests", add:
-  { "src": "tag:taskbox", "deny": ["OWNER:22", "OWNER:80", "OWNER:443", "OWNER:445", "OWNER:548", "OWNER:3283", "OWNER:5900", "OWNER:7000"] }
+  { "src": "tag:taskbox", "deny": ["YOUR_LOGIN:22", "YOUR_LOGIN:80", "YOUR_LOGIN:443", "YOUR_LOGIN:445", "YOUR_LOGIN:548", "YOUR_LOGIN:3283", "YOUR_LOGIN:5900", "YOUR_LOGIN:7000"] }
 `);
   });
   test("every line is one of the whole file's", () => {
@@ -236,7 +236,7 @@ describe("policy show's answer, joined on the controller", () => {
     if (Array.isArray(v)) return v.slice(0, 1000).map((x) => scrub(x, depth + 1)).filter((x) => x !== undefined);
     return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 200).filter(([k]) => /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(k)).map(([k, x]) => [k, scrub(x, depth + 1)]));
   };
-  const OWNER_LOGIN = "owner@example.com";
+  const OWNER_LOGIN = "me@example.com";
   const one = validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: ["pat"], ssh: ["pat"] });
   const two = validateAccounts({ service: "ci", agent: "remote", people: [{ user: "sam", tailnet: "sam@example.com" }], ssh: ["sam"], workspaces: { pool: "ws", size: 2 } });
   const ids = ["1".repeat(32), "2".repeat(32)];
@@ -253,8 +253,8 @@ describe("policy show's answer, joined on the controller", () => {
     expect(policyText(back.policy)).toBe(policyText(policyFor(one, { owner: OWNER_LOGIN, admins: ["boss"], tag: "tag:taskbox-one" })));
   });
   test("policyAnswer never answers a placeholder", () => {
-    expect(() => policyAnswer(policyFor(one, { admins: ["boss"] }), ids[0])).toThrow(/OWNER or ADMIN/);
-    expect(() => policyAnswer(policyFor(one, { owner: OWNER_LOGIN }), ids[0])).toThrow(/OWNER or ADMIN/);
+    expect(() => policyAnswer(policyFor(one, { admins: ["boss"] }), ids[0])).toThrow(/YOUR_LOGIN or ADMIN/);
+    expect(() => policyAnswer(policyFor(one, { owner: OWNER_LOGIN }), ids[0])).toThrow(/YOUR_LOGIN or ADMIN/);
   });
   const b = answers[1]!;
   const rules = b.rules as Record<string, Record<string, unknown>[]>;
@@ -269,9 +269,9 @@ describe("policy show's answer, joined on the controller", () => {
     ["a key taskbox doesn't write", withRule("ssh", { action: "accept", src: [OWNER_LOGIN], dst: ["tag:taskbox-two"], users: ["remote"], checkPeriod: "always" }), /a key taskbox doesn't write/],
     ["a test that accepts another box", withRule("tests", { src: OWNER_LOGIN, accept: ["tag:taskbox-one:22"] }), /accepts more than tag:taskbox-two/],
     ["a tag that isn't taskbox's", { ...b, tag: "tag:prod" }, /isn't a taskbox tag/],
-    ["an owner that isn't the controller's", { ...b, owners: ["attacker@example.net"] }, /owner isn't yours/],
-    ["a second owner", { ...b, owners: [OWNER_LOGIN, "attacker@example.net"] }, /owner isn't yours/],
-    ["a placeholder", withRule("ssh", { action: "accept", src: ["OWNER"], dst: ["tag:taskbox-two"], users: ["remote"] }), /OWNER or ADMIN/],
+    ["a tag owner that isn't the controller's login", { ...b, owners: ["attacker@example.net"] }, /isn't owned by your login/],
+    ["a second tag owner", { ...b, owners: [OWNER_LOGIN, "attacker@example.net"] }, /isn't owned by your login/],
+    ["a placeholder", withRule("ssh", { action: "accept", src: ["YOUR_LOGIN"], dst: ["tag:taskbox-two"], users: ["remote"] }), /YOUR_LOGIN or ADMIN/],
   ];
   for (const [what, a, line] of refused) test(`refuses ${what}`, () => expect(policyOfAnswer(a, ids[1]!, OWNER_LOGIN)).toMatch(line));
   test("refuses an answer naming another install ID than the one paired", () => {

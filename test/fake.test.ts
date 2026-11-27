@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { within } from "../src/clock.ts";
 import { FakeSys } from "./fake.ts";
 import { unknownCommands } from "./helpers.ts";
 
@@ -79,14 +80,17 @@ describe("the fake clock", () => {
   });
 });
 
-// To do: a sleep that lost a race stays queued, and the next turn of real I/O moves the clock to
-// its deadline, so a pull that ends early (loop.ts pullImage) adds up to 30 s nobody waited.
-test.todo("a sleep that lost a race costs nothing, even across real I/O", async () => {
+// A pull that ends early (loop.ts pullImage) races a sleep: the sleep is aborted with the race, so
+// nobody's clock moves for it, even after real I/O.
+test("a sleep that lost a race costs nothing, even across real I/O", async () => {
   const sys = new FakeSys();
   const t0 = sys.now();
-  await Promise.race([Promise.resolve(), sys.sleep(600_000)]);
+  expect(await within(sys, Promise.resolve("done"), 600_000)).toBe("done");
   await Bun.sleep(1); // any real I/O: a file read, a child's output
-  expect(sys.now() - t0).toBe(0);
+  expect([sys.now() - t0, sys.timers.length]).toEqual([0, 0]);
+  // A race the sleep wins is undefined, at its deadline.
+  expect(await within(sys, new Promise(() => {}), 5_000)).toBeUndefined();
+  expect(sys.now() - t0).toBe(5_000);
 });
 
 describe("a command no fake answers", () => {

@@ -1,4 +1,4 @@
-// taskbox hello: what the laptop reads first when it pairs, and where the two agree an answers
+// taskbox hello: what the controller reads first when it pairs, and where the two agree an answers
 // version. Internal: help leaves it out. No hostname, serial number, user name or path in the answer.
 import type { BoxCtx, CommandSpec } from "../command.ts";
 
@@ -20,7 +20,7 @@ async function facts(c: BoxCtx) {
 export const commands: CommandSpec[] = [
   {
     path: ["hello"],
-    summary: "What the laptop reads when it pairs: the release, the install ID, the answers version.",
+    summary: "What the controller reads when it pairs: the release, the install ID, the answers version.",
     who: ["anyone"],
     flags: ["json"],
     shell: true,

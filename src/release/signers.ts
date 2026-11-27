@@ -187,5 +187,5 @@ export function settle(s: SignerState, now: number): { state: SignerState; said:
 
 // What confirm at the box shows for a removal, in the box's own words.
 export function removalShows(p: Pending): string[] {
-  return [`The release signers change removes ${p.removes.join(", ")}.`, `Kept: ${p.kept.join(", ") || "none"}; added after its 7 days: ${p.adds.join(", ") || "none"}.`, "Confirm only if you, the owner, made this change. Refuse a change you didn't make."];
+  return [`The release signers change removes ${p.removes.join(", ")}.`, `Kept: ${p.kept.join(", ") || "none"}; added after its 7 days: ${p.adds.join(", ") || "none"}.`, "Confirm only if you made this change. Refuse a change you didn't make."];
 }

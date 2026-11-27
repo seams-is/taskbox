@@ -30,7 +30,7 @@ function box(uuid = "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17", usecs = 100_480_211_
   return { sys, m };
 }
 
-describe("N7-1: a real boot id, end to end", () => {
+describe("a real boot id, end to end", () => {
   test("raise, save and read back, lapse; recordOutcome and keepOutcomes, with bootId's own output", async () => {
     const b = box();
     const moment = async () => ({ wall: b.sys.now(), mono: await monoNow(b.sys), boot: await bootId(b.sys) });
@@ -63,7 +63,7 @@ describe("N7-1: a real boot id, end to end", () => {
   });
 });
 
-describe("the lows", () => {
+describe("floods and the verifier's counts", () => {
   test("flood: a type taskbox doesn't name as lasting goes to the volume series, so the size cap takes it first", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid, partMax: 4096 };
     const log = eventLog("guard", e, { now: () => T });
@@ -107,7 +107,7 @@ describe("the lows", () => {
     for (let i = 0; i < 60; i++) log.refused({ type: "workspace.refused", text: "again" }, key);
     expect(readEvents([{ ...e, writer: "guard" }]).events.filter((x) => x.text === "again")).toHaveLength(0);
   });
-  test("nit: a known key's dropped count names who signed, not the cap's key", () => {
+  test("a known key's dropped count names who signed, not the cap's key", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid };
     let now = T;
     const log = eventLog("guard", e, { now: () => now });
@@ -118,7 +118,7 @@ describe("the lows", () => {
     expect(said.length).toBeGreaterThan(0);
     expect(said.every((t) => t.includes(key.actor) && !t.includes("from key "))).toBe(true);
   });
-  test("nit: a Verified made around its factories is refused", () => {
+  test("a Verified made around its factories is refused", () => {
     const log = eventLog("guard", { dir: join(tmp(), "ev"), owner: uid }, { now: () => T });
     const fake = Object.assign(Object.create(Verified.prototype), { key: "key x", actor: "owner" });
     expect(() => log.refused({ type: "workspace.refused", text: "r" }, fake)).toThrow();

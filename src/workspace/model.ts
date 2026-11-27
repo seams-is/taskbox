@@ -35,7 +35,7 @@ export const KEEPS: readonly State[] = ["approved", "starting", "ready", "saving
 // owner's signed resume brings the workspace back.
 export const PAUSED_BY = ["owner", "restart", "disk", "memory", "quiet", "off", "noboot"] as const;
 export type PausedBy = (typeof PAUSED_BY)[number];
-export const PAUSED_WORD: Record<PausedBy, string> = { owner: "by the owner", restart: "by a restart", disk: "with the disk below the floor", memory: "for its memory", quiet: "with no word from its agent", off: "while workspaces were off", noboot: "while the box couldn't read its boot" };
+export const PAUSED_WORD: Record<PausedBy, string> = { owner: "by an approver", restart: "by a restart", disk: "with the disk below the floor", memory: "for its memory", quiet: "with no word from its agent", off: "while workspaces were off", noboot: "while the box couldn't read its boot" };
 
 // An agent's name, such as nova. A label, never a proof: agents on the controller share one user.
 export const AGENT = /^[a-z][a-z0-9]{0,15}$/;
@@ -58,7 +58,7 @@ export const STEP_MAX = 1_000_000_000;
 export const RQ = /^rq_[0-9A-HJKMNP-TV-Z]{26}$/;
 
 // The line every reader prints while no approver key is pinned at the box.
-export const NO_KEY = "workspaces need the owner's approver key on this box. The owner types taskbox key trust approver at the box.";
+export const NO_KEY = "workspaces need an approver key on this box. An admin types taskbox key trust approver at the box.";
 
 // The most records the state holds; final ones past it go, oldest first.
 export const MAX_WORKSPACES = 100;
@@ -222,18 +222,18 @@ const gbOf = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
 // An agent asks. The request waits for the owner, holds nothing and gets no account.
 export function request(s: WsState, o: { agent: string; size: Size; why: string; rq?: string }, r: Rules, now: number): Result {
   if (!AGENT.test(o.agent)) return no("An agent's name is a-z and 0-9, starting with a letter, at most 16 characters.", "usage");
-  if (RESERVED.includes(o.agent)) return no(`An agent can't ask as ${o.agent}: an unsigned request never speaks for the owner or the box.`, "usage");
+  if (RESERVED.includes(o.agent)) return no(`An agent can't ask as ${o.agent}: an unsigned request never speaks for an approver or the box.`, "usage");
   if (!isSize(o.size)) return no(`The size is ${SIZES.join(", ")}.`, "usage");
   const why = cleanWords(o.why);
   if (!why) return no(`The why takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`, "usage");
   const waiting = s.workspaces.filter((w) => w.state === "requested").length;
-  if (waiting >= r.maxRequests) return no(`${waiting} requests already wait for the owner, at most ${r.maxRequests}. Ask again once one is decided.`, "busy");
+  if (waiting >= r.maxRequests) return no(`${waiting} requests already wait for an approver, at most ${r.maxRequests}. Ask again once one is decided.`, "busy");
   if (s.workspaces.filter((w) => !isFinal(w)).length >= MAX_WORKSPACES) return no(`${MAX_WORKSPACES} workspaces are live on this box already.`, "busy");
   const n = s.nameSeq + 1;
   if (n > NAME_SEQ_MAX) return no("taskbox has used every workspace number on this box.", "busy");
   const w: Workspace = { name: `${o.agent}-${n}`, agent: o.agent, asked: o.size, size: o.size, why, state: "requested", user: null, clear: false, hold: null, at: now, changedAt: now, approvedAt: null, by: null, order: null, saveAskedAt: null, pausedBy: null, saved: null, reason: null, endedBy: null, boot: null, word: null, rq: o.rq !== undefined && RQ.test(o.rq) ? o.rq : null };
   const st = trim({ ...s, nameSeq: n, workspaces: [...s.workspaces, w] });
-  return yes(st, w.name, `${w.name} asks for ${SIZE_WORD[o.size]}. It expires at ${clockOf(now + r.requestMs)} unless the owner approves it.`, [{ name: w.name, type: "requested", text: `${o.agent} asked for ${label(w)}: ${why}`.slice(0, 240) }]);
+  return yes(st, w.name, `${w.name} asks for ${SIZE_WORD[o.size]}. It expires at ${clockOf(now + r.requestMs)} unless it is approved.`, [{ name: w.name, type: "requested", text: `${o.agent} asked for ${label(w)}: ${why}`.slice(0, 240) }]);
 }
 
 // Final records past MAX_WORKSPACES go, oldest first.
@@ -280,7 +280,7 @@ export function end(s: WsState, o: { name: string; by: "owner" | "agent"; agent?
   if (o.by === "agent" && o.agent !== w.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
   if (isFinal(w)) return no(`${w.name} is ${w.state} already.`);
   if (w.state === "ending") return no(`${w.name} is ending already: its processes are stopping.`);
-  const who = o.by === "owner" ? "the owner" : w.agent;
+  const who = o.by === "owner" ? "an approver" : w.agent;
   if (w.state === "requested" || w.state === "approved" || w.state === "starting") {
     const st = put(s, move(w, "withdrawn", now, { endedBy: o.by, order: null, hold: null, saveAskedAt: null }));
     return yes(st, w.name, `${w.name} withdrawn by ${who}.`, [{ name: w.name, type: "withdrawn", text: `${w.name} withdrawn by ${who}` }]);
@@ -300,7 +300,7 @@ export function pause(s: WsState, o: { name: string }, r: Rules, now: number): R
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
   if (w.state === "ready") {
     const st = put(s, move(w, "saving", now, { saveAskedAt: now, pausedBy: "owner" }));
-    return yes(st, w.name, `Asked ${w.agent} to save ${w.name} and pause. CI is back by ${clockOf(now + r.progressMs + r.saveMs)} at the latest.`, [{ name: w.name, type: "saving", text: `${w.name} asked to save, by the owner` }]);
+    return yes(st, w.name, `Asked ${w.agent} to save ${w.name} and pause. CI is back by ${clockOf(now + r.progressMs + r.saveMs)} at the latest.`, [{ name: w.name, type: "saving", text: `${w.name} asked to save, by an approver` }]);
   }
   if (w.state === "approved" || w.state === "starting") return pausedNow(s, w, "owner", now);
   if (w.state === "saving") return no(`${w.name} is saving already.`);
@@ -462,7 +462,7 @@ export function ready(s: WsState, name: string, boot: string, now: number): Resu
 export function ended(s: WsState, name: string, now: number): { state: WsState; steps: Step[] } {
   const w = find(s, name);
   if (!w || w.state !== "ending") return { state: s, steps: [] };
-  return { state: put(s, move(w, "ended", now, { hold: null })), steps: [{ name, type: "ended", text: `${name} ended by ${w.endedBy === "owner" ? "the owner" : w.agent}${w.user ? `; its files stay in ${w.user}` : ""}` }] };
+  return { state: put(s, move(w, "ended", now, { hold: null })), steps: [{ name, type: "ended", text: `${name} ended by ${w.endedBy === "owner" ? "an approver" : w.agent}${w.user ? `; its files stay in ${w.user}` : ""}` }] };
 }
 
 // A workspace that couldn't be made ready (its account, its files): failed, with why.
@@ -591,9 +591,9 @@ export function parseBoot(out: string): string | undefined {
 export function stateLine(w: Workspace): string {
   if (w.state === "paused" && w.frozen) return `paused: stopped at once, ${w.frozen.text}`;
   if (w.state === "paused" && w.pausedBy) return `paused ${PAUSED_WORD[w.pausedBy]}${w.saved === false ? ", unsaved" : ""}`;
-  if (w.state === "saving") return w.to ? "saving: asked to drop to Light" : w.pausedBy === "quiet" ? "saving: no word from its agent" : w.pausedBy === "memory" ? "saving: over its memory" : w.rushFor ? `saving: making room for ${w.rushFor}` : "saving: the owner asked";
+  if (w.state === "saving") return w.to ? "saving: asked to drop to Light" : w.pausedBy === "quiet" ? "saving: no word from its agent" : w.pausedBy === "memory" ? "saving: over its memory" : w.rushFor ? `saving: making room for ${w.rushFor}` : "saving: an approver asked";
   if ((w.state === "denied" || w.state === "expired" || w.state === "failed") && w.reason) return `${w.state}: ${w.reason}`;
-  if (w.state === "ended" || w.state === "withdrawn") return `${w.state} by ${w.endedBy === "owner" ? "the owner" : w.agent}`;
+  if (w.state === "ended" || w.state === "withdrawn") return `${w.state} by ${w.endedBy === "owner" ? "an approver" : w.agent}`;
   if (w.state === "approved" && w.size !== w.asked) return `approved as ${w.size} (asked for ${w.asked})`;
   return w.state;
 }

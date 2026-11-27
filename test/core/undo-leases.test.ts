@@ -101,7 +101,7 @@ describe("the runner's rules for its callers", () => {
   });
 });
 
-describe("the lows", () => {
+describe("leases, ended ops and the ops folder's caps", () => {
   test("a child taking its lease while the guard probes it waits a moment, and takes it", () => {
     const p = join(tmp(), "x.lease");
     writeFileSync(p, "");
@@ -119,7 +119,7 @@ describe("the lows", () => {
     expect(waits).toBeGreaterThan(0);
     closeSync(held);
   });
-  test("R5 and L2: an ended op whose job is still loaded is never aged out, and its bootout is tried again", async () => {
+  test("an ended op whose job is still loaded is never aged out, and its bootout is tried again", async () => {
     let code = 5;
     const s = setup();
     s.sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "bootout" ? { code, stdout: "", stderr: "" } : undefined));
@@ -135,7 +135,7 @@ describe("the lows", () => {
     const r = readOp(s.d.ops, b.op.id);
     expect(r.kind === "ok" && (r.value.child as { done?: true }).done).toBe(true);
   });
-  test("R6 and L3: a type that resumes after a restart is followed again on the new boot", async () => {
+  test("a type that resumes after a restart is followed again on the new boot", async () => {
     const s = setup();
     const b = begin([], resumer, { subject: "box", params: {}, actor: "owner" }, T);
     if (b.kind !== "start") throw new Error();

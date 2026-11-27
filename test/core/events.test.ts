@@ -38,7 +38,7 @@ describe("ids", () => {
 });
 
 describe("an event", () => {
-  const e = () => newEvent("guard", { type: "drain.started", actor: "owner (signed, key SHA256:abc)", text: "The owner started a drain.", subject: "box" }, clock(T), rand);
+  const e = () => newEvent("guard", { type: "drain.started", actor: "approver (signed, key SHA256:abc)", text: "The owner started a drain.", subject: "box" }, clock(T), rand);
   test("is one line under 4 KB, in its fixed shape", () => {
     const line = eventLine(e());
     expect(line.endsWith("\n")).toBe(true);

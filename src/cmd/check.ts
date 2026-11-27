@@ -32,13 +32,16 @@ export const commands: CommandSpec[] = [
       const { loadVersions } = await import("../config.ts");
       const { check } = await import("../ops.ts");
       const { away } = await import("../away.ts");
+      // The settings and versions.json are read here, so a box missing either answers one line.
       let ctx: Awaited<ReturnType<typeof context>>;
+      let versions: ReturnType<typeof loadVersions> | undefined;
       try {
         ctx = await context(c);
+        versions = c.opts.away ? undefined : loadVersions(c.p.app);
       } catch {
         return { v3: { answers: 3, kind: "error", error: "unreadable" }, exit: 1 };
       }
-      const r = await captured(c, (ops) => (c.opts.away ? away(ctx, ops, true) : check(ctx, ops, loadVersions(c.p.app), true)));
+      const r = await captured(c, (ops) => (versions === undefined ? away(ctx, ops, true) : check(ctx, ops, versions, true)));
       const v3 = oneJsonLine(r.lines);
       if (!v3) return { v3: UNREADABLE, exit: 1 };
       const { answers: _a, kind: _k, ...fields } = v3;

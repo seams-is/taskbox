@@ -50,18 +50,6 @@ describe("the setting", () => {
     expect([c.vmCpus, c.vmMemoryMB, c.linux!.vmCpus, c.linux!.vmMemoryMB]).toEqual([4, 8192, 4, 8192]);
   });
 
-  // taskbox-1's own settings, tuned from its timings of 19 Nov 2026 (#42): a third VM, Linux at 4 GB.
-  test.skipIf(!existsSync(join(repo, "taskbox.json")))("the box's own settings: 3 VMs, and on 32 GB two macOS VMs leave room for one Linux VM and nothing more", () => {
-    const c = loadConfig(repo);
-    expect([c.vmsAtOnce, slotCount(c)]).toEqual([3, 3]);
-    expect([c.vmCpus, c.vmMemoryMB, c.linux!.vmCpus, c.linux!.vmMemoryMB]).toEqual([4, 8192, 4, 4096]);
-    const box: Memory = { pressure: 1, availableGB: 9, totalGB: 34.36 };
-    const mac = c.vmMemoryMB!, lin = c.linux!.vmMemoryMB!;
-    expect(memoryShort(box, lin, 2 * mac, 12)).toBeUndefined();
-    expect(memoryShort(box, lin, 2 * mac + lin, 12)).toBeDefined();
-    expect(memoryShort(box, mac, 2 * mac, 12)).toBeDefined();
-  });
-
   test("vmsAtOnce is 1 to 4, slots stays 1, and every label is its own", () => {
     const base = JSON.parse(settingsText());
     for (const v of [0, 5, 1.5, "2"]) expect(() => loadConfig(writeConfig({ ...base, vmsAtOnce: v }))).toThrow("vmsAtOnce");

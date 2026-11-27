@@ -112,7 +112,7 @@ describe("the keeping pass", () => {
 
 // A moment for the pending store: the wall clock, a monotonic clock that keeps pace with it, one boot.
 const mo = (wall: number) => ({ wall, mono: wall - 1_700_000_000_000, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" });
-    const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["Move to beta."], actor: "owner (signed, key SHA256:x)", payload: { to: "beta" } }, mo(sys.now() - LAPSE_MS));
+    const r = raise(noPending(), { kind: "channel", subject: "channel", shows: ["Move to beta."], actor: "approver (signed, key SHA256:x)", payload: { to: "beta" } }, mo(sys.now() - LAPSE_MS));
     if (!r.ok) throw new Error();
     await updatePending(s.pending, { rootUid: uid }, () => ({ state: r.state, out: undefined }));
     const pass = keepingPass.make({ ...c, rootUid: uid })!;
@@ -204,7 +204,7 @@ describe("the keeping pass", () => {
     const c = { sys, cfg: {}, p: { installId: join(s.dir, "install-id") }, log: { write: () => {} }, writer: true, rootUid: uid } as unknown as PassCtx;
     return { c, s, sys, uid };
   }
-  test("N7 and L9: it sweeps temporary names a crash left, and outcomes past their hour", async () => {
+  test("it sweeps temporary names a crash left, and outcomes past their hour", async () => {
     const { c, s, sys, uid } = ctx();
     const { recordOutcome } = await import("../../src/core/spool.ts");
     writeFileSync(join(s.dir, "nonces.json.new.999999.0123456789abcdef"), "half");

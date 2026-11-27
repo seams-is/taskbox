@@ -1,10 +1,10 @@
 // Lasting changes waiting for `confirm`, in root's pending.json, 644, the guard its
-// one writer. One touch on the laptop can't grant something that outlives the request: the change
+// one writer. One touch on the controller can't grant something that outlives the request: the change
 // waits here, as needs-you, until an admin at the box reads what the box itself shows and says yes.
 // Each waits at most 24 hours, then lapses.
 //
 // `shows` is the box's own text for the change, made when it is raised from the checked request,
-// never text a laptop or an agent sent. `payload` is what the guard applies on the yes; the kind's
+// never text a controller or an agent sent. `payload` is what the guard applies on the yes; the kind's
 // owner (keys, rules, settings, channel, rollback) reads it. Nothing secret goes in either: the file
 // is readable by every account on the box.
 import { createHash } from "node:crypto";
@@ -140,7 +140,7 @@ export type Taken = { ok: true; state: PendingState; item: Pending } | { ok: fal
 export function answer(s: PendingState, id: string, at: Moment): Taken {
   const item = s.items.find((p) => p.id === id);
   if (!item) return { ok: false, why: "Nothing with that id waits for confirm." };
-  if (!live(item, at)) return { ok: false, why: "That change waited 24 hours and lapsed. Ask for it again from the laptop." };
+  if (!live(item, at)) return { ok: false, why: "That change waited 24 hours and lapsed. Ask for it again from the controller." };
   return { ok: true, state: { v: 1, items: s.items.filter((p) => p.id !== id) }, item };
 }
 

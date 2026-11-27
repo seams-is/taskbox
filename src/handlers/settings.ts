@@ -60,20 +60,20 @@ export const handlers: { signed: SignedHandler[] } = {
           return { state: x.state, out: x.dropped[0] };
         });
         if (!gone) return { ok: false, code: "not-found", said: `Nothing with the id ${id} waits for confirm.` };
-        c.events.write({ type: "confirm.withdrawn", actor: r.by.actor, subject: gone.subject, text: `The owner withdrew a ${gone.kind} change that waited for confirm.`, data: { id } });
+        c.events.write({ type: "confirm.withdrawn", actor: r.by.actor, subject: gone.subject, text: `An approver withdrew a ${gone.kind} change that waited for confirm.`, data: { id } });
         if (gone.kind === "settings") {
           const { passOver } = await import("../settings/op.ts");
           const d = await deps(c);
           const { readState } = await import("../settings/inforce.ts");
           const s = readState(d.files, c.rootUid);
           if (s.kind === "ok" && s.value.waiting?.pending === id) {
-            const wt = await passOver(d, "the owner withdrew it");
+            const wt = await passOver(d, "an approver withdrew it");
             if (wt) {
               const { readOp, end, writeOp, opEvent } = await import("../core/ops.ts");
               const ops = { dir: c.state.ops, owner: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) };
               const op = readOp(ops, wt.op);
               if (op.kind === "ok" && op.value.state === "running") {
-                const after = end(op.value, "cancelled", c.now, { why: "withdrawn by the owner" });
+                const after = end(op.value, "cancelled", c.now, { why: "withdrawn by an approver" });
                 writeOp(ops, after);
                 const e = opEvent(op.value, after);
                 if (e) c.events.write(e);

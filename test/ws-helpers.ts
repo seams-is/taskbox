@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { approve, assign, emptyState, ready, request, type Result, type Rules, start, type WsState } from "../src/workspace/model.ts";
 import type { RunResult } from "../src/sys.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
+import { lasting } from "./tmpclean.ts";
 
 export const T = 1_800_000_000_000;
 export const INSTALL_ID = "0123456789abcdef0123456789abcdef";
@@ -70,7 +71,7 @@ export async function realKeygen(cmd: string, args: string[], opts: { stdin?: st
 
 // One folder for every check in a test run; each check makes and removes its own inside it.
 let tmp: string | undefined;
-export const verifyDeps = () => ({ run: realKeygen, tmp: (tmp ??= mkdtempSync(join(tmpdir(), "ws-verify-"))) });
+export const verifyDeps = () => ({ run: realKeygen, tmp: (tmp ??= lasting("ws-verify-")) });
 
 // An armoured signature with its flags byte set to flags, as an attacker would edit it: the byte
 // sits in the last 5 bytes of the blob, before the counter.

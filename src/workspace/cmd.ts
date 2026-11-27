@@ -184,10 +184,10 @@ export async function waitRun(c: BoxCtx, o: { interrupt?: Interrupt } = {}): Pro
 // The words wait prints for a state, such as "approved as light (you asked for heavy)".
 function lineFor(w: Workspace): string {
   if (w.state === "approved" && w.size !== w.asked) return `approved as ${w.size} (you asked for ${w.asked})`;
-  if (w.state === "denied") return `denied by the owner${w.reason ? `: ${w.reason}` : ""}`;
+  if (w.state === "denied") return `denied${w.reason ? `: ${w.reason}` : ""}`;
   if (w.state === "expired") return `expired: ${w.reason ?? "nobody approved it in time"}`;
   if (w.state === "ready") return `ready in ${w.user}. taskbox workspace connect ${w.name} works now.`;
-  if (w.state === "paused") return `paused${w.pausedBy ? ` ${w.pausedBy === "owner" ? "by the owner" : `(${w.pausedBy})`}` : ""}`;
+  if (w.state === "paused") return `paused${w.pausedBy ? ` ${w.pausedBy === "owner" ? "by an approver" : `(${w.pausedBy})`}` : ""}`;
   return w.state;
 }
 
@@ -203,7 +203,7 @@ export async function progressRun(c: BoxCtx): Promise<Outcome> {
   const s = stateOf(read(c));
   const w = s ? find(s, id) : undefined;
   const d: Do = r.ok ? doFor(w) : "save";
-  const said = r.ok ? r.said : "The box didn't take the progress, so save: the owner gets CI back if the box can't hear you.";
+  const said = r.ok ? r.said : "The box didn't take the progress, so save: CI gets the box back if the box can't hear you.";
   c.say(said);
   return { exit: EXIT.ok, changed: r.ok, result: { do: d, id, state: w?.state ?? null } };
 }
