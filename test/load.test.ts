@@ -274,7 +274,7 @@ describe("sessions", () => {
   });
   test("a session is never longer than 4 hours, and a clock gone back ends it, whatever the file says", async () => {
     const ps = p();
-    writeFileSync(loadFile(ps), JSON.stringify({ v: 1, sessions: [{ n: 1, startedAt: NOW, until: NOW + 30 * 86_400_000, only: true }] }));
+    writeFileSync(rootLoadFile(ps), JSON.stringify({ v: 1, sessions: [{ n: 1, startedAt: NOW, until: NOW + 30 * 86_400_000, only: true }] }));
     expect(loadNow(ps, NOW + 3 * 3600_000, ME)).toEqual({ on: true, only: true });
     expect(loadNow(ps, NOW + 4 * 3600_000, ME)).toBeUndefined();
     expect(loadNow(ps, NOW - 10 * M, ME)).toBeUndefined();
