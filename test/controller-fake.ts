@@ -180,7 +180,7 @@ export function deps(w: World, answers: string[] = []): TestDeps {
 // One pairing, as box add writes it.
 export const pairing = (o: { name?: string; node?: string; installId?: string; hostKey?: string; agent?: string } = {}) => ({ name: o.name ?? "taskbox-1", node: o.node ?? NODE, installId: o.installId ?? INSTALL_ID, hostKey: o.hostKey ?? KEY, agent: o.agent ?? "taskbox-agent", pairedAt: 1 });
 // The controller's config with these pairings.
-export const controllerConfig = (boxes: ReturnType<typeof pairing>[], o: { default?: string | null } = {}) => ({ role: "controller" as const, source: null, boxes, default: o.default ?? null, channel: "stable" as const });
+export const controllerConfig = (boxes: (ReturnType<typeof pairing> & { jobsRepo?: string })[], o: { default?: string | null } = {}) => ({ role: "controller" as const, source: null, boxes, default: o.default ?? null, channel: "stable" as const });
 
 export { errorAnswer, StandIn };
 

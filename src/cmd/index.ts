@@ -26,6 +26,7 @@ import * as nonce from "./nonce.ts";
 import * as op from "./op.ts";
 import * as pause from "./pause.ts";
 import * as policy from "./policy.ts";
+import * as poll from "./poll.ts";
 import * as prune from "./prune.ts";
 import * as remove from "./remove.ts";
 import * as resume from "./resume.ts";
@@ -61,6 +62,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "op.ts", module: op },
   { file: "pause.ts", module: pause },
   { file: "policy.ts", module: policy },
+  { file: "poll.ts", module: poll },
   { file: "prune.ts", module: prune },
   { file: "remove.ts", module: remove },
   { file: "resume.ts", module: resume },
