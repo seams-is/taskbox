@@ -524,15 +524,17 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     chmodSync(join(next, "app/src/shell.ts"), 0o755);
     chmodSync(join(next, "app/src/gate.ts"), 0o755);
     await kit.finish(next, d.paths.service, (path) => setSetuid(d.sys, path), (cmd, args) => mustRun(d, cmd, args));
+    const at = new Date(d.sys.now()).toISOString();
     const record: Installed = {
       commit: head.sha,
       pr: head.pr,
       title: head.title,
       mergedAt: head.mergedAt,
       tag: head.tag,
-      installedAt: new Date(d.sys.now()).toISOString(),
+      installedAt: at,
       files: hashTree(next),
       format: 2,
+      v3Since: v3SinceFor(d.paths, at),
     };
     writeFileSync(join(next, "installed.json"), JSON.stringify(record, null, 2), { mode: 0o644 });
     d.chown(join(next, "installed.json"), 0, 0);
@@ -784,16 +786,18 @@ async function hop(d: InstallDeps, o: { own: Config; installed: Installed | unde
       await mustRun(d, "/bin/chmod", ["-R", "go-w", next]);
       chmodSync(next, 0o755);
       await kitFor(undefined).finish(next, d.paths.service, (path) => setSetuid(d.sys, path), (cmd, args) => mustRun(d, cmd, args));
+      const at = new Date(d.sys.now()).toISOString();
       const record: Installed = {
         commit: st.commit,
         pr: st.pr,
         title: `taskbox ${st.version}`,
         mergedAt: st.mergedAt,
         tag: st.tag,
-        installedAt: new Date(d.sys.now()).toISOString(),
+        installedAt: at,
         files: hashTree(next),
         format: 2,
         release: { repo, statement: text.slice(0, -1), signature: new TextDecoder().decode(rel.signature), signer },
+        v3Since: v3SinceFor(d.paths, at),
       };
       writeFileSync(join(next, "installed.json"), JSON.stringify(record, null, 2), { mode: 0o644 });
       d.chown(join(next, "installed.json"), 0, 0);
@@ -1254,4 +1258,16 @@ function printChecks(d: InstallDeps, checks: Check[]): void {
 // The preflight only needs the disk floor, so a missing App ID is not fatal there.
 function loadConfigLoose(dir: string): Config {
   return readJson<Config>(join(dir, "taskbox.json"));
+}
+
+// The box's first v3 install, as root's install record keeps it: the one before's, or this one's when
+// none before had one (pfstarts.ts: only the first v3 install may start the guard's record afresh).
+export function v3SinceFor(p: Pick<Paths, "installed">, at: string): string {
+  try {
+    const was = JSON.parse(readFileSync(p.installed, "utf8")) as { v3Since?: unknown; installedAt?: unknown; release?: unknown };
+    if (typeof was.v3Since === "string") return was.v3Since;
+    // An install before this one with a signed release is v3's (the hop's, or one before v3Since): it was the first.
+    if (typeof was.installedAt === "string" && was.release !== undefined) return was.installedAt;
+  } catch {}
+  return at;
 }

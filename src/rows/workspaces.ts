@@ -31,4 +31,4 @@ export async function workspacesRow(c: CheckContext): Promise<Omit<Check, "name"
   return { status: "OK", detail: `${on.pool.length} pool account${on.pool.length === 1 ? "" : "s"}; ${sizes}${over.length ? ` (${over.join("; ")}: the budget decides)` : ""}${now}` };
 }
 
-export const WORKSPACE_ROWS: Row[] = [{ name: "Workspaces", fn: workspacesRow, order: 8040, in: ["check"] }];
+export const WORKSPACE_ROWS: Row[] = [{ name: "Workspaces", fn: workspacesRow, order: 8050, in: ["check"] }];
