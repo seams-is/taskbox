@@ -211,7 +211,7 @@ export async function waitRun(c: BoxCtx, o: { interrupt?: Interrupt } = {}): Pro
 // The words wait prints for a state, such as "approved as light (you asked for heavy)".
 function lineFor(w: Workspace): string {
   if (w.state === "approved" && w.size !== w.asked) return `approved as ${w.size} (you asked for ${w.asked})`;
-  if (w.state === "denied") return `denied${w.reason ? `: ${w.reason}` : ""}`;
+  if (w.state === "denied") return `denied (unsigned)${w.reason ? `: ${w.reason}` : ""}`;
   if (w.state === "expired") return `expired: ${w.reason ?? "nobody approved it in time"}`;
   if (w.state === "ready") return `ready in ${w.user}. taskbox workspace connect ${w.name} works now.`;
   if (w.state === "paused") return `paused${w.pausedBy ? ` ${w.pausedBy === "owner" ? "by an approver" : `(${w.pausedBy})`}` : ""}`;
