@@ -3,6 +3,8 @@
 // tags are checked against the release pattern, asset links against the one form GitHub uses, and
 // every download is capped and has a time limit.
 import { type Clock, realClock } from "../clock.ts";
+import { REVOKES } from "../release/revokes.ts";
+import { REVOKE } from "../release/signers.ts";
 import type { Source } from "./home.ts";
 
 export const API = "https://api.github.com";
@@ -96,11 +98,13 @@ export async function findRelease(fetch: Fetch, s: Source, tag?: string, limitMs
   }
   const t = one.tag_name as string;
   const want = [STATEMENT, SIGNATURE, tarballName(t)];
+  // Read when a release has them: its revoke list, and a revoke signed on its own (release/revokes.ts).
+  const also = [REVOKES, REVOKE, `${REVOKE}.sig`];
   const assets: Record<string, string> = {};
   for (const a of Array.isArray(one.assets) ? one.assets : []) {
     const name = (a as Record<string, unknown>)?.name;
     const link = (a as Record<string, unknown>)?.browser_download_url;
-    if (typeof name === "string" && want.includes(name) && link === `https://github.com/${s.owner}/${s.repo}/releases/download/${t}/${name}`) assets[name] = link;
+    if (typeof name === "string" && (want.includes(name) || also.includes(name)) && link === `https://github.com/${s.owner}/${s.repo}/releases/download/${t}/${name}`) assets[name] = link;
   }
   if (want.some((n) => !assets[n])) return { ok: false, why: "odd" };
   return { ok: true, value: { tag: t, assets } };

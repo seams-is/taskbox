@@ -129,6 +129,7 @@ export interface TestDeps extends UpdateDeps {
   fetched: string[];
   verified: Parameters<Verify>[0][];
   verdict: Verdict;
+  signedVerdict: Awaited<ReturnType<UpdateDeps["signed"]>>;
 }
 
 export function deps(w: World, answers: string[] = []): TestDeps {
@@ -174,6 +175,8 @@ export function deps(w: World, answers: string[] = []): TestDeps {
       verified.push(o);
       return t.verdict;
     },
+    signedVerdict: { ok: false, why: "no verdict set" },
+    signed: async () => t.signedVerdict,
     arch: "arm64",
   };
   return t;

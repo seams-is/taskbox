@@ -7,7 +7,7 @@ import { type CommandSpec, EXIT, type GlobalFlag, parse, usage } from "../comman
 import { realClock } from "../clock.ts";
 import { envelope } from "../envelope.ts";
 import { commandList, registry, shellCommands, firstWords } from "../registry.ts";
-import { verifyRelease } from "../release.ts";
+import { verifyRelease, verifySigned } from "../release.ts";
 import { check } from "./check.ts";
 import { grouped, makeKey } from "./signer.ts";
 import { ghAt, notifyOnce, postArgv } from "./notify.ts";
@@ -215,7 +215,7 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     case "self update":
       return answer(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true, auto: p.opts.auto === true }));
     case "self rollback":
-      return print(rollback(d));
+      return print(await rollback(d));
     case "self check":
       const sd = d.term && d.user && d.exists ? { run: d.run, home: d.home, user: d.user, uid: d.uid ?? -1, userHome: d.userHome, term: d.term, exists: d.exists, say: io.out, ask: d.ask } : undefined;
       if (p.opts.fix) return sd ? fix(sd, d.ask, d.tty) : (io.out("taskbox self check --fix needs a terminal."), EXIT.usage);
@@ -268,10 +268,11 @@ async function signCommand(d: UpdateDeps, version: string | undefined, opts: Rec
   const { existsSync, mkdirSync, readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { fingerprints, GH, revokeTransition, sign } = await import("../release/sign.ts");
-  const { pinFile, signersIn } = await import("./update.ts");
+  const { readPin } = await import("./signers.ts");
   if (opts.fingerprint === true) {
-    const file = existsSync(pinFile(d.home)) ? pinFile(d.home) : signersIn(join(d.home.current, "app"));
-    for (const l of existsSync(file) ? fingerprints(readFileSync(file, "utf8")) : ["  No release key is pinned on this controller."]) io.out(l);
+    // This controller's own pin only, never a release's signers file.
+    const pin = readPin(d.home);
+    for (const l of typeof pin === "string" ? ["  No release key is pinned on this controller."] : fingerprints(pin.pinned)) io.out(l);
     return EXIT.ok;
   }
   if (!version) return io.out("taskbox sign takes the release's version, such as 3.0.1."), EXIT.usage;
@@ -311,6 +312,7 @@ export function realDeps(): UpdateDeps {
     tty: process.stdin.isTTY === true,
     fetch: (url, init) => fetch(url, init),
     verify: (o) => verifyRelease(keygen, o),
+    signed: (o) => verifySigned(keygen, o),
     arch: process.arch,
     uid: process.getuid?.() ?? -1,
   };
