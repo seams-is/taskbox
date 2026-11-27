@@ -62,6 +62,7 @@ export interface JobRecord {
   state?: JobState;
   reason?: FailReason;
   stoppedBy?: string;
+  tools?: string; // the tool cache's generation the VM's base carried (tools/), short
 }
 
 // The runner's own word for a job's end, from "Job <name> completed with result: <Result>".

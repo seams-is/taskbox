@@ -7,7 +7,7 @@ import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
 import { eventLog, readEvents } from "../src/core/events.ts";
 import { begin, end, listOps, type Op, readOp, toPhase, writeOp } from "../src/core/ops.ts";
-import { rootStateOf } from "../src/core/paths.ts";
+import { loopState, rootStateOf } from "../src/core/paths.ts";
 import { Verified } from "../src/core/statement.ts";
 import { watchPaths, writeBeat } from "../src/guardwatch.ts";
 import { handlers } from "../src/handlers/op.ts";
@@ -199,6 +199,26 @@ describe("op cancel", () => {
       // A drain is the owner's or the service account's to start, so an admin's cancel is refused.
       const d = await b.drain();
       expect((await b.cli(["op", "cancel", d, "-y"], { admin: true })).code).toBe(1);
+    },
+    SLOW,
+  );
+
+  test(
+    "a loop op its type marks byLoop is cancelled at the box by the service account; the loop reads it at its next step",
+    async () => {
+      const b = await box();
+      const f = { dir: loopState(b.p.state).ops, owner: me };
+      mkdirSync(f.dir, { recursive: true });
+      const x = begin([], opType("tool-refresh"), { subject: "box", params: {}, actor: "service" }, b.sys.now());
+      if (x.kind !== "start") throw new Error("no op");
+      writeOp(f, x.op);
+      expect((await b.cli(["op", "show", x.op.id])).said).toContain(`taskbox op cancel ${x.op.id}, at the box as the service account, cancels it. taskbox tool refresh starts it again; the pins never change.`);
+      const r = await b.cli(["op", "cancel", x.op.id, "-y"]);
+      expect(r.code).toBe(0);
+      expect(r.said).toContain(`The tool-refresh ${x.op.id} is cancelled; the loop stops it at its next step.`);
+      const after = readOp(f, x.op.id);
+      expect(after.kind === "ok" && after.value.state).toBe("cancelled");
+      expect(after.kind === "ok" && "writer" in after.value).toBe(false);
     },
     SLOW,
   );

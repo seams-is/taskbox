@@ -33,6 +33,11 @@ export interface VmEngine {
   clone(image: string, vm: string): Promise<RunResult>;
   size(vm: string, cpus: number, memoryMB: number): Promise<RunResult>; // on the clone, never the image
   start(vm: string, net: NetPolicy): Proc; // runs until stopped
+  // The tool cache's bake (tools/bake.ts): the one boot of a base VM, with one folder shared into it
+  // read-only under tag. No job VM is started this way.
+  startBake(vm: string, net: NetPolicy, share: { path: string; tag: string }): Proc;
+  // Where a VM's disk is, for the hash the bake records.
+  diskPath(vm: string): string;
   exec(vm: string, cmd: string[], stdin?: string | Uint8Array, timeoutMs?: number): Promise<RunResult>; // never over SSH
   execStream(vm: string, cmd: string[], stdin: string, onLine: (l: string) => void): Proc;
   ip(vm: string): Promise<string>;

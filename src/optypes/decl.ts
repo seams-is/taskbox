@@ -11,5 +11,8 @@ export type Starter = "owner" | "service" | "admin";
 export interface OpDecl extends OpType {
   who: readonly Starter[]; // who may start it at the box or from the controller
   wayBack: string; // said when it can't be cancelled, or is past its point of no return
+  // The loop runs it and reads its record before each step: the service account cancels it at the
+  // box by ending that record, since the guard never writes in the service's home.
+  byLoop?: true;
   cancel?(c: HandlerCtx, op: Op, actor: string): Promise<Answer>;
 }

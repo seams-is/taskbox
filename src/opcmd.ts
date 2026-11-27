@@ -67,8 +67,8 @@ export function opLines(o: Op): string[] {
 function cancelLine(o: Op): string {
   const d = declOf(o.type);
   if (!d) return "It can't be cancelled: this release doesn't declare its type.";
+  if ((o as { writer?: string }).writer === "loop") return d.byLoop && o.cancellable && !pastNoReturn(o) ? `taskbox op cancel ${o.id}, at the box as the service account, cancels it. ${d.wayBack}` : `It can't be cancelled from here: the loop runs it. ${d.wayBack}`;
   if (!d.cancel || !o.cancellable) return `It can't be cancelled. ${d.wayBack}`;
-  if ((o as { writer?: string }).writer === "loop") return `It can't be cancelled from here: the loop runs it. ${d.wayBack}`;
   if (pastNoReturn(o)) return `It is past ${o.pointOfNoReturn}, so it can't be cancelled. ${d.wayBack}`;
   return `taskbox op cancel ${o.id} cancels it. ${d.wayBack}`;
 }
@@ -210,11 +210,34 @@ export async function opCancel(c: BoxCtx): Promise<Outcome> {
     c.say(`The ${clean(op.type, 20)} has ended already: ${op.state}.`);
     return { exit: EXIT.ok, changed: false, result: { op: opJson(op) } };
   }
-  // The loop's own ops: the guard can't end them, so the type's way back is said.
+  // The loop's own ops: the guard never writes in the service's home. One its type marks byLoop the
+  // service account ends here, and the loop stops it at its next step; any other says its way back.
   if (op.writer !== "guard") {
-    const line = `The ${clean(op.type, 20)} can't be cancelled from here: the loop runs it. ${declOf(op.type)?.wayBack ?? "It can only finish."}`;
-    c.say(line);
-    return { exit: EXIT.failed, error: err("failed", line) };
+    const d = declOf(op.type);
+    if (!d?.byLoop || !op.cancellable || pastNoReturn(op) || c.uid !== c.cu) {
+      const line = `The ${clean(op.type, 20)} can't be cancelled ${d?.byLoop ? "but at the box as the service account" : "from here: the loop runs it"}. ${d?.wayBack ?? "It can only finish."}`;
+      c.say(line);
+      return { exit: EXIT.failed, error: err(d?.byLoop ? "denied" : "failed", line, d?.byLoop ? "at-the-box" : null) };
+    }
+    if (c.flags.yes === undefined && c.deps.terminal?.() === false) {
+      const line = "op cancel asks a typed yes, and there is no terminal here. Add -y to answer it.";
+      c.say(line);
+      return { exit: EXIT.usage, error: err("usage", line, "at-the-box") };
+    }
+    if (c.flags.yes === undefined && (await c.ask(`Cancel the ${clean(op.type, 20)} ${id}? Type yes to go on: `)).trim().toLowerCase() !== "yes") {
+      c.say("Not cancelled. Nothing changed.");
+      return { exit: EXIT.failed, did: "Nothing changed." };
+    }
+    const { cancel, writeOp } = await import("./core/ops.ts");
+    const done = cancel(op, c.ops.sys.now(), "service");
+    if (!done.ok) {
+      c.say(done.why);
+      return { exit: EXIT.failed, error: err("failed", done.why) };
+    }
+    const { writer: _, ...record } = done.op;
+    writeOp({ dir: loopState(c.own.state).ops, owner: c.cu! }, record as Op);
+    c.say(`The ${clean(op.type, 20)} ${id} is cancelled; the loop stops it at its next step.`);
+    return { exit: EXIT.ok, changed: true, result: { op: id }, did: `Cancelled the ${clean(op.type, 20)}.` };
   }
   const admin = c.uid !== c.cu && (c.uid === 0 || c.uid === (c.deps.rootUid ?? 0));
   if (!admin && c.uid !== c.cu) {

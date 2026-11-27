@@ -13,6 +13,7 @@ import * as daemons from "./daemons.ts";
 import * as drain from "./drain.ts";
 import * as guardwatch from "./guardwatch.ts";
 import * as hello from "./hello.ts";
+import * as image from "./image.ts";
 import * as install from "./install.ts";
 import * as job from "./job.ts";
 import * as key from "./key.ts";
@@ -32,6 +33,7 @@ import * as start from "./start.ts";
 import * as status from "./status.ts";
 import * as stop from "./stop.ts";
 import * as template from "./template.ts";
+import * as tool from "./tool.ts";
 import * as unlock from "./unlock.ts";
 import * as update from "./update.ts";
 import * as workspace from "./workspace.ts";
@@ -43,6 +45,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "drain.ts", module: drain },
   { file: "guardwatch.ts", module: guardwatch },
   { file: "hello.ts", module: hello },
+  { file: "image.ts", module: image },
   { file: "install.ts", module: install },
   { file: "job.ts", module: job },
   { file: "key.ts", module: key },
@@ -62,6 +65,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "status.ts", module: status },
   { file: "stop.ts", module: stop },
   { file: "template.ts", module: template },
+  { file: "tool.ts", module: tool },
   { file: "unlock.ts", module: unlock },
   { file: "update.ts", module: update },
   { file: "workspace.ts", module: workspace },

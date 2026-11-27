@@ -139,6 +139,7 @@ const SLOT_WORDS: Record<string, string> = {
   "starting a VM": "Starting a fresh VM.",
   "waiting for a job": "Ready, waiting for a job from GitHub.",
   "proving Linux": "Proving a Linux VM under Softnet reaches nothing on the box or the LAN. It runs no job.",
+  "baking tools": "Baking the pinned tools into a base VM for jobs to clone. It runs no job.",
   "running a job": "Running a job",
   "cleaning up": "Deleting the VM after its job.",
   idle: "Between jobs.",
