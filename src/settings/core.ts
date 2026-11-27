@@ -7,6 +7,7 @@ import { checkAccounts } from "./accounts.ts";
 import { type AwaySettings, checkAway } from "./away.ts";
 import { type BudgetSettings, checkKind, checkLabels, checkSizes, IMAGE_PIN, type Kind, type KindSettings, type SizeSettings, V2_MAX_SLOTS, DEFAULT_TURN_IDLE_MINUTES } from "./kinds.ts";
 import { checkScheduling, type ClassRule, type SourceSettings, type Timings } from "./scheduling.ts";
+import { checkTools, type ToolsSettings } from "../tools/settings.ts";
 
 export interface Config extends BudgetSettings {
   org: string; // the GitHub organisation that holds the App, taskbox's repo and the runner group
@@ -99,6 +100,8 @@ export interface Config extends BudgetSettings {
   away?: Partial<AwaySettings>;
   // The program that runs the VMs (src/vm.ts). "tart", the default, is the only one allowed today.
   engine?: EngineName;
+  // The pinned tool cache (tools/settings.ts): pins baked into each kind's base VM.
+  tools?: ToolsSettings;
   // Set by forKind: which kind this view of the settings is for (absent means macOS), and the
   // settings as loaded, so a view of one kind can still give the other's.
   kind?: Kind;
@@ -144,6 +147,7 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
   checkLabels(c);
   checkScheduling(c, warn);
   checkAway(c, warn);
+  checkTools(c);
   if ("turnIdleMinutes" in c && (!Number.isInteger(c.turnIdleMinutes) || c.turnIdleMinutes! < 1 || c.turnIdleMinutes! > 60)) throw new Error("taskbox.json: turnIdleMinutes is 1 to 60");
   if ("quietTurnMinutes" in c && (!Number.isInteger(c.quietTurnMinutes) || c.quietTurnMinutes! < (c.turnIdleMinutes ?? DEFAULT_TURN_IDLE_MINUTES) || c.quietTurnMinutes! > 240)) throw new Error("taskbox.json: quietTurnMinutes is turnIdleMinutes to 240");
   if ("engine" in c && !(ENGINES as readonly unknown[]).includes(c.engine)) throw new Error(`taskbox.json: engine is one of ${ENGINES.join(", ")}`);

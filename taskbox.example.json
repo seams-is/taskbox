@@ -1,5 +1,5 @@
 {
-  "$comment": "One box's settings, with made-up values. Copy it to taskbox.json in your private copy of taskbox and change each value. org is your organisation, jobsFrom the one repo whose jobs the box runs, appId the App's ID, runnerGroup the group's name. Every setting left out has a default. away.restartPlan is your choice: kvm, filevault-off or accept. accounts names the box's accounts by role: the install makes service and agent, and people, your own standard accounts for Screen Sharing, may be empty. ssh, which may be left out, names the people who may also log in by Tailscale SSH. VMs pack by memory and CPUs: up to vmsAtMost at once, in what the box has beyond what it keeps for itself (boxKeepsGB, by default 35% of its memory, 4 to 16 GB). A job picks a size with one of the size's labels; the kind's own labels are its default size.",
+  "$comment": "One box's settings, with made-up values. Copy it to taskbox.json in your private copy of taskbox and change each value. org is your organisation, jobsFrom the one repo whose jobs the box runs, appId the App's ID, runnerGroup the group's name. Every setting left out has a default. away.restartPlan is your choice: kvm, filevault-off or accept. accounts names the box's accounts by role: the install makes service and agent, and people, your own standard accounts for Screen Sharing, may be empty. ssh, which may be left out, names the people who may also log in by Tailscale SSH. VMs pack by memory and CPUs: up to vmsAtMost at once, in what the box has beyond what it keeps for itself (boxKeepsGB, by default 35% of its memory, 4 to 16 GB). A job picks a size with one of the size's labels; the kind's own labels are its default size. tools.entries pins files jobs would download, each by name, os, https URL and SHA-256: the box fetches each once and bakes it into each kind's base VM, which every job VM clones.",
   "org": "example-org",
   "repo": "taskbox",
   "project": "app",
@@ -35,5 +35,6 @@
   "away": {
     "restartPlan": "accept"
   },
+  "tools": { "maxGB": 5, "entries": [] },
   "accounts": { "service": "taskbox", "agent": "taskbox-agent", "people": [] }
 }
