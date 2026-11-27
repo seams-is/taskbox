@@ -9,13 +9,14 @@ import type { Answer } from "../core/dispatch.ts";
 import type { EventLog } from "../core/events.ts";
 import { begin, end, listOps, type Op, opEvent, readOp, toPhase, writeOp } from "../core/ops.ts";
 import type { Gate } from "../update/gate.ts";
-import { drop, type Moment, raise, readPending, updatePending, waiting as live } from "../core/pending.ts";
+import { createHash } from "node:crypto";
+import { drop, type Moment, raise, readPending, showLines, SHOWS_MAX, updatePending, waiting as live } from "../core/pending.ts";
 import type { RootState } from "../core/paths.ts";
 import type { WriteRules } from "../core/rootfile.ts";
 import { opType } from "../optypes/index.ts";
 import { type AdminSsh, adminSshWhenProblem } from "./adminssh.ts";
 import { docProblem, findSettingsRepo, validateCommit } from "./commit.ts";
-import { type Change, guardedChanges, holdBack, stable } from "./guarded.ts";
+import { type Change, guardedChanges, holdBack, stable, WORDS_MAX } from "./guarded.ts";
 import { type InForce, readInForce, readState, readValidated, REPO, type SettingsFiles, type SettingsState, updateState, type Validated, type Waiting, writeInForce, writeValidated } from "./inforce.ts";
 
 type Doc = Record<string, unknown>;
@@ -85,18 +86,33 @@ function inForceOf(v: Validated, doc: Doc, held: string[], now: number): InForce
   return { v: 1, sha: v.sha, at: now, held, doc, overlayKeys: v.overlay ? Object.keys(v.overlay) : [], overlayIgnored: v.overlayIgnored, ...(v.overlayProblem ? { overlayProblem: v.overlayProblem } : {}), unknown: v.unknown };
 }
 
-// The confirm item a waiting commit raises: the box's own words for each change, and what applies on
-// the yes. Nothing secret is in settings.
-async function raiseConfirm(d: SettingsDeps, v: Validated, changes: Change[], actor: string, op: string): Promise<string | undefined> {
-  const shows = [`Settings commit ${short(v.sha)} from ${v.repo}:`, ...changes.map((c) => c.words)].slice(0, 10);
+// What confirm shows for a commit's waiting changes: a header, then each change's words whole. Its
+// digest goes in the confirm item and in what waits, and a yes applies only when the same words come
+// out of the commit and the settings in force at that moment (takeConfirmed).
+export const confirmShows = (v: Pick<Validated, "sha" | "repo">, changes: readonly Change[]): string[] => showLines([`Settings commit ${short(v.sha)} from ${v.repo}:`, ...changes.map((c) => c.words)]);
+const shownOf = (lines: readonly string[]) => createHash("sha256").update(lines.join("\n")).digest("hex");
+// Why a commit's waiting changes can't be confirmed as they stand, or undefined: confirm shows every
+// change whole, so one that can't be shown is refused, never cut.
+export function confirmTooBig(v: Pick<Validated, "sha" | "repo">, changes: readonly Change[]): string | undefined {
+  const long = changes.find((c) => c.words.length > WORDS_MAX);
+  if (long) return `its change to ${long.path} takes ${long.words.length} characters to say, and confirm shows a change of at most ${WORDS_MAX} whole. Make that change in smaller commits`;
+  const n = confirmShows(v, changes).length;
+  return n > SHOWS_MAX ? `its guarded changes take ${n} lines to show, and confirm shows at most ${SHOWS_MAX}. Make them in smaller commits` : undefined;
+}
+
+// The confirm item a waiting commit raises: the box's own words for each change, every line of them,
+// and what applies on the yes. Nothing secret is in settings.
+async function raiseConfirm(d: SettingsDeps, v: Validated, changes: Change[], actor: string, op: string): Promise<{ id: string; shown: string } | undefined> {
+  const shows = confirmShows(v, changes);
+  const shown = shownOf(shows);
   const at = await d.moment();
   return updatePending(d.state.pending, w(d), (s) => {
-    const r = raise(s, { kind: "settings", subject: "settings", shows, actor, op, payload: { sha: v.sha, paths: changes.map((c) => c.path) } }, at);
+    const r = raise(s, { kind: "settings", subject: "settings", shows, actor, op, payload: { sha: v.sha, paths: changes.map((c) => c.path), shown } }, at);
     if (!r.ok) {
       d.log(`settings: the confirm for ${short(v.sha)} couldn't be raised: ${r.why}`);
       return { state: s, out: undefined };
     }
-    return { state: r.state, out: r.item.id };
+    return { state: r.state, out: { id: r.item.id, shown } };
   });
 }
 
@@ -136,6 +152,8 @@ export async function takeCommit(d: SettingsDeps, a: { repo: string; sha: string
   if (sshWhy) return refuse(d, op, a, now, sshWhy);
   writeValidated(d.files, v, w(d));
   const widening = guardedChanges(base.doc, v.doc).filter((x) => !x.narrows);
+  const big = widening.length ? confirmTooBig(v, widening) : undefined;
+  if (big) return refuse(d, op, a, now, big);
   const held = widening.map((x) => x.path);
   const composed = holdBack(v.doc, base.doc, held);
   // With the guarded keys held back the settings must still pass; if they don't, nothing applies
@@ -158,7 +176,7 @@ export async function takeCommit(d: SettingsDeps, a: { repo: string; sha: string
   let wait: Waiting = { sha: v.sha, op: op.id, phase: "needs-owner", changes: all, first: base.first };
   if (base.first) {
     const id = await raiseConfirm(d, v, all, "taskbox", op.id);
-    wait = { ...wait, phase: "needs-confirm", ...(id ? { pending: id } : {}) };
+    wait = { ...wait, phase: "needs-confirm", ...(id ? { pending: id.id, shown: id.shown } : {}) };
     op = phase(d, op, "needs-confirm", `${all.length} guarded change${all.length === 1 ? "" : "s"}: taskbox confirm at the box`);
   } else op = phase(d, op, "needs-owner", `${all.length} guarded change${all.length === 1 ? "" : "s"}: taskbox settings apply ${short(v.sha)}`);
   d.events.write({ type: "settings.waiting", actor: "taskbox", subject: "settings", op: op.id, text: `Settings commit ${short(v.sha)} changes ${all.length} guarded key${all.length === 1 ? "" : "s"} (${all.map((x) => x.path).join(", ")}): ${base.first ? "taskbox confirm at the box" : `taskbox settings apply ${v.sha}`}.`.slice(0, 240), data: { sha: v.sha, paths: all.map((x) => x.path) } });
@@ -280,7 +298,7 @@ async function reraise(d: SettingsDeps): Promise<void> {
   const v = readValidated(d.files, wt.sha, d.rootUid);
   if (v.kind !== "ok") return;
   const id = await raiseConfirm(d, v.value, wt.changes.filter((c) => !wt.appliedBy || c.tier === 1), wt.appliedBy ?? "taskbox", wt.op);
-  if (id) await updateState(d.files, w(d), (x) => ({ state: x.waiting?.sha === wt.sha ? { ...x, waiting: { ...x.waiting, pending: id } } : x, out: undefined }));
+  if (id) await updateState(d.files, w(d), (x) => ({ state: x.waiting?.sha === wt.sha ? { ...x, waiting: { ...x.waiting, pending: id.id, shown: id.shown } } : x, out: undefined }));
 }
 
 // The owner's signed settings apply: the commit's second-tier keys apply now, and its first-tier
@@ -318,7 +336,7 @@ export async function applySigned(d: SettingsDeps, sha: string, actor: string): 
   if (!id) return { ok: false, code: "failed", said: "The change couldn't wait for confirm: too many wait already. Type taskbox confirm at the box.", op: wt.op };
   const op = readSettingsOp(d, wt.op);
   if (op?.state === "running") phase(d, op, "needs-confirm", `${waitFor.length} first-tier change${waitFor.length === 1 ? "" : "s"}: taskbox confirm at the box`);
-  await updateState(d.files, w(d), (x) => ({ state: { ...x, ...(through.length ? { inUse: sha } : {}), waiting: { ...wt, phase: "needs-confirm", pending: id, appliedBy: actor, changes: waitFor } }, out: undefined }));
+  await updateState(d.files, w(d), (x) => ({ state: { ...x, ...(through.length ? { inUse: sha } : {}), waiting: { ...wt, phase: "needs-confirm", pending: id.id, shown: id.shown, appliedBy: actor, changes: waitFor } }, out: undefined }));
   return { ok: false, code: "needs-confirm", said: `${through.length ? `Applied ${through.map((c) => c.path).join(", ")}. ` : ""}${waitFor.map((c) => c.path).join(", ")} wait${waitFor.length === 1 ? "s" : ""} for confirm at the box: taskbox confirm there.`.slice(0, 240), op: wt.op };
 }
 
@@ -347,6 +365,22 @@ export async function takeConfirmed(d: SettingsDeps): Promise<string[]> {
     if (v.kind !== "ok" || why) {
       endOp(d, wt.op, "failed", { why: `commit ${short(c.sha)} can't apply: ${why}` });
       next = { ...next, waiting: undefined, problem: { sha: c.sha, why: `it can't apply: ${why}`.slice(0, 240), at: now } };
+      continue;
+    }
+    // The yes is to the words confirm showed. The same words must come out of the commit and what is
+    // in force now, or nothing applies and confirm asks again with the words as they now stand.
+    const now_ = guardedChanges(baselineOf(d).doc, v.value.doc).filter((x) => !x.narrows);
+    if (!wt.shown || shownOf(confirmShows(v.value, now_)) !== wt.shown) {
+      const id = now_.length && !confirmTooBig(v.value, now_) ? await raiseConfirm(d, v.value, now_, wt.appliedBy ?? "taskbox", wt.op) : undefined;
+      if (!id) {
+        endOp(d, wt.op, "failed", { why: `commit ${short(c.sha)} changed against the settings in force after confirm showed it` });
+        next = { ...next, waiting: undefined, passed: c.sha };
+        lines.push(`settings: commit ${short(c.sha)} no longer matches what confirm showed, so nothing applied`);
+        continue;
+      }
+      d.events.write({ type: "settings.waiting", actor: "taskbox", subject: "settings", op: wt.op, text: `Settings commit ${short(c.sha)} changes something other than confirm showed, since the settings in force moved. Nothing applied; taskbox confirm asks again.`, data: { sha: c.sha, paths: now_.map((x) => x.path) } });
+      next = { ...next, waiting: { ...wt, changes: now_, pending: id.id, shown: id.shown } };
+      lines.push(`settings: commit ${short(c.sha)} no longer matches what confirm showed; it asks again`);
       continue;
     }
     writeInForce(d.files, inForceOf(v.value, v.value.doc, [], now), w(d));

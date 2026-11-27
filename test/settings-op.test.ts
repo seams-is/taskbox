@@ -9,7 +9,7 @@ import type { Answer, Ask } from "../src/broker.ts";
 import { applyConfirm } from "../src/confirmapply.ts";
 import { loadConfig } from "../src/config.ts";
 import { readOp } from "../src/core/ops.ts";
-import { readPending, waiting as live } from "../src/core/pending.ts";
+import { readPending, updatePending, waiting as live } from "../src/core/pending.ts";
 import { rootStateIn } from "../src/core/paths.ts";
 import { handlers } from "../src/handlers/settings.ts";
 import { classOf } from "../src/settings/classes.ts";
@@ -145,11 +145,12 @@ describe("the guarded keys", () => {
     expect(guardedChanges({ ...BASE, tools: { entries: [PIN] } }, BASE)[0]).toMatchObject({ path: "tools.entries", narrows: true });
   });
 
-  test("the words say each change, on one line of at most 120 characters", () => {
+  test("the words say each change whole: a long one is never cut", () => {
     const [c] = guardedChanges(BASE, { ...BASE, tailnetTag: "tag:taskbox-studio" });
     expect(c!.words).toBe('tailnetTag: nothing to "tag:taskbox-studio" (which of the tailnet\'s rules reach the box)');
     const long = guardedChanges(BASE, { ...BASE, tools: { entries: Array.from({ length: 5 }, (_, i) => ({ ...PIN, name: `t${i}.tar.gz` })) } })[0]!;
-    expect(long.words.length).toBeLessThanOrEqual(120);
+    expect(long.words.length).toBeGreaterThan(120);
+    for (let i = 0; i < 5; i++) expect(long.words).toContain(`t${i}.tar.gz`);
   });
 });
 
@@ -317,6 +318,58 @@ describe("the settings op", () => {
     expect(b.op(old)).toMatchObject({ state: "cancelled", why: expect.stringMatching(/newer settings commit/) });
     expect(await b.pending()).toEqual([]);
     expect(b.inForce()).toMatchObject({ sha: sha(3), held: [] });
+  });
+
+  test("confirm shows every guarded change, the tenth and the last too, and a long one whole", async () => {
+    const b = box();
+    expect(await readHead(b.d)).toMatch(/waits for confirm$/);
+    const [item] = await b.pending();
+    const paths = b.st().waiting!.changes.map((c) => c.path);
+    expect(paths.length).toBeGreaterThan(9);
+    const said = item!.shows.join("\n").replace(/\n {4}/g, "");
+    for (const c of b.st().waiting!.changes) expect(said).toContain(c.words);
+    expect(item!.shows.every((l) => l.length <= 120)).toBe(true);
+    const pins = Array.from({ length: 5 }, (_, i) => ({ ...PIN, name: `t${i}.tar.gz` }));
+    const c = box({ v2: BASE });
+    await readHead(c.d);
+    c.commit(2, { ...BASE, tools: { entries: pins }, accounts: { ...CFG.accounts, people: ["person1"] } });
+    await readHead(c.d);
+    await applySigned(c.d, sha(2), "owner");
+    // The pins went through with the signed apply; the person waits, and a later look shows that whole.
+    expect((await c.pending())[0]!.shows).toEqual([`Settings commit ${sha(2).slice(0, 12)} from example-org/box-settings:`, 'accounts.people: [] to ["person1"] (who reaches the box)']);
+    const words = guardedChanges(BASE, { ...BASE, tools: { entries: pins } })[0]!.words;
+    const { showLines } = await import("../src/core/pending.ts");
+    expect(showLines([words]).join("").replace(/ {4}/g, "")).toBe(words.replace(/ {4}/g, ""));
+  });
+
+  test("a commit with more than confirm can show whole is refused, and says why", async () => {
+    const b = box({ v2: BASE });
+    await readHead(b.d);
+    b.commit(2, { ...BASE, tools: { entries: Array.from({ length: 40 }, (_, i) => ({ ...PIN, name: `tool-${i}.tar.gz` })) } });
+    expect(await readHead(b.d)).toMatch(/isn't valid: its change to tools\.entries takes \d+ characters to say, and confirm shows a change of at most 2000 whole/);
+    expect(b.inForce().sha).toBe(sha(1));
+    expect(await b.pending()).toEqual([]);
+  });
+
+  test("a yes applies only the words confirm showed: when what is in force moved, nothing applies and it asks again", async () => {
+    const b = box({ v2: BASE });
+    await readHead(b.d);
+    b.commit(2, { ...BASE, accounts: { ...CFG.accounts, people: ["person1"] }, tailnetTag: "tag:taskbox-studio" });
+    await readHead(b.d);
+    await applySigned(b.d, sha(2), "owner");
+    // Behind the shown words, what is in force changes, so the commit now also changes something else.
+    const f = b.inForce();
+    writeInForce(b.files, { ...f, doc: { ...f.doc, tailnetTag: "tag:other" } }, { rootUid: me });
+    const first = (await b.pending())[0]!;
+    expect(await b.confirmYes()).toEqual([`settings: commit ${sha(2).slice(0, 12)} no longer matches what confirm showed; it asks again`]);
+    expect(b.inForce().doc).toMatchObject({ accounts: { people: [] }, tailnetTag: "tag:other" });
+    // confirm took the first item out; the guard raised the words as they now stand.
+    const again = (await b.pending()).at(-1)!;
+    expect(again.id).not.toBe(first.id);
+    await updatePending(b.state.pending, { rootUid: me }, (x) => ({ state: { v: 1, items: x.items.filter((i) => i.id !== first.id) }, out: undefined }));
+    expect(again.shows.join(" ")).toContain('tailnetTag: "tag:other" to "tag:taskbox-studio"');
+    expect(await b.confirmYes()).toEqual([`settings: commit ${sha(2).slice(0, 12)} confirmed and applied`]);
+    expect(b.inForce().doc).toMatchObject({ accounts: { people: ["person1"] }, tailnetTag: "tag:taskbox-studio" });
   });
 
   test("settings apply names only the commit that waits", async () => {

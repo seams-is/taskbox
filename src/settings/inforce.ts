@@ -8,7 +8,7 @@
 import { lstatSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isObj, plain, readOwnedJson, type Read, time, updateOwnedJson, writeOwnedText, type WriteRules } from "../core/rootfile.ts";
-import type { Change } from "./guarded.ts";
+import { type Change, WORDS_MAX } from "./guarded.ts";
 
 export const SETTINGS_V = 1;
 export const DOC_MAX = 256 * 1024;
@@ -74,6 +74,7 @@ export interface Waiting {
   changes: Change[]; // the widening guarded changes, both tiers, as the commit makes them
   first: boolean; // the box's first commit: confirm stands in for settings apply
   pending?: string; // the confirm item, once raised
+  shown?: string; // sha256 of the lines that confirm item shows: a yes applies only those words
   appliedBy?: string; // who signed settings apply
 }
 
@@ -111,7 +112,7 @@ export function parseInForce(v: unknown): InForce | string {
 }
 
 function changeOk(c: unknown): boolean {
-  return isObj(c) && plain(c.path, 60) && (c.tier === 1 || c.tier === 2) && typeof c.narrows === "boolean" && plain(c.words, 120);
+  return isObj(c) && plain(c.path, 60) && (c.tier === 1 || c.tier === 2) && typeof c.narrows === "boolean" && plain(c.words, WORDS_MAX);
 }
 export function parseState(v: unknown): SettingsState | string {
   if (!isObj(v) || v.v !== SETTINGS_V) return "it isn't a settings state taskbox reads";
@@ -123,7 +124,7 @@ export function parseState(v: unknown): SettingsState | string {
   if (w !== undefined) {
     if (!isObj(w) || typeof w.sha !== "string" || !SHA.test(w.sha) || typeof w.op !== "string" || !/^op_[0-9A-HJKMNP-TV-Z]{26}$/.test(w.op)) return "what waits isn't one taskbox reads";
     if ((w.phase !== "needs-owner" && w.phase !== "needs-confirm") || typeof w.first !== "boolean" || !Array.isArray(w.changes) || w.changes.length > 60 || !w.changes.every(changeOk)) return "what waits isn't one taskbox reads";
-    if ((w.pending !== undefined && !(typeof w.pending === "string" && /^pc_[0-9A-HJKMNP-TV-Z]{26}$/.test(w.pending))) || (w.appliedBy !== undefined && !plain(w.appliedBy, 120))) return "what waits isn't one taskbox reads";
+    if ((w.pending !== undefined && !(typeof w.pending === "string" && /^pc_[0-9A-HJKMNP-TV-Z]{26}$/.test(w.pending))) || (w.appliedBy !== undefined && !plain(w.appliedBy, 120)) || (w.shown !== undefined && !(typeof w.shown === "string" && /^[0-9a-f]{64}$/.test(w.shown)))) return "what waits isn't one taskbox reads";
   }
   if (v.confirmed !== undefined && !(Array.isArray(v.confirmed) && v.confirmed.length <= 20 && v.confirmed.every((c) => isObj(c) && typeof c.pending === "string" && typeof c.sha === "string" && SHA.test(c.sha) && plain(c.by, 120) && time(c.at) && typeof c.yes === "boolean"))) return "its confirmations aren't ones taskbox reads";
   if (v.readNow !== undefined && typeof v.readNow !== "boolean") return "its readNow isn't true or false";

@@ -195,8 +195,11 @@ describe("the pending store for confirm", () => {
     }
     expect(raise(s, { ...ask, payload: { i: "more" } }, mo(T))).toMatchObject({ ok: false });
     expect(raise(noPending(), { ...ask, payload: { t: "ghs_abcdefghijklmnopqrstuvwxyz0123" } }, mo(T))).toMatchObject({ ok: false, why: expect.stringContaining("secret") });
+    // A long line is wrapped, never cut; more lines than confirm shows are refused.
     const long = raise(noPending(), { ...ask, shows: ["x".repeat(500)] }, mo(T));
-    expect(long.ok && long.item.shows[0]!.length).toBe(120);
+    expect(long.ok && long.item.shows.join("").replace(/ {4}/g, "")).toBe("x".repeat(500));
+    expect(long.ok && long.item.shows.every((l) => l.length <= 120)).toBe(true);
+    expect(raise(noPending(), { ...ask, shows: Array.from({ length: 201 }, (_, i) => `line ${i}`) }, mo(T))).toMatchObject({ ok: false, why: expect.stringContaining("confirm shows at most 200") });
   });
   test("round trip; an edited payload no longer matches its digest and reads as bad", async () => {
     const p = join(tmp(), "pending.json");
