@@ -2,8 +2,8 @@
 // owner shares with them, with their own GitHub and Claude Code sign-ins, so they never hold the
 // owner's keychain, browser or GitHub token and can't raise a Touch ID sheet. Each step says whether
 // it is done; a re-run resumes at the first that isn't. self check reads the same steps.
-import { lstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { ACCOUNT, type Home, readConfig } from "./home.ts";
 import { agentPlist, LABEL } from "./notify.ts";
 import type { Runner } from "./run.ts";
@@ -214,6 +214,8 @@ export const STEPS: Step[] = [
       // A LaunchAgent in the owner's own domain: no admin.
       const plist = join(d.userHome, "Library", "LaunchAgents", `${LABEL}.plist`);
       try {
+        // A fresh user has no LaunchAgents folder yet.
+        mkdirSync(dirname(plist), { recursive: true, mode: 0o755 });
         writeFileSync(plist, agentPlist(join(d.home.bin, "taskbox")), { mode: 0o644 });
       } catch {
         return `${plist} couldn't be written`;

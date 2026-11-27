@@ -12,7 +12,7 @@ import { CEILING, controllerConfig, deps, fail, ok, pairing, runLine, World } fr
 function mac() {
   const d = deps(new World());
   writeConfig(d.home, controllerConfig([pairing(), pairing({ name: "taskbox-2", node: "nBox2CNTRL", installId: "f".repeat(32), agent: "remote" })]));
-  mkdirSync(join(d.userHome, "Library", "LaunchAgents"), { recursive: true });
+  // No LaunchAgents folder: a fresh user has none, and setup makes it (found in Tart).
   const made = { user: false, group: false, folder: false, sudoers: false, gh: false, claude: false, rules: "", agent: false };
   const ran: string[][] = [];
   const termed: string[][] = [];
