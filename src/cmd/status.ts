@@ -61,7 +61,7 @@ async function watchBox(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Prom
     pullLinuxFile: dir ? join(dir, "pull-linux.json") : p.pullLinux,
     loopFile: dir ? join(dir, "loop-state.json") : p.loopState,
     once: !c.flags.watch,
-    stoppedAt: () => readStopped(dir ? { ...p, stopped: join(dir, "stopped.json") } : p)?.at,
+    stoppedAt: () => readStopped(p, c.deps.rootUid ?? 0)?.at,
     others: async () => (dir ? [] : otherLogins(c.ops.sys, c.S, typist())),
     logins: dir ? undefined : async () => recentLine(readSeen(c.own), c.ops.sys.now()),
     unfinished: () => !dir && updateUnfinished(p),

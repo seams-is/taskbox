@@ -1,14 +1,18 @@
 // taskbox op list, op show and op cancel: the box's long operations (core/ops.ts), root's and the
 // loop's. Anyone reads them: each record is 644, read only when its writer owns it. op cancel is
 // the guard's to apply, as every root op has one writer: the owner's is signed (handlers/op.ts); the
-// service account's comes through the service spool, an admin's, as root at the box, through root's admin
-// spool; the op's type says who may cancel it and how (src/optypes/).
+// service account's comes through the service spool, an admin's (run as root at the box) through
+// root's admin spool; the op's type says who may cancel it and how (src/optypes/). The one watcher
+// (followOp) and the one asker of the guard (askGuard) for every command at the box live here too.
 import { declOf } from "./optypes/index.ts";
 import type { BoxCtx, ErrorBody, Outcome } from "./command.ts";
 import { duration, EXIT } from "./command.ts";
 import { listOps, type Op, pastNoReturn, readOp } from "./core/ops.ts";
 import { loopState, rootState } from "./core/paths.ts";
-import { type Interrupt, onInterrupt } from "./availabilitycmd.ts";
+import { GUARD_LABEL } from "./config.ts";
+import { ask, type AskDeps } from "./core/asker.ts";
+import { spoolProblem } from "./core/spool.ts";
+import { beatState, STALE_MS, watchPaths } from "./guardwatch.ts";
 
 export const WATCH_MS = 2_000;
 const err = (code: ErrorBody["code"], message: string, who: ErrorBody["who"] = null): ErrorBody => ({ code, message, fix: null, who });
@@ -49,7 +53,7 @@ export function opLine(o: Op): string {
 export function opLines(o: Op): string[] {
   const at = o.phases.indexOf(o.phase);
   return [
-    `${o.id}: a ${clean(o.type, 20)}, ${o.state}.`,
+    `${o.id}: ${clean(o.type, 20)}, ${o.state}.`,
     `Phase: ${clean(o.phase, 30)}${at >= 0 ? `, ${at + 1} of ${o.phases.length} (${o.phases.join(", ")})` : ""}.`,
     `By: ${clean(o.actor)}. Started ${hhmm(o.startedAt)} UTC${o.endedAt !== null ? `, ended ${hhmm(o.endedAt)} UTC` : ""}.`,
     ...(o.progress?.text ? [`Progress: ${clean(o.progress.text)}.`] : []),
@@ -64,6 +68,7 @@ function cancelLine(o: Op): string {
   const d = declOf(o.type);
   if (!d) return "It can't be cancelled: this release doesn't declare its type.";
   if (!d.cancel || !o.cancellable) return `It can't be cancelled. ${d.wayBack}`;
+  if ((o as { writer?: string }).writer === "loop") return `It can't be cancelled from here: the loop runs it. ${d.wayBack}`;
   if (pastNoReturn(o)) return `It is past ${o.pointOfNoReturn}, so it can't be cancelled. ${d.wayBack}`;
   return `taskbox op cancel ${o.id} cancels it. ${d.wayBack}`;
 }
@@ -87,6 +92,88 @@ export async function opList(c: BoxCtx): Promise<Outcome> {
   return { exit: EXIT.ok, result: { ops: shown.map(opJson) } };
 }
 
+export interface Interrupt {
+  hit(): boolean;
+  off(): void;
+}
+// Ctrl-C while an op is watched: noted, so the watch ends with 130 and the op goes on.
+export function onInterrupt(proc: Pick<NodeJS.Process, "on" | "off"> = process): Interrupt {
+  let hit = false;
+  const f = () => (hit = true);
+  proc.on("SIGINT", f);
+  return { hit: () => hit, off: () => proc.off("SIGINT", f) };
+}
+
+// Why the guard can't take a request now, or undefined: its beat is missing or stale in this boot.
+export async function guardDown(c: Pick<BoxCtx, "ops" | "own" | "deps">): Promise<string | undefined> {
+  const w = watchPaths(c.own);
+  const b = await beatState(c.ops.sys, w.guardBeat, c.deps.rootUid ?? 0, w.record, GUARD_LABEL, c.deps.rootUid ?? 0).catch(() => ({ none: "its beat can't be read", gaveUp: false }));
+  if ("none" in b) return b.none;
+  return b.age > STALE_MS ? `its beat is ${Math.round(b.age / 60_000)} minutes old` : undefined;
+}
+
+// One request to the guard from the box, through the service spool or root's admin spool, and its
+// outcome; or the command's failed answer, said.
+export type Asked = { ok: true; outcome: { ok: boolean; said: string; code?: ErrorBody["code"]; op?: string }; id: string } | { ok: false; out: Outcome };
+export async function askGuard(c: BoxCtx, spool: "service" | "admin", kind: string, body: Record<string, unknown>): Promise<Asked> {
+  const s = rootState(c.root);
+  const rootUid = c.deps.rootUid ?? 0;
+  const dir = spool === "admin" ? s.adminSpool : s.serviceSpool;
+  const uid = spool === "admin" ? rootUid : c.uid;
+  const fail = (line: string): Asked => {
+    c.say(line);
+    return { ok: false, out: { exit: EXIT.failed, error: err("failed", line, "at-the-box") } };
+  };
+  const sp = spoolProblem(dir, uid, rootUid, spool === "admin" ? "root" : "the service account");
+  if (sp) return fail(`The request goes through ${spool === "admin" ? "root's admin spool" : "the service spool"}, and ${sp}. The guard makes it; taskbox check says why it hasn't.`);
+  const d: AskDeps = { spool: dir, outcomes: s.outcomes(spool), nonces: s.nonces, uid, rootUid, clock: c.ops.sys, sleep: (ms) => c.ops.sys.sleep(ms), waiting: () => c.say("Waiting for the box's guard, which takes requests in turn.") };
+  const r = await ask(d, kind, body);
+  if ("no" in r) return fail(r.no);
+  if (!r.outcome) return fail(r.left === "gone" ? `The ${kind} request (${r.id}) left the spool with no answer from the guard. taskbox events says whether it applied.` : `The box's guard hasn't read the ${kind} request (${r.id}), so it may be down. taskbox check says why.`);
+  return { ok: true, outcome: r.outcome, id: r.id };
+}
+
+// The one watcher: an op followed to its end, each change of its phase or progress said once.
+// polls: 0 for no limit. again: the command that watches again; undo: the one that cancels it.
+export async function followOp(c: Pick<BoxCtx, "say" | "ops" | "root" | "deps" | "own" | "cu">, id: string, o: { polls: number; interrupt: Interrupt; again: string; undo?: string; done?: string }): Promise<{ exit: number; result: Record<string, unknown>; error?: ErrorBody; next?: string }> {
+  const tail = `${o.again} watches again${o.undo ? `; ${o.undo} cancels it` : ""}.`;
+  let last = "";
+  let phase = "";
+  for (let i = 0; ; i++) {
+    const cur = findOp(c, id);
+    if (!cur) {
+      const line = `The op ${id} can't be read. taskbox op list shows what there is.`;
+      c.say(line);
+      return { exit: EXIT.failed, result: { op: id }, error: err("failed", line) };
+    }
+    const what = clean(cur.type, 20);
+    const text = clean(cur.progress?.text ?? "");
+    if (i > 0 && cur.phase !== phase && cur.state === "running") c.say(`Now ${clean(cur.phase, 30)}.`);
+    if (text && text !== last) c.say(`${text[0]!.toUpperCase()}${text.slice(1)}.`);
+    last = text;
+    phase = cur.phase;
+    if (cur.state === "succeeded") {
+      c.say(o.done ?? `The ${what} succeeded.`);
+      return { exit: EXIT.ok, result: { op: opJson(cur) } };
+    }
+    if (cur.state !== "running") {
+      const line = `The ${what} ${cur.state}${cur.why ? `: ${clean(cur.why, 200)}` : ""}.`;
+      c.say(line);
+      return { exit: EXIT.failed, result: { op: opJson(cur) }, error: err("failed", line) };
+    }
+    if (o.interrupt.hit()) {
+      c.say(`Stopped watching. The ${what} carries on. ${tail}`);
+      return { exit: EXIT.interrupted, result: { op: opJson(cur) }, next: o.again };
+    }
+    if (o.polls && i >= o.polls) {
+      const line = `The ${what} is still running at the timeout. ${tail}`;
+      c.say(line);
+      return { exit: EXIT.timeout, result: { op: opJson(cur) }, error: err("timeout", line, "waits"), next: o.again };
+    }
+    await c.ops.sys.sleep(WATCH_MS);
+  }
+}
+
 export async function opShow(c: BoxCtx, o: { interrupt?: Interrupt } = {}): Promise<Outcome> {
   const id = c.args[0]!;
   const first = findOp(c, id);
@@ -95,42 +182,13 @@ export async function opShow(c: BoxCtx, o: { interrupt?: Interrupt } = {}): Prom
     c.say(line);
     return { exit: EXIT.failed, error: err("not-found", line) };
   }
-  if (c.flags.watch === undefined) {
-    for (const l of opLines(first)) c.say(l);
-    return { exit: EXIT.ok, result: { op: opJson(first) } };
-  }
-  // -w: every change of phase or progress, until it ends. Ctrl-C stops the watching only.
+  for (const l of opLines(first)) c.say(l);
+  if (c.flags.watch === undefined) return { exit: EXIT.ok, result: { op: opJson(first) } };
+  // -w: every change until it ends. Ctrl-C stops the watching only.
   const limit = typeof c.flags.timeout === "string" ? duration(c.flags.timeout)! : 0;
-  const polls = limit ? Math.ceil(limit / WATCH_MS) : 0;
   const interrupt = o.interrupt ?? onInterrupt();
   try {
-    for (const l of opLines(first)) c.say(l);
-    let last = `${first.phase} ${first.progress?.text ?? ""}`;
-    let cur = first;
-    for (let i = 0; cur.state === "running"; i++) {
-      if (interrupt.hit()) {
-        c.say(`Stopped watching. The ${clean(cur.type, 20)} carries on. taskbox op show ${id} -w watches again.`);
-        return { exit: EXIT.interrupted, result: { op: opJson(cur) } };
-      }
-      if (polls && i >= polls) {
-        const line = `The ${clean(cur.type, 20)} is still running at the timeout. taskbox op show ${id} -w watches again.`;
-        c.say(line);
-        return { exit: EXIT.timeout, result: { op: opJson(cur) }, error: err("timeout", line, "waits") };
-      }
-      await c.ops.sys.sleep(WATCH_MS);
-      const next = findOp(c, id);
-      if (!next) {
-        const line = `The op ${id} can't be read any more. taskbox op list shows what there is.`;
-        c.say(line);
-        return { exit: EXIT.failed, error: err("failed", line) };
-      }
-      cur = next;
-      const now = `${cur.phase} ${cur.progress?.text ?? ""}`;
-      if (now !== last && cur.state === "running") c.say(`${clean(cur.phase, 30)}${cur.progress?.text ? `: ${clean(cur.progress.text)}` : ""}.`);
-      last = now;
-    }
-    c.say(`The ${clean(cur.type, 20)} ${cur.state}${cur.why ? `: ${clean(cur.why, 200)}` : ""}.`);
-    return cur.state === "succeeded" ? { exit: EXIT.ok, result: { op: opJson(cur) } } : { exit: EXIT.failed, result: { op: opJson(cur) }, error: err("failed", `The ${clean(cur.type, 20)} ${cur.state}.`) };
+    return await followOp(c, id, { polls: limit ? Math.ceil(limit / WATCH_MS) : 0, interrupt, again: `taskbox op show ${id} -w` });
   } finally {
     if (!o.interrupt) interrupt.off();
   }
@@ -150,17 +208,26 @@ export async function opCancel(c: BoxCtx): Promise<Outcome> {
     c.say(`The ${clean(op.type, 20)} has ended already: ${op.state}.`);
     return { exit: EXIT.ok, changed: false, result: { op: opJson(op) } };
   }
+  // The loop's own ops: the guard can't end them, so the type's way back is said.
   if (op.writer !== "guard") {
-    const line = `The loop's ${clean(op.type, 20)} is cancelled by its own command.`;
+    const line = `The ${clean(op.type, 20)} can't be cancelled from here: the loop runs it. ${declOf(op.type)?.wayBack ?? "It can only finish."}`;
     c.say(line);
     return { exit: EXIT.failed, error: err("failed", line) };
   }
   const admin = c.uid !== c.cu && (c.uid === 0 || c.uid === (c.deps.rootUid ?? 0));
-  const name = c.env.SUDO_USER;
-  if (admin && (!name || name === "root" || !/^[a-z_][a-z0-9_.-]{0,31}$/.test(name))) {
-    const line = "Log in as your admin user, then type taskbox op cancel.";
+  if (!admin && c.uid !== c.cu) {
+    const line = `Run taskbox op cancel as ${c.S} or as your admin user at the box, or from the controller, which signs it.`;
     c.say(line);
     return { exit: EXIT.failed, error: err("denied", line, "at-the-box") };
+  }
+  const name = c.env.SUDO_USER;
+  if (admin) {
+    const { isAdmin } = await import("./elevate.ts");
+    if (!name || name === "root" || !/^[a-z_][a-z0-9_.-]{0,31}$/.test(name) || !(await isAdmin(c.ops.sys, name).catch(() => false))) {
+      const line = "Log in as your admin user, then type taskbox op cancel.";
+      c.say(line);
+      return { exit: EXIT.failed, error: err("denied", line, "at-the-box") };
+    }
   }
   if (c.flags.yes === undefined) {
     if (c.deps.terminal?.() === false) {
@@ -174,28 +241,8 @@ export async function opCancel(c: BoxCtx): Promise<Outcome> {
       return { exit: EXIT.failed, did: "Nothing changed." };
     }
   }
-  const { ask } = await import("./core/asker.ts");
-  const { spoolProblem } = await import("./core/spool.ts");
-  const s = rootState(c.root);
-  const rootUid = c.deps.rootUid ?? 0;
-  if (!admin && c.uid !== c.cu) {
-    const line = `Run taskbox op cancel as ${c.S} or as your admin user at the box, or from the controller, which signs it.`;
-    c.say(line);
-    return { exit: EXIT.failed, error: err("denied", line, "at-the-box") };
-  }
-  const spool = admin ? s.adminSpool : s.serviceSpool;
-  const sp = spoolProblem(spool, admin ? rootUid : c.uid, rootUid, admin ? "root" : "the service account");
-  if (sp) {
-    const line = `The request goes through ${admin ? "root's admin spool" : "the service spool"}, and ${sp}. The guard makes it; taskbox check says why it hasn't.`;
-    c.say(line);
-    return { exit: EXIT.failed, error: err("failed", line, "at-the-box") };
-  }
-  const r = await ask({ spool, outcomes: s.outcomes(admin ? "admin" : "service"), nonces: s.nonces, uid: admin ? rootUid : c.uid, rootUid, clock: c.ops.sys, sleep: (ms) => c.ops.sys.sleep(ms) }, "op-cancel", { words: [id], ...(admin ? { admin: name! } : {}) });
-  if ("no" in r || !r.outcome) {
-    const line = "no" in r ? r.no : `The box's guard hasn't answered the op cancel (${r.id}), so it may be down. taskbox check says why.`;
-    c.say(line);
-    return { exit: EXIT.failed, error: err("failed", line, "at-the-box") };
-  }
+  const r = await askGuard(c, admin ? "admin" : "service", "op-cancel", { words: [id], ...(admin ? { admin: name! } : {}) });
+  if (!r.ok) return r.out;
   const o = r.outcome;
   c.say(o.said);
   if (!o.ok) return { exit: EXIT.failed, result: { op: id }, error: err(o.code ?? "failed", o.said) };

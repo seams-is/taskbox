@@ -19,7 +19,8 @@ import { removeRequests } from "./requests.ts";
 import { rows } from "./rows/index.ts";
 import { bootId, isBootId, monoNow } from "./core/boot.ts";
 import { endOpJobs, oneShotPlist, oneShotScript, pidAlive, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
-import { begin, end, listOps, type Op, type OpFolder, opEvent, type OpType, toPhase, writeOp } from "./core/ops.ts";
+import { begin, end, listOps, type Op, type OpFolder, opEvent, toPhase, writeOp } from "./core/ops.ts";
+import { opType } from "./optypes/index.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { canUnlock, halfMadeState, lookup, readRecord, UNLOCK_UNKNOWN, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
@@ -34,7 +35,7 @@ import { timingsLine } from "./timings.ts";
 import { readJobs } from "./jobs.ts";
 import { currentSession, loadBlind, readLoad } from "./load.ts";
 import { AGENTS_FIX, computeState, footer, headline, NOTHING, type State, UPDATE_FIX } from "./state.ts";
-import { availabilityLine, loopRunning, readStopped } from "./availability.ts";
+import { availabilityLine, loopRunning, readControl, readStopped } from "./availability.ts";
 import type { Sys } from "./sys.ts";
 import { readLoopState, runningJobs, slotsShown } from "./watch.ts";
 import { commandList, firstWords, registry, shellCommands } from "./registry.ts";
@@ -133,7 +134,9 @@ export function commandsFor(d: OpsDeps, who?: Reader): string {
 }
 
 async function stateFrom(d: OpsDeps): Promise<State> {
-  const loop = readLoopState(d.paths.loopState);
+  // A drain in control.json shows in the state's words (state.ts), with when it began.
+  const ctl = readControl(rootStateOf(d.paths).control, d.rootUid ?? 0);
+  const loop = { ...readLoopState(d.paths.loopState), drainingSince: ctl.kind === "ok" && ctl.value.availability === "draining" ? ctl.value.since : undefined };
   // As anyone but the service account, whether it has a login session at all. Not known counts as there.
   const sessions = asService(d) ? undefined : await loginSessions(d.sys).catch(() => undefined);
   return computeState({
@@ -141,7 +144,7 @@ async function stateFrom(d: OpsDeps): Promise<State> {
     serviceAway: sessions?.known === true && !sessions.users.includes(d.paths.service),
     now: d.sys.now(),
     loopRunning: asService(d) ? await loopRunning(d.sys, d.uid, d.paths.loopLabels) : undefined,
-    stoppedAt: readStopped(d.paths)?.at,
+    stoppedAt: readStopped(d.paths, d.rootUid ?? 0)?.at,
     pull: activePull(readPull(d.paths.pull), readPull(d.paths.pullLinux)),
     loop,
     sourceLine: sourceWords(loop),
@@ -169,9 +172,9 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   d.say(`  Installed: ${installedLine(d.paths)}`);
   const avail = availabilityLine(rootStateOf(d.paths).control, d.rootUid ?? 0);
   if (avail) d.say(`  Available: ${avail}`);
-  d.say(`  Download:  ${pullLine(readPull(d.paths.pull), d.sys.now(), running, readStopped(d.paths)?.at)}`);
+  d.say(`  Download:  ${pullLine(readPull(d.paths.pull), d.sys.now(), running, readStopped(d.paths, d.rootUid ?? 0)?.at)}`);
   const linux = readPull(d.paths.pullLinux);
-  if (linux) d.say(`  Linux:     ${pullLine(linux, d.sys.now(), running, readStopped(d.paths)?.at)}`);
+  if (linux) d.say(`  Linux:     ${pullLine(linux, d.sys.now(), running, readStopped(d.paths, d.rootUid ?? 0)?.at)}`);
   const choosing = choiceLine(loop, existsSync(d.paths.runnerTarballLinux) ? 2 : 1);
   if (choosing) d.say(`  Choosing:  ${choosing}`);
   // v2.6.0: the load test's session, while one is on.
@@ -703,7 +706,7 @@ export const TAILSCALED_STOP_TRIES = 20;
 // remove as an op, in phases, recorded in root's ops folder like every op. It can't be cancelled once
 // past confirm: from services on, a half-removed box only goes forward. It never detaches: it boots
 // out every op's job, which would end its own.
-export const REMOVE_OP: OpType = { type: "remove", phases: ["confirm", "services", "images", "tailscale", "files", "accounts"], pointOfNoReturn: "services", cancellable: false, onBoot: () => "fail" };
+const REMOVE_OP = () => opType("remove"); // src/optypes/remove.ts
 const REMOVE_PHASE: Record<string, string> = { services: "Stopping taskbox's services.", images: "The downloaded images.", tailscale: "Taking the box off the tailnet.", files: "Removing taskbox's files.", accounts: "The accounts taskbox made." };
 
 // What remove needs to end its own op when it is stopped: the signals it hears, and a way to exit.
@@ -753,7 +756,7 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
   const events = eventLog("guard", { dir: rootStateOf(d.paths).events, owner: d.rootUid ?? 0 }, d.sys);
   const proc = o.proc;
   await staleRemoves(opsDir, d.sys, o.alive ?? pidAlive);
-  const begun = begin(listOps(opsDir).ops, REMOVE_OP, { subject: "box", params: { keepImages: o.keepImages === true }, actor: "admin" }, d.sys.now());
+  const begun = begin(listOps(opsDir).ops, REMOVE_OP(), { subject: "box", params: { keepImages: o.keepImages === true }, actor: "admin" }, d.sys.now());
   if (begun.kind !== "start") {
     for (const l of [begun.kind === "busy" ? begun.why : `A remove (${begun.op.id}) is running already. taskbox op show ${begun.op.id} -w follows it.`, "", "Now: unchanged.", "Did: Nothing changed.", "Next: Wait for it to end, then type taskbox remove again."]) d.say(l);
     return 1;

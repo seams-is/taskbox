@@ -1,33 +1,36 @@
 // The box's availability: pause, drain, resume, stop and start.
 //
-// One writer. What the owner wants lives in root's control.json, which only the guard writes. A
-// request reaches it from the service spool (the service account at the box), or signed from the
-// controller through the agent spool, and every one goes through applyControl, a pure function from
-// the state and the request to the new state. changeControl applies one under the file's lock, with
-// its op and its events. The loop reads control.json on every turn and inside the start gate
-// (controlGate): anything but active starts no VM, ends waiting VMs and lets running jobs finish.
-// It says when every slot is empty for the state it saw (its gen), which moves a drain to drained,
-// or a stop's drain to stopped; then the loop exits 0 and launchd keeps it down. start makes it
-// active, and the guard starts the loop.
+// One writer. What is asked lives in root's control.json, which only the guard writes, and which is
+// the truth: control.json is written first, then the op it names, and every guard tick reconciles
+// the two (reconcileOps), so a power cut between the writes leaves nothing running that control.json
+// doesn't name. A request reaches the guard from the service spool (the service account at the box),
+// or signed from the controller through the agent spool, and every one goes through applyControl, a
+// pure function from the state and the request to the new state. The loop reads control.json on every
+// turn and inside the start gate (controlGate): anything but active starts no VM, ends waiting VMs
+// and lets running jobs finish. It says when every slot is empty for the state it saw (its gen), which
+// moves a drain to drained, or a stop's drain to stopped; then the loop exits 0 and launchd keeps it
+// down. start makes it active, and the guard starts the loop.
 //
 // A forced drain or stop marks the state forcing at its deadline, on this boot's monotonic clock, so
 // no clock step forces one early. The loop then stops each running job's VM, as job cancel does.
 //
-// Break-glass, with the guard down: the service account stops or starts its own loop (stopHere,
-// startHere), as v2 did.
+// With the guard down, at the box: stop --force takes the loop out of launchd (stopHere), and start
+// starts it with a note of the gen it was asked over (startHere), which the loop runs past and the
+// guard turns into a start once it is back.
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { duration, type ErrorCode } from "./command.ts";
+import { AGENT_LABEL, LAUNCHCTL_MS, type Paths, previousLabels, readStateJson } from "./config.ts";
 import { bootId, isBootId, monoNow } from "./core/boot.ts";
+import type { HandlerCtx, Answer } from "./core/dispatch.ts";
 import type { EventLog } from "./core/events.ts";
 import { isId, type Rand, realRand } from "./core/ids.ts";
-import { begin, end as endOp, listOps, opEvent, type OpType, readOp, toPhase, writeOp } from "./core/ops.ts";
-import type { RootState } from "./core/paths.ts";
-import { isObj, plain, type Read, readOwnedJson, updateOwnedJson, writeOwnedText, type WriteRules } from "./core/rootfile.ts";
+import { begin, end as endOp, listOps, type Op, opEvent, readOp, toPhase, withProgress, writeOp } from "./core/ops.ts";
+import { type RootState, rootStateOf } from "./core/paths.ts";
+import { isObj, plain, type Read, readOwnedJson, withLock, writeOwnedText, type WriteRules } from "./core/rootfile.ts";
 import type { Json } from "./core/statement.ts";
 import { serviceName } from "./names.ts";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { mirrorJson } from "./shared.ts";
-import { AGENT_LABEL, LAUNCHCTL_MS, type Paths, previousLabels, readStateJson } from "./config.ts";
-import { dirname, join } from "node:path";
+import { opType } from "./optypes/index.ts";
 import { clean } from "./progress.ts";
 import type { Sys } from "./sys.ts";
 
@@ -36,31 +39,18 @@ export interface StopDeps {
   paths: Paths;
   uid: number;
   say(line: string): void;
-  ask(prompt: string): Promise<string>;
   // Removes the job VMs a stopped loop left, and says how many. The loop ends without deleting its
   // VMs, so a stop that left them would leave their disk, and any still running their memory and CPUs.
   cleanVms?(): Promise<{ removed: number; failed: number }>;
-  log?(line: string): void; // the loop's log, for what the owner's screen leaves out
+  log?(line: string): void; // the loop's log, for what the screen leaves out
 }
 
 const domain = (uid: number) => `gui/${uid}`;
 
-// stop or start found the loop already as asked: success, with nothing changed.
-export const ALREADY = 3;
-
-// The label the loop runs under: its own, or an earlier install's until the loop moves (loop.ts).
-async function runningLabel(sys: Sys, uid: number, labels: string[]): Promise<string | undefined> {
-  for (const label of labels) {
-    const r = await sys.run("/bin/launchctl", ["print", `${domain(uid)}/${label}`], { timeoutMs: 5_000 });
-    if (r.code === 0 && /state = running/.test(r.stdout)) return label;
-  }
-  return undefined;
-}
-
 // Every label launchd holds in the service's session, with its state: running, SIGTERMed while it exits, or
 // spawn scheduled while KeepAlive waits out its throttle. A loaded label can run again by itself, so
 // stop takes out every one.
-async function loadedLabels(sys: Sys, uid: number, labels: string[]): Promise<{ label: string; state: string }[]> {
+async function loadedLabels(sys: Pick<Sys, "run">, uid: number, labels: string[]): Promise<{ label: string; state: string }[]> {
   const out: { label: string; state: string }[] = [];
   for (const label of labels) {
     const r = await sys.run("/bin/launchctl", ["print", `${domain(uid)}/${label}`], { timeoutMs: 5_000 });
@@ -73,13 +63,14 @@ async function loadedLabels(sys: Sys, uid: number, labels: string[]): Promise<{ 
 // returns at once; launchd then ends the loop and its process group, which a slow exit stretches.
 export const STOP_WAIT_MS = 30_000;
 
-export async function loopRunning(sys: Sys, uid: number, labels: string[] = [AGENT_LABEL]): Promise<boolean> {
-  return (await runningLabel(sys, uid, labels)) !== undefined;
+export async function loopRunning(sys: Pick<Sys, "run">, uid: number, labels: string[] = [AGENT_LABEL]): Promise<boolean> {
+  return (await loadedLabels(sys, uid, labels)).some((l) => l.state === "running");
 }
 
-export function readStopped(paths: Paths): { at: number } | undefined {
-  const s = readStateJson<{ at?: unknown }>(paths.stopped);
-  return s && typeof s.at === "number" && Number.isFinite(s.at) ? { at: s.at } : undefined;
+// When the box was stopped, by control.json: for status, watch and check.
+export function readStopped(paths: Pick<Paths, "installId">, rootUid = 0): { at: number } | undefined {
+  const r = readControl(rootStateOf(paths).control, rootUid);
+  return r.kind === "ok" && r.value.availability === "stopped" ? { at: r.value.since } : undefined;
 }
 
 // What a stopped box says, in watch and check.
@@ -88,52 +79,23 @@ export function stoppedLine(at: number): string {
   return `stopped by taskbox stop at ${t}. Type taskbox start as ${serviceName()}, or from the controller, and it carries on.`;
 }
 
-// The job each slot is running, by the loop's own state.
-function runningJobs(paths: Paths): string[] {
-  const s = readStateJson<{ slot?: unknown; job?: unknown; slots?: unknown }>(paths.loopState);
-  const slots = s?.slots && typeof s.slots === "object" && !Array.isArray(s.slots) ? Object.values(s.slots as Record<string, { slot?: unknown; job?: unknown }>) : [];
-  return (slots.length ? slots : s ? [s] : []).filter((x) => x && x.slot === "running a job").map((x) => clean(x.job).slice(0, 120) || "a job");
-}
-
-// The record watch and check read as "stopped by taskbox stop". The loop writes it too, once drained.
-export function markStopped(paths: Paths, at: number): void {
-  writeFileSync(paths.stopped, JSON.stringify({ at }), { mode: 0o600 });
-  mirrorJson(paths, "stopped", { at });
-}
-
-// Break-glass, at the box: the service account takes its own loop out of launchd and removes the
-// VMs it left, with no guard. stop --force uses it when the guard is down. It lasts until a start
-// or the service's next login, which loads the LaunchAgent again, whatever control.json says then.
+// Break-glass, at the box with the guard down: the service account takes its own loop out of launchd
+// and removes the VMs it left. control.json isn't changed, since only the guard writes it, so the
+// next login runs the loop if control.json says active. The command asks its typed yes first.
 export async function stopHere(d: StopDeps): Promise<number> {
-  const first = await loadedLabels(d.sys, d.uid, d.paths.loopLabels);
-  if (!first.length) {
-    d.say("Already stopped: the loop isn't running. Type taskbox start to start it.");
-    return ALREADY;
+  if (!(await loadedLabels(d.sys, d.uid, d.paths.loopLabels)).length) {
+    d.say("The loop isn't running here already.");
+    return 0;
   }
-  // Every slot's job (v2.2.0): stop ends them all. Only a running loop has jobs: a loop waiting for
-  // its restart left its state as it was, so its jobs are already gone.
-  const jobs = first.some((l) => l.state === "running") ? runningJobs(d.paths) : [];
-  if (jobs.length) {
-    const ask = jobs.length === 1 ? `A job is running: ${jobs[0]}. Stopping now fails it on GitHub.` : `${jobs.length} jobs are running: ${jobs.join(" and ")}. Stopping now fails them all on GitHub.`;
-    const a = (await d.ask(`${ask} Type yes to stop anyway: `)).trim().toLowerCase();
-    if (a !== "yes") {
-      d.say(jobs.length === 1 ? "Not stopped. The job carries on." : "Not stopped. The jobs carry on.");
-      return 1;
-    }
-  }
-  markStopped(d.paths, d.sys.now());
   // Until no label is loaded: each pass takes out every loaded label, so a loop that was waiting for
-  // its restart, or one an old loop's hand-over loaded meanwhile, goes too (loop.ts, handOver).
-  // A deadline on the clock, so a slow launchctl can't stretch the wait past STOP_WAIT_MS by much.
-  const until = d.sys.now() + STOP_WAIT_MS;
+  // its restart, or one an old loop's hand-over loaded meanwhile, goes too. Counted in passes, so a
+  // slow launchctl can't stretch it far past STOP_WAIT_MS and no clock step moves it.
   let refused: string | undefined;
   let told = false;
   for (let pass = 0; ; pass++) {
     const loaded = await loadedLabels(d.sys, d.uid, d.paths.loopLabels);
     if (!loaded.length) break;
-    if (d.sys.now() >= until) {
-      rmSync(d.paths.stopped, { force: true });
-      mirrorJson(d.paths, "stopped", null);
+    if (pass >= STOP_WAIT_MS / 1_000) {
       const why = refused ?? `launchd still has it ${STOP_WAIT_MS / 1000} s after it was taken out`;
       d.log?.(`stop: ${loaded.map((l) => `${l.label} (${l.state})`).join(", ")} still loaded: ${why}`);
       d.say(`Could not stop the loop (${why}). Log out ${d.paths.service}: that stops it too.`);
@@ -159,7 +121,7 @@ export async function stopHere(d: StopDeps): Promise<number> {
       if (r.failed) d.say(`${r.failed === 1 ? "A VM" : `${r.failed} VMs`} the loop left couldn't be removed. Type taskbox prune to try again.`);
     }
   }
-  d.say(`Stopped. No jobs or downloads run until you type taskbox start or log in as ${d.paths.service} again. A download carries on from where it stopped.`);
+  d.say(`Stopped here, at the box. control.json isn't changed while the guard is down, so logging in as ${d.paths.service} again starts the loop.`);
   return 0;
 }
 
@@ -178,27 +140,29 @@ export async function launchLoop(d: Pick<StopDeps, "sys" | "paths" | "uid">): Pr
   return clean(boot.stderr.trim()).slice(0, 120) || `launchctl exit ${boot.code}`;
 }
 
-// Break-glass, at the box: the service account starts its own loop when the guard is down.
-export async function startHere(d: StopDeps): Promise<number> {
+// The service account's note of a start asked with the guard down: the control gen it was asked over.
+export const startedHereFile = (p: Pick<Paths, "loopState">) => join(dirname(p.loopState), "started-here.json");
+export function readStartedHere(p: Pick<Paths, "loopState">): number | undefined {
+  const v = readStateJson<{ gen?: unknown }>(startedHereFile(p))?.gen;
+  return Number.isSafeInteger(v) ? (v as number) : undefined;
+}
+
+// Break-glass, at the box with the guard down: start notes the gen control.json has now, so the loop
+// runs past a stopped, draining or paused state the guard can't change yet, then starts the loop.
+export async function startHere(d: StopDeps & { rootUid?: number }): Promise<number> {
+  const c = readControl(rootStateOf(d.paths).control, d.rootUid ?? 0);
+  if (c.kind === "ok" && c.value.availability !== "active") writeFileSync(startedHereFile(d.paths), JSON.stringify({ gen: c.value.gen }), { mode: 0o644 });
   if (await loopRunning(d.sys, d.uid, d.paths.loopLabels)) {
-    clearStopped(d.paths);
-    d.say("Already running. Type taskbox status -w to see what it does.");
-    return ALREADY;
+    d.say("The loop runs already. It takes jobs as if active until the guard is back, which then writes the start.");
+    return 0;
   }
   const why = await launchLoop(d);
   if (why) {
     d.say(`Could not start the loop (${why}). Log out ${d.paths.service} and log in again: that starts it.`);
     return 1;
   }
-  clearStopped(d.paths);
-  d.say("Started. Type taskbox status -w to see what it does.");
+  d.say("Started here, at the box. The guard writes the start in control.json once it is back.");
   return 0;
-}
-
-// The loop clears a stop when it starts, which only happens at login or taskbox start.
-export function clearStopped(paths: Paths): void {
-  if (existsSync(paths.stopped)) rmSync(paths.stopped, { force: true });
-  mirrorJson(paths, "stopped", null);
 }
 
 // ---- The model: control.json and applyControl ----
@@ -224,7 +188,7 @@ export interface Control {
   gen: number; // one more on every change, so the loop's report names the state it saw
   since: number; // when it took this availability, for people to read
   actor: string; // who asked for it, as the event log says it
-  reason?: string; // the owner's words, from --reason
+  reason?: string; // the words given with --reason
   op?: string; // the drain or stop op in progress
   stop?: true; // a stop's drain: at its end the loop stops
   force?: true; // the drain or stop stops what is left at forceAt
@@ -253,6 +217,7 @@ export function parseControl(v: unknown): Control | string {
   const draining = v.availability === "draining";
   if ((v.op !== undefined) !== draining) return "only a drain or a stop in progress has an op";
   if (!draining && (v.stop || v.force || v.forceAt || v.forcing || v.timeout)) return "only a drain or a stop in progress is forced or stops";
+  if (v.force && !v.forceAt) return "a forced one has no deadline";
   return v as unknown as Control;
 }
 
@@ -276,7 +241,7 @@ export type ControlRequest =
   | { kind: "tick" };
 
 // The args each action takes (statement.ts argsOf of its command line), or why not. The same check
-// serves the service spool's bodies and the owner's signed statements.
+// serves the service spool's bodies and the signed statements from the controller.
 const TAKES: Record<Action, readonly string[]> = { pause: ["reason"], drain: ["timeout", "force", "reason"], resume: [], stop: ["timeout", "force"], start: [] };
 export function argsProblem(action: Action, args: Record<string, unknown>): string | undefined {
   const takes = TAKES[action];
@@ -310,6 +275,7 @@ export interface Applied {
   ended?: { op: string; state: "succeeded" | "cancelled"; why: string };
   events: { type: string; text: string }[];
   kick?: true;
+  params?: Record<string, Json>; // the running op's params, when --force narrowed it
 }
 
 // Now, as applyControl reads it: the wall clock for labels, this boot's mono for a forced deadline.
@@ -321,6 +287,8 @@ export interface ControlNow {
 const busy = (s: Control, said: string): Applied => ({ state: s, changed: false, ok: false, code: "busy", said, events: [] });
 const same = (s: Control, said: string, extra: Partial<Applied> = {}): Applied => ({ state: s, changed: false, ok: true, said, events: [], ...extra });
 const whatOf = (s: Control) => (s.stop ? "stop" : "drain");
+// Two drains ask the same when both force alike, with the same timeout however it is written.
+const sameAsk = (a: Forced, b: Forced) => !!a.force === !!b.force && (!a.force || (a.timeout === undefined ? 0 : duration(a.timeout)) === (b.timeout === undefined ? 0 : duration(b.timeout)));
 
 // The pure step: the state, a request and now, to the new state and what to say. Every change moves
 // gen on, so a report the loop made of an older state never counts.
@@ -328,9 +296,9 @@ export function applyControl(s: Control, r: ControlRequest, now: ControlNow): Ap
   const next = (to: Availability, actor: string, extra: Partial<Control> = {}): Control => ({ v: 1, availability: to, gen: s.gen + 1, since: now.wall, actor, ...extra });
   const forceOf = (q: Forced): Partial<Control> => {
     if (!q.force) return {};
-    // With no timeout, a forced stop stops what runs at once; forceAt is now.
-    const at = now.at ? { forceAt: { boot: now.at.boot, mono: now.at.mono + (q.timeoutMs ?? 0) } } : {};
-    return { force: true, ...(q.timeout !== undefined ? { timeout: q.timeout } : {}), ...at };
+    // With no timeout, a forced stop stops what runs at once; forceAt is now. A forced request with
+    // no mono reading is refused before this (noClock).
+    return { force: true, ...(q.timeout !== undefined ? { timeout: q.timeout } : {}), forceAt: { boot: now.at!.boot, mono: now.at!.mono + (q.timeoutMs ?? 0) } };
   };
   const paramsOf = (q: Forced): Record<string, Json> => ({ force: q.force === true, ...(q.force && q.timeout !== undefined ? { timeout: q.timeout } : {}) });
   const ending = (why: string, state: "succeeded" | "cancelled" = "cancelled") => (s.op ? { ended: { op: s.op, state, why } } : {});
@@ -342,6 +310,9 @@ export function applyControl(s: Control, r: ControlRequest, now: ControlNow): Ap
     case "drain":
     case "stop": {
       const want = paramsOf(r);
+      // A forced one is timed on this boot's mono: with no reading, it is refused, never accepted to
+      // force nothing.
+      if (r.force && !now.at) return { state: s, changed: false, ok: false, code: "failed", said: `The box's clock can't be read, so a forced ${r.kind} can't be timed. Ask again in a minute, or without --force.`, events: [] };
       if (s.availability === "stopped") return same(s, "The loop is stopped already. taskbox start starts it.");
       if (r.kind === "drain" && s.availability === "drained") return same(s, "Drained already: no job runs, and none starts until taskbox resume.");
       if (s.availability === "draining") {
@@ -351,10 +322,10 @@ export function applyControl(s: Control, r: ControlRequest, now: ControlNow): Ap
           return { state: next("draining", r.actor, { stop: true, ...forceOf(r) }), changed: true, ok: true, said: "Stopping: running jobs finish, then the loop stops. taskbox start cancels it.", start: { type: "stop", params: want }, ...ending("taskbox stop took it over"), events: [{ type: "stop.started", text: `${r.actor} started a stop, which takes the drain over.` }] };
         }
         if (!mine) return busy(s, `A stop (${s.op}) is running. taskbox start cancels it.`);
-        const had = paramsOf({ ...(s.force ? { force: true } : {}), ...(s.timeout !== undefined ? { timeout: s.timeout } : {}) });
-        if (JSON.stringify(had) === JSON.stringify(want)) return same(s, `The ${r.kind} (${s.op}) is running already.`, { ok: true });
-        // --force over one without: the deadline is the one way it narrows.
-        if (!s.force && r.force) return { state: { ...s, gen: s.gen + 1, ...forceOf(r) }, changed: true, ok: true, said: `The ${r.kind} now stops what is left ${r.timeoutMs ? `in ${r.timeout}` : "at once"}.`, events: [{ type: `${r.kind}.forced`, text: `${r.actor} made the ${r.kind} stop what is left ${r.timeoutMs ? `in ${r.timeout}` : "at once"}.` }] };
+        const had: Forced = { ...(s.force ? { force: true } : {}), ...(s.timeout !== undefined ? { timeout: s.timeout } : {}) };
+        if (sameAsk(had, r)) return same(s, `The ${r.kind} (${s.op}) is running already.`, { ok: true });
+        // --force over one without: the deadline is the one way it narrows, and the op says so.
+        if (!s.force && r.force) return { state: { ...s, gen: s.gen + 1, ...forceOf(r) }, changed: true, ok: true, params: want, said: `The ${r.kind} now stops what is left ${r.timeoutMs ? `in ${r.timeout}` : "at once"}.`, events: [{ type: `${r.kind}.forced`, text: `${r.actor} made the ${r.kind} stop what is left ${r.timeoutMs ? `in ${r.timeout}` : "at once"}.` }] };
         return busy(s, `A ${r.kind} (${s.op}) is running with other settings. taskbox op show ${s.op} -w follows it.`);
       }
       // active, paused, or drained (a stop): a new drain begins.
@@ -407,9 +378,12 @@ export interface Gate {
   stopped: boolean;
   forcing?: "a forced drain" | "a forced stop";
 }
-export function controlGate(path: string, rootUid = 0): Gate {
+// startedHere: the gen a break-glass start at the box was asked over (startHere): while control.json
+// still names that gen, the loop runs as if active, and the guard writes the start once it is back.
+export function controlGate(path: string, rootUid = 0, startedHere?: number): Gate {
   const r = readControl(path, rootUid);
   if (r.kind === "missing") return { gen: 0, stopped: false };
+  if (r.kind === "ok" && startedHere === r.value.gen && r.value.availability !== "active") return { gen: r.value.gen, stopped: false };
   if (r.kind === "bad") return { wait: { key: "paused", text: `the box's control.json can't be read (${r.why}), so no VM starts. The guard puts it right; taskbox check says why` }, gen: -1, stopped: false };
   const c = r.value;
   const why = c.reason ? ` (${clean(c.reason).slice(0, REASON_MAX)})` : "";
@@ -435,10 +409,7 @@ export function availabilityLine(path: string, rootUid = 0): string | undefined 
   return `${what} since ${t} UTC, by ${clean(c.actor).slice(0, 60)}${c.reason ? `: ${clean(c.reason).slice(0, REASON_MAX)}` : ""}${c.op ? ` (${c.op})` : ""}${c.forcing ? ", stopping the jobs left" : ""}`;
 }
 
-// ---- Applying a request: under the file's lock, with its op and events ----
-
-export const DRAIN_OP: OpType = { type: "drain", phases: ["draining", "forcing"], onBoot: () => "resume" };
-export const STOP_OP: OpType = { type: "stop", phases: ["draining", "forcing"], onBoot: () => "resume" };
+// ---- Applying a request: control.json first, then its ops, under the file's lock ----
 
 export interface ControlDeps {
   sys: Pick<Sys, "run" | "now">;
@@ -466,57 +437,116 @@ export async function controlNow(sys: Pick<Sys, "run" | "now">): Promise<Control
   return { wall: sys.now(), ...(boot && mono !== undefined ? { at: { boot, mono } } : {}) };
 }
 
-// One request applied to control.json under its lock: the op it begins or ends written with it, and
-// its events. A box-wide op (an update) that can't run beside a stop refuses the stop as busy.
-export async function changeControl(d: ControlDeps, r: ControlRequest, now?: ControlNow): Promise<Changed> {
+const opsOf = (d: Pick<ControlDeps, "state" | "rootUid" | "chown">) => ({ dir: d.state.ops, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
+const writeControl = (d: Pick<ControlDeps, "state" | "rootUid" | "chown">, s: Control) => writeOwnedText(d.state.control, `${JSON.stringify(s)}\n`, { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
+
+// One request applied under control.json's lock. The new state is written first, then the op it
+// ends, then the op it begins, carrying the ended one's progress over, then its events. A cut
+// between any two of these leaves control.json the truth, and reconcileOps the rest. A box-wide op
+// (an update) that can't run beside a stop refuses the stop as busy.
+export async function changeControl(d: ControlDeps, r: ControlRequest, now?: ControlNow, o: { kick?: boolean } = {}): Promise<Changed> {
   const at = now ?? (await controlNow(d.sys));
-  const ops = { dir: d.state.ops, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) };
-  const out = await updateOwnedJson<Control, Changed & { kick?: true }>(
-    d.state.control,
-    { owner: d.rootUid, max: CONTROL_MAX },
-    parseControl,
-    initialControl,
-    (s) => {
-      const a = applyControl(s, r, at);
-      if (!a.changed) return { state: s, out: { ok: a.ok, ...(a.code ? { code: a.code } : {}), said: a.said, changed: false, ...(s.op ? { op: s.op } : {}), state: s, ...(a.kick ? { kick: true as const } : {}) } };
-      let state = a.state;
-      mkdirSync(d.state.ops, { recursive: true, mode: 0o755 });
-      if (a.start) {
-        const actor = "actor" in r ? r.actor : "taskbox";
-        const running = listOps(ops).ops.filter((o) => o.state === "running" && o.id !== s.op);
-        const b = begin(running, a.start.type === "stop" ? STOP_OP : DRAIN_OP, { subject: "box", params: a.start.params, actor }, at.wall, d.rand ?? realRand);
-        if (b.kind !== "start") return { state: s, out: { ok: false, code: "busy", said: b.kind === "busy" ? b.why : `A ${b.op.type} (${b.op.id}) is running already.`, changed: false, state: s } };
-        state = { ...state, op: b.op.id };
-        writeOp(ops, b.op);
-        tell(d, opEvent(undefined, b.op));
+  const ops = opsOf(d);
+  const actor = "actor" in r ? r.actor : "taskbox";
+  const out = await withLock(d.state.control, async (): Promise<Changed & { kick?: true }> => {
+    const got = readControl(d.state.control, d.rootUid);
+    if (got.kind === "bad") throw new Error(`control.json can't be read: ${got.why}`);
+    const s = got.kind === "ok" ? got.value : initialControl();
+    const a = applyControl(s, r, at);
+    if (!a.changed) return { ok: a.ok, ...(a.code ? { code: a.code } : {}), said: a.said, changed: false, ...(s.op ? { op: s.op } : {}), state: s, ...(a.kick ? { kick: true as const } : {}) };
+    let state = a.state;
+    let begun: Op | undefined;
+    if (a.start) {
+      const running = listOps(ops).ops.filter((x) => x.state === "running" && x.id !== s.op);
+      const b = begin(running, opType(a.start.type), { subject: "box", params: a.start.params, actor }, at.wall, d.rand ?? realRand);
+      if (b.kind !== "start") return { ok: false, code: "busy", said: b.kind === "busy" ? b.why : `A ${b.op.type} (${b.op.id}) is running already.`, changed: false, state: s };
+      begun = b.op;
+      state = { ...state, op: b.op.id };
+    }
+    writeControl(d, state);
+    mkdirSync(d.state.ops, { recursive: true, mode: 0o755 });
+    let carried: Op["progress"] = null;
+    if (a.ended) {
+      const was = readOp(ops, a.ended.op);
+      if (was.kind === "ok") {
+        carried = was.value.progress;
+        const done = endOp(was.value, a.ended.state, at.wall, { why: a.ended.why });
+        writeOp(ops, done);
+        tell(d, opEvent(was.value, done));
+      } else d.log(`the ${a.ended.op} record couldn't be read (${was.kind === "bad" ? was.why : "missing"}); the next pass ends it if it runs`);
+    }
+    if (begun) {
+      const op = carried ? withProgress(begun, carried) : begun;
+      writeOp(ops, op);
+      tell(d, opEvent(undefined, op));
+    }
+    if (state.op && (a.params || (state.forcing && !s.forcing))) {
+      const was = readOp(ops, state.op);
+      if (was.kind === "ok" && was.value.state === "running") {
+        let moved: Op = a.params ? { ...was.value, params: a.params } : was.value;
+        if (state.forcing && !s.forcing) moved = toPhase(moved, "forcing", { text: "stopping the jobs still running" });
+        writeOp(ops, moved);
+        tell(d, opEvent(was.value, moved));
       }
-      if (a.ended) {
-        const was = readOp(ops, a.ended.op);
-        if (was.kind === "ok") {
-          const done = endOp(was.value, a.ended.state, at.wall, { why: a.ended.why });
-          writeOp(ops, done);
-          tell(d, opEvent(was.value, done));
-        } else d.log(`the ${a.ended.op} record couldn't be read (${was.kind === "bad" ? was.why : "missing"}), so it wasn't ended`);
-      }
-      if (state.forcing && !s.forcing && state.op) {
-        const was = readOp(ops, state.op);
-        if (was.kind === "ok" && was.value.state === "running") {
-          const moved = toPhase(was.value, "forcing", { text: "stopping the jobs still running" });
-          writeOp(ops, moved);
-          tell(d, opEvent(was.value, moved));
-        }
-      }
-      for (const e of a.events) tell(d, { type: e.type, text: e.text, subject: "box", actor: "actor" in r ? r.actor : "taskbox", ...(state.op ? { op: state.op } : {}) });
-      return { state, out: { ok: a.ok, said: a.said, changed: true, ...(state.op ? { op: state.op } : {}), state, ...(a.kick ? { kick: true as const } : {}) } };
-    },
-    { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) },
-  );
+    }
+    for (const e of a.events) tell(d, { type: e.type, text: e.text, subject: "box", actor, ...(state.op ? { op: state.op } : {}) });
+    return { ok: a.ok, said: a.said, changed: true, ...(state.op ? { op: state.op } : {}), state, ...(a.kick ? { kick: true as const } : {}) };
+  });
   const { kick, ...rest } = out;
-  if (kick && d.kick) {
+  if (kick && d.kick && o.kick !== false) {
     const why = await d.kick().catch((e: unknown) => String((e as Error)?.message ?? e).slice(0, 120));
     if (why) return { ...rest, ok: false, code: "failed", said: `${rest.said} But the loop couldn't be started: ${why}. Log out the service account and log in again: that starts it.`.slice(0, 240) };
   }
   return rest;
+}
+
+// A drain or a stop cancelled by op cancel: as resume or start does, when control.json names this op.
+// Any other running drain or stop is an orphan, and its record alone is ended.
+export async function cancelControlOp(c: HandlerCtx, op: Op, verb: "resume" | "start", actor: string): Promise<Answer> {
+  const ctl = readControl(c.state.control, c.rootUid);
+  if (!(ctl.kind === "ok" && ctl.value.op === op.id)) {
+    const ops = opsOf(c);
+    const done = endOp(op, "cancelled", c.now, { why: `cancelled by ${actor}; control.json didn't name it` });
+    writeOp(ops, done);
+    tell(c, opEvent(op, done));
+    return { ok: true, said: `The ${op.type} ${op.id} is cancelled. control.json didn't name it, so the box's availability is as it was.` };
+  }
+  const { uidOf } = await import("./accounts.ts");
+  const kick = async () => {
+    const uid = await uidOf(c.sys, c.p.service).catch(() => undefined);
+    return uid === undefined ? "the service account's uid can't be read" : launchLoop({ sys: c.sys, paths: c.p, uid });
+  };
+  const x = await changeControl({ sys: c.sys, state: c.state, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}), events: c.events, log: c.log, kick }, requestOf(verb, {}, actor));
+  return x.ok ? { ok: true, said: x.said } : { ok: false, code: x.code ?? "failed", said: x.said };
+}
+
+// control.json is the truth for drains and stops: a running one it doesn't name is ended as failed,
+// and one it names with no record (a cut between the two writes) is written. Every guard tick.
+export function reconcileOps(d: Pick<ControlDeps, "state" | "rootUid" | "chown" | "events" | "log">, now: number): string[] {
+  const ctl = readControl(d.state.control, d.rootUid);
+  if (ctl.kind === "bad") return [];
+  const named = ctl.kind === "ok" ? ctl.value.op : undefined;
+  const ops = opsOf(d);
+  const did: string[] = [];
+  for (const op of listOps(ops).ops) {
+    if (op.state !== "running" || (op.type !== "drain" && op.type !== "stop") || op.id === named) continue;
+    const done = endOp(op, "failed", now, { why: "control.json doesn't name it: the box stopped between two writes, or control.json was written again" });
+    writeOp(ops, done);
+    tell(d, opEvent(op, done));
+    did.push(`ended the ${op.type} ${op.id}, which control.json doesn't name`);
+  }
+  if (named && ctl.kind === "ok" && readOp(ops, named).kind === "missing") {
+    const c = ctl.value;
+    const b = begin([], opType(c.stop ? "stop" : "drain"), { subject: "box", params: { force: c.force === true, ...(c.force && c.timeout !== undefined ? { timeout: c.timeout } : {}) }, actor: c.actor }, c.since || now);
+    if (b.kind === "start") {
+      mkdirSync(d.state.ops, { recursive: true, mode: 0o755 });
+      const op: Op = { ...b.op, id: named, ...(c.forcing ? { phase: "forcing" } : {}) };
+      writeOp(ops, op);
+      tell(d, opEvent(undefined, op));
+      did.push(`wrote the ${op.type} ${named} control.json names, which had no record`);
+    }
+  }
+  return did;
 }
 
 function tell(d: Pick<ControlDeps, "events" | "log">, e: { type: string; text: string; subject?: string; actor: string; op?: string } | undefined): void {
@@ -528,15 +558,17 @@ function tell(d: Pick<ControlDeps, "events" | "log">, e: { type: string; text: s
   }
 }
 
-// A control.json the guard can't read is written over as paused, so the box never takes jobs on a
-// state nobody can read, and the owner resumes it. True when it was.
+// A control.json the guard can't read (a rollback meeting a field it doesn't know, a damaged disk)
+// is written over as paused, so the box never takes jobs on a state nobody can read, and taskbox resume
+// undoes it. The drain or stop it named is ended with it. True when it was.
 export function healControl(d: Pick<ControlDeps, "state" | "rootUid" | "chown" | "events" | "log">, now: number): boolean {
   const r = readControl(d.state.control, d.rootUid);
   if (r.kind !== "bad") return false;
   d.log(`control.json couldn't be read (${r.why}), so it is written again as paused`);
   // A gen no report from before can name: the counts it held were small.
   const s: Control = { v: 1, availability: "paused", gen: Math.max(1, now), since: now, actor: "taskbox", reason: "control.json couldn't be read" };
-  writeOwnedText(d.state.control, `${JSON.stringify(s)}\n`, { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
+  writeControl(d, s);
   tell(d, { type: "pause.paused", text: `The box paused itself: control.json couldn't be read (${r.why}). taskbox resume undoes it.`, subject: "box", actor: "taskbox" });
+  for (const l of reconcileOps(d, now)) d.log(l);
   return true;
 }

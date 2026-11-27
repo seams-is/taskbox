@@ -9,12 +9,12 @@ import { join } from "node:path";
 import type { Paths } from "./config.ts";
 import { clean } from "./progress.ts";
 
-const FILES = { loopState: "loop-state.json", pull: "pull.json", pullLinux: "pull-linux.json", stopped: "stopped.json", log: "loop.log", load: "load.json", loadSeen: "load-seen.json" } as const;
+const FILES = { loopState: "loop-state.json", pull: "pull.json", pullLinux: "pull-linux.json", log: "loop.log", load: "load.json", loadSeen: "load-seen.json" } as const;
 type SharedKey = keyof typeof FILES;
 
 // The same paths, with the readable copies in place of the service's own files.
 export function sharedPaths(p: Paths): Paths {
-  return { ...p, loopState: join(p.shared, FILES.loopState), pull: join(p.shared, FILES.pull), pullLinux: join(p.shared, FILES.pullLinux), stopped: join(p.shared, FILES.stopped), log: join(p.shared, FILES.log) };
+  return { ...p, loopState: join(p.shared, FILES.loopState), pull: join(p.shared, FILES.pull), pullLinux: join(p.shared, FILES.pullLinux), log: join(p.shared, FILES.log) };
 }
 
 // Control characters out, the service's folder named instead of spelled, and anything shaped like a token
@@ -31,7 +31,6 @@ const COPIED: Record<Exclude<SharedKey, "log">, string[] | undefined> = {
   loopState: ["slot", "slotAt", "job", "lastJob", "lastJobResult", "lastCheck", "failed", "image", "cleanup", "cleanupAt", "waitingFor", "failing", "vmStartGuard", "hostToVM", "guardClosed", "vmSize", "beside", "vmKind", "kindPaused", "kindChoice", "linuxProof", "slots", "slotCount", "why", "gaveWay", "gaveWayLog", "github", "beatGraceMs", "imageBroken", "selfRestartCount", "selfRestartSince", "workflows", "clockUnread"],
   pull: undefined, // the download's record is the screens' own; every field is read
   pullLinux: undefined,
-  stopped: ["at"],
   load: undefined, // the load test's sessions: no secret, every field read (v2.6.0)
   loadSeen: undefined, // what the source last listed, as counts, and each session's numbers (v2.6.0)
 };

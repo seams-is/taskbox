@@ -66,9 +66,9 @@ function stateOf(i: StateInputs): State {
   const since = i.loop.drainingSince;
   if (since === undefined || (s.word !== "Running" && s.word !== "Waiting" && s.word !== "Downloading")) return s;
   const at = since > 0 ? ` since ${new Date(since).toTimeString().slice(0, 5)}` : "";
-  // A download the drain stopped: it starts again only once the loop does.
-  if (s.word === "Downloading") return { word: "Waiting", detail: `draining${at}: the download stopped, and starts again after taskbox start; no new job starts, and the loop stops within a minute`, next: "Nothing to do: it stops by itself. taskbox start cancels the drain.", notify: false };
-  return { ...s, detail: s.word === "Waiting" ? `draining${at}: no new job starts, and the loop stops within a minute` : `${s.detail}; draining${at}: the loop stops once ${s.detail.startsWith("1 job") || !/^\d+ jobs/.test(s.detail) ? "this job finishes" : "these jobs finish"}`, next: "Nothing to do: it stops by itself. taskbox start cancels the drain." };
+  // A download the drain stopped: it starts again once the box is active.
+  if (s.word === "Downloading") return { word: "Waiting", detail: `draining${at}: the download stopped, and starts again after taskbox resume; no new job starts`, next: "Nothing to do: it ends by itself. taskbox resume cancels the drain.", notify: false };
+  return { ...s, detail: s.word === "Waiting" ? `draining${at}: no new job starts` : `${s.detail}; draining${at}: no new job starts once ${s.detail.startsWith("1 job") || !/^\d+ jobs/.test(s.detail) ? "this job finishes" : "these jobs finish"}`, next: "Nothing to do: it ends by itself. taskbox resume cancels the drain." };
 }
 
 // While the loop holds the box (loop.ts showHold), Running, Waiting, Ready and Downloading say why. A
@@ -109,8 +109,8 @@ function baseState(i: StateInputs): State {
   // The loop runs in the service's login session. Anyone else reads the loop's last state from files, which
   // stays as it was when the service logged out, so a missing session comes first (v2.1.1).
   if (i.serviceAway) return { word: "Needs you", detail: `nobody is logged in as ${i.service ?? serviceName()} at the box, so no jobs run`, next: `At the box: log in as ${i.service ?? serviceName()}. Jobs wait until then.`, notify: true };
-  // Stopped only after taskbox stop. The loop clears the record when it starts, so a record means
-  // stopped even when the loop can't be asked (root, during update and undo).
+  // Stopped only after taskbox stop, by control.json, so it reads stopped even when the loop can't be
+  // asked (root, during update and undo).
   if (i.loopRunning !== true && i.stoppedAt !== undefined) return { word: "Stopped", detail: stoppedLine(i.stoppedAt), next: "Type taskbox start.", notify: false };
   if (i.loopRunning === false) return { word: "Needs you", detail: "the loop isn't running, and nobody stopped it", next: "Type taskbox start.", notify: true };
   // v2.5.0: a slot whose heartbeat is past its own deadline plus the grace: the loop has stopped

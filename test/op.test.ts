@@ -6,7 +6,7 @@ import { changeControl, readControl, requestOf } from "../src/availability.ts";
 import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
 import { eventLog, readEvents } from "../src/core/events.ts";
-import { begin, end, type Op, readOp, toPhase, writeOp } from "../src/core/ops.ts";
+import { begin, end, listOps, type Op, readOp, toPhase, writeOp } from "../src/core/ops.ts";
 import { rootStateOf } from "../src/core/paths.ts";
 import { Verified } from "../src/core/statement.ts";
 import { watchPaths, writeBeat } from "../src/guardwatch.ts";
@@ -14,7 +14,7 @@ import { handlers } from "../src/handlers/op.ts";
 import { cancelOp, endAsCancelled } from "../src/opcancel.ts";
 import { opShow } from "../src/opcmd.ts";
 import type { OpDecl } from "../src/optypes/decl.ts";
-import { declOf, opDecls, opTypeFiles } from "../src/optypes/index.ts";
+import { declOf, opDecls, opType, opTypeFiles } from "../src/optypes/index.ts";
 import { controlJob } from "../src/passes/control.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
@@ -22,7 +22,6 @@ import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
 const me = process.getuid!();
 const T = Date.UTC(2026, 10, 27, 12, 0, 0);
 const SLOW = 30_000;
-const REMOVE = { type: "remove", phases: ["confirm", "services"], pointOfNoReturn: "services", cancellable: false, onBoot: () => "fail" as const };
 const UPDATE = { type: "update", phases: ["downloading", "draining", "swap", "proving"], pointOfNoReturn: "swap", onBoot: () => "fail" as const };
 
 async function box() {
@@ -34,6 +33,8 @@ async function box() {
   const sys = new FakeSys();
   sys.clock = T;
   sys.responders.push((cmd, args) => (cmd === "/usr/bin/id" && args.join(" ") === `-u ${p.service}` ? { code: 0, stdout: `${me}\n`, stderr: "" } : undefined));
+  // pat is an admin; sam isn't.
+  sys.responders.push((cmd, args) => (cmd === "/usr/sbin/dseditgroup" ? { code: args[3] === "pat" ? 0 : 67, stdout: "", stderr: "" } : undefined));
   const c = { sys, cfg: CFG, p, log: { write: () => {} }, writer: true, rootUid: me };
   const job = controlJob({ c, chown: () => {}, kick: async () => undefined });
   await job();
@@ -47,7 +48,7 @@ async function box() {
     return op;
   };
   const remove = (): Op => {
-    const b = begin([], REMOVE, { subject: "box", params: {}, actor: "admin" }, sys.now());
+    const b = begin([], opType("remove"), { subject: "box", params: {}, actor: "admin" }, sys.now());
     if (b.kind !== "start") throw new Error("no remove");
     writeOp(f, b.op);
     return b.op;
@@ -60,7 +61,7 @@ async function box() {
   };
   // The cli as the service account; each wait runs the guard's pass and an after step.
   // admin: the line as root, as the cli elevates an admin's.
-  const cli = async (argv: string[], o: { uid?: number; terminal?: boolean; answer?: string; admin?: boolean; after?: (n: number) => void } = {}) => {
+  const cli = async (argv: string[], o: { uid?: number; terminal?: boolean; answer?: string; admin?: boolean; sudoUser?: string; after?: (n: number) => void } = {}) => {
     mkdirSync(p.app, { recursive: true });
     writeFileSync(join(p.app, "taskbox.json"), readFileSync(join(import.meta.dir, "../taskbox.example.json"), "utf8"));
     quietBox(sys);
@@ -77,7 +78,7 @@ async function box() {
       beat();
     };
     const said: string[] = [];
-    const deps: CliDeps = { sys: () => sys, uid: o.uid ?? (o.admin ? 0 : me), serviceUid: async () => me, env: { HOME: "/var/empty", ...(o.admin ? { SUDO_USER: "pat" } : {}) }, tty: () => 0, user: () => "taskbox", ask: async () => o.answer ?? "yes", say: (l) => void said.push(l), err: () => {}, terminal: () => o.terminal ?? true, hostname: () => "taskbox-1.local", root, chown: () => {}, rootUid: me };
+    const deps: CliDeps = { sys: () => sys, uid: o.uid ?? (o.admin ? 0 : me), serviceUid: async () => me, env: { HOME: "/var/empty", ...(o.admin ? { SUDO_USER: o.sudoUser ?? "pat" } : {}) }, tty: () => 0, user: () => "taskbox", ask: async () => o.answer ?? "yes", say: (l) => void said.push(l), err: () => {}, terminal: () => o.terminal ?? true, hostname: () => "taskbox-1.local", root, chown: () => {}, rootUid: me };
     return { code: await main(argv, deps), said };
   };
   return { root, p, s, sys, f, update, remove, drain, op, cli, events, ctx };
@@ -115,7 +116,7 @@ describe("op show", () => {
       const d = await b.drain();
       const r = await b.cli(["op", "show", d]);
       expect(r.code).toBe(0);
-      expect(r.said.slice(0, 4)).toEqual([`${d}: a drain, running.`, "Phase: draining, 1 of 2 (draining, forcing).", "By: service. Started 2026-11-27 12:00 UTC.", `taskbox op cancel ${d} cancels it. taskbox resume ends it.`]);
+      expect(r.said.slice(0, 4)).toEqual([`${d}: drain, running.`, "Phase: draining, 1 of 2 (draining, forcing).", "By: service. Started 2026-11-27 12:00 UTC.", `taskbox op cancel ${d} cancels it. taskbox resume ends it.`]);
       const rm = b.remove();
       expect((await b.cli(["op", "show", rm.id])).said).toContain("It can't be cancelled. It can only finish: taskbox remove again carries on from where it stopped.");
       expect((await b.cli(["op", "show", "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ"])).code).toBe(1);
@@ -132,7 +133,8 @@ describe("op show", () => {
       const u = b.update();
       const ok = await b.cli(["op", "show", u.id, "-w"], { after: (n) => (n === 0 ? writeOp(b.f, toPhase(b.op(u.id)!, "draining", { text: "1 job running" })) : n === 2 ? writeOp(b.f, end(b.op(u.id)!, "succeeded", b.sys.now())) : undefined) });
       expect(ok.code).toBe(0);
-      expect(ok.said).toContain("draining: 1 job running.");
+      expect(ok.said).toContain("Now draining.");
+      expect(ok.said).toContain("1 job running.");
       expect(ok.said).toContain("The update succeeded.");
       const v = b.update();
       const bad = await b.cli(["op", "show", v.id, "-w"], { after: () => writeOp(b.f, end(b.op(v.id)!, "failed", b.sys.now(), { why: "the proof failed" })) });
@@ -185,11 +187,14 @@ describe("op cancel", () => {
       const b = await box();
       const rm = b.remove();
       const svc = await b.cli(["op", "cancel", rm.id, "-y", "--json"]);
-      expect(JSON.parse(svc.said.at(-1)!)).toMatchObject({ exit: 1, error: { code: "denied", message: "A remove is cancelled by an admin at the box, as it is started." } });
+      expect(JSON.parse(svc.said.at(-1)!)).toMatchObject({ exit: 1, error: { code: "denied", message: "A remove is cancelled at the box as an admin, as it is started." } });
       const adm = await b.cli(["op", "cancel", rm.id, "-y"], { admin: true });
       expect(adm.code).toBe(1);
       expect(adm.said).toContain("The remove can't be cancelled. It can only finish: taskbox remove again carries on from where it stopped.");
       expect(readFileSync(b.s.admins, "utf8")).toContain('"name":"pat"');
+      // A name sudo gives that isn't an admin's is refused before anything is sent.
+      const sam = await b.cli(["op", "cancel", rm.id, "-y"], { admin: true, sudoUser: "sam" });
+      expect([sam.code, sam.said[0]]).toEqual([1, "Log in as your admin user, then type taskbox op cancel."]);
       expect(b.op(rm.id)?.state).toBe("running");
       // A drain is the owner's or the service account's to start, so an admin's cancel is refused.
       const d = await b.drain();
@@ -234,7 +239,7 @@ describe("op cancel", () => {
     "a type that cancels by ending its op: refused past its point of no return with the way back, else cancelled",
     async () => {
       const b = await box();
-      const decls: OpDecl[] = [{ type: "update", who: ["owner", "admin"], wayBack: "taskbox rollback undoes it once it ends.", cancel: (c, op, actor) => endAsCancelled(c, op, actor) }];
+      const decls: OpDecl[] = [{ ...UPDATE, who: ["owner", "admin"], wayBack: "taskbox rollback undoes it once it ends.", cancel: (c, op, actor) => endAsCancelled(c, op, actor) }];
       const past = b.update("swap");
       expect(await cancelOp(b.ctx() as never, past.id, "owner", "owner", decls)).toMatchObject({ ok: false, said: "The update is past swap, so it can't be cancelled. taskbox rollback undoes it once it ends." });
       const u = b.update();
@@ -246,19 +251,29 @@ describe("op cancel", () => {
     SLOW,
   );
 
-  test("every op type in src is declared, with who may start it and its way back", () => {
-    const src = join(import.meta.dir, "../src");
-    const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
-    const types = new Set<string>();
-    for (const f of files(src)) for (const m of readFileSync(f, "utf8").matchAll(/OpType = \{ type: "([a-z][a-z0-9-]*)"/g)) types.add(m[1]!);
-    expect([...types].sort()).toEqual(["drain", "remove", "stop"]);
-    for (const t of types) expect({ t, declared: declOf(t) !== undefined }).toEqual({ t, declared: true });
-    for (const d of opDecls()) {
-      expect(d.who.length).toBeGreaterThan(0);
-      expect(d.wayBack).toMatch(/\.$/);
-    }
-    // The index names every file in src/optypes/ but decl.ts and itself.
-    const listed = readdirSync(join(src, "optypes")).filter((f) => f !== "decl.ts" && f !== "index.ts").sort();
-    expect(opTypeFiles.map((f) => f.file).sort()).toEqual(listed);
-  });
+  test(
+    "every op type is declared once, in src/optypes: the records the box writes name declared types, and an undeclared one is never begun",
+    async () => {
+      const b = await box();
+      // Each declaration begins a valid record, with who may start it and a way back.
+      for (const d of opDecls()) {
+        const x = begin([], d, { subject: "box", params: {}, actor: "service" }, T);
+        expect({ type: d.type, kind: x.kind }).toEqual({ type: d.type, kind: "start" });
+        expect(d.who.length).toBeGreaterThan(0);
+        expect(d.wayBack).toMatch(/\.$/);
+      }
+      // The records the box's own code writes: a drain, a stop taking it over, and a remove.
+      await b.drain();
+      await changeControl({ sys: b.sys, state: b.s, rootUid: me, events: b.events, log: () => {} }, requestOf("stop", {}, "service"));
+      b.remove();
+      const written = listOps(b.f).ops.map((o) => o.type);
+      expect(new Set(written)).toEqual(new Set(["drain", "stop", "remove"]));
+      for (const t of written) expect(declOf(t)).toBeDefined();
+      expect(() => opType("update")).toThrow("isn't declared in src/optypes");
+      // The index names every file in src/optypes/ but decl.ts and itself.
+      const listed = readdirSync(join(import.meta.dir, "../src/optypes")).filter((f) => f !== "decl.ts" && f !== "index.ts").sort();
+      expect(opTypeFiles.map((f) => f.file).sort()).toEqual(listed);
+    },
+    SLOW,
+  );
 });

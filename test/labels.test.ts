@@ -248,7 +248,7 @@ describe("stop, start and remove while the old loop may still run", () => {
     const l = launchd(sys, { [`gui/502/${old.loop}`]: 4242 });
     const said: string[] = [];
     const p = paths(tempRoot(), testBox(OLD));
-    expect(await stop({ sys, paths: p, uid: 502, say: (s) => said.push(s), ask: async () => "no" })).toBe(0);
+    expect(await stop({ sys, paths: p, uid: 502, say: (s) => said.push(s) })).toBe(0);
     expect(l[`gui/502/${old.loop}`]).toBeUndefined();
   });
 
@@ -261,13 +261,11 @@ describe("stop, start and remove while the old loop may still run", () => {
     mkdirSync(join(p.agentPlist, ".."), { recursive: true });
     const oldFile = join(p.agentPlist, "..", `${old.loop}.plist`);
     writeFileSync(oldFile, "<plist/>");
-    writeFileSync(p.stopped, JSON.stringify({ at: 1 }));
     const said: string[] = [];
-    expect(await start({ sys, paths: p, uid: 502, say: (s) => said.push(s), ask: async () => "no" })).toBe(0);
+    expect(await start({ sys, paths: p, uid: 502, say: (s) => said.push(s) })).toBe(0);
     expect(sys.calls.find((c) => c.args[0] === "bootstrap")!.args).toEqual(["bootstrap", "gui/502", oldFile]);
     expect(l[`gui/502/${old.loop}`]).toBeGreaterThan(0);
-    expect(said.at(-1)).toBe("Started. Type taskbox status -w to see what it does.");
-    expect(existsSync(p.stopped)).toBe(false);
+    expect(said.at(-1)).toBe("Started here, at the box. The guard writes the start in control.json once it is back.");
   });
 
   test("start loads the new LaunchAgent once its file is there", async () => {
@@ -279,7 +277,7 @@ describe("stop, start and remove while the old loop may still run", () => {
     mkdirSync(join(p.agentPlist, ".."), { recursive: true });
     writeFileSync(p.agentPlist, "<plist/>");
     writeFileSync(join(p.agentPlist, "..", `${old.loop}.plist`), "<plist/>");
-    expect(await start({ sys, paths: p, uid: 502, say: () => {}, ask: async () => "no" })).toBe(0);
+    expect(await start({ sys, paths: p, uid: 502, say: () => {} })).toBe(0);
     expect(l[`gui/502/${AGENT_LABEL}`]).toBeGreaterThan(0);
     expect(l[`gui/502/${old.loop}`]).toBeUndefined();
   });
@@ -290,8 +288,8 @@ describe("stop, start and remove while the old loop may still run", () => {
     quietBox(sys);
     launchd(sys, { [`gui/502/${old.loop}`]: 4242 });
     const said: string[] = [];
-    expect(await start({ sys, paths: paths(tempRoot(), testBox(OLD)), uid: 502, say: (s) => said.push(s), ask: async () => "no" })).toBe(3);
-    expect(said.at(-1)).toContain("Already running");
+    expect(await start({ sys, paths: paths(tempRoot(), testBox(OLD)), uid: 502, say: (s) => said.push(s) })).toBe(0);
+    expect(said.at(-1)).toContain("The loop runs already");
   });
 
   test("remove boots out and deletes the old loop and guard too", async () => {

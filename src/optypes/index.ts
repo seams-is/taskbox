@@ -1,6 +1,6 @@
-// Every op type's declaration (decl.ts), by static import, so the engine compiles to one binary. A
-// package adds src/optypes/<package>.ts and one line below, sorted by file. A test checks that every
-// op type in src is declared here.
+// Every op type's one declaration (decl.ts), by static import, so the engine compiles to one binary.
+// A package adds src/optypes/<package>.ts and one line below, sorted by file. Code that begins an op
+// takes its type from here (opType), so no type is declared twice.
 import * as availability from "./availability.ts";
 import type { OpDecl } from "./decl.ts";
 import * as remove from "./remove.ts";
@@ -17,3 +17,9 @@ export const opDecls = (): OpDecl[] => {
   return all;
 };
 export const declOf = (type: string): OpDecl | undefined => opDecls().find((d) => d.type === type);
+// A type code begins: declared, or a throw, so a type is never begun undeclared.
+export function opType(type: string): OpDecl {
+  const d = declOf(type);
+  if (!d) throw new Error(`the ${type} op type isn't declared in src/optypes`);
+  return d;
+}

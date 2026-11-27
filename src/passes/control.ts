@@ -3,13 +3,18 @@
 // by the spool rules of core/spool.ts, and answers each by its id. Then it reads what the loop says
 // of itself: once every slot is empty for the state the guard wrote, a drain is drained and a stop's
 // drain stopped. A forced one's deadline is looked at here too. A control.json the guard can't read
-// is written over as paused.
+// is written over as paused. Every pass, the drain and stop ops are made to agree with control.json
+// (reconcileOps), and a start the service account made with the guard down is written in. Root's
+// admin spool, for an admin's op cancel, is read first, so it never waits on the service account.
 //
-// The owner's signed requests come through the agent spool's pass and handlers/availability.ts, and
+// The flood rules here are core/spool.ts's own; a flood's dropped requests get no outcome (the asker
+// says it went unanswered), and the generic per-kind caps come with core/spool.ts.
+//
+// Signed requests from the controller come through the agent spool's pass and handlers/availability.ts, and
 // apply through the same changeControl.
 import { lchownSync } from "node:fs";
 import { uidOf } from "../accounts.ts";
-import { ACTIONS, type Action, argsProblem, running, changeControl, type ControlDeps, controlNow, healControl, launchLoop, readControl, requestOf } from "../availability.ts";
+import { ACTIONS, type Action, argsProblem, changeControl, type ControlDeps, controlNow, healControl, launchLoop, readControl, reconcileOps, requestOf, running, startedHereFile } from "../availability.ts";
 import { appendAdmin, eventLog } from "../core/events.ts";
 import { Verified } from "../core/statement.ts";
 import { readOp, withProgress, writeOp } from "../core/ops.ts";
@@ -27,6 +32,7 @@ export const PER_PASS = 10; // the service account asks one at a time; a few mor
 export const OP_CANCEL = "op-cancel";
 const SERVICE = () => Verified.principal("service account");
 const ADMIN = () => Verified.principal("admin");
+export const STARTED_HERE = "service, at the box with the guard down";
 // The loop's own fields that this pass reads: every slot empty for this gen, and each slot's job.
 interface LoopReport {
   controlEmpty?: unknown;
@@ -51,16 +57,15 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
   const said = new Set<string>();
   let service: number | undefined;
   let passes = 0;
-  let shown = ""; // the op's progress line last written
+  let shown = ""; // the op and its progress line last written
   const deps = (): ControlDeps => ({ sys: c.sys, state: s, rootUid: root, ...own, events, log, kick: d.kick ?? (() => launchLoop({ sys: c.sys, paths: c.p, uid: service! })) });
   return async () => {
     const pass = passes++;
-    if (pass % REFRESH === 0 || service === undefined) service = await uidOf(c.sys, c.p.service).catch(() => undefined);
-    if (service === undefined) throw new Error("the service account's uid can't be read, so the service spool is closed");
     healControl(deps(), c.sys.now());
-    placeSpool(s.serviceSpool, service, root, d.chown ?? lchownSync);
     const at = await controlNow(c.sys);
+    for (const l of reconcileOps(deps(), at.wall)) log(l);
     const report: SpoolReport = { did: [], problems: [] };
+    let kicked = false; // one start a pass starts the loop; the rest answer from control.json
     const hctx = () => ({ sys: c.sys, cfg: c.cfg, p: c.p, state: s, rootUid: root, ...own, events, log, now: at.wall });
     // One spool's requests: the service account's (availability and op cancel), or root's admin spool
     // (op cancel only, from an admin as root). Each answered by its id in that spool's outcomes.
@@ -85,7 +90,7 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
           order: orderBy(spool.kinds),
           dropped: (name, why) => {
             const n = parseRequestName(name, spool.kinds);
-            if (n) answer(n.id, false, why === "flood" ? "The box dropped it unread: its spool held more than 50 requests." : `It waited past its ${REQUEST_FOR_MS / 60_000} minutes in the spool unread.`, why === "flood" ? "busy" : "expired");
+            if (n && why === "expired") answer(n.id, false, `It waited past its ${REQUEST_FOR_MS / 60_000} minutes in the spool unread.`, "expired");
           },
         },
         mem[spool.role === "admin" ? "admin" : "service"],
@@ -108,7 +113,8 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
               const r = await cancelOp(hctx(), id, spool.role, spool.role === "admin" ? "an admin" : "service");
               return answer(n.id, r.ok, r.said, r.ok ? undefined : r.code, r.op);
             }
-            const r = await changeControl(deps(), requestOf(n.kind as Action, body, "service"), at);
+            const r = await changeControl(deps(), requestOf(n.kind as Action, body, "service"), at, { kick: !kicked });
+            if (n.kind === "start") kicked = true;
             answer(n.id, r.ok, r.said, r.code, r.op);
           } catch (e) {
             log(`the ${n.kind} request ${n.id} failed: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
@@ -126,13 +132,24 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
         log(`which admin asked couldn't be written: ${String((x as Error)?.message ?? x).slice(0, 120)}`);
       }
     };
-    await take({ dir: s.serviceSpool, owner: service, whose: "the service account", role: "service", outcomes, kinds: [...ACTIONS, OP_CANCEL] }, report);
     placeSpool(s.adminSpool, root, root, d.chown ?? lchownSync);
     const adminReport: SpoolReport = { did: [], problems: [] };
     await take({ dir: s.adminSpool, owner: root, whose: "root", role: "admin", outcomes: s.outcomes("admin"), kinds: [OP_CANCEL] }, adminReport);
     for (const l of adminReport.did) log(`admin spool: ${l}`);
     report.problems.push(...adminReport.problems.map((p) => `admin spool: ${p}`));
+    if (adminReport.closed) throw new Error(`the admin spool: ${adminReport.closed}, so the spool is closed`);
+    if (pass % REFRESH === 0 || service === undefined) service = await uidOf(c.sys, c.p.service).catch(() => undefined);
+    if (service === undefined) throw new Error("the service account's uid can't be read, so the service spool is closed");
+    placeSpool(s.serviceSpool, service, root, d.chown ?? lchownSync);
+    await take({ dir: s.serviceSpool, owner: service, whose: "the service account", role: "service", outcomes, kinds: [...ACTIONS, OP_CANCEL] }, report);
     for (const l of report.did) log(`service spool: ${l}`);
+    // A start the service account made with the guard down (availability.ts startHere): written in.
+    const before = readControl(s.control, root);
+    const here = (readOwnedJson(startedHereFile(c.p), service) ?? {}) as { gen?: unknown };
+    if (before.kind === "ok" && before.value.availability !== "active" && here.gen === before.value.gen) {
+      const r = await changeControl(deps(), { kind: "start", actor: STARTED_HERE }, at, { kick: false });
+      log(`the service account started the loop while the guard was down, so control.json says active: ${r.said}`);
+    }
     // What the loop says: every slot empty for this gen, and the jobs still running, for the op.
     const ctl = readControl(s.control, root);
     if (ctl.kind === "ok" && ctl.value.availability === "draining") {
@@ -148,19 +165,18 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
     said.clear();
     for (const p of problems) said.add(p);
     if (report.closed) throw new Error(`the service spool: ${report.closed}, so the spool is closed`);
-    if (adminReport.closed) throw new Error(`the admin spool: ${adminReport.closed}, so the spool is closed`);
   };
 
   // The drain's progress in its op, on a change only.
   function progress(op: string | undefined, jobs: string[]): void {
     if (!op) return;
     const text = jobs.length ? `${jobs.length} job${jobs.length === 1 ? "" : "s"} running: ${jobs.join(", ")}` : "no job running";
-    if (text === shown) return;
+    if (`${op} ${text}` === shown) return;
     const f = { dir: s.ops, owner: root, ...own };
     const was = readOp(f, op);
     if (was.kind !== "ok" || was.value.state !== "running") return;
     writeOp(f, withProgress(was.value, { done: 0, of: jobs.length, text: text.slice(0, 120) }));
-    shown = text;
+    shown = `${op} ${text}`;
   }
 }
 

@@ -5,7 +5,8 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writ
 import { dirname, join } from "node:path";
 import { writeRecord } from "../src/accounts.ts";
 import { type Action, applyControl, availabilityLine, running, type Availability, argsProblem, changeControl, type Control, type ControlRequest, controlGate, initialControl, parseControl, readControl, requestOf } from "../src/availability.ts";
-import { FIRST_LINE, watchOp } from "../src/availabilitycmd.ts";
+import { FIRST_LINE } from "../src/availabilitycmd.ts";
+import { followOp } from "../src/opcmd.ts";
 import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
 import { trustFirst, updateApprovers } from "../src/core/approvers.ts";
@@ -17,6 +18,7 @@ import { rootStateOf } from "../src/core/paths.ts";
 import { readOutcome, writeSpoolFile } from "../src/core/spool.ts";
 import { argsOf, CONTROL_NS, signedWord, statementFor, statementText } from "../src/core/statement.ts";
 import { watchPaths, writeBeat } from "../src/guardwatch.ts";
+import { opType } from "../src/optypes/index.ts";
 import { controlJob } from "../src/passes/control.ts";
 import { requestsJob } from "../src/passes/requests.ts";
 import { FakeSys } from "./fake.ts";
@@ -493,7 +495,7 @@ describe("the commands at the box", () => {
     async () => {
       const r = await cli(["drain", "--timeout", "6s"]);
       expect(r.code).toBe(3);
-      expect(r.said.some((l) => l.startsWith("Still draining at the timeout."))).toBe(true);
+      expect(r.said).toContain("The drain is still running at the timeout. taskbox drain watches again; taskbox resume cancels it.");
       expect(readControl(r.b.s.control, me)).toMatchObject({ value: { availability: "draining" } });
       const d = await cli(["drain", "--detach"], { b: r.b });
       expect(d.code).toBe(0);
@@ -509,14 +511,15 @@ describe("the commands at the box", () => {
       const o = await b.send("drain");
       const said: string[] = [];
       let hits = 0;
-      const c = { say: (l: string) => void said.push(l), ops: { sys: { ...b.sys, sleep: async () => {} } }, root: b.root, deps: { rootUid: me } } as never;
-      const r = await watchOp(c, "drain", o!.op!, { polls: 0, interrupt: { hit: () => ++hits > 2, off: () => {} } });
+      const c = { say: (l: string) => void said.push(l), ops: { sys: { ...b.sys, sleep: async () => {} } }, root: b.root, deps: { rootUid: me }, own: b.p, cu: undefined } as never;
+      const watch = { polls: 0, again: "taskbox drain", undo: "taskbox resume" };
+      const r = await followOp(c, o!.op!, { ...watch, interrupt: { hit: () => ++hits > 2, off: () => {} } });
       expect(r.exit).toBe(130);
       expect(said.at(-1)).toBe("Stopped watching. The drain carries on. taskbox drain watches again; taskbox resume cancels it.");
       expect(b.control()).toMatchObject({ availability: "draining" });
       // A resume while it is watched: the watch says the drain was cancelled.
       await b.send("resume");
-      const again = await watchOp(c, "drain", o!.op!, { polls: 0, interrupt: { hit: () => false, off: () => {} } });
+      const again = await followOp(c, o!.op!, { ...watch, interrupt: { hit: () => false, off: () => {} } });
       expect(again.exit).toBe(1);
       expect(said.at(-1)).toBe("The drain cancelled: cancelled by service.");
     },
@@ -565,7 +568,180 @@ describe("the commands at the box", () => {
       expect(r.code).toBe(1);
       expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
       expect(readControl(r.b.s.control, me).kind).toBe("missing");
+      // As root, stop is refused before its first line: no advice for a command that didn't run.
+      const root = await cli(["stop"], { uid: 0 });
+      expect(root.said[0]).toStartWith("Run taskbox stop as");
+      expect(root.said).not.toContain(FIRST_LINE);
     },
     SLOW,
   );
+});
+
+describe("control.json is the truth: power cuts, rollbacks and restarts", () => {
+  const ID = "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ";
+  const putControl = (b: Awaited<ReturnType<typeof box>>, c: Record<string, unknown>) => writeFileSync(b.s.control, JSON.stringify(c), { mode: 0o644 });
+  const orphan = (b: Awaited<ReturnType<typeof box>>, type: "drain" | "stop") => {
+    mkdirSync(b.s.ops, { recursive: true });
+    const x = begin([], opType(type), { subject: "box", params: { force: false }, actor: "service" }, T);
+    if (x.kind !== "start") throw new Error("no op");
+    writeOp({ dir: b.s.ops, owner: me }, x.op);
+    return x.op.id;
+  };
+
+  test(
+    "a cut after control.json and before its new op: the next pass writes the op control.json names",
+    async () => {
+      const b = await box();
+      putControl(b, { v: 1, availability: "draining", gen: 4, since: T, actor: "service", op: ID });
+      await b.job();
+      expect(b.op(ID)).toMatchObject({ type: "drain", state: "running", actor: "service" });
+      putControl(b, { v: 1, availability: "draining", gen: 5, since: T, actor: "service", op: "op_01JD8Q4ZZZZZZZZZZZZZZZZZZY", stop: true, force: true, forceAt: { boot: BOOT, mono: 1 }, forcing: true });
+      await b.job();
+      expect(b.op("op_01JD8Q4ZZZZZZZZZZZZZZZZZZY")).toMatchObject({ type: "stop", phase: "forcing", params: { force: true } });
+    },
+    SLOW,
+  );
+
+  test(
+    "a cut between a stop's control.json and ending the drain it took over: the drain is ended, the stop written",
+    async () => {
+      const b = await box();
+      const drain = orphan(b, "drain");
+      putControl(b, { v: 1, availability: "draining", gen: 6, since: T, actor: "service", op: ID, stop: true });
+      await b.job();
+      expect(b.op(drain)).toMatchObject({ state: "failed", why: expect.stringContaining("control.json doesn't name it") });
+      expect(b.op(ID)).toMatchObject({ type: "stop", state: "running" });
+      expect(b.logs.join("\n")).toContain(`ended the drain ${drain}, which control.json doesn't name`);
+    },
+    SLOW,
+  );
+
+  test(
+    "an op left running with control.json active blocks nothing: the pass ends it, and a new drain begins",
+    async () => {
+      const b = await box();
+      const left = orphan(b, "stop");
+      putControl(b, { v: 1, availability: "active", gen: 2, since: T, actor: "service" });
+      const o = await b.send("drain");
+      expect(o).toMatchObject({ ok: true });
+      expect(b.op(left)).toMatchObject({ state: "failed" });
+      expect(b.control()).toMatchObject({ availability: "draining" });
+    },
+    SLOW,
+  );
+
+  test(
+    "op cancel of a drain control.json doesn't name ends only its record; the box's availability stays",
+    async () => {
+      const b = await box();
+      putControl(b, { v: 1, availability: "paused", gen: 3, since: T, actor: "taskbox", reason: "control.json couldn't be read" });
+      const left = orphan(b, "drain");
+      const { cancelOp } = await import("../src/opcancel.ts");
+      const ctx = { sys: b.sys, cfg: CFG, p: b.p, state: b.s, rootUid: me, events: eventLog("guard", { dir: b.s.events, owner: me }, b.sys), log: () => {}, now: T };
+      expect(await cancelOp(ctx as never, left, "service", "service")).toMatchObject({ ok: true, said: expect.stringContaining("didn't name it") });
+      expect(b.op(left)).toMatchObject({ state: "cancelled" });
+      expect(b.control()).toMatchObject({ availability: "paused" });
+    },
+    SLOW,
+  );
+
+  test(
+    "a rollback meeting a field it doesn't know: control.json is written again as paused, and the stop it named is ended",
+    async () => {
+      const b = await box();
+      const stop = await b.send("stop");
+      const was = JSON.parse(readFileSync(b.s.control, "utf8"));
+      putControl(b, { ...was, update: "op_01JD8Q4ZZZZZZZZZZZZZZZZZZX" });
+      await b.job();
+      expect(b.control()).toMatchObject({ availability: "paused", reason: "control.json couldn't be read" });
+      expect(b.op(stop!.op!)).toMatchObject({ state: "failed" });
+      // The stop no longer holds the box-wide lock, so an update or a remove isn't refused for it.
+      expect(listOps({ dir: b.s.ops, owner: me }).ops.filter((x) => x.state === "running")).toEqual([]);
+    },
+    SLOW,
+  );
+
+  test(
+    "a guard restart mid-drain: a new pass over the same files carries the op on, and its progress",
+    async () => {
+      const b = await box();
+      const o = await b.send("drain");
+      const again = controlJob({ c: b.c, chown: () => {}, kick: async () => undefined });
+      b.loop({ slots: { "1": { slot: "running a job", job: "app/test" } } });
+      await again();
+      expect(b.op(o!.op!)).toMatchObject({ state: "running", progress: { text: "1 job running: app/test" } });
+      b.loop({ controlEmpty: (b.control() as Control).gen });
+      await again();
+      expect(b.op(o!.op!)).toMatchObject({ state: "succeeded" });
+    },
+    SLOW,
+  );
+});
+
+describe("the review's other fixes", () => {
+  test("a forced drain or stop with no mono reading is refused, never one that forces nothing", () => {
+    for (const r of [requestOf("stop", { force: true }, "service"), requestOf("drain", { force: true, timeout: "10m" }, "service")]) {
+      const a = applyControl(initialControl(), r, { wall: T });
+      expect(a).toMatchObject({ ok: false, code: "failed", changed: false, said: expect.stringContaining("clock can't be read") });
+    }
+    expect(parseControl({ v: 1, availability: "draining", gen: 1, since: 1, actor: "service", op: "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ", force: true })).toBe("a forced one has no deadline");
+  });
+
+  test("the same drain with its timeout written another way attaches; --force over one without rewrites the op's params", async () => {
+    const d = { ...initialControl(), availability: "draining" as const, gen: 3, op: "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ", force: true as const, timeout: "30m", forceAt: { boot: BOOT, mono: 5 } };
+    expect(applyControl(d, requestOf("drain", { force: true, timeout: "1800s" }, "service"), at()).changed).toBe(false);
+    expect(applyControl(d, requestOf("drain", { force: true, timeout: "31m" }, "service"), at())).toMatchObject({ code: "busy" });
+    const b = await box();
+    const o = await b.send("drain");
+    await b.send("drain", { force: true, timeout: "10m" });
+    expect(b.op(o!.op!)).toMatchObject({ params: { force: true, timeout: "10m" } });
+  });
+
+  test("a stop taking a drain over carries its progress to the new op", async () => {
+    const b = await box();
+    const d = await b.send("drain");
+    b.loop({ slots: { "1": { slot: "running a job", job: "app/test" } } });
+    await b.job();
+    const s = await b.send("stop");
+    expect(s!.op).not.toBe(d!.op);
+    expect(b.op(s!.op!)).toMatchObject({ type: "stop", progress: { text: "1 job running: app/test" } });
+    // And a second drain after a resume gets its progress though the jobs are the same.
+    await b.send("start");
+    const again = await b.send("drain");
+    await b.job();
+    expect(b.op(again!.op!)?.progress?.text).toBe("1 job running: app/test");
+  });
+
+  test("start requests in one pass start the loop once", async () => {
+    const b = await box();
+    await b.send("stop");
+    for (let i = 0; i < 3; i++) writeSpoolFile(b.s.serviceSpool, "start", {}, b.sys);
+    await b.job();
+    expect(b.kicks).toHaveLength(1);
+    expect(b.control()).toMatchObject({ availability: "active" });
+  });
+
+  test("a start made at the box with the guard down is written in control.json once the guard is back", async () => {
+    const b = await box();
+    await b.send("stop");
+    b.loop({ controlEmpty: (b.control() as Control).gen });
+    await b.job();
+    expect(b.control()).toMatchObject({ availability: "stopped" });
+    const { startedHereFile } = await import("../src/availability.ts");
+    writeFileSync(startedHereFile(b.p), JSON.stringify({ gen: (b.control() as Control).gen }));
+    await b.job();
+    expect(b.control()).toMatchObject({ availability: "active", actor: "service, at the box with the guard down" });
+    expect(b.kicks).toHaveLength(0);
+  });
+
+  test("a flood's dropped requests get no outcome; the asker says they went unanswered", async () => {
+    const b = await box();
+    const ids: string[] = [];
+    for (let i = 0; i < 60; i++) ids.push(writeSpoolFile(b.s.serviceSpool, "pause", {}, b.sys).id);
+    await b.job();
+    const answered = ids.filter((id) => readOutcome(b.s.outcomes("service"), id, me).kind === "ok");
+    expect(answered.length).toBeLessThanOrEqual(10);
+  });
+
+  test.todo("start is refused while an update is past its drain, naming the update (scenario 9, with the releases package)");
 });

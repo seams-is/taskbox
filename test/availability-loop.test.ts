@@ -103,7 +103,6 @@ describe("the loop and the box's availability", () => {
     expect(mac.endedAt - at).toBeGreaterThan(10 * 60_000);
     expect(r.clonesAt.filter((x) => x > at)).toEqual([]);
     expect(readControl(t.file, me)).toMatchObject({ kind: "ok", value: { availability: "stopped" } });
-    expect(existsSync(t.d.paths.stopped)).toBe(true);
     expect(readFileSync(t.d.paths.log, "utf8")).toContain("stopped: every job finished, so the loop stops until taskbox start");
   });
 

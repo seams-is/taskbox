@@ -202,8 +202,6 @@ export interface Paths {
   loopState: string;
   pull: string; // the download's progress, written by the loop: the macOS image's
   pullLinux: string; // the Linux image's download
-  stopped: string; // written by taskbox stop; removed by taskbox start and at the service's next login
-  drain: string; // written by taskbox drain; removed once drained, by taskbox start, and at the loop's start
   tartHome: string; // Tart's own folder, ~<service>/.tart, where it caches the image
   // The loop's launchd label, then its label under an earlier install's prefix while it may still run.
   loopLabels: string[];
@@ -287,8 +285,6 @@ export function paths(root: string, box: BoxNames): Paths {
     loopState: join(proj, "loop-state.json"),
     pull: join(proj, "pull.json"),
     pullLinux: join(proj, "pull-linux.json"),
-    stopped: join(proj, "stopped.json"),
-    drain: join(proj, "drain.json"),
     tartHome: join(serviceHome, ".tart"),
     loopLabels: previousLabelPrefix ? [AGENT_LABEL, previousLabels(previousLabelPrefix).loop] : [AGENT_LABEL],
     ...(previousLabelPrefix ? { previousLabelPrefix } : {}),

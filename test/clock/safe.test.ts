@@ -63,20 +63,7 @@ describe("the VM-start check for missing rules", () => {
   });
 });
 
-describe("a drain from before a restart", () => {
-  test("is dropped only when the boot's uuid changed; a clock step leaves the owner's drain", async () => {
-    const { dropDrainFromBeforeBoot } = await import("../../src/loop.ts");
-    const sys = new FakeSys();
-    const d = loopDeps(sys, tempRoot());
-    mkdirSync(dirname(d.paths.drain), { recursive: true });
-    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now(), boot: sys.bootUuid }));
-    step(sys, 400 * 86_400_000);
-    await dropDrainFromBeforeBoot(d);
-    expect(existsSync(d.paths.drain)).toBe(true);
-    sys.bootUuid = "99999999-2222-3333-4444-555555555555";
-    await dropDrainFromBeforeBoot(d);
-    expect(existsSync(d.paths.drain)).toBe(false);
-  });
+describe("a forced drain's deadline", () => {
   test("a forced drain's deadline is on this boot's monotonic clock: a clock step forces nothing", async () => {
     const { applyControl, initialControl } = await import("../../src/availability.ts");
     const sys = new FakeSys();

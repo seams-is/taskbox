@@ -56,7 +56,7 @@ export const keepingPass: PassMaker = {
         spools = readdirSync(join(s.dir, "outcomes"));
       } catch {}
       for (const sp of spools) {
-        if (!/^(agent|service|pool-[1-9][0-9]?)$/.test(sp)) continue;
+        if (!/^(agent|service|admin|pool-[1-9][0-9]?)$/.test(sp)) continue;
         keepOutcomes(s.outcomes(sp), at);
         sweepTemps(s.outcomes(sp), pidAlive);
       }

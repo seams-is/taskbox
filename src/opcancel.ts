@@ -1,4 +1,4 @@
-// op cancel, as the guard applies it, whoever asks: the owner signed, the service account from its
+// op cancel, as the guard applies it, whoever asks: signed from the controller, the service account from its
 // spool, an admin at the box from root's admin spool. The op's type says who may start it, and so who
 // may cancel it, and how (src/optypes/). One the type can't cancel, or past its point of no return,
 // is refused with the way back.
@@ -18,7 +18,7 @@ export function cancelProblem(a: Record<string, unknown>, admin = false): string
   return undefined;
 }
 
-const NAME: Record<Starter, string> = { owner: "the owner", service: "the service account", admin: "an admin at the box" };
+const WHERE: Record<Starter, string> = { owner: "from the controller", service: "at the box as the service account", admin: "at the box as an admin" };
 const list = (xs: readonly string[]) => (xs.length < 2 ? (xs[0] ?? "nobody") : `${xs.slice(0, -1).join(", ")} or ${xs.at(-1)}`);
 
 export async function cancelOp(c: HandlerCtx, id: string, role: Starter, actor: string, decls: readonly OpDecl[] = opDecls()): Promise<Answer> {
@@ -29,7 +29,7 @@ export async function cancelOp(c: HandlerCtx, id: string, role: Starter, actor: 
   if (op.state !== "running") return { ok: true, said: `The ${op.type} has ended already: ${op.state}.`, op: id };
   const d = decls.find((x) => x.type === op.type);
   if (!d) return { ok: false, code: "failed", said: `The ${op.type} can't be cancelled: this release doesn't declare it.`, op: id };
-  if (!d.who.includes(role)) return { ok: false, code: "denied", said: `A ${op.type} is cancelled by ${list(d.who.map((w) => NAME[w]))}, as it is started.`, op: id };
+  if (!d.who.includes(role)) return { ok: false, code: "denied", said: `A ${op.type} is cancelled ${list(d.who.map((w) => WHERE[w]))}, as it is started.`, op: id };
   if (!d.cancel || !op.cancellable) return { ok: false, code: "failed", said: `The ${op.type} can't be cancelled. ${d.wayBack}`, op: id };
   if (pastNoReturn(op)) return { ok: false, code: "failed", said: `The ${op.type} is past ${op.pointOfNoReturn}, so it can't be cancelled. ${d.wayBack}`, op: id };
   const a = await d.cancel(c, op, actor);

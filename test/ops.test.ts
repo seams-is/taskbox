@@ -559,7 +559,6 @@ describe("state files ci could have replaced", () => {
     mkdirSync(p.projectState, { recursive: true });
     Bun.spawnSync(["/usr/bin/mkfifo", p.pull]);
     symlinkSync("/dev/zero", p.loopState);
-    writeFileSync(p.stopped, "null");
     const t = Date.now();
     expect(await status(d)).toBe(0);
     expect(Date.now() - t).toBeLessThan(2000);

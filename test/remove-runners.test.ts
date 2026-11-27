@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
-import { type OpsDeps, REMOVE_OP, remove } from "../src/ops.ts";
+import { type OpsDeps, remove } from "../src/ops.ts";
+import { opType } from "../src/optypes/index.ts";
 import { begin, listOps, writeOp } from "../src/core/ops.ts";
 import { rootStateOf } from "../src/core/paths.ts";
 import { FakeSys } from "./fake.ts";
@@ -178,7 +179,7 @@ describe("a remove stopped part way", () => {
     const { d, p, sys } = removeDeps();
     d.rootUid = process.getuid!();
     const f = { dir: rootStateOf(p).ops, owner: process.getuid!() };
-    const b = begin([], REMOVE_OP, { subject: "box", params: { keepImages: false }, actor: "admin" }, sys.now());
+    const b = begin([], opType("remove"), { subject: "box", params: { keepImages: false }, actor: "admin" }, sys.now());
     if (b.kind !== "start") throw new Error("no start");
     mkdirSync(f.dir, { recursive: true });
     writeOp(f, { ...b.op, pid: 99999 });
@@ -186,7 +187,7 @@ describe("a remove stopped part way", () => {
     expect(await remove(d, { serviceUid: 502, boxName: "box-1", alive: () => false })).toBe(1);
     expect(ops(p).map((o) => o.state).sort()).toEqual(["cancelled", "failed"]);
     // While it still runs, it is one remove at a time.
-    const live = begin([], REMOVE_OP, { subject: "box", params: { keepImages: false }, actor: "admin" }, sys.now());
+    const live = begin([], opType("remove"), { subject: "box", params: { keepImages: false }, actor: "admin" }, sys.now());
     if (live.kind !== "start") throw new Error("no start");
     writeOp(f, { ...live.op, pid: 4243 });
     const said: string[] = [];
