@@ -144,7 +144,7 @@
     "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
   },
   "loop.ts": {
-    "reads": 100,
+    "reads": 101,
     "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label."
   },
   "cmd/daemons.ts": {
@@ -160,8 +160,8 @@
     "why": "moved from cli.ts: the now the logins screen counts back from: display"
   },
   "cmd/status.ts": {
-    "reads": 2,
-    "why": "moved from cli.ts: the now for status's recent-logins line: display"
+    "reads": 3,
+    "why": "moved from cli.ts: the now for status's recent-logins line: display; whether the temporary admin SSH window is open: display"
   },
   "cmd/workspace.ts": {
     "reads": 2,
@@ -199,6 +199,10 @@
     "reads": 1,
     "why": "when a stop was asked: a label in the stop's file"
   },
+  "pfstarts.ts": {
+    "reads": 3,
+    "why": "the time on the guard's record of starts when it changes, a lock file's age, and the id of an event made before the admin's entry that names it: a step only makes a lock look stale or fresh sooner, the record's order is its sequence number, and an id's time is a label"
+  },
   "passes/control.ts": {
     "reads": 1,
     "why": "the time label on a control.json written again as paused"
@@ -234,5 +238,33 @@
   "update/cmd.ts": {
     "reads": 1,
     "why": "the 7-day line about the release check, for display"
+  },
+  "cmd/confirm.ts": {
+    "reads": 3,
+    "why": "the id of the declined event, made before the admin's entry that names it: a label; the moment a confirm is judged at, and when an admin's yes was given: pending.ts lapses on the monotonic clock and the boot too"
+  },
+  "passes/settings.ts": {
+    "reads": 1,
+    "why": "when the settings repo was last read, for the hourly read: a step only moves the next read"
+  },
+  "rows/settings.ts": {
+    "reads": 3,
+    "why": "how long since the settings repo was read, and whether the temporary admin SSH window is open: display"
+  },
+  "settings/op.ts": {
+    "reads": 5,
+    "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot"
+  },
+  "settings/repo.ts": {
+    "reads": 2,
+    "why": "the settings op's now, and the wall part of a confirm's moment, judged with the monotonic clock and the boot (pending.ts)"
+  },
+  "cmd/policy.ts": {
+    "reads": 1,
+    "why": "whether the temporary admin SSH window is open, for the policy printed: a step moves its end by the step, and the check row warns while it is open"
+  },
+  "rows/accounts.ts": {
+    "reads": 1,
+    "why": "whether the temporary admin SSH window is open, for the rules compared: display"
   }
 }

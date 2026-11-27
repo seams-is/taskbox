@@ -14,7 +14,7 @@ const clock = (t = { now: 0 }) => ({ now: () => t.now, t });
 
 describe("the pass registry", () => {
   test("the guard's passes: its beat first, v2's in their order, then v3's", () => {
-    expect(passMakers().map((m) => m.name)).toEqual(["beat", "workspaces", "loop-watch", "logins", "tailscaled", "tailscaled-probe", "ending-loop", "keeping", "update", "ops", "accounts", "requests", "control", "key-keeper"]);
+    expect(passMakers().map((m) => m.name)).toEqual(["beat", "workspaces", "loop-watch", "logins", "tailscaled", "tailscaled-probe", "ending-loop", "keeping", "update", "ops", "accounts", "requests", "control", "key-keeper", "gpu", "pf-starts", "settings"]);
   });
   test("each pass starts at its stage, and runs one at a time, never awaited by the tick", async () => {
     const c = clock();

@@ -5,6 +5,7 @@ import * as availability from "./availability.ts";
 import * as connect from "./connect.ts";
 import type { OpDecl } from "./decl.ts";
 import * as remove from "./remove.ts";
+import * as settings from "./settings.ts";
 import * as tools from "./tools.ts";
 import * as update from "./update.ts";
 
@@ -12,6 +13,7 @@ export const opTypeFiles: readonly { file: string; optypes: readonly OpDecl[] }[
   { file: "availability.ts", optypes: availability.optypes },
   { file: "connect.ts", optypes: connect.optypes },
   { file: "remove.ts", optypes: remove.optypes },
+  { file: "settings.ts", optypes: settings.optypes },
   { file: "tools.ts", optypes: tools.optypes },
   { file: "update.ts", optypes: update.optypes },
 ];

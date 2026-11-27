@@ -169,7 +169,10 @@ describe("ci's answers for a controller", () => {
       const v3 = await run([cmd, "--json", "--answers", "3"], CALLERS.ci);
       const old = JSON.parse(v3.said[0]!);
       expect([old.answers, old.kind]).toEqual([3, kind]);
-      expect(Object.keys(e.result).sort()).toEqual(Object.keys(old).filter((k) => k !== "answers" && k !== "kind").sort());
+      // Version 4's status also carries the box's timings line, which v3's line never had.
+      const v4Only = kind === "status" ? ["timings"] : [];
+      expect(Object.keys(e.result).sort()).toEqual([...Object.keys(old).filter((k) => k !== "answers" && k !== "kind"), ...v4Only].sort());
+      expect(Object.keys(old)).not.toContain("timings");
     }
   });
 

@@ -549,7 +549,7 @@ describe("the guard fails closed", () => {
     };
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("guard-closed");
     expect(sys.tartCalls().at(-1)).toMatch(/^delete job-/);
-    expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).guardClosed).toBe(true);
+    // The guard closes the box when it judges the start (pfstarts.ts); until then the loss alone waits it.
     expect((await whyWait(d))?.key).toBe("guard");
     // Once a box-check job has shown VM starts leave the rules alone, the rule lifts.
     expect(await whyWait({ ...d, cfg: { ...d.cfg, vmnetPfProven: true } })).toBeUndefined();

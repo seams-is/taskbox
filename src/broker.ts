@@ -6,7 +6,7 @@ import { connect, createServer } from "node:net";
 import { type Clock, realClock } from "./clock.ts";
 import { type AppRole, installationsOf } from "./connect.ts";
 import type { Config } from "./config.ts";
-import { AppClient, bodyOf, orgRunnersOf, type RunnerGroup, runnerGroupsOf, revokeToken, type TokenAsk, tokenCall } from "./github.ts";
+import { AppClient, bodyOf, orgRunnersOf, type RunnerGroup, runnerGroupsOf, revokeToken, type TokenAsk, tokenCall, tokenRepos } from "./github.ts";
 import { GitHub, type GroupRunner, type Head } from "./github.ts";
 import { CLOCK_LIMIT_S, clockOffsetS, GitHubError } from "./ghfail.ts";
 import { readHeldKey } from "./keys.ts";
@@ -21,10 +21,10 @@ export const ANSWER_MAX = 2 * 1024 * 1024;
 export const ASK_MS = 30_000;
 
 // The closed set. Anything else is refused.
-export const ASKS = ["source-token", "jit-config", "group-state", "remove-runner", "org-runners", "group-workflows"] as const;
+export const ASKS = ["source-token", "jit-config", "group-state", "remove-runner", "org-runners", "group-workflows", "settings-files", "runner-repos", "settings-rules"] as const;
 export type AskName = (typeof ASKS)[number];
 // Asks served on the guard's socket only.
-export const GUARD_ONLY: ReadonlySet<AskName> = new Set(["org-runners", "group-workflows"]);
+export const GUARD_ONLY: ReadonlySet<AskName> = new Set(["org-runners", "group-workflows", "settings-files", "runner-repos", "settings-rules"]);
 // The most of each ask an hour, so a stolen service account can't mint runners without end.
 export const PER_HOUR: Partial<Record<AskName, number>> = { "jit-config": 120, "remove-runner": 240, "source-token": 240 };
 
@@ -40,6 +40,8 @@ export interface BrokerDeps {
   settings(): Config;
   keysDir: string;
   ownerUid: number; // _taskboxgh's uid: the owner each key must have
+  // box.json alone, for the settings read when no settings are in force yet (a fresh box).
+  box?(): Record<string, unknown> | undefined;
 }
 
 const no = (why: string, c: FailClass = "ask"): Answer => ({ ok: false, why, class: c });
@@ -121,6 +123,7 @@ async function groupRunners(d: BrokerDeps, cfg: Config, token: string, groupId: 
 async function answerAsk(d: BrokerDeps, a: Ask, guard: boolean): Promise<Answer> {
   if (!(ASKS as readonly string[]).includes(a.ask)) return no("the GitHub key keeper doesn't answer that ask");
   if (GUARD_ONLY.has(a.ask) && !guard) return no("that ask is the guard's alone");
+  if (a.ask === "settings-files" || a.ask === "runner-repos" || a.ask === "settings-rules") return settingsAsk(d, a);
   const cfg = d.settings();
   switch (a.ask) {
     case "source-token": {
@@ -250,6 +253,102 @@ async function answerAsk(d: BrokerDeps, a: Ask, guard: boolean): Promise<Answer>
     }
   }
   return no("the GitHub key keeper doesn't answer that ask");
+}
+
+// ---- The settings repo, for the guard alone ----
+
+const BOX = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const SHA = /^[0-9a-f]{40}$/;
+const ORG = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+export const SETTINGS_FILE_MAX = 256 * 1024;
+
+// The runner App's ID from the settings in force, or from box.json alone when none are.
+function runnerIdOf(d: BrokerDeps): number | undefined {
+  try {
+    return runnerAppId(d.settings());
+  } catch {
+    const r = d.box?.()?.runnerApp as { appId?: unknown } | undefined;
+    return Number.isSafeInteger(r?.appId) && (r!.appId as number) > 0 ? (r!.appId as number) : undefined;
+  }
+}
+
+// A call with an installation token and headers of its own (an ETag), as apiCall makes it.
+const call = (d: BrokerDeps, token: string, path: string, headers: Record<string, string> = {}) =>
+  d.sys.fetch(`https://api.github.com${path}`, { method: "GET", headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox", Authorization: `Bearer ${token}`, ...headers }, redirect: "error", signal: d.sys.timeout(30_000) });
+
+// One file of the commit, as text, or undefined when the repo has none at that path.
+async function fileAt(d: BrokerDeps, token: string, repo: string, path: string, sha: string): Promise<string | undefined | Answer> {
+  const r = await call(d, token, `/repos/${repo}/contents/${path}?ref=${sha}`);
+  if (r.status === 404) return undefined;
+  if (!r.ok) return failedRes(d, `the settings repo's ${path}`, r);
+  const b = (await bodyOf(r)) as { type?: unknown; encoding?: unknown; content?: unknown; size?: unknown } | undefined;
+  if (b?.type !== "file" || b.encoding !== "base64" || typeof b.content !== "string" || !Number.isSafeInteger(b.size) || (b.size as number) > SETTINGS_FILE_MAX) return no(`the settings repo's ${path} isn't a file of at most ${SETTINGS_FILE_MAX / 1024} KB`, "refused");
+  return Buffer.from(b.content, "base64").toString("utf8");
+}
+
+async function settingsAsk(d: BrokerDeps, a: Ask): Promise<Answer> {
+  const id = runnerIdOf(d);
+  if (!id) return no("this box has no runner App", "key");
+  const pem = readHeldKey(d.keysDir, d.ownerUid, "runner", id);
+  if (!pem) return no("the runner App's key isn't with the GitHub key keeper", "key");
+  const app = new AppClient(d.sys, d.log, id, pem);
+  if (a.ask === "runner-repos") {
+    // The repos the runner App is installed on, by name, to find the settings repo.
+    if (typeof a.org !== "string" || !ORG.test(a.org)) return no("an org is a GitHub organisation's name");
+    const inst = await app.call("GET", `/orgs/${a.org}/installation`);
+    if (!inst.ok) return failedRes(d, "the runner App's installation", inst);
+    const iid = ((await bodyOf(inst)) as { id?: unknown } | undefined)?.id;
+    if (!Number.isSafeInteger(iid)) return no("GitHub's answer for the runner App's installation had no ID", "server");
+    const t = await app.token(iid as number, { permissions: { metadata: "read" } });
+    if ("status" in t) return failed("the runner App's token", t.status);
+    try {
+      const repos = await tokenRepos(d.sys, t.token);
+      if ("status" in repos) return failed("the runner App's repos", repos.status);
+      return { ok: true, repos: repos.filter((r) => REPO.test(r)) };
+    } finally {
+      await revokeToken(d.sys, t.token);
+    }
+  }
+  const repo = a.repo;
+  if (typeof repo !== "string" || !REPO.test(repo)) return no("the settings repo is owner/name");
+  const inst = await app.call("GET", `/repos/${repo}/installation`);
+  if (!inst.ok) return inst.status === 404 ? no(`the runner App isn't installed on ${repo}`, "gone") : failedRes(d, "the runner App's installation on the settings repo", inst);
+  const iid = ((await bodyOf(inst)) as { id?: unknown } | undefined)?.id;
+  if (!Number.isSafeInteger(iid)) return no("GitHub's answer for the runner App's installation had no ID", "server");
+  // Contents read on the settings repo alone, revoked once the ask is answered.
+  const t = await app.token(iid as number, { repositories: [repo.split("/")[1]!], permissions: { contents: "read" } });
+  if ("status" in t) return failed("the runner App's token on the settings repo", t.status);
+  try {
+    if (a.ask === "settings-rules") {
+      // Whether the default branch takes direct pushes: a rule that asks for a pull request stops them.
+      const r = await call(d, t.token, `/repos/${repo}`);
+      if (!r.ok) return failedRes(d, "the settings repo", r);
+      const branch = ((await bodyOf(r)) as { default_branch?: unknown } | undefined)?.default_branch;
+      if (typeof branch !== "string" || !/^[A-Za-z0-9._/-]{1,200}$/.test(branch)) return no("GitHub's answer for the settings repo had no default branch", "server");
+      const rules = await call(d, t.token, `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}?per_page=100`);
+      if (!rules.ok) return { ok: true, branch, known: false, status: rules.status };
+      const list = await bodyOf(rules);
+      const types = Array.isArray(list) ? list.map((x) => (x as { type?: unknown })?.type).filter((x): x is string => typeof x === "string") : [];
+      return { ok: true, branch, known: true, pullRequest: types.includes("pull_request") };
+    }
+    const box = a.box;
+    if (typeof box !== "string" || !BOX.test(box)) return no("a box's name is a MagicDNS label");
+    const etag = typeof a.etag === "string" && /^[\x21-\x7e]{1,200}$/.test(a.etag) ? a.etag : undefined;
+    // The default branch's head commit, which no PR controls. Unchanged costs nothing with the ETag.
+    const head = await call(d, t.token, `/repos/${repo}/commits/HEAD`, etag ? { "If-None-Match": etag } : {});
+    if (head.status === 304) return { ok: true, unchanged: true };
+    if (!head.ok) return failedRes(d, "the settings repo's head commit", head);
+    const sha = ((await bodyOf(head)) as { sha?: unknown } | undefined)?.sha;
+    if (typeof sha !== "string" || !SHA.test(sha)) return no("GitHub's answer for the settings repo's head had no commit", "server");
+    const tag = head.headers.get("etag");
+    const product = await fileAt(d, t.token, repo, "taskbox.json", sha);
+    if (isAnswer(product)) return product;
+    const overlay = await fileAt(d, t.token, repo, `boxes/${box}.json`, sha);
+    if (isAnswer(overlay)) return overlay;
+    return { ok: true, sha, ...(tag && /^[\x21-\x7e]{1,200}$/.test(tag) ? { etag: tag } : {}), ...(product !== undefined ? { product } : {}), ...(overlay !== undefined ? { overlay } : {}) };
+  } finally {
+    await revokeToken(d.sys, t.token);
+  }
 }
 
 // What may leave: no key, no JWT. A source token and a JIT config are the two asks whose answer is a

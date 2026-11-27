@@ -477,6 +477,16 @@ export async function otherLogins(sys: Sys, ...except: string[]): Promise<string
 
 // Whether Screen Sharing listens now, from the socket table or a try on loopback. Fails closed: a
 // table that can't be read counts as on.
+// The strict read, for counting VM starts with Screen Sharing on (pfstarts.ts): true only when it is
+// seen listening, false only when netstat shows no listener and the port refuses, else null.
+export async function screenSharingSeen(sys: Sys): Promise<boolean | null> {
+  const ns = await sys.run("/usr/sbin/netstat", ["-an", "-p", "tcp"]).catch(() => undefined);
+  if (!ns || ns.code !== 0 || !/^Proto\s/m.test(ns.stdout)) return null;
+  if (tcpListeners(ns.stdout).some((l) => l.port === SCREEN_SHARING_PORT)) return true;
+  const probe = await sys.tcpProbe("127.0.0.1", SCREEN_SHARING_PORT, 1500).catch(() => "error" as const);
+  return probe === "refused" ? false : probe === "open" ? true : null;
+}
+
 export async function screenSharingOn(sys: Sys): Promise<boolean> {
   const ns = await sys.run("/usr/sbin/netstat", ["-an", "-p", "tcp"]).catch(() => undefined);
   if (!ns || ns.code !== 0 || !/^Proto\s/m.test(ns.stdout)) return true;

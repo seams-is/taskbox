@@ -9,6 +9,7 @@
 import type { CommandFile } from "../registry.ts";
 import * as broker from "./broker.ts";
 import * as check from "./check.ts";
+import * as confirm from "./confirm.ts";
 import * as connect from "./connect.ts";
 import * as daemons from "./daemons.ts";
 import * as drain from "./drain.ts";
@@ -30,6 +31,7 @@ import * as release from "./release.ts";
 import * as remove from "./remove.ts";
 import * as resume from "./resume.ts";
 import * as rollback from "./rollback.ts";
+import * as settings from "./settings.ts";
 import * as size from "./size.ts";
 import * as source from "./source.ts";
 import * as start from "./start.ts";
@@ -44,6 +46,7 @@ import * as workspace from "./workspace.ts";
 export const commandFiles: readonly CommandFile[] = [
   { file: "broker.ts", module: broker },
   { file: "check.ts", module: check },
+  { file: "confirm.ts", module: confirm },
   { file: "connect.ts", module: connect },
   { file: "daemons.ts", module: daemons },
   { file: "drain.ts", module: drain },
@@ -65,6 +68,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "remove.ts", module: remove },
   { file: "resume.ts", module: resume },
   { file: "rollback.ts", module: rollback },
+  { file: "settings.ts", module: settings },
   { file: "size.ts", module: size },
   { file: "source.ts", module: source },
   { file: "start.ts", module: start },

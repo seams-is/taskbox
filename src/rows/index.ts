@@ -16,7 +16,9 @@ import { CLOCK_ROWS } from "./clock.ts";
 import { ACCOUNT_ROWS } from "./accounts.ts";
 import { BEAT_ROWS } from "./away.ts";
 import { CONNECT_ROWS } from "./connect.ts";
+import { SETTINGS_ROWS } from "./settings.ts";
 import { SIZE_ROWS } from "./sizes.ts";
+import { PF_ROWS } from "../pfstarts.ts";
 import { TOOL_ROWS } from "./tools.ts";
 
 function v2Rows(): Row[] {
@@ -33,7 +35,7 @@ function v2Rows(): Row[] {
 let built: Row[] | undefined;
 export function allRows(): Row[] {
   if (built) return built;
-  const rows = [...v2Rows(), ...GUARD_ROWS, ...OP_ROWS, ...CLOCK_ROWS, ...BEAT_ROWS, ...SIZE_ROWS, ...TOOL_ROWS, ...ACCOUNT_ROWS, ...CONNECT_ROWS];
+  const rows = [...v2Rows(), ...GUARD_ROWS, ...OP_ROWS, ...CLOCK_ROWS, ...BEAT_ROWS, ...SIZE_ROWS, ...TOOL_ROWS, ...ACCOUNT_ROWS, ...CONNECT_ROWS, ...PF_ROWS, ...SETTINGS_ROWS];
   const why = rowsProblem(rows);
   if (why) throw new Error(`the check rows can't be used: ${why}`);
   return (built = rows);

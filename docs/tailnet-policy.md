@@ -4,6 +4,8 @@ The box signs in to your tailnet as the tagged device `tag:taskbox`, or the tag 
 
 It allows your own devices to reach the box by Tailscale SSH as the agent account and the workspace accounts, and by Screen Sharing for the accounts in `accounts.people`. A person given as `{ "user": "sam", "tailnet": "sam@example.com" }` is reached from that Tailscale login only. Nothing reaches root, the service account or the admin users. The box reaches nothing on the tailnet.
 
+For a while, one admin user can be reached: set `adminSsh` in the box's overlay to `{ "login": "pat@example.com", "user": "pat-admin", "until": "2026-12-01T18:00:00Z" }`, at most 30 days off. It is a guarded setting, so it opens after `taskbox settings apply` and `taskbox confirm` at the box. While it is open, the printed policy accepts that login to that user, and `check` warns. After `until`, paste the policy again; `check` then says the access has gone.
+
 At the box, type `taskbox policy show --owner <your Tailscale login>` to print the entries for your settings. `--admin <short name>` names an admin user, once for each, in place of `ADMIN`. `--whole` prints a whole file. This is the whole file for `taskbox.example.json` with one person, `pat`, in `accounts.people` and `accounts.ssh`:
 
 ```json
