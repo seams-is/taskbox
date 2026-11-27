@@ -186,5 +186,9 @@
   "passes/control.ts": {
     "reads": 1,
     "why": "the time label on a control.json written again as paused"
+  },
+  "opcmd.ts": {
+    "reads": 1,
+    "why": "op list --since: a duration back from now, which only shows more or fewer records"
   }
 }

@@ -3,7 +3,7 @@
 // and stop then watch their op until it ends: Ctrl-C stops the watching only, and running the same
 // command again watches again. With the guard down, stop --force and start act on the loop here.
 // From the controller, the same commands come signed, and the cli sends them on (core/asker.ts).
-import { type Action, argsProblem, readControl, startHere, stopHere, type StopDeps } from "./availability.ts";
+import { type Action, argsProblem, readControl, running, startHere, stopHere, type StopDeps } from "./availability.ts";
 import type { BoxCtx, ErrorBody, Outcome } from "./command.ts";
 import { duration, EXIT } from "./command.ts";
 import { ask, type AskDeps } from "./core/asker.ts";
@@ -13,7 +13,6 @@ import { spoolProblem } from "./core/spool.ts";
 import { argsOf } from "./core/statement.ts";
 import { GUARD_LABEL, readStateJson } from "./config.ts";
 import { beatState, STALE_MS, watchPaths } from "./guardwatch.ts";
-import { running } from "./passes/control.ts";
 
 export const WATCH_MS = 2_000; // how often a drain or a stop looks at its op
 export const FIRST_LINE = "stop now drains first; stop --force ends running jobs now.";

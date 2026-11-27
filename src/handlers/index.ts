@@ -4,5 +4,9 @@
 // file in this folder is named here.
 import type { HandlerFile } from "../core/dispatch.ts";
 import * as availability from "./availability.ts";
+import * as op from "./op.ts";
 
-export const handlerFiles: readonly HandlerFile[] = [{ file: "availability.ts", handlers: availability.handlers }];
+export const handlerFiles: readonly HandlerFile[] = [
+  { file: "availability.ts", handlers: availability.handlers },
+  { file: "op.ts", handlers: op.handlers },
+];

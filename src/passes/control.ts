@@ -9,7 +9,7 @@
 // apply through the same changeControl.
 import { lchownSync } from "node:fs";
 import { uidOf } from "../accounts.ts";
-import { ACTIONS, type Action, argsProblem, changeControl, type ControlDeps, controlNow, healControl, launchLoop, readControl, requestOf } from "../availability.ts";
+import { ACTIONS, type Action, argsProblem, running, changeControl, type ControlDeps, controlNow, healControl, launchLoop, readControl, requestOf } from "../availability.ts";
 import { eventLog } from "../core/events.ts";
 import { Verified } from "../core/statement.ts";
 import { readOp, withProgress, writeOp } from "../core/ops.ts";
@@ -130,14 +130,6 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
     writeOp(f, withProgress(was.value, { done: 0, of: jobs.length, text: text.slice(0, 120) }));
     shown = text;
   }
-}
-
-// The jobs the loop's slots run now, by its own state: each one's name, cleaned and cut.
-export function running(slots: unknown): string[] {
-  if (!slots || typeof slots !== "object" || Array.isArray(slots)) return [];
-  return Object.values(slots as Record<string, { slot?: unknown; job?: unknown }>)
-    .filter((x) => x && x.slot === "running a job")
-    .map((x) => (typeof x.job === "string" ? x.job.replace(/[^\x20-\x7e]/g, " ").slice(0, 40) : "a job"));
 }
 
 export const controlPass: PassMaker = {

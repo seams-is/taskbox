@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeRecord } from "../src/accounts.ts";
-import { type Action, applyControl, availabilityLine, type Availability, argsProblem, changeControl, type Control, type ControlRequest, controlGate, initialControl, parseControl, readControl, requestOf } from "../src/availability.ts";
+import { type Action, applyControl, availabilityLine, running, type Availability, argsProblem, changeControl, type Control, type ControlRequest, controlGate, initialControl, parseControl, readControl, requestOf } from "../src/availability.ts";
 import { FIRST_LINE, watchOp } from "../src/availabilitycmd.ts";
 import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
@@ -17,7 +17,7 @@ import { rootStateOf } from "../src/core/paths.ts";
 import { readOutcome, writeSpoolFile } from "../src/core/spool.ts";
 import { argsOf, CONTROL_NS, signedWord, statementFor, statementText } from "../src/core/statement.ts";
 import { watchPaths, writeBeat } from "../src/guardwatch.ts";
-import { controlJob, running } from "../src/passes/control.ts";
+import { controlJob } from "../src/passes/control.ts";
 import { requestsJob } from "../src/passes/requests.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
@@ -421,7 +421,7 @@ describe("the owner's signed requests", () => {
     const { contractProblem } = await import("../src/core/dispatch.ts");
     const { registry } = await import("../src/registry.ts");
     expect(contractProblem(registry(), requestHandlers())).toBeUndefined();
-    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "pause", "resume", "start", "stop"]);
+    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "op.cancel", "pause", "resume", "start", "stop"]);
   });
 });
 
