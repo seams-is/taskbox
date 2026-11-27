@@ -7,8 +7,8 @@
 // (reconcileOps), and a start the service account made with the guard down is written in. Root's
 // admin spool, for an admin's op cancel, is read first, so it never waits on the service account.
 //
-// The flood rules here are core/spool.ts's own; a flood's dropped requests get no outcome (the asker
-// says it went unanswered), and the generic per-kind caps come with core/spool.ts.
+// The flood rules are core/spool.ts's: each kind its own cap, no outcome a dropped request (the asker
+// says it went unanswered), one summary a pass, and the outcomes folder kept to its newest.
 //
 // Signed requests from the controller come through the agent spool's pass and handlers/availability.ts, and
 // apply through the same changeControl.
@@ -21,7 +21,7 @@ import { Verified } from "../core/statement.ts";
 import { readOp, withProgress, writeOp } from "../core/ops.ts";
 import type { PassCtx, PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
-import { drainSpool, newSpoolMemory, orderBy, type Outcome, parseRequestName, readOutcome, readRequest, recordOutcome, REQUEST_FOR_MS, type SpoolReport } from "../core/spool.ts";
+import { drainSpool, dropsLine, newSpoolMemory, orderBy, type Outcome, parseRequestName, readOutcome, readRequest, recordOutcome, type SpoolReport } from "../core/spool.ts";
 import type { ErrorCode } from "../command.ts";
 import { readOwnedJson } from "../loopwatch.ts";
 import { cancelOp, cancelProblem, opIdOf } from "../opcancel.ts";
@@ -31,6 +31,7 @@ import { applyConfirm, CONFIRM, confirmProblem } from "../confirmapply.ts";
 
 export const REFRESH = 30; // passes between lookups of the service account's uid
 export const PER_PASS = 10; // the service account asks one at a time; a few more is plenty
+export const PER_KIND = 4; // each kind's own place in the spool: one ask at a time, and a few more
 export const OP_CANCEL = "op-cancel";
 const SERVICE = () => Verified.principal("service account");
 const ADMIN = () => Verified.principal("admin");
@@ -96,10 +97,10 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
           perPass: PER_PASS,
           isRequest: (n) => parseRequestName(n, spool.kinds) !== undefined,
           order: orderBy(spool.kinds),
-          dropped: (name, why) => {
-            const n = parseRequestName(name, spool.kinds);
-            if (n && why === "expired") answer(n.id, false, `It waited past its ${REQUEST_FOR_MS / 60_000} minutes in the spool unread.`, "expired");
-          },
+          // The shared flood rules (core/spool.ts): each kind its own cap, no outcome a dropped file,
+          // the outcomes folder kept to its newest, the cut before any timed work.
+          caps: Object.fromEntries(spool.kinds.map((k) => [k, PER_KIND])),
+          outcomes: { dir: spool.outcomes },
         },
         mem[spool.role === "admin" ? "admin" : "service"],
         c.sys,
@@ -135,6 +136,12 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
           }
         },
       );
+      // One summary a pass of what was removed unread, never an outcome or event a file.
+      if (report.drops) {
+        try {
+          events.write({ type: "guard.spool-drops", actor: spool.role === "admin" ? "an admin" : "service account", subject: "box", text: `The ${spool.role === "admin" ? "admin" : "service"} spool this pass: removed unread, ${dropsLine(report.drops)}.`.slice(0, 240), data: { drops: report.drops } });
+        } catch {}
+      }
     };
     // Which admin asked, in root's private record beside the event, which says only "an admin".
     const adminNote = (name: string, op: string) => {

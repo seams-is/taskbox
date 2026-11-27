@@ -9,7 +9,7 @@ import { ANCHOR, PFCTL } from "./guard.ts";
 import { BOOTOUT_WAIT_S, dropReloadJob, keepInert, labelsBack, RELOAD_JOB, reloadPlistPath, setSetuid } from "./install.ts";
 export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
-import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, treeProblem } from "./checks.ts";
+import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, screenSharingOn, treeProblem } from "./checks.ts";
 import { GUARDWATCH_LABEL, guardStaleSince, watchPaths } from "./guardwatch.ts";
 import { sourceWords } from "./sourcefail.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
@@ -30,8 +30,10 @@ import { fingerprint } from "./approver.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "./pin.ts";
 import { adminState } from "./elevate.ts";
 import { activePull, clean as noControl, pullLine, readPull } from "./progress.ts";
-import { type Config, forKind, KIND_WORD, kindsOf, loadRepoOf, MACOS_MAX, sourceOf, vmsAtMostOf } from "./config.ts";
+import { type Config, forKind, KIND_WORD, kindsOf, loadConfig, loadRepoOf, MACOS_MAX, sourceOf, vmsAtMostOf } from "./config.ts";
 import { LAST_CLASS } from "./classes.ts";
+import { pfFiles, pfLine } from "./pfstarts.ts";
+import { readRate } from "./sourcerate.ts";
 import { timingsLine } from "./timings.ts";
 import { readJobs } from "./jobs.ts";
 import { currentSession, loadBlind, readLoad } from "./load.ts";
@@ -179,6 +181,12 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   if (linux) d.say(`  Linux:     ${pullLine(linux, d.sys.now(), running, readStopped(d.paths, d.rootUid ?? 0)?.at)}`);
   const choosing = choiceLine(loop, existsSync(d.paths.runnerTarballLinux) ? 2 : 1);
   if (choosing) d.say(`  Choosing:  ${choosing}`);
+  // VM starts with Screen Sharing on (pfstarts.ts): closed or open, the count, and the command. Left
+  // out on a box that is open, has counted nothing, and has Screen Sharing off.
+  try {
+    const pf = pfLine(d.paths, d.rootUid ?? 0, loadConfig(d.paths.app, d.paths.boxSettings), await screenSharingOn(d.sys));
+    if (pf.shown) d.say(`  VM starts: ${pf.line}`);
+  } catch {}
   // v2.6.0: the load test's session, while one is on.
   const lf = readLoad(d.paths, !asService(d));
   const ls = currentSession(lf, d.sys.now());
@@ -234,7 +242,7 @@ export async function check(c: CheckContext, d: OpsDeps, versions: Versions, jso
   }
   d.say(`Slots:      ${slotsLine(c.cfg)}`);
   d.say(`Job source: ${sourceLine(c.cfg)}`);
-  d.say(`Timings:    ${timingsLine(c.cfg, readJobs(d.paths, c.serviceUid) ?? [])}`);
+  d.say(`Timings:    ${timingsLine(c.cfg, readJobs(d.paths, c.serviceUid) ?? [], c.serviceUid === undefined ? [] : readRate(d.paths, c.serviceUid))}`);
   if (kindsOf(c.cfg).length > 1) d.say(`Linux proof: ${linuxProofLine(readLoopState(d.paths.loopState).linuxProof)}`);
   const choosing = choiceLine(readLoopState(d.paths.loopState), kindsOf(c.cfg).length);
   if (choosing) d.say(`Choosing:   ${choosing}${loopChoiceFix(readLoopState(d.paths.loopState).kindChoice)}`);
@@ -628,10 +636,28 @@ export async function cameOverSsh(sys: Sys, pid: number = process.pid): Promise<
     const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(r.stdout);
     if (r.code !== 0 || !m) return true;
     const comm = m[2]!.split("/").pop()!;
-    if (/^(sshd|sshd-session|sshd-auth|tailscaled)$/.test(comm)) return true;
+    if (/^(sshd|sshd-session|sshd-auth|tailscaled|mosh-server)$/.test(comm)) return true;
     at = Number(m[1]);
   }
   return false;
+}
+
+// Why this process isn't an admin at the box's own screen, or undefined when it is. Over SSH, mosh
+// or Tailscale SSH by the environment or an ancestor; then its terminal must be a local one: the
+// console or a Terminal window, as `who` lists it with no remote host (tmux, screen and remote
+// sessions aren't), and the one logged in at the screen must be the admin who ran sudo.
+export async function atBoxScreen(sys: Sys, env: Record<string, string | undefined>, pid: number = process.pid): Promise<string | undefined> {
+  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) return "it came over SSH";
+  if (await cameOverSsh(sys, pid)) return "it came over SSH, mosh or Tailscale SSH";
+  const t = await sys.run("/bin/ps", ["-o", "tty=", "-p", String(pid)], { timeoutMs: 5_000 }).catch(() => ({ code: -1, stdout: "" }));
+  const tty = t.stdout.trim();
+  if (t.code !== 0 || !/^(console|ttys?\d{1,4})$/.test(tty)) return "it has no terminal at the box's screen";
+  const c = await sys.run("/usr/bin/stat", ["-f", "%Su", "/dev/console"], { timeoutMs: 5_000 }).catch(() => ({ code: -1, stdout: "" }));
+  if (c.code !== 0 || !env.SUDO_USER || c.stdout.trim() !== env.SUDO_USER) return "the admin who typed it isn't the one logged in at the box's screen";
+  const w = await sys.run("/usr/bin/who", [], { timeoutMs: 5_000 }).catch(() => ({ code: -1, stdout: "" }));
+  const line = w.code === 0 ? w.stdout.split("\n").find((l) => l.trim().split(/\s+/)[1] === tty) : undefined;
+  if (!line || line.includes("(")) return "its terminal isn't one at the box's screen: tmux, screen or a remote session";
+  return undefined;
 }
 
 // taskbox's tailscaled (v2.2.2): before v2.2.2 remove left it running, with its LaunchDaemon, state
@@ -902,6 +928,9 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
     [d.paths.installId, "the install ID"],
     // The approver key the box trusted: a box installed again pins its key again, at its screen.
     [d.paths.approverPin, "the pinned approver key"],
+    // The guard's record of VM starts with Screen Sharing on, its mark, marker, lock and witness: a box
+    // installed again starts afresh (pfstarts.ts).
+    ...pfFiles(d.paths).map((f) => [f, "the guard's record of VM starts"] as const),
     // Both Apps' keys and root's folder for them. The Apps themselves stay on GitHub.
     [d.paths.actionsKeyDir, "the Apps' keys"],
     // The box's own settings, and an App connect made and didn't finish.

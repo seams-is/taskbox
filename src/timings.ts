@@ -7,6 +7,7 @@ import { type Config, DEFAULT_TIMINGS, type Kind, KIND_WORD, kindsOf, timingsOf,
 import type { JobRecord } from "./jobs.ts";
 import { labelUsage, labelUsageLines } from "./usage.ts";
 import { LAST_CLASS } from "./classes.ts";
+import type { RateLook } from "./sourcerate.ts";
 
 export const TIMINGS_JOBS = 50;
 
@@ -61,8 +62,78 @@ export interface Suggestion {
 }
 
 const MIN_JOBS = 10;
+const MIN_BURST_WAITS = 5;
+const MIN_LOOKS = 20;
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-export function suggestions(cfg: Config, all: KindTimings[]): Suggestion[] {
+// The lines job timings measures besides the phases: the jobs, for pushes and bursts, and the job
+// source's looks, for its rate limit.
+export interface MeasureFrom {
+  jobs?: JobRecord[];
+  rate?: RateLook[];
+}
+
+// The gaps between jobs of one push: jobs GitHub tied to a run, grouped by the run's head commit, its
+// event and the job's kind, each gap from one job's start to the next one's. A kind stays busy
+// busyForMinutes after a quick start, so the gaps it should span are these. A re-run repeats a run's
+// jobs later, so each job of a run counts once, its first; a gap past the setting's highest is no
+// burst's, and is left out.
+export const GAP_MAX_MS = 240 * 60_000;
+export function pushGaps(jobs: JobRecord[]): number[] {
+  const by = new Map<string, number[]>();
+  const seen = new Set<string>();
+  for (const j of [...jobs].sort((a, b) => (a.jobAt ?? 0) - (b.jobAt ?? 0))) {
+    if (!j.commit || j.jobAt === undefined) continue;
+    if (j.githubRun !== undefined && j.job !== undefined) {
+      const once = `${j.githubRun} ${j.job}`;
+      if (seen.has(once)) continue;
+      seen.add(once);
+    }
+    const k = `${j.commit} ${j.event ?? ""} ${j.vmKind ?? "macos"}`;
+    by.set(k, [...(by.get(k) ?? []), j.jobAt]);
+  }
+  return [...by.values()].flatMap((ts) => {
+    const v = [...ts].sort((a, b) => a - b);
+    return v.slice(1).map((t, i) => t - v[i]!).filter((g) => g > 0 && g <= GAP_MAX_MS);
+  });
+}
+
+// A burst: at least BURST_JOBS Linux jobs taking a VM within BURST_MS. Each burst runs from its first
+// Linux job to the end of its last.
+export function burstWindows(ran: JobRecord[]): { from: number; to: number }[] {
+  const linux = ran.filter((j) => j.vmKind === "linux" && j.jobAt !== undefined).sort((a, b) => a.jobAt! - b.jobAt!);
+  const out: { from: number; to: number }[] = [];
+  for (let i = 0; i < linux.length; ) {
+    const s0 = linux[i]!.jobAt!;
+    const inBurst = linux.filter((j) => j.jobAt! >= s0 && j.jobAt! < s0 + BURST_MS);
+    if (inBurst.length < BURST_JOBS) {
+      i++;
+      continue;
+    }
+    out.push({ from: s0, to: Math.max(...inBurst.map((j) => j.endedAt)) });
+    i += inBurst.length;
+  }
+  return out;
+}
+
+// How long macOS jobs queued in a burst waited, from queued to running. Needs a source's queue times.
+export function burstWaits(jobs: JobRecord[]): number[] {
+  const windows = burstWindows(jobs);
+  return jobs.flatMap((j) => {
+    const q = queuedAt(j);
+    if ((j.vmKind ?? "macos") !== "macos" || q === undefined || j.phases?.jobStarted === undefined || j.phases.queued === undefined) return [];
+    return windows.some((w) => q >= w.from && q <= w.to) ? [j.phases.jobStarted - j.phases.queued] : [];
+  });
+}
+
+// What a look at the source costs, 9 times in 10, against the hourly limit GitHub named last.
+export function pollCost(looks: RateLook[]): { looks: number; cost: number; limit: number } | undefined {
+  if (looks.length < MIN_LOOKS) return undefined;
+  const c = spread(looks.map((l) => l.counted))!;
+  return { looks: looks.length, cost: c.p90, limit: looks[looks.length - 1]!.limit };
+}
+
+export function suggestions(cfg: Config, all: KindTimings[], m: MeasureFrom = {}): Suggestion[] {
   const t = timingsOf(cfg);
   const enough = (k?: KindTimings) => !!k && k.jobs >= MIN_JOBS;
   const minutes = (ms: number) => Math.max(1, Math.ceil(ms / 60_000));
@@ -72,16 +143,26 @@ export function suggestions(cfg: Config, all: KindTimings[]): Suggestion[] {
   const boots = all.filter(enough).map((k) => k.boot?.median ?? 0);
   const runs = all.filter(enough).map((k) => k.run?.median ?? Infinity);
   out.push({ setting: "giveWayMinutes", now: t.giveWayMinutes, ...(boots.length ? { suggests: Math.min(60, minutes(Math.max(...boots) + Math.min(...runs))) } : {}), from: "the slowest kind's median boot, with the quickest kind's median run" });
-  // The floor: a kind with no VM waits at most this, plus a boot. Policy more than measure: suggest
-  // keeping it, at least twice the give-way time it suggests.
+  // The floor: a kind with no VM waits at most this, plus a boot. Measured from macOS jobs queued in
+  // Linux bursts: the floor moves by what their 90% wait has to spare under the acceptance limit, or
+  // by what it is over. Never under twice the give-way time, so a VM gives way before the floor.
   const gw = out[0]!.suggests ?? t.giveWayMinutes;
-  out.push({ setting: "floorMinutes", now: t.floorMinutes, suggests: Math.max(t.floorMinutes, 2 * gw), from: "at least twice giveWayMinutes; how long a job may wait in a burst is yours to set" });
+  const waits = spread(burstWaits(m.jobs ?? []));
+  if (waits && waits.n >= MIN_BURST_WAITS) {
+    const over = waits.p90 / 60_000 - ACCEPT.macosWaitP90Minutes;
+    out.push({ setting: "floorMinutes", now: t.floorMinutes, suggests: clamp(t.floorMinutes - Math.ceil(over), 2 * gw, 240), from: `macOS jobs in bursts waited ${(waits.p90 / 60_000).toFixed(1)} min 9 times in 10 (${waits.n} jobs), against ${ACCEPT.macosWaitP90Minutes} min, so the floor can ${over > 0 ? "fall" : "rise"} by the difference. The waits were measured under the floor now, so read it again after a change` });
+  } else out.push({ setting: "floorMinutes", now: t.floorMinutes, suggests: Math.max(t.floorMinutes, 2 * gw), from: `at least twice giveWayMinutes, until ${MIN_BURST_WAITS} macOS jobs in bursts have queue times` });
   // Busy: three times the slowest kind's 90th percentile of how soon a ready VM took its job, and
   // never under 30 s, since GitHub takes seconds to hand a waiting job to a runner. Too low, and the box never sees a kind as busy.
   const readies = all.filter(enough).flatMap((k) => (k.ready ? [Math.min(k.ready.p90, 120_000)] : []));
   out.push({ setting: "busyWithinSeconds", now: t.busyWithinSeconds, ...(readies.length ? { suggests: Math.min(600, Math.max(30, Math.ceil((3 * Math.max(...readies)) / 1000))) } : {}), from: "three times the slowest kind's 90% of how soon a ready VM took a job, at least 30 s" });
-  out.push({ setting: "busyForMinutes", now: t.busyForMinutes, suggests: t.busyForMinutes, from: "kept: the gaps between a burst's jobs, which a later version can measure" });
-  out.push({ setting: "sourcePollSeconds", now: t.sourcePollSeconds, suggests: DEFAULT_TIMINGS.sourcePollSeconds, from: "kept: the source's rate limit" });
+  // Busy for: long enough to span 9 in 10 of the gaps between one push's jobs.
+  const gaps = spread(pushGaps(m.jobs ?? []));
+  out.push({ setting: "busyForMinutes", now: t.busyForMinutes, ...(gaps && gaps.n >= MIN_JOBS ? { suggests: clamp(minutes(gaps.p90), 1, 240) } : {}), from: gaps && gaps.n >= MIN_JOBS ? `9 in 10 of the gaps between one push's jobs are within ${fmt(gaps.p90)} (${gaps.n} gaps)` : `the gaps between one push's jobs, once ${MIN_JOBS} are tied to GitHub's runs` });
+  // The source: read no more often than keeps its looks under half the token's hourly limit, so the
+  // job hooks' reads and a burst of looks have the other half.
+  const poll = pollCost(m.rate ?? []);
+  out.push({ setting: "sourcePollSeconds", now: t.sourcePollSeconds, ...(poll ? { suggests: clamp(Math.ceil((3600 * poll.cost) / (poll.limit / 2)), 10, 600) } : {}), from: poll ? `a look costs ${poll.cost} of GitHub's ${poll.limit} an hour, 9 times in 10 (${poll.looks} looks); half the limit is the source's` : `GitHub's rate limit, once the source has made ${MIN_LOOKS} looks` });
   return out;
 }
 
@@ -92,7 +173,7 @@ const fmt = (ms?: number) => {
 };
 const line = (name: string, x?: Spread) => `  ${name.padEnd(9)}${x ? `median ${fmt(x.median)}, 90% within ${fmt(x.p90)} (${x.n} jobs)` : "not measured yet"}`;
 
-export function timingsScreen(cfg: Config, jobs: JobRecord[], gaveWay: Partial<Record<Kind, number>> = {}, accept?: Criterion[]): string[] {
+export function timingsScreen(cfg: Config, jobs: JobRecord[], gaveWay: Partial<Record<Kind, number>> = {}, accept?: Criterion[], rate: RateLook[] = []): string[] {
   const all = kindsOf(cfg).map((k) => kindTimings(jobs, k));
   const out = [`taskbox job timings: each kind's last ${TIMINGS_JOBS} jobs with phases. Jobs from before v2.4.0 have none.`, ""];
   for (const k of all) {
@@ -102,16 +183,16 @@ export function timingsScreen(cfg: Config, jobs: JobRecord[], gaveWay: Partial<R
   // v2.5.0: what each label's jobs used, for sizing VMs per label (usage.ts).
   out.push(`What each label's jobs used, from their last ${TIMINGS_JOBS} jobs with a record:`, ...labelUsageLines(labelUsage(jobs, TIMINGS_JOBS)), "");
   out.push("Settings (timings in taskbox.json), now and what the numbers suggest:");
-  for (const s of suggestions(cfg, all)) out.push(`  ${s.setting.padEnd(18)}${String(s.now).padEnd(6)}${s.suggests === undefined ? `not enough jobs yet (${MIN_JOBS} per kind)` : s.suggests === s.now ? "keep" : `suggests ${s.suggests}`}: ${s.from}`);
+  for (const s of suggestions(cfg, all, { jobs, rate })) out.push(`  ${s.setting.padEnd(18)}${String(s.now).padEnd(6)}${s.suggests === undefined ? `not enough jobs yet (${MIN_JOBS} per kind)` : s.suggests === s.now ? "keep" : `suggests ${s.suggests}`}: ${s.from}`);
   if (accept) out.push("", ...acceptanceLines(accept));
   return out;
 }
 
 // check's line: the settings in force, and how many jobs back them.
-export function timingsLine(cfg: Config, jobs: JobRecord[]): string {
+export function timingsLine(cfg: Config, jobs: JobRecord[], rate: RateLook[] = []): string {
   const t = timingsOf(cfg);
   const all = kindsOf(cfg).map((k) => kindTimings(jobs, k));
-  const sug = suggestions(cfg, all).filter((s) => s.suggests !== undefined && s.suggests !== s.now);
+  const sug = suggestions(cfg, all, { jobs, rate }).filter((s) => s.suggests !== undefined && s.suggests !== s.now);
   const measured = all.map((k) => `${KIND_WORD[k.kind]} ${k.jobs}`).join(", ");
   return `give way ${t.giveWayMinutes} min, floor ${t.floorMinutes} min, busy within ${t.busyWithinSeconds} s for ${t.busyForMinutes} min, source every ${t.sourcePollSeconds} s. Jobs measured: ${measured}.${sug.length ? ` taskbox job timings suggests a change to ${sug.map((s) => s.setting).join(", ")}` : ""}`;
 }
@@ -164,18 +245,10 @@ export function acceptance(cfg: Config, jobs: JobRecord[], gaveWayLog: { at: num
   if (slots < 2 || !kindsOf(cfg).includes("linux")) out.push({ id: "linux-burst", name: "Linux bursts keep the slots busy", value: "one slot or no Linux kind", limit: limit1, status: "NOT MEASURED" });
   else {
     const shares: number[] = [];
-    for (let i = 0; i < linux.length; ) {
-      const s0 = linux[i]!.jobAt!;
-      const inBurst = linux.filter((j) => j.jobAt! >= s0 && j.jobAt! < s0 + BURST_MS);
-      if (inBurst.length < BURST_JOBS) {
-        i++;
-        continue;
-      }
-      const end = Math.max(...inBurst.map((j) => j.endedAt));
+    for (const w of burstWindows(linux)) {
       let busy = 0;
-      for (const r of ran) busy += Math.max(0, Math.min(r.endedAt, end) - Math.max(r.jobAt!, s0));
-      shares.push((100 * busy) / (slots * Math.max(1, end - s0)));
-      i += inBurst.length;
+      for (const r of ran) busy += Math.max(0, Math.min(r.endedAt, w.to) - Math.max(r.jobAt!, w.from));
+      shares.push((100 * busy) / (slots * Math.max(1, w.to - w.from)));
     }
     const med = [...shares].sort((a, b) => a - b)[Math.floor(shares.length / 2)];
     out.push(shares.length ? { id: "linux-burst", name: `Linux bursts keep the slots busy, the median of ${shares.length}`, value: `${med!.toFixed(0)}%`, limit: limit1, status: med! >= ACCEPT.burstSharePercent ? "PASS" : "FAIL" } : { id: "linux-burst", name: "Linux bursts keep the slots busy", value: "no burst yet", limit: limit1, status: "NOT MEASURED" });

@@ -67,6 +67,8 @@ export function statusBody(s: Status, own: string): string[] {
   if (s.othersLoggedIn > 0) out.push(`Other users logged in at the box: ${s.othersLoggedIn}`);
   const rel = s.release ?? "release not known";
   out.push(`Box: ${rel}${s.commit ? ` (${s.commit})` : ""}${s.release && s.release !== own ? `. This controller: ${own}.` : ""}`);
+  // One timings line per box; job timings --box has the whole view.
+  if (typeof s.timings === "string" && s.timings) out.push(`Timings: ${scrub(s.timings, 300)}`);
   return out;
 }
 

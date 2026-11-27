@@ -19,6 +19,10 @@ export interface TartVM {
   Size?: number;
 }
 
+// The most of a usage probe's output read, as usage.ts OUTPUT_MAX cuts it in the guest. A number
+// here, so this engine file imports no value back from the rest.
+export const PROBE_MAX = 65_536;
+
 export class Tart {
   constructor(
     private sys: Sys,
@@ -62,6 +66,12 @@ export class Tart {
 
   exec(vm: string, cmd: string[], stdin?: string | Uint8Array, timeoutMs = 300_000): Promise<RunResult> {
     return this.run(["exec", ...(stdin === undefined ? [] : ["-i"]), vm, ...cmd], stdin, timeoutMs);
+  }
+
+  // A command in the guest whose output is the guest's to make: read up to maxBytes on this side,
+  // and killed past it, whatever the guest's own cut does.
+  execCapped(vm: string, cmd: string[], timeoutMs: number, maxBytes: number): Promise<RunResult> {
+    return this.sys.run(this.bin, ["exec", vm, ...cmd], { timeoutMs, maxBytes });
   }
 
   // A long command in the guest, its output read line by line.
@@ -242,8 +252,8 @@ export class TartEngine implements VmEngine {
   }
   async usage(vm: string, probe: UsageProbe, timeoutMs: number): Promise<UsageSample | undefined> {
     try {
-      const r = await this.t.exec(vm, probe.cmd, undefined, timeoutMs);
-      return r.code === 0 ? probe.parse(r.stdout) : undefined;
+      const r = await this.t.execCapped(vm, probe.cmd, timeoutMs, PROBE_MAX);
+      return r.code === 0 && !r.over ? probe.parse(r.stdout) : undefined;
     } catch {
       return undefined;
     }
@@ -287,7 +297,7 @@ async function softnetRow(c: { paths: Paths; uid?: number; serviceUid?: number }
 }
 
 // Closes Softnet's folder to every account but root and the service (the pattern of the job source App's key
-// folder, actionskey.ts).
+// folder, keys.ts).
 async function closeFolder(folder: string, service: string, run: (cmd: string, args: string[]) => Promise<void>): Promise<void> {
   await run("/bin/chmod", ["700", folder]);
   await run("/bin/chmod", ["-N", folder]);

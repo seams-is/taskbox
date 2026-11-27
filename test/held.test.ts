@@ -83,12 +83,12 @@ describe("the loop's wait", () => {
     const d = deps(2, 1, [light("starting"), light("ready", "bo-3")]);
     d.box!.totalGB = 32;
     d.box!.logicalCpus = 10;
-    d.memory = async () => ({ totalGB: 32, freeGB: 20 });
+    d.memory = async () => ({ totalGB: 32, availableGB: 20, pressure: 1 as const });
     d.box!.held.set(1, { slot: 1, kind: "macos", labels: [], job: false, since: 0, size: "default", memoryMB: 8192, cpus: 4 });
     expect(await whyWait(d, true)).toEqual({ key: "workspace", text: "workspaces hold 16.0 GB of the VM budget, so this waiting VM gives them room" });
     const fits = deps(2, 1, [light("ready")]);
     fits.box!.totalGB = 32;
-    fits.memory = async () => ({ totalGB: 32, freeGB: 20 });
+    fits.memory = async () => ({ totalGB: 32, availableGB: 20, pressure: 1 as const });
     fits.box!.held.set(1, { slot: 1, kind: "macos", labels: [], job: false, since: 0, size: "default", memoryMB: 8192, cpus: 4 });
     expect((await whyWait(fits, true))?.key).not.toBe("workspace");
     expect((await whyWait(d))?.key).not.toBe("workspace");

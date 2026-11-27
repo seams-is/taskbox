@@ -19,7 +19,7 @@ describe("the check-row registry", () => {
     // And the access model's two (rows/accounts.ts).
     extra.splice(extra.indexOf("Service account") + 1, 0, "Accounts");
     extra.splice(extra.indexOf("Tailscale") + 1, 0, "Tailnet policy");
-    expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...extra, SECOND_KEY_ROW, "Sizes", "Tool cache", "Workspaces"]);
+    expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...extra, SECOND_KEY_ROW, "Sizes", "Tool cache", "Screen Sharing and VM starts", "Workspaces"]);
     expect(names(rows("away", ctx()))).toEqual([...names(AWAY_ONLY), ...names(PRESTART), ...extra]);
     expect(names(rows("preflight"))).toEqual(names(INSTALL_PREFLIGHT));
   });

@@ -1,7 +1,7 @@
 // The box's availability: applyControl's table, control.json's shape, the guard's control pass over
 // the service spool and the loop's report, the owner's signed requests, and the commands at the box.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeRecord } from "../src/accounts.ts";
 import { type Action, applyControl, availabilityLine, running, type Availability, argsProblem, changeControl, type Control, type ControlRequest, controlGate, initialControl, parseControl, readControl, requestOf } from "../src/availability.ts";
@@ -19,7 +19,7 @@ import { readOutcome, writeSpoolFile } from "../src/core/spool.ts";
 import { argsOf, CONTROL_NS, signedWord, statementFor, statementText } from "../src/core/statement.ts";
 import { watchPaths, writeBeat } from "../src/guardwatch.ts";
 import { opType } from "../src/optypes/index.ts";
-import { controlJob } from "../src/passes/control.ts";
+import { controlJob, PER_KIND } from "../src/passes/control.ts";
 import { requestsJob } from "../src/passes/requests.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
@@ -786,6 +786,42 @@ describe("the review's other fixes", () => {
     await b.job();
     const answered = ids.filter((id) => readOutcome(b.s.outcomes("service"), id, me).kind === "ok");
     expect(answered.length).toBeLessThanOrEqual(10);
+  });
+
+  test("the spool's shared flood rules on the service spool: a flood of one kind never pushes out another, and drops are one summary", async () => {
+    const b = await box();
+    for (let i = 0; i < 300; i++) writeSpoolFile(b.s.serviceSpool, "pause", {}, b.sys);
+    const drain = writeSpoolFile(b.s.serviceSpool, "drain", {}, b.sys);
+    await b.job();
+    expect(readOutcome(b.s.outcomes("service"), drain.id, me)).toMatchObject({ kind: "ok" });
+    expect(readdirSync(b.s.outcomes("service")).length).toBeLessThanOrEqual(1 + PER_KIND);
+    const sums = b.events().filter((e) => e.type === "guard.spool-drops");
+    expect(sums).toHaveLength(1);
+    expect((sums[0]!.data as { drops: Record<string, { cap: number }> }).drops.pause!.cap).toBe(300 - PER_KIND);
+  });
+
+  test("the same on the admin spool: an op-cancel flood keeps its own cap, with one summary", async () => {
+    const b = await box();
+    for (let i = 0; i < 100; i++) writeSpoolFile(b.s.adminSpool, "op-cancel", { admin: "pat", words: ["op_01J0000000000000000000000A"] }, b.sys);
+    await b.job();
+    expect(readdirSync(b.s.adminSpool)).toHaveLength(0);
+    const sums = b.events().filter((e) => e.type === "guard.spool-drops" && e.actor === "an admin");
+    expect(sums).toHaveLength(1);
+    expect((sums[0]!.data as { drops: Record<string, { cap: number }> }).drops["op-cancel"]!.cap).toBe(100 - PER_KIND);
+  });
+
+  test("the service spool's outcomes folder keeps its newest 1000", async () => {
+    const b = await box();
+    const dir = b.s.outcomes("service");
+    mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < 1005; i++) {
+      const f = join(dir, `rq_01J${String(i).padStart(23, "0")}.json`);
+      writeFileSync(f, "{}");
+      utimesSync(f, 1_800_000_000 + i, 1_800_000_000 + i);
+    }
+    await b.job();
+    expect(readdirSync(dir)).toHaveLength(1000);
+    expect(readdirSync(dir).sort()[0]).toBe(`rq_01J${String(5).padStart(23, "0")}.json`);
   });
 
   test.todo("start is refused while an update is past its drain, naming the update (scenario 9, with the releases package)");

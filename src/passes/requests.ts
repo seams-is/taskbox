@@ -20,19 +20,23 @@ import { type DispatchDeps, type Handlers, handlersProblem, rankOf, requestHandl
 import { eventLog } from "../core/events.ts";
 import type { PassCtx, PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
-import { drainSpool, type Entry, newSpoolMemory, type Outcome, readRequest, readSpoolFile, recordOutcome, REQUEST_FOR_MS, REQUEST_NAME, type SpoolReport } from "../core/spool.ts";
+import { drainSpool, dropsLine, type Entry, newSpoolMemory, readRequest, readSpoolFile, REQUEST_NAME, type SpoolReport } from "../core/spool.ts";
 import { pinnedKeys, readApprovers } from "../core/approvers.ts";
 import { currentNonce, readNonces } from "../core/nonces.ts";
 import { parseStatement, SIGNED_FOR_MS, signsInProcess, splitSigned } from "../core/statement.ts";
 import { isSignedWord } from "../core/word.ts";
 import { asNobody, type VerifyDeps, verifyFolder } from "../workspace/approval.ts";
 import { agentUid } from "../workspace/pass.ts";
+import { CODE_KIND, connectCodeScreen } from "../connectflow.ts";
 
 export const REFRESH = 30; // passes between lookups of the agent account's uid
 export const WINDOW = 30;
 export const PER_WINDOW = 60;
 export const SIGNED_PER_PASS = 5;
 export const OUTCOMES_KEEP = 1000; // outcomes this guard wrote, newest kept; keeping ages the rest
+// Kinds with a cap of their own in the spool, each screened with no network before the cut. The
+// connect code's: 4, and only one with a state of its open op's hash is kept (connectflow.ts).
+export const KIND_CAPS: Record<string, number> = { [CODE_KIND]: 4 };
 
 export interface RequestsDeps {
   c: PassCtx;
@@ -55,7 +59,6 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
   const rank = rankOf(d.handlers);
   const said = new Set<string>();
   const seen = new Map<string, number>(); // name: the pass root first saw it in
-  const written: string[] = []; // outcome ids, oldest first
   let boot: string | undefined;
   let agent: number | undefined;
   let passes = 0;
@@ -119,20 +122,6 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     };
     const BIG = 1e12;
     const age = (e: Entry): number => (REQUEST_NAME.exec(e.name)?.[2] !== SIGNED ? firstSeen(e) : firstSeen(e) + (ranked().has(e.name) ? BIG : -BIG));
-    const note = (name: string, code: "busy" | "expired", said: string) => {
-      const id = REQUEST_NAME.exec(name)?.[1];
-      if (!id) return;
-      const o: Outcome = { id, at: now, ok: false, code, said, ...(boot ? { boot } : {}) };
-      try {
-        if (recordOutcome(outcomes, o, { owner: root, ...(d.chown ? { chown: d.chown } : {}) })) written.push(id);
-      } catch (e) {
-        c.log.write(`agent spool: the outcome of ${id} couldn't be written: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
-      }
-    };
-    const dropped = (name: string, why: "flood" | "expired") =>
-      why === "flood"
-        ? note(name, "busy", "The box dropped it unread: its spool held more than 50 requests. Send it again in a minute.")
-        : note(name, "expired", `It waited past its ${REQUEST_FOR_MS / 60_000} minutes in the spool unread. Send it again.`);
     const order = (entries: readonly Entry[], perPass: number): string[] => {
       const here = new Set(entries.map((e) => e.name));
       for (const n of [...seen.keys()]) if (!here.has(n)) seen.delete(n);
@@ -140,7 +129,8 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
       const sorted = entries
         .map((e) => ({ e, m: REQUEST_NAME.exec(e.name) }))
         .filter((x) => x.m !== null)
-        .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
+        // Within a rank, a capped kind's files (screened, and at most its cap) go first.
+        .sort((a, b) => rank(a.m![2]!) - rank(b.m![2]!) || Number(Object.hasOwn(KIND_CAPS, b.m![2]!)) - Number(Object.hasOwn(KIND_CAPS, a.m![2]!)) || firstSeen(a.e) - firstSeen(b.e) || (a.e.name < b.e.name ? -1 : 1));
       let left = Math.max(0, perPass);
       let signedLeft = SIGNED_PER_PASS;
       let otherLeft = Math.max(0, PER_WINDOW - window.taken);
@@ -150,6 +140,8 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
         if (x.m![2] === SIGNED) {
           if (signedLeft === 0) continue;
           signedLeft--;
+        } else if (Object.hasOwn(KIND_CAPS, x.m![2]!)) {
+          // A capped kind's files passed its screen and are at most its cap: outside the window.
         } else {
           if (otherLeft === 0) continue;
           otherLeft--;
@@ -161,19 +153,26 @@ export function requestsJob(d: RequestsDeps): () => Promise<void> {
     };
     const late: string[] = [];
     const report: SpoolReport = { did: [], problems: [] };
-    await drainSpool({ dir: s.agentSpool, owner: agent, rootUid: root, isRequest: (n) => REQUEST_NAME.test(n), order, age, dropped, whose: "the agent account", ...(d.perPass ? { perPass: d.perPass } : {}) }, mem, c.sys, report, async (name, f) => {
-      if (REQUEST_NAME.exec(name)?.[2] !== SIGNED) window.taken++;
+    // The connect codes refused this pass, written as one summary, never one event a file.
+    const refusedCodes = { screened: 0, refused: 0 };
+    let screen: ((name: string) => boolean) | undefined;
+    const screenOf = () => (screen ??= connectCodeScreen({ ops: { dir: s.ops, owner: root }, spool: s.agentSpool, agent: agent!, now }));
+    await drainSpool({ dir: s.agentSpool, owner: agent, rootUid: root, isRequest: (n) => REQUEST_NAME.test(n), order, age, whose: "the agent account", caps: KIND_CAPS, screen: (_kind, name) => screenOf()(name), outcomes: { dir: outcomes, max: d.outcomesKeep ?? OUTCOMES_KEEP }, ...(d.perPass ? { perPass: d.perPass } : {}) }, mem, c.sys, report, async (name, f) => {
+      const k = REQUEST_NAME.exec(name)?.[2] ?? "";
+      if (k !== SIGNED && !Object.hasOwn(KIND_CAPS, k)) window.taken++;
       const o = await takeRequest(dd, name, f);
       if (!o) return;
+      if (REQUEST_NAME.exec(name)?.[2] === CODE_KIND && !o.ok) refusedCodes.refused++;
       if (o.code === "timeout") late.push(o.said);
-      written.push(o.id);
-      while (written.length > (d.outcomesKeep ?? OUTCOMES_KEEP)) {
-        try {
-          unlinkSync(join(outcomes, `${written.shift()}.json`));
-        } catch {}
-      }
     });
     for (const l of report.did) c.log.write(`agent spool: ${l}`);
+    // One summary a pass of what was removed unread or refused, never one outcome or event a file.
+    refusedCodes.screened = report.drops?.[CODE_KIND]?.screened ?? 0;
+    if (report.drops || refusedCodes.refused) {
+      try {
+        events.write({ type: "guard.spool-drops", actor: "agent account", subject: "box", text: `The agent spool this pass: ${[report.drops && `removed unread, ${dropsLine(report.drops)}`, refusedCodes.refused && `${refusedCodes.refused} connect codes refused by the box`].filter(Boolean).join("; ")}.`.slice(0, 240), data: { ...(report.drops ? { drops: report.drops } : {}), refusedCodes: refusedCodes.refused } });
+      } catch {}
+    }
     // A problem is said once while it lasts. A closed spool, or a handler that didn't answer, fails the pass.
     const problems = new Set(report.problems);
     for (const p of problems) if (!said.has(p)) c.log.write(`agent spool: ${p}`);

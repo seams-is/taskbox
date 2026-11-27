@@ -98,7 +98,7 @@ describe("the gate's decision", () => {
   });
   test("another account's open workspace opens nothing here", () => {
     const s = inPhase("ready");
-    const other = { ...s, workspaces: s.workspaces.map((w) => ({ ...w, user: "taskbox-ws2" })), accounts: { nova: "taskbox-ws2" } };
+    const other = { ...s, workspaces: s.workspaces.map((w) => ({ ...w, user: "taskbox-ws2" })), accounts: { "taskbox-ws2": { agent: "nova", usedAt: T } } };
     expect(why({ read: { kind: "ok", state: other } })).toBe("No workspace is open for taskbox-ws1.");
   });
 });

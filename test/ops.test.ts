@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hashTree } from "../src/checks.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { paths } from "../src/config.ts";
 import { cleanBox, commandsFor, log, type OpsDeps, plainLog, remove, status, undo } from "../src/ops.ts";
 import { linkTarget } from "../src/layout.ts";
@@ -112,7 +112,7 @@ describe("taskbox status", () => {
     linked(p);
     expect(await status(d)).toBe(0);
     expect(said[0]).toBe("app: Ready. Waiting for a job.");
-    expect(said.join("\n")).toContain("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, resume, size, start, status, stop, template, tool");
+    expect(said.join("\n")).toContain("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, resume, size, connect, start, status, stop, template, tool");
     expect(tail(said)).toEqual(["Now: Ready. Waiting for a job.", "Did: Nothing changed.", "Next: Nothing to do."]);
   });
 
@@ -148,10 +148,10 @@ describe("taskbox status", () => {
     const { d } = ops({ running: true });
     const notCi = { ...d, uid: d.uid + 1 };
     expect(commandsFor(d, { remote: false, admin: false })).toBe(commandList());
-    expect(commandList()).toBe("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, resume, size, start, status, stop, template, tool, workspace, and as your admin user: confirm, connect, disconnect, key, remove, rollback, unlock, update.");
-    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, drain, hello, image, job, load, logins, logs, nonce, op, pause, resume, size, start, status, stop, template, tool, workspace, queue, wait, progress, deny, signed, workspaces.");
-    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, image, job, load, logins, logs, op, policy, size, status, template, tool, workspaces, and connect, disconnect, key, remove, rollback, unlock, update, workspace.");
-    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, image, job, load, logins, logs, op, policy, size, status, template, tool, workspaces.");
+    expect(commandList()).toBe("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, resume, size, connect, start, status, stop, template, tool, workspace, and as your admin user: confirm, connect, disconnect, key, remove, rollback, unlock, update.");
+    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, drain, hello, image, job, load, logins, logs, nonce, op, pause, resume, size, start, status, stop, template, tool, workspace.");
+    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, image, job, load, logins, logs, op, policy, size, connect, status, template, tool, workspace, and confirm, connect, disconnect, key, remove, rollback, unlock, update.");
+    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, image, job, load, logins, logs, op, policy, size, connect, status, template, tool, workspace.");
     expect(commandsFor(notCi, undefined)).toBe(commandList());
   });
 
@@ -339,6 +339,20 @@ describe("taskbox remove", () => {
     expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeGreaterThanOrEqual(0);
     expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeLessThan(outs.indexOf("system/local.taskbox.guard"));
     expect(existsSync(plist)).toBe(false);
+  });
+
+  test("the guard's record of VM starts goes, its witness in /var/db too, so a box installed again starts afresh", async () => {
+    const { pfFiles, pfState } = await import("../src/pfstarts.ts");
+    const { pfOpen } = await import("./helpers.ts");
+    const { d, p } = ops({ answers: ["yes"] });
+    pfOpen(p);
+    for (const f of pfFiles(p).slice(3, 5)) writeFileSync(f, "1 x");
+    await remove(d, { serviceUid: 502, people: [] });
+    for (const f of pfFiles(p)) expect(existsSync(f)).toBe(false);
+    // Installed again: root's install record is the box's first v3 install, so the record starts on trial.
+    mkdirSync(dirname(p.installed), { recursive: true });
+    writeFileSync(p.installed, JSON.stringify({ installedAt: "2027-03-01T00:00:00.000Z", v3Since: "2027-03-01T00:00:00.000Z" }), { mode: 0o644 });
+    expect(pfState(p, process.getuid!()).kind).toBe("fresh");
   });
 
   test("no: nothing removed", async () => {
