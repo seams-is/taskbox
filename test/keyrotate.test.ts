@@ -57,6 +57,33 @@ describe("key rotate runner and source, against a fake GitHub", () => {
     for (const s of ["PRIVATE KEY", "code-cccc", "cs-secret-value"]) expect(b.said.join("\n")).not.toContain(s);
   });
 
+  test("an old App GitHub won't uninstall: the rotation fails saying what is left, keeps the key, and the next run finishes it", async () => {
+    const b = keptBox();
+    b.gh.willMake("code-cccc", "runner", PEMS[2]!);
+    b.codes.push("code-cccc");
+    b.gh.installOnPoll();
+    (b.gh.apps.get(7000) as { stuck?: boolean }).stuck = true;
+    const r = rotating(b);
+    expect(await rotateApp(r.d, "runner")).toBe(1);
+    expect(boxJson(b).runnerApp).toEqual({ appId: 7002, app: "example-org-taskbox-1-runners-cccc" });
+    expect(listKeys(b.keysDir).map((k) => k.name).sort()).toEqual(["runner-7000.pem", "runner-7002.pem", "source-7001.pem"]);
+    expect(readRetired(r.retiredFile, me)).toMatchObject([{ role: "runner", appId: 7000, uninstalled: false }]);
+    expect(b.said.join("\n")).toMatch(/Switched, not finished: the old App r is still installed, and a copy of its key still works\. Uninstall it on GitHub .*or type taskbox key rotate runner again/);
+    // The row fails, whatever its age.
+    const { retiredRow } = await import("../src/rows/keys.ts");
+    const dir = join(r.retiredFile, "..");
+    const row = await retiredRow({ paths: { installId: join(dir, "install-id") }, rootUid: me, sys: { now: () => Date.now() + 365 * 86_400_000 }, cfg: CFG } as never);
+    expect(row).toMatchObject({ status: "FAIL", detail: expect.stringContaining("still installed, so a copy of the old key still works") });
+    // GitHub takes it now: the next run finishes it with the key it kept, and makes no new App.
+    (b.gh.apps.get(7000) as { stuck?: boolean }).stuck = false;
+    const again = rotating(b);
+    expect(await rotateApp(again.d, "runner")).toBe(0);
+    expect(again.phases).toEqual(["retiring"]);
+    expect(b.gh.apps.get(7000)!.installs).toEqual([]);
+    expect(listKeys(b.keysDir).map((k) => k.name).sort()).toEqual(["runner-7002.pem", "source-7001.pem"]);
+    expect(readRetired(r.retiredFile, me)).toMatchObject([{ role: "runner", appId: 7000, uninstalled: true }]);
+  });
+
   test("the source App keeps its repos through a rotation", async () => {
     const b = keptBox();
     b.gh.willMake("code-dddd", "source", PEMS[2]!);

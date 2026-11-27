@@ -23,7 +23,11 @@ export async function approverRow(c: CheckContext): Promise<Out> {
 
 export async function retiredRow(c: CheckContext): Promise<Out> {
   const now = c.sys.now();
-  const left = readRetired(retiredPath(rootStateOf(c.paths).dir), c.rootUid ?? 0).filter((r) => now - r.at < RETIRED_DAYS * 86_400_000);
+  const all = readRetired(retiredPath(rootStateOf(c.paths).dir), c.rootUid ?? 0);
+  // One still installed fails with no expiry: a copy of its key still works.
+  const installed = all.filter((r) => r.uninstalled === false);
+  if (installed.length) return { status: "FAIL", detail: `a rotation switched from ${installed.map((r) => `${r.slug} (App ${r.appId})`).join(", ")}, and ${installed.length === 1 ? "it is" : "they are"} still installed, so a copy of the old key still works. Uninstall on GitHub: ${installed.map((r) => `${appPage(c.cfg.org, r.slug)}/installations`).join(", ")}, or type taskbox key rotate ${installed[0]!.role} again, which tries with the key it kept.` };
+  const left = all.filter((r) => now - r.at < RETIRED_DAYS * 86_400_000);
   if (!left.length) return { status: "OK", detail: "no App a rotation retired is left on GitHub" };
   return { status: "FAIL", detail: `a rotation retired ${left.map((r) => `${r.slug} (App ${r.appId})`).join(", ")}, and GitHub keeps ${left.length === 1 ? "it" : "them"} until you delete ${left.length === 1 ? "it" : "them"}: ${left.map((r) => `${appPage(c.cfg.org, r.slug)}/advanced`).join(", ")}` };
 }
