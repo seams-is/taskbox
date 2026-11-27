@@ -32,6 +32,8 @@ export class StandIn {
   sent: string[] = [];
   // A line's answer set by hand, in place of the box's own: for a box that breaks the rules.
   over = new Map<string, { stdout: string; code: number }>();
+  // A line's answer made by the test, before the box's own: for a signed line, which the guard answers.
+  hook?: (line: string) => Promise<{ stdout: string; code: number } | undefined>;
 
   constructor(
     readonly installId: string,
@@ -55,6 +57,8 @@ export class StandIn {
   // One line, as the agent shell takes it, then the box's main. stdout is what the shell would print.
   async answer(line: string): Promise<{ stdout: string; code: number }> {
     this.sent.push(line);
+    const hooked = await this.hook?.(line);
+    if (hooked) return hooked;
     const set = this.over.get(line);
     if (set) return set;
     const c = commandFor(line);

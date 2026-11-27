@@ -1,9 +1,14 @@
 // Every box command on the controller: parsed by the box's own registry, sent over ssh as the
 // pairing's agent account with --json in the version hello agreed, and read by the shared schema.
 // Text prints the envelope's lines; --json prints a rebuilt envelope in ASCII.
-import { type CommandSpec, EXIT, type Parsed, parse, usage } from "../command.ts";
+import { type CommandSpec, duration as durationOf, EXIT, type Parsed, parse, usage } from "../command.ts";
+import { POLL_MS, POLLS } from "../core/asker.ts";
 import { cleanLine, type Envelope, envelope, resultOf } from "../envelope.ts";
 import { registry } from "../registry.ts";
+import { argsOf, signedWord, type Statement, statementFor, statementText } from "../core/statement.ts";
+import { NONCE } from "../core/nonces.ts";
+import { handlersFrom } from "../core/dispatch.ts";
+import { handlerFiles } from "../handlers/index.ts";
 import { renamed } from "../renames.ts";
 import { commandFor } from "../shell.ts";
 import { readEnvelopes } from "../schema.ts";
@@ -12,10 +17,15 @@ import { NAME, type Paired, readConfig } from "./home.ts";
 import { ask as boxAsk, chooseBoxes, configOrStop, connectBox, type Connected, type Deps, isStop, linesFor, type Stop, sshDeps, sshStop, tailnetOrStop } from "./reach.ts";
 import { readAnswer } from "./schema.ts";
 import { boxChecksBody, footer, header, jobsBody, logBody, nextFor, nowLine, statusBody } from "./screens.ts";
+import { keySigner } from "./signer.ts";
 import { boxCall, remoteLine, sendable } from "./ssh.ts";
 import { controllerStatus as statusFile, save } from "./statusline.ts";
 
 export const ANSWER_MS = 90_000;
+// A signed line waits as long as the box's asker waits for the guard (core/asker.ts POLLS), and more.
+export const SIGNED_MS = POLLS * POLL_MS + 30_000;
+// How many reads of a followed op may fail in a row before the controller stops following.
+export const FOLLOW_MISSES = 10;
 export const WATCH_MS = 3_000;
 
 export interface Shown {
@@ -91,7 +101,8 @@ function ownEnvelope(d: Deps, command: string, box: Paired | null, exit: number,
 }
 const refusal = (d: Deps, json: boolean, command: string, exit: number, lines: string[], error: ErrorFields): Shown => ({ lines, json: json ? [ownEnvelope(d, command, null, exit, lines, error)] : [], exit });
 
-export type Asked = { spec: CommandSpec; parsed: Extract<Parsed, { ok: true }>; sel?: string; words: string[]; json: boolean; watch: boolean } | { shown: Shown };
+// signed: the owner's command, which the controller signs with the approver key before it is sent.
+export type Asked = { spec: CommandSpec; parsed: Extract<Parsed, { ok: true }>; sel?: string; words: string[]; json: boolean; watch: boolean; signed: boolean } | { shown: Shown };
 export type Ask = Exclude<Asked, { shown: Shown }>;
 
 // The line the box gets, in the version hello agreed. The agent's own verbs go as typed.
@@ -130,7 +141,8 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
     const why = line === undefined ? "Those words have characters the box's shell doesn't take." : (commandFor(line) as { no?: string }).no ?? "The box's shell doesn't take those words.";
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [cleanLine(why)], { code: "usage", message: cleanLine(why), fix: null, who: null }) };
   }
-  return { spec, parsed: p, sel: cut.sel, words, json, watch: !spec.raw && p.flags.watch === true };
+  const signed = !spec.raw && (spec.flags ?? []).includes("signed") && spec.who.includes("owner") && p.flags.signed === undefined;
+  return { spec, parsed: p, sel: cut.sel, words, json, watch: !spec.raw && p.flags.watch === true, signed };
 }
 
 export type One = { box: Paired; stop?: Stop; envelopes?: Envelope[]; raw?: string[]; exit: number };
@@ -163,8 +175,94 @@ async function oldBox(d: Deps, c: Connected, a: Ask): Promise<One> {
   return back({ stop: `${c.box.name} runs ${c.hello.release ?? "an older taskbox"}, which has no taskbox ${a.spec.path.join(" ")}${a.parsed.opts.away ? " --away" : ""}.`, next: "Nothing to do: the box updates itself within a day." });
 }
 
+// An envelope from a line, or the stop that says why not.
+async function call(d: Deps, c: Connected, line: string, limitMs = ANSWER_MS): Promise<Envelope[] | (Stop & { timedOut?: boolean })> {
+  let r: Awaited<ReturnType<typeof boxCall>>;
+  try {
+    r = await boxCall(sshDeps(d), c.target, line, limitMs);
+  } catch {
+    return { stop: `${c.box.name} can't be asked that over ssh.`, next: "Run it at the box." };
+  }
+  if (!r.ok) return { ...sshStop(c.box.name, r.why, limitMs), ...(r.why === "timeout" ? { timedOut: true } : {}) };
+  const e = readEnvelopes(r.stdout, { installId: c.box.installId, stream: true });
+  return e.ok ? e.envelopes : { stop: `${c.box.name}'s answer doesn't match what taskbox reads (${e.detail}), so the command stopped.`, next: "Update taskbox on this controller and on the box. If they match, agents look." };
+}
+
+// The owner's command, signed: the box's nonce for the handler's subject, the statement the box's own
+// statement.ts makes, the approval signer, then the line with --signed. A nonce that moved on while
+// the owner touched is fetched and signed again, once (spec 3.5).
+async function signedOnBox(d: Deps, c: Connected, a: Ask): Promise<One> {
+  const back = (s: Stop, exit: number = EXIT.failed): One => ({ box: c.box, stop: s, exit });
+  const action = a.spec.path.join(".");
+  const args = argsOf(a.parsed);
+  const handler = handlersFrom(handlerFiles).signed.find((h) => h.action === action);
+  const subject = handler?.subject(args);
+  if (!subject) return back({ stop: `No box takes taskbox ${a.spec.path.join(" ")} signed in this release.`, next: "Nothing was signed." });
+  const signer = d.signerFor ? d.signerFor(c.box, d.out) : keySigner({ run: d.run, home: d.home, uid: d.uid ?? -1, say: d.out });
+  const v = c.hello.answers;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const n = await call(d, c, remoteLine(["nonce", subject, "--json", "--answers", String(v)]));
+    if (isStop(n)) return back(n);
+    const nonce = n.at(-1)?.result?.nonce;
+    if (typeof nonce !== "string" || !NONCE.test(nonce)) return back({ stop: `${c.box.name} gave no nonce for ${subject}.`, next: "Type taskbox check at the box." });
+    let st: Statement;
+    try {
+      st = statementFor({ box: c.box.installId, action, args, subject, nonce, now: d.now() });
+    } catch {
+      return back({ stop: "That command's words can't go in a statement the box reads.", next: "Nothing was signed." });
+    }
+    const sig = await signer(new TextEncoder().encode(statementText(st)));
+    // A declined Touch ID is the owner's no: exit 4, as a denial.
+    if (!sig.ok) return back({ stop: sig.why, next: "Nothing was sent." }, sig.reason === "declined" ? EXIT.denied : EXIT.failed);
+    // The box's agent shell waits for the guard as long as a request can wait, so the call does too.
+    // Once sent, a signature is never offered again for it: a call cut short says what to look at.
+    const e = await call(d, c, lineFor(a.spec, [...a.words, "--signed", signedWord(st, sig.signature)], v), SIGNED_MS);
+    if (isStop(e)) {
+      if (!e.timedOut) return back(e);
+      return back({ stop: `The signed taskbox ${a.spec.path.join(" ")} reached ${c.box.name}, which hasn't answered yet. It may still apply, so don't sign it again.`, next: `taskbox op list --box ${c.box.name} shows it.` }, EXIT.timeout);
+    }
+    if (attempt === 0 && e.at(-1)?.error?.code === "stale-state") {
+      d.out("Another signed request reached the box first, so its nonce moved on. Signing once more.");
+      continue;
+    }
+    // An op it started is followed here, unless --detach asked otherwise: the drain or stop carries on
+    // at the box whatever this controller does.
+    const op = e.at(-1)?.result?.op;
+    if (typeof op === "string" && /^op_[0-9A-HJKMNP-TV-Z]{26}$/.test(op) && !a.parsed.flags.detach && !a.json && (a.spec.flags ?? []).includes("detach")) return follow(d, c, a, op, e);
+    return { box: c.box, envelopes: e, exit: e.at(-1)!.exit };
+  }
+  return back({ stop: "The box's nonce moved on twice.", next: "Try again in a moment." });
+}
+
+// An op's progress, read every few seconds with op show, each new line said once, until it ends or
+// the command's --timeout runs out (exit 3; the op carries on).
+async function follow(d: Deps, c: Connected, a: Ask, op: string, started: Envelope[]): Promise<One> {
+  for (const l of started.at(-1)!.lines) d.out(cleanLine(l));
+  d.out(`Following ${op}. Ctrl-C stops following; the box carries on. taskbox op show ${op} -w --box ${c.box.name} follows it again.`);
+  const limit = typeof a.parsed.flags.timeout === "string" ? (durationOf(a.parsed.flags.timeout) ?? 0) : 0;
+  const shown = new Set<string>();
+  let misses = 0;
+  for (let waited = 0; !limit || waited < limit; waited += WATCH_MS) {
+    await d.sleep(WATCH_MS);
+    const e = await call(d, c, remoteLine(["op", "show", op, "--json", "--answers", String(c.hello.answers)]));
+    // A box that stops answering is left to carry on: this controller says how to follow it later.
+    if (isStop(e)) {
+      if (++misses >= FOLLOW_MISSES) return { box: c.box, stop: { stop: `${c.box.name} stopped answering while ${op} ran. It carries on at the box.`, next: `taskbox op show ${op} -w --box ${c.box.name}` }, exit: EXIT.timeout };
+      continue;
+    }
+    misses = 0;
+    const last = e.at(-1)!;
+    for (const l of last.lines) if (!shown.has(l)) (shown.add(l), d.out(cleanLine(l)));
+    const state = (last.result?.op as { state?: unknown } | undefined)?.state;
+    // Its lines are said already; the answer is its exit.
+    if (state && state !== "running") return { box: c.box, envelopes: [], exit: state === "succeeded" ? EXIT.ok : EXIT.failed };
+  }
+  return { box: c.box, stop: { stop: `${op} is still running at ${c.box.name}, and --timeout ran out here.`, next: `taskbox op show ${op} -w --box ${c.box.name}` }, exit: EXIT.timeout };
+}
+
 async function onBox(d: Deps, c: Connected, a: Ask): Promise<One> {
   if (c.hello.answers === 3) return oldBox(d, c, a);
+  if (a.signed) return signedOnBox(d, c, a);
   const name = c.box.name;
   let r: Awaited<ReturnType<typeof boxCall>>;
   try {
@@ -180,7 +278,7 @@ async function onBox(d: Deps, c: Connected, a: Ask): Promise<One> {
   return { box: c.box, envelopes: e.envelopes, exit: e.envelopes.at(-1)!.exit };
 }
 
-function show(d: Deps, a: Ask, list: One[]): Shown {
+export function show(d: Deps, a: Ask, list: One[]): Shown {
   const command = a.spec.path.join(".");
   const lines: string[] = [];
   const json: string[] = [];
@@ -255,6 +353,19 @@ export async function forward(d: Deps, argv: readonly string[], io: ForwardIo): 
   if ("shown" in a) {
     for (const l of a.shown.json.length ? a.shown.json : a.shown.lines) io.out(l);
     return a.shown.exit;
+  }
+  // --force on a signed command cuts the graceful path short: the owner types yes here first, since
+  // the box takes the signature as the answer. -y answers it, as at the box.
+  if (a.signed && a.parsed.flags.force && !a.parsed.flags.yes && (a.spec.flags ?? []).includes("yes")) {
+    if (!d.tty) {
+      const l = `taskbox ${a.spec.path.join(" ")} --force asks for a typed yes, and there is no terminal here. Add --yes to answer it.`;
+      io.out(l);
+      return EXIT.usage;
+    }
+    if ((await d.ask(`taskbox ${a.spec.path.join(" ")} --force ends running jobs. Type yes to go on: `)).trim() !== "yes") {
+      io.out("Nothing was signed.");
+      return EXIT.failed;
+    }
   }
   if (a.watch) {
     let last = 0;
