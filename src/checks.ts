@@ -13,7 +13,7 @@ import { canUnlock, poolProblem, readRecord, recordName, UNLOCK_UNKNOWN, uidOf, 
 import { poolNames } from "./access.ts";
 import { fingerprint, trustedKey } from "./approver.ts";
 import { readPin, readPoolRecord } from "./pin.ts";
-import { proveActionsKey } from "./actionskey.ts";
+import { proveActionsKey } from "./keys.ts";
 import { BOX_FIX } from "./boxsettings.ts";
 import { Log } from "./log.ts";
 import { GitHub, type GroupRunner } from "./github.ts";
@@ -578,6 +578,9 @@ export function runnerProblems(runners: readonly GroupRunner[], prefix: string, 
 // The box's runner group: only this box's runners, with its
 // labels. Run as the service or root, which hold the runner App's key. Three reads, no writes.
 export async function runnerGroupRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  // v3: with the GitHub key keeper on the box, the row asks it (rows/connect.ts).
+  const v3 = await import("./rows/connect.ts");
+  if (v3.keeperHere(c)) return v3.runnerGroupRow(c);
   if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${c.paths.service} to check` };
   let pem: string;
   try {
@@ -600,6 +603,8 @@ export async function runnerGroupRow(c: CheckContext): Promise<Omit<Check, "name
 }
 
 export async function sourceAppRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  const v3 = await import("./rows/connect.ts");
+  if (v3.keeperHere(c)) return v3.sourceAppRow(c);
   const src = sourceOf(c.cfg);
   if (src.type !== "github-actions") return { status: "SKIP", detail: "no job source App" };
   if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${c.paths.service} to check` };

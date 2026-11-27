@@ -106,7 +106,7 @@ jobs:
           set -euo pipefail
           mkdir "$RUNNER_TEMP/engine"
           # Each entry's binary is named for its path: src/workspace/probe.ts is workspace-probe.
-          for e in cli shell gate listen workspace/probe controller/main; do
+          for e in cli shell gate workspace/probe controller/main; do
             bun build --compile "src/$e.ts" --outfile "$RUNNER_TEMP/engine/${e//\//-}"
           done
           ls -l "$RUNNER_TEMP/engine"
@@ -130,7 +130,6 @@ jobs:
             "cli template show --help" "cli template show box-check" "cli template show test-job" "cli template show load" "cli no-such-command"
             "shell -c no-such-command" "shell -c remove"
             "gate one two three"
-            "listen"
             "workspace/probe" "workspace/probe tcp not-a-host 1 x"
             "controller/main --version" "controller/main help" "controller/main self --help"
           )

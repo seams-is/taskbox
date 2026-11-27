@@ -1,4 +1,7 @@
-// The second App's key (v2.1.0): Actions read only, installed on jobsFrom only, for the queued-jobs
+// The GitHub Apps' keys. Two parts: v2's (below, to the keeper's part) and v3's GitHub key keeper's
+// folder (at the end).
+//
+// v2's second App's key (v2.1.0): Actions read only, installed on jobsFrom only, for the queued-jobs
 // chooser. The install, run by the owner with sudo, takes it from the owner's Downloads, proves with
 // GitHub that it is that App's key with exactly those rights, and places it in root's own folder,
 // /opt/taskbox-keys, as the service's file at mode 600. Root never writes in the service's home. The loop reads it from
@@ -8,22 +11,22 @@
 // can change its contents or mode; the service holds the first App's key too, so that gives the service nothing new.
 // The key is an App credential: with it, a JWT can change the App's own settings on GitHub.
 import { createPrivateKey } from "node:crypto";
-import { chmodSync, closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fchownSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type Config, servedRepos, sourceAppId, sourceKeyPath } from "./config.ts";
 import { CLOCK_LIMIT_S, clockOffsetS, githubLine } from "./ghfail.ts";
-import { appJwt } from "./github.ts";
+import { KEY_MAX, sameRights } from "./connect.ts";
+import { apiCall, appJwt } from "./github.ts";
 import type { InstallDeps } from "./install.ts";
 import { actionsKeyProblem, readActionsKey } from "./queue.ts";
 
-const API = "https://api.github.com";
 // Every GitHub App has metadata read; this one has Actions read and nothing else.
 export const ACTIONS_PERMISSIONS = { actions: "read", metadata: "read" };
 
 // line: what the update says about the key. proved: the key in place passed with GitHub just now.
 export type KeyStep = { skipped: string; proved?: true };
 
-const MAX_KEY = 20_000;
+const MAX_KEY = KEY_MAX;
 
 // A key file from Downloads: a plain file with one name, not a link, read without following one, at
 // most MAX_KEY bytes, and a private key. Its device and inode, so only this file is deleted later.
@@ -46,23 +49,8 @@ export function readDownloadedKey(path: string): { pem: string; dev: number; ino
 // A Downloads name as the owner's terminal may show it: printable ASCII, cut short.
 const shown = (name: string) => name.replace(/[^\x20-\x7e]/g, "").slice(0, 80);
 
-async function call(d: Pick<InstallDeps, "sys">, method: string, path: string, auth: string, body?: unknown): Promise<Response> {
-  return d.sys.fetch(API + path, {
-    method,
-    headers: {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "taskbox",
-      Authorization: `Bearer ${auth}`,
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    redirect: "error",
-    signal: d.sys.timeout(15_000),
-  });
-}
+const call = (d: Pick<InstallDeps, "sys">, method: string, path: string, auth: string, body?: unknown) => apiCall(d.sys, method, path, auth, body);
 
-const sameKeys = (a: Record<string, unknown>, b: Record<string, string>) => Object.keys(a).length === Object.keys(b).length && Object.entries(b).every(([k, v]) => a[k] === v);
 
 // Why this key isn't the job source App's, with only Actions read on jobsFrom only, or undefined.
 // GitHub answers for the App the key signs as: its ID and rights, then its one installation's repos.
@@ -92,7 +80,7 @@ async function proveOnce(d: ProveDeps, cfg: Config, pem: string, appId: number):
   if (!app.ok) return `GitHub answered ${app.status} for the App`;
   const a = (await app.json()) as { id?: unknown; permissions?: unknown; events?: unknown };
   if (a.id !== appId) return `it is another App's key (App ${String(a.id).slice(0, 12)}, taskbox.json says ${appId})`;
-  if (!a.permissions || typeof a.permissions !== "object" || !sameKeys(a.permissions as Record<string, unknown>, ACTIONS_PERMISSIONS)) {
+  if (!a.permissions || typeof a.permissions !== "object" || !sameRights(a.permissions, ACTIONS_PERMISSIONS)) {
     return "that App has more rights than Actions read. In its settings, Permissions, leave Actions: Read-only and nothing else";
   }
   if (Array.isArray(a.events) && a.events.length) return "that App subscribes to webhook events. Turn its webhook off";
@@ -197,7 +185,7 @@ export async function placeActionsKey(d: InstallDeps, cfg: Config, serviceUid: n
 
 const NO_KEY = "no new key in Downloads yet";
 
-// One new key in the admin's Downloads (connect --new-key): exactly one file ending
+// One new key in the admin's Downloads (the v2 install path): exactly one file ending
 // .private-key.pem, not a download in progress, made at or after since. Read as readDownloadedKey
 // reads it. Returns the key and the file to delete once it is placed, or why there is none yet.
 export function keyFromDownloads(dl: string, since: number): { pem: string; from: string; name: string; dev: number; ino: number } | { why: string; wait: boolean } {
@@ -307,3 +295,203 @@ export function removeReadFile(from: string, dev: number, ino: number): boolean 
 }
 
 export class KeyStop extends Error {}
+
+// ---- The GitHub key keeper's folder (v3) ----
+// Both Apps' keys sit with the keeper (broker.ts, as _taskboxgh): keys/ is its own at 0700, each key
+// its own at 0600. Root hands a key in as <role>-<id>.pending.pem and renames it once proved.
+export type KeyRole = "runner" | "source";
+export const BROKER_ACCOUNT = "_taskboxgh";
+
+export interface BrokerPaths {
+  dir: string; // /var/db/taskbox-broker: root's, 755
+  keys: string; // the keeper's, 700, no ACL
+  log: string; // the keeper's, 700: used.jsonl, the counts it handed out
+  beatDir: string; // the keeper's, 755: its beat, which guardwatch and the beat row read
+  beat: string;
+  run: string; // root's, 700, ACL: the keeper makes the socket, the service account reaches it
+  guard: string; // root's, 700, ACL: the keeper only. The guard's socket
+  socket: string;
+  guardSocket: string;
+  used: string;
+}
+
+export const brokerPaths = (root: string): BrokerPaths => brokerPathsIn(join(root, "var/db/taskbox-broker"));
+export const brokerPathsOf = (p: { loginsSeen: string }): BrokerPaths => brokerPathsIn(join(dirname(p.loginsSeen), "taskbox-broker"));
+export function brokerPathsIn(dir: string): BrokerPaths {
+  return { dir, keys: join(dir, "keys"), log: join(dir, "log"), beatDir: join(dir, "beat"), beat: join(dir, "beat/broker.beat"), run: join(dir, "run"), guard: join(dir, "guard"), socket: join(dir, "run/broker.sock"), guardSocket: join(dir, "guard/broker.sock"), used: join(dir, "log/used.jsonl") };
+}
+
+const KEY_NAME = /^(runner|source)-([1-9][0-9]{0,11})(\.pending)?\.pem$/;
+export const keyFileName = (role: KeyRole, id: number, pending = false) => {
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error("not an App ID");
+  return `${role}-${id}${pending ? ".pending" : ""}.pem`;
+};
+
+export type HeldKey = { role: KeyRole; id: number; pending: boolean; name: string };
+
+export function listKeys(dir: string): HeldKey[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const m = KEY_NAME.exec(name);
+    return m ? [{ role: m[1] as KeyRole, id: Number(m[2]), pending: m[3] !== undefined, name }] : [];
+  });
+}
+
+// The keys folder as it must be: a folder, not a link, the keeper's, 700.
+export function keysDirProblem(dir: string, ownerUid: number): string | undefined {
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return `${dir} isn't there`;
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) return `${dir} isn't a folder`;
+  if (st.uid !== ownerUid) return `${dir} isn't the GitHub key keeper's`;
+  if ((st.mode & 0o777) !== 0o700) return `${dir} isn't 700`;
+  return undefined;
+}
+
+// An ACL entry on the folder would let another account read every key made in it, whatever its mode.
+export async function aclProblem(sys: Pick<InstallDeps["sys"], "run">, path: string): Promise<string | undefined> {
+  const r = await sys.run("/bin/ls", ["-lde", path], { timeoutMs: 10_000 }).catch(() => ({ code: -1, stdout: "" }));
+  if (r.code !== 0) return `${path} can't be read for its ACL`;
+  return /^\s*\d+: /m.test(r.stdout) ? `${path} has an ACL entry` : undefined;
+}
+
+function syncDir(dir: string): void {
+  const dfd = openSync(dir, constants.O_RDONLY);
+  try {
+    fsyncSync(dfd);
+  } finally {
+    closeSync(dfd);
+  }
+}
+
+// Root hands a new App's key to the keeper. The name must be new (an App ID is never reused), and its
+// owner and mode are set on the open file, never by path: the folder is the keeper's, and a name in it
+// can be swapped for a hard link to a file of root's.
+export function placePending(o: { dir: string; ownerUid: number; ownerGid: number }, role: KeyRole, id: number, pem: string): string | undefined {
+  const why = keysDirProblem(o.dir, o.ownerUid);
+  if (why) return why;
+  if (pem.length === 0 || pem.length > MAX_KEY) return "the key isn't one GitHub made";
+  let fd: number;
+  try {
+    fd = openSync(join(o.dir, keyFileName(role, id, true)), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EEXIST" ? `a key for App ${id} is there already` : `the key couldn't be written (${(e as NodeJS.ErrnoException).code ?? "error"})`;
+  }
+  try {
+    fchmodSync(fd, 0o600);
+    fchownSync(fd, o.ownerUid, o.ownerGid);
+    const buf = Buffer.from(pem, "utf8");
+    for (let off = 0; off < buf.length; ) off += writeSync(fd, buf, off, buf.length - off);
+    fsyncSync(fd);
+  } catch (e) {
+    return `the key couldn't be written (${(e as Error).message.slice(0, 60)})`;
+  } finally {
+    closeSync(fd);
+  }
+  syncDir(o.dir);
+  return undefined;
+}
+
+// The pending key becomes the App's key by one rename.
+export function promoteKey(dir: string, role: KeyRole, id: number): string | undefined {
+  try {
+    renameSync(join(dir, keyFileName(role, id, true)), join(dir, keyFileName(role, id)));
+  } catch {
+    // Renamed already, by a keep that stopped after it.
+    return existsSync(join(dir, keyFileName(role, id))) ? undefined : `no key for App ${id} is waiting with the GitHub key keeper`;
+  }
+  syncDir(dir);
+  return undefined;
+}
+
+export function dropKey(dir: string, role: KeyRole, id: number): void {
+  rmSync(join(dir, keyFileName(role, id)), { force: true });
+  rmSync(join(dir, keyFileName(role, id, true)), { force: true });
+  try {
+    syncDir(dir);
+  } catch {}
+}
+
+// A key file read with no link followed: a plain file with one name, owner's, nobody else's to read
+// or write, under the size cap, and a private key.
+export function readKeyFile(path: string, owner: number): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1 || st.uid !== owner || (st.mode & 0o077) !== 0 || st.size === 0 || st.size > MAX_KEY) return undefined;
+    const buf = Buffer.alloc(MAX_KEY + 1);
+    const n = readSync(fd, buf, 0, MAX_KEY + 1, 0);
+    if (n > MAX_KEY) return undefined;
+    const pem = buf.subarray(0, n).toString("utf8");
+    createPrivateKey(pem);
+    return pem;
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export const readHeldKey = (dir: string, ownerUid: number, role: KeyRole, id: number, pending = false) => readKeyFile(join(dir, keyFileName(role, id, pending)), ownerUid);
+
+// A v2 key, read once by root for the move to v3. Its path runs through folders the service account
+// may control, so no part of it may be a link, and the file must be the service account's own.
+export function readAdoptedKey(path: string, serviceUid: number): string | undefined {
+  const parts = path.split("/").filter(Boolean);
+  for (let i = 1; i < parts.length; i++) {
+    try {
+      if (lstatSync(`/${parts.slice(0, i).join("/")}`).isSymbolicLink()) return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return readKeyFile(path, serviceUid);
+}
+
+// The keeper's folders, made or put right by root: the folder 755 root's; keys and log 700 the
+// keeper's, beat 755 the keeper's; run and guard 700 root's, each with its ACL. chmod -N first, so no other entry stays, on
+// keys too, so no key inherits one.
+export async function brokerFoldersProblem(d: { sys: Pick<InstallDeps["sys"], "run">; chown: (path: string, uid: number, gid: number) => void; rootUid?: number }, b: BrokerPaths, o: { brokerUid: number; brokerGid: number; brokerName: string; serviceName: string }): Promise<string | undefined> {
+  const root = d.rootUid ?? 0;
+  const folder = (path: string, uid: number, gid: number): string | undefined => {
+    try {
+      lstatSync(path);
+    } catch {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    }
+    const st = lstatSync(path);
+    if (st.isSymbolicLink() || !st.isDirectory()) return `${path} isn't a folder`;
+    d.chown(path, uid, gid);
+    chmodSync(path, path === b.dir || path === b.beatDir ? 0o755 : 0o700);
+    return undefined;
+  };
+  const why = folder(b.dir, root, 0) ?? folder(b.keys, o.brokerUid, o.brokerGid) ?? folder(b.log, o.brokerUid, o.brokerGid) ?? folder(b.beatDir, o.brokerUid, o.brokerGid) ?? folder(b.run, root, 0) ?? folder(b.guard, root, 0);
+  if (why) return why;
+  const acl: [string, string[]][] = [
+    [b.keys, []],
+    [b.log, []],
+    [b.beatDir, []],
+    [b.run, [`user:${o.brokerName} allow list,add_file,delete_child,search`, `user:${o.serviceName} allow search`]],
+    [b.guard, [`user:${o.brokerName} allow list,add_file,delete_child,search`]],
+  ];
+  for (const [dir, entries] of acl) {
+    for (const args of [["-N", dir], ...entries.map((e) => ["+a", e, dir])]) {
+      const r = await d.sys.run("/bin/chmod", args, { timeoutMs: 10_000 });
+      if (r.code !== 0) return `chmod ${args[0]} failed on ${dir}`;
+    }
+  }
+  return undefined;
+}

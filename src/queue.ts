@@ -107,6 +107,8 @@ export class QueueReader {
   reads = 0;
   // The running look's deadline, which ends its calls themselves.
   private deadline?: AbortSignal;
+  // v3: tokens from the GitHub key keeper (broker.ts), by repo, so the loop holds no key.
+  tokens?: (repo: string) => Promise<string>;
 
   // events: the events the classes name, whose runs are read first (v2.4.0). load: the test repo,
   // read after jobsFrom with a budget of its own, so its runs never crowd out the real repo's (v2.6.0).
@@ -148,6 +150,13 @@ export class QueueReader {
     const now = this.sys.now();
     const kept = forLoad ? this.loadToken : this.token;
     if (kept && now - kept.at < TOKEN_KEEP_MS) return kept.value;
+    if (this.tokens) {
+      const token = await this.tokens(forLoad ? this.load! : `${this.owner}/${this.repo}`);
+      this.log.secret(token);
+      if (forLoad) this.loadToken = { value: token, at: now };
+      else this.token = { value: token, at: now };
+      return token;
+    }
     const jwt = appJwt(this.appId, this.pem, now);
     this.log.secret(jwt);
     const inst = await this.call("GET", `/repos/${this.owner}/${this.repo}/installation`, jwt);
@@ -287,6 +296,16 @@ export class QueueReader {
 
 // The reader for this box, or why there is none. cfg.actionsAppId and the key both come from the
 // owner: until the second App exists, the box takes turns.
+// v3: the reader with the keeper's tokens, so the loop holds no key.
+export function brokerQueueReader(sys: Sys, cfg: Config, log: Log, tokens: (repo: string) => Promise<string>): QueueReader | string {
+  const appId = sourceAppId(cfg);
+  if (!appId) return (cfg.base ?? cfg).sources?.[0]?.type === "none" ? "the job source is none" : "there is no job source App yet";
+  const events = [...new Set(((cfg.base ?? cfg).classes ?? []).flatMap((r) => r.when.event ?? []))].slice(0, 4);
+  const r = new QueueReader(sys, appId, "", cfg.jobsFrom, log, events, loadRepoOf(cfg)?.name);
+  r.tokens = tokens;
+  return r;
+}
+
 export function queueReaderFor(sys: Sys, cfg: Config, keyDir: string, keyPath: string, serviceUid: number | undefined, log: Log, rootUid = 0): QueueReader | string {
   const appId = sourceAppId(cfg);
   if (!appId) return (cfg.base ?? cfg).sources?.[0]?.type === "none" ? "the job source is none" : "there is no job source App yet";

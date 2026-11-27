@@ -6,6 +6,7 @@ import { type EngineName, ENGINES } from "../vm.ts";
 import { checkAccounts } from "./accounts.ts";
 import { type AwaySettings, checkAway } from "./away.ts";
 import { type BudgetSettings, checkKind, checkLabels, checkSizes, IMAGE_PIN, type Kind, type KindSettings, type SizeSettings, V2_MAX_SLOTS, DEFAULT_TURN_IDLE_MINUTES } from "./kinds.ts";
+import { checkRunnerApp, type RunnerAppSettings } from "./connect.ts";
 import { checkScheduling, type ClassRule, type SourceSettings, type Timings } from "./scheduling.ts";
 import { checkTools, type ToolsSettings } from "../tools/settings.ts";
 import { checkWorkspaces, type WorkspaceSettings } from "./workspaces.ts";
@@ -90,6 +91,8 @@ export interface Config extends BudgetSettings {
   // v2.4.0: where the box reads what is waiting, how it ranks it, and the
   // timings its rules use. Every value is the owner's: the code names no org, repo, App or label.
   sources?: SourceSettings[];
+  // v3: the runner App connect github made or adopted, kept in box.json (settings/connect.ts).
+  runnerApp?: RunnerAppSettings;
   // Set by the layering (layers.ts), never in a file: the keys box.json sets, why it was set aside,
   // and each key it held that it may not.
   boxKeys?: string[];
@@ -149,6 +152,7 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
   checkSizes(c);
   checkLabels(c);
   checkScheduling(c, warn);
+  checkRunnerApp(c);
   checkAway(c, warn);
   checkTools(c);
   checkWorkspaces(c);
