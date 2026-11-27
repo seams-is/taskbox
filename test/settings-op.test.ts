@@ -386,6 +386,28 @@ describe("the settings op", () => {
     expect(b.inForce().doc).toMatchObject({ accounts: { people: ["person1"] }, tailnetTag: "tag:taskbox-studio" });
   });
 
+  test("a commit waiting for confirm is raised again within its 24 hours, then lapses: its op ends and it is passed over", async () => {
+    const b = box({ v2: BASE });
+    await readHead(b.d);
+    b.commit(2, { ...BASE, tailnetTag: "tag:taskbox-studio" });
+    await readHead(b.d);
+    await applySigned(b.d, sha(2), "owner");
+    const op = b.st().waiting!.op;
+    // The item went (a restart lapses it): within the 24 hours the next read raises it again.
+    await updatePending(b.state.pending, { rootUid: me }, () => ({ state: { v: 1, items: [] }, out: undefined }));
+    b.t.now += 3600_000;
+    b.t.mono += 3600_000;
+    await readHead(b.d);
+    expect((await b.pending()).length).toBe(1);
+    b.t.now += 24 * 3600_000;
+    b.t.mono += 24 * 3600_000;
+    await readHead(b.d);
+    expect(b.st().waiting).toBeUndefined();
+    expect(b.st().passed).toBe(sha(2));
+    expect(b.op(op)).toMatchObject({ state: "failed", why: expect.stringContaining("lapsed") });
+    expect(b.written.some((e) => e.type === "settings.lapsed")).toBe(true);
+  });
+
   test("settings apply names only the commit that waits", async () => {
     const b = box({ v2: BASE });
     await readHead(b.d);
@@ -535,6 +557,38 @@ describe("update --check's settings read", () => {
 });
 
 describe("the update window and the drain", () => {
+  test("a commit with a widening and a job VM change: the VM change waits for the window and the drain, even after confirm", async () => {
+    const { takeDeferred } = await import("../src/settings/op.ts");
+    const { settingsGate } = await import("../src/update/gate.ts");
+    const { DEFAULT_UPDATE } = await import("../src/settings/update.ts");
+    const b = box({ v2: BASE });
+    let open = false;
+    let drained = false;
+    const did: string[] = [];
+    b.d.hold = {
+      gate: (keys, dr) => settingsGate({ keys, u: DEFAULT_UPDATE, now: open ? Date.UTC(2026, 10, 27, 3) : Date.UTC(2026, 10, 27, 12), offsetMin: 0, drained: dr }),
+      drained: () => drained,
+      drain: async (op) => void did.push(`drain ${op}`),
+      resume: async (op) => void did.push(`resume ${op}`),
+    };
+    await readHead(b.d);
+    b.commit(2, { ...BASE, vmMemoryMB: 4096, accounts: { ...CFG.accounts, people: ["person1"] } });
+    await readHead(b.d);
+    // The VM change doesn't apply mid-job with the rest: it is deferred.
+    expect(b.inForce().sha).toBe(sha(1));
+    const op = b.st().waiting!.op;
+    expect(b.st().deferred).toMatchObject({ sha: sha(2), op, keep: true });
+    await applySigned(b.d, sha(2), "owner");
+    await b.confirmYes();
+    expect(b.inForce().doc.vmMemoryMB).not.toBe(4096);
+    expect(b.st().deferred).toMatchObject({ sha: sha(2), held: [] });
+    open = true;
+    drained = true;
+    await takeDeferred(b.d);
+    expect(b.inForce().doc).toMatchObject({ vmMemoryMB: 4096, accounts: { people: ["person1"] } });
+    expect(b.op(op).state).toBe("succeeded");
+  });
+
   test("a commit that changes a job VM waits for the window, then a drain, then applies and resumes; the rest apply at once", async () => {
     const { takeDeferred } = await import("../src/settings/op.ts");
     const { settingsGate } = await import("../src/update/gate.ts");

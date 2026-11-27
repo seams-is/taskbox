@@ -71,7 +71,7 @@ export async function applyConfirm(d: ConfirmDeps, b: { id: string; yes: boolean
     try {
       await updateState(settingsFiles(rootStateOf(d.p).dir), own, (x) => ({ state: { ...x, confirmed: [...(x.confirmed ?? []), entry].slice(-20) }, out: undefined }));
     } catch (e) {
-      return { ok: false, said: `The settings state can't be written now (${String((e as Error)?.message ?? e).slice(0, 120)}), so it isn't applied. A newer settings commit asks again.`, code: "failed" };
+      return { ok: false, said: `The settings state can't be written now (${String((e as Error)?.message ?? e).slice(0, 120)}), so it isn't applied. taskbox confirm asks again within the hour.`, code: "failed" };
     }
     said({ type: b.yes ? "confirm.confirmed" : "confirm.refused", subject: item.subject, ...(item.op ? { op: item.op } : {}), text: `An admin at the box ${b.yes ? "confirmed" : "refused"} settings commit ${sha.slice(0, 12)}.` });
     return { ok: true, said: b.yes ? "Confirmed: the guard applies it on its next tick." : "Refused: it won't apply, and the rest of that commit stays in force." };
