@@ -6,9 +6,9 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { keyPair, sshsig } from "./sshsig.ts";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { compareTags, describeStatement, skFlags, NAMESPACE, parseStatement, type Statement, statementText, signersProblem, verifyRelease, type VerifyDeps } from "../src/release.ts";
 
 // The real ssh-keygen, which only reads here. Tests otherwise run no real command.
@@ -84,13 +84,13 @@ describe("verifying a release with ssh-keygen", () => {
     expect([compareTags("v2.1.0", "v2.0.9"), compareTags("v2.1.0", "v2.1.0"), compareTags("v2.9.0", "v2.10.0"), compareTags("v10.0.0", "v9.9.9")]).toEqual([1, 0, -1, 1]);
   }, 20_000);
 
-  test("the signature on disk must be the downloaded bytes exactly", async () => {
-    const never: VerifyDeps = { run: async () => { throw new Error("ssh-keygen ran"); } };
+  test("ssh-keygen checks the downloaded bytes, never a good signature left on disk beside them", async () => {
     const r = release();
     const one = new Uint8Array(r.signature);
-    one[one.length - 2] = one[one.length - 2]! ^ 1;
-    expect(await verifyRelease(never, { ...r, signature: one })).toEqual({ ok: false, why: "the signature file isn't the one downloaded" });
-  });
+    one[one.length - 30] = one[one.length - 30]! ^ 1;
+    expect((await verifyRelease(real, { ...r, signature: one })).ok).toBe(false);
+    expect((await verifyRelease(real, r)).ok).toBe(true);
+  }, 20_000);
 
   test("a signed statement taskbox doesn't read fails, though the signature is good", async () => {
     expect(await verifyRelease(real, release({ statement: '{"format":1}\n' }))).toEqual({ ok: false, why: "the signed statement isn't one taskbox reads" });
@@ -102,45 +102,67 @@ describe("verifying a release with ssh-keygen", () => {
     expect(await verifyRelease(never, release({ pinned: `* ${keyPair().line}` }))).toEqual({ ok: false, why: "the signers file has a line taskbox doesn't take" });
     // Only a security key may be pinned.
     expect(await verifyRelease(never, release({ pinned: `taskbox-release namespaces="taskbox-release" ssh-ed25519 ${"A".repeat(68)}\n` }))).toEqual({ ok: false, why: "the signers file has a line taskbox doesn't take" });
-    const r = release();
-    expect(await verifyRelease(never, { ...r, signature: new TextEncoder().encode("other") })).toEqual({ ok: false, why: "the signature file isn't the one downloaded" });
   });
 });
 
-describe("the engine's own pin", () => {
-  // No signers named: the pin is the one read in when the engine was built (src/embedded.ts), which
-  // is the repo's signers/allowed_signers byte for byte. ssh-keygen reads it from a new file beside
-  // the signature, removed after.
-  test("is the repo's signers file, written beside the signature for ssh-keygen, and removed after", async () => {
-    const repo = readFileSync(join(import.meta.dir, "..", "signers", "allowed_signers"), "utf8");
-    if (signersProblem(repo)) return; // no key pinned yet: nothing reaches ssh-keygen
-    const r = release();
-    const dir = mkdtempSync(join(tmpdir(), "taskbox-verify-own-"));
-    const sigPath = join(dir, "statement.json.sig");
-    writeFileSync(sigPath, r.signature);
-    let seen: { file: string; text: string } | undefined;
+// Whether the repo's signers file pins a key yet. Until it does, the engine's own pin verifies
+// nothing, and the tests that need a key are skipped, which the counts show.
+const REPO_SIGNERS = readFileSync(join(import.meta.dir, "..", "signers", "allowed_signers"), "utf8");
+const PINNED = signersProblem(REPO_SIGNERS) === undefined;
+
+describe("the engine's own pin, and the folder ssh-keygen reads", () => {
+  // ssh-keygen reads the pin and the signature from a fresh folder of verifyRelease's own inside
+  // workRoot (core/verifyfolder.ts), written from the bytes it checked, and removed after.
+  const watching = () => {
+    const seen: { dir: string; dirMode: number; files: string[]; signers: string; signature: string; modes: number[] }[] = [];
     const keygen: VerifyDeps = {
       run: async (cmd, args) => {
         expect(cmd).toBe("/usr/bin/ssh-keygen");
-        const file = args[args.indexOf("-f") + 1]!;
-        seen = { file, text: readFileSync(file, "utf8") };
+        const f = args[args.indexOf("-f") + 1]!;
+        const sig = args[args.indexOf("-s") + 1]!;
+        const dir = dirname(f);
+        seen.push({ dir, dirMode: statSync(dir).mode & 0o777, files: readdirSync(dir).sort(), signers: readFileSync(f, "utf8"), signature: readFileSync(sig, "utf8"), modes: [statSync(f).mode & 0o777, statSync(sig).mode & 0o777] });
         return { code: 1, stdout: "", stderr: "" };
       },
     };
-    const { signers: _named, ...unnamed } = r;
-    expect(await verifyRelease(keygen, { ...unnamed, sigPath })).toEqual({ ok: false, why: "the release isn't signed by the pinned key" });
-    expect(seen).toEqual({ file: join(dir, "allowed_signers"), text: repo });
-    expect(existsSync(join(dir, "allowed_signers"))).toBe(false);
+    return { seen, keygen };
+  };
+
+  test.skipIf(!PINNED)("with no signers named, is the repo's signers file, in a folder of its own at 700, removed after", async () => {
+    const { signers: _named, sigPath: _sig, ...r } = release();
+    const workRoot = mkdtempSync(join(tmpdir(), "taskbox-work-"));
+    const { seen, keygen } = watching();
+    expect(await verifyRelease(keygen, { ...r, workRoot })).toEqual({ ok: false, why: "the release isn't signed by the pinned key" });
+    expect(seen).toEqual([{ dir: expect.stringContaining(join(workRoot, "taskbox-verify-")), dirMode: 0o700, files: ["allowed_signers", "statement.json.sig"], signers: REPO_SIGNERS, signature: new TextDecoder().decode(r.signature), modes: [0o600, 0o600] }]);
+    expect(readdirSync(workRoot)).toEqual([]);
   });
 
-  test("is never written over a file already beside the signature", async () => {
-    const repo = readFileSync(join(import.meta.dir, "..", "signers", "allowed_signers"), "utf8");
-    if (signersProblem(repo)) return;
+  test.skipIf(PINNED)("with no key pinned in the repo yet, the engine's own pin verifies nothing", async () => {
     const never: VerifyDeps = { run: async () => { throw new Error("ssh-keygen ran"); } };
-    // release() leaves a signers file of its own beside the signature.
-    const { signers, ...unnamed } = release();
-    expect(await verifyRelease(never, unnamed)).toEqual({ ok: false, why: "the signers file can't be written beside the signature" });
-    expect(readFileSync(signers, "utf8")).toStartWith("# the owner's key");
+    const { signers: _named, ...r } = release();
+    expect(await verifyRelease(never, r)).toEqual({ ok: false, why: "no release key is pinned yet" });
+  });
+
+  test("a named signers file is read once, and copied with the signature to the folder of its own", async () => {
+    const r = release();
+    const workRoot = mkdtempSync(join(tmpdir(), "taskbox-work-"));
+    const { seen, keygen } = watching();
+    await verifyRelease(keygen, { ...r, workRoot });
+    expect(seen[0]!.signers).toBe(readFileSync(r.signers, "utf8"));
+    expect(seen[0]!.dir).not.toBe(dirname(r.sigPath));
+    expect(readdirSync(workRoot)).toEqual([]);
+  });
+
+  test("a folder that can't be made refuses the release, and ssh-keygen never runs", async () => {
+    const never: VerifyDeps = { run: async () => { throw new Error("ssh-keygen ran"); } };
+    expect(await verifyRelease(never, { ...release(), workRoot: join(tmpdir(), "taskbox-no-such-folder", "x") })).toEqual({ ok: false, why: "taskbox couldn't write the files ssh-keygen checks" });
+  });
+
+  test("ssh-keygen's own failure throws as before, and the folder is still removed", async () => {
+    const workRoot = mkdtempSync(join(tmpdir(), "taskbox-work-"));
+    const broken: VerifyDeps = { run: async () => { throw new Error("spawn failed"); } };
+    await expect(verifyRelease(broken, { ...release(), workRoot })).rejects.toThrow("spawn failed");
+    expect(readdirSync(workRoot)).toEqual([]);
   });
 });
 

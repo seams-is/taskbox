@@ -117,40 +117,61 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The settings the template verbs read, from the example. The runner is thrown away after.
+          # The settings the template verbs read: the example, with a made-up load repo. The runner is
+          # thrown away after.
           sudo mkdir -p /opt/taskbox/app
-          sudo cp taskbox.example.json /opt/taskbox/app/taskbox.json
+          bun -e 'const c = JSON.parse(await Bun.file("taskbox.example.json").text()); c.sources = [{ type: "github-actions", appId: c.appId + 1, repos: [c.jobsFrom, { name: `${c.jobsFrom.split("/")[0]}/load`, role: "load", runnerGroup: "taskbox-load" }] }]; console.log(JSON.stringify(c, null, 2));' > "$RUNNER_TEMP/taskbox.json"
+          sudo cp "$RUNNER_TEMP/taskbox.json" /opt/taskbox/app/taskbox.json
           # An empty home, so the controller has no settings and reads no network.
           mkdir "$RUNNER_TEMP/home"
           # Each line: the entry, then its words. Every one is read only, with stdin empty.
           lines=(
             "cli --help" "cli help" "cli --version" "cli status --version" "cli policy show --help"
-            "cli template show --help" "cli template show box-check" "cli template show test-job" "cli no-such-command"
+            "cli template show --help" "cli template show box-check" "cli template show test-job" "cli template show load" "cli no-such-command"
             "shell -c no-such-command" "shell -c remove"
             "gate one two three"
             "listen"
             "workspace/probe" "workspace/probe tcp not-a-host 1 x"
             "controller/main --version" "controller/main help" "controller/main self --help"
           )
+          # Each line's output and exit, in a file named for the line.
+          named() { local f=${1// /_}; echo "${f//\//-}"; }
           say() { local out=$1; shift; (cd / && HOME="$RUNNER_TEMP/home" "$@" < /dev/null) > "$out" 2>&1 && echo "exit 0" >> "$out" || echo "exit $?" >> "$out"; }
           mkdir "$RUNNER_TEMP/want" "$RUNNER_TEMP/got"
-          for i in "${!lines[@]}"; do
-            read -r e words <<< "${lines[$i]}"
+          for l in "${lines[@]}"; do
+            read -r e words <<< "$l"
             # shellcheck disable=SC2086
-            say "$RUNNER_TEMP/want/$i" bun --no-install --no-env-file --cwd=/ "--config=$PWD/bunfig.run.toml" "$PWD/src/$e.ts" $words
+            say "$RUNNER_TEMP/want/$(named "$l")" bun --no-install --no-env-file --cwd=/ "--config=$PWD/bunfig.run.toml" "$PWD/src/$e.ts" $words
           done
           mv src src.away && mv templates templates.away && mv signers signers.away && mv launchd launchd.away && mv versions.json versions.json.away
-          for i in "${!lines[@]}"; do
-            read -r e words <<< "${lines[$i]}"
+          for l in "${lines[@]}"; do
+            read -r e words <<< "$l"
             # shellcheck disable=SC2086
-            say "$RUNNER_TEMP/got/$i" "$RUNNER_TEMP/engine/${e//\//-}" $words
-            echo "::group::${lines[$i]}"
-            cat "$RUNNER_TEMP/got/$i"
+            say "$RUNNER_TEMP/got/$(named "$l")" "$RUNNER_TEMP/engine/${e//\//-}" $words
+            echo "::group::$l"
+            cat "$RUNNER_TEMP/got/$(named "$l")"
             echo "::endgroup::"
-            diff -u "$RUNNER_TEMP/want/$i" "$RUNNER_TEMP/got/$i"
+            diff -u "$RUNNER_TEMP/want/$(named "$l")" "$RUNNER_TEMP/got/$(named "$l")"
           done
-          # The box check came from the template the engine carries, filled in.
-          grep -q "^exit 0$" "$RUNNER_TEMP/got/6" && grep -q "TASKBOX_HOLD" "$RUNNER_TEMP/got/6" && ! grep -q "__[A-Z]*__" "$RUNNER_TEMP/got/6"
+          # Each workflow came from the template the engine carries, filled in.
+          for t in box-check test-job load; do
+            f="$RUNNER_TEMP/got/$(named "cli template show $t")"
+            if ! grep -q "^exit 0$" "$f" || ! grep -q "^name: " "$f" || grep -q "__[A-Z]*__" "$f"; then
+              echo "::error::taskbox template show $t isn't filled in from the template the engine carries."
+              exit 1
+            fi
+          done
+      - name: Compiled, rollback-watch has no install folder and refuses
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=0
+          out=$(cd / && sudo "$RUNNER_TEMP/engine/cli" rollback-watch < /dev/null 2>&1) || code=$?
+          echo "$out"
+          if [ "$code" != 1 ] || ! grep -q "^The compiled engine has no install folder of its own, so the rollback watcher can't run." <<< "$out"; then
+            echo "::error::taskbox rollback-watch, compiled and as root, didn't refuse as it should (exit $code)."
+            exit 1
+          fi
 
   typecheck:
     runs-on: ubuntu-24.04

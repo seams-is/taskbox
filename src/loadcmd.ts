@@ -6,7 +6,7 @@ import { loadReportAnswer } from "./answers.ts";
 import { awayChecks } from "./away.ts";
 import type { CheckContext } from "./checks.ts";
 import { canaryLabels, fingerprint } from "./watchdog.ts";
-import { TEMPLATE_TEXT } from "./embedded.ts";
+import { EMBEDDED } from "./embedded.ts";
 import { GitHub } from "./github.ts";
 import { Log } from "./log.ts";
 import { type Config, type Kind, kindsOf, labelsFor, loadRepoOf, readStateJson, vmsAtMostOf } from "./config.ts";
@@ -37,7 +37,7 @@ export function loadSettings(cfg: Config) {
   const linux = kindsOf(cfg).includes("linux");
   return { v: 1, canary: canaryLabels(cfg), macos: first("macos"), ...(linux ? { linux: first("linux") } : {}) };
 }
-export function loadWorkflowYaml(cfg: Config, template = TEMPLATE_TEXT.load): string {
+export function loadWorkflowYaml(cfg: Config, template = EMBEDDED["templates/taskbox-load.yml"]): string {
   const s = loadSettings(cfg);
   // A box with no Linux kind has no Linux job, and no burst.
   const body = s.linux ? template.replace(/^# __LINUX(START|END)__\n/gm, "") : template.replace(/^# __LINUXSTART__\n[\s\S]*?^# __LINUXEND__\n/m, "");

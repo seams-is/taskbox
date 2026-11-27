@@ -5,9 +5,10 @@
 // ssh-keygen -Y verify checks the signature; then the tarball must hash to what the statement says.
 import { skFlags as readFlags } from "./core/sshsig.ts";
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { SIGNERS_TEXT } from "./embedded.ts";
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { inVerifyFolder } from "./core/verifyfolder.ts";
+import { EMBEDDED } from "./embedded.ts";
 import { RELEASE_TAG } from "./github.ts";
 import type { RunResult } from "./sys.ts";
 
@@ -89,13 +90,15 @@ export interface VerifyDeps {
 // Checks a release before anything is unpacked: the statement's signature against the pinned key,
 // then the statement itself, then the tarball's SHA-256. tag, when given, is the release asked for.
 // installed is the release in place, or null for a first install: a release must be newer, so an
-// old signed release can't be put back, nor the same one replayed.
-export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; signature: Uint8Array; tarball: Uint8Array; sigPath: string; installed: string | null; signers?: string; tag?: string }): Promise<Verdict> {
+// old signed release can't be put back, nor the same one replayed. ssh-keygen reads the pin and the
+// signature from a folder of verifyRelease's own inside workRoot (core/verifyfolder.ts), written
+// from the bytes checked here, so no caller's folder is trusted.
+export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; signature: Uint8Array; tarball: Uint8Array; installed: string | null; signers?: string; workRoot?: string; tag?: string }): Promise<Verdict> {
   if (o.installed !== null && !RELEASE_TAG.test(o.installed)) return { ok: false, why: "the installed release has no version taskbox reads" };
-  // The pin: the signers file the caller names, else this engine's own (signers/allowed_signers,
-  // read in when it was built, src/embedded.ts).
+  // The pin: the signers file the caller names, read once, else this engine's own
+  // (signers/allowed_signers, read in when it was built, src/embedded.ts).
   let pinned: string;
-  if (o.signers === undefined) pinned = SIGNERS_TEXT;
+  if (o.signers === undefined) pinned = EMBEDDED["signers/allowed_signers"];
   else {
     try {
       pinned = readFileSync(o.signers, "utf8");
@@ -105,23 +108,17 @@ export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; s
   }
   const why = signersProblem(pinned);
   if (why) return { ok: false, why };
-  // ssh-keygen reads the signature from a file and the statement from stdin. The caller writes the
-  // signature to sigPath, in a folder of its own. The engine's own pin is written there too, for
-  // ssh-keygen to read, as a new file, and removed after.
-  if (!Buffer.from(o.signature).equals(readFileSync(o.sigPath))) return { ok: false, why: "the signature file isn't the one downloaded" };
-  const signers = o.signers ?? join(dirname(o.sigPath), "allowed_signers");
-  if (o.signers === undefined) {
-    try {
-      writeFileSync(signers, pinned, { flag: "wx", mode: 0o644 });
-    } catch {
-      return { ok: false, why: "the signers file can't be written beside the signature" };
-    }
-  }
+  // A folder that can't be made or written refuses the release; ssh-keygen's own failure throws as before.
+  let ran = false;
   let r: RunResult;
   try {
-    r = await d.run(SSH_KEYGEN, ["-Y", "verify", "-f", signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", o.sigPath], { stdin: o.statement, timeoutMs: 20_000 });
-  } finally {
-    if (o.signers === undefined) rmSync(signers, { force: true });
+    r = await inVerifyFolder(o.workRoot ?? tmpdir(), { signers: pinned, signature: o.signature }, (f) => {
+      ran = true;
+      return d.run(SSH_KEYGEN, ["-Y", "verify", "-f", f.signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", f.signature], { stdin: o.statement, timeoutMs: 20_000 });
+    });
+  } catch (e) {
+    if (ran) throw e;
+    return { ok: false, why: "taskbox couldn't write the files ssh-keygen checks" };
   }
   if (r.code !== 0) return { ok: false, why: "the release isn't signed by the pinned key" };
   const flags = skFlags(o.signature);
