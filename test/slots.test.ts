@@ -12,7 +12,7 @@ import { type Memory, memoryShort, memoryShortWhileUp } from "../src/memory.ts";
 import { slotsLine } from "../src/ops.ts";
 import { sharedPaths } from "../src/shared.ts";
 import { computeState } from "../src/state.ts";
-import { stop } from "../src/stopstart.ts";
+import { stopHere as stop } from "../src/availability.ts";
 import { readLoopState, screen } from "../src/watch.ts";
 import { held, heldSlotsEmpty, type WorkspaceView } from "../src/held.ts";
 import { stateHold } from "../src/workspace/hold.ts";

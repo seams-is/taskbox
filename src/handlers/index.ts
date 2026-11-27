@@ -3,5 +3,6 @@
 // `handlers: { signed?, unsigned? }`, and one line below, sorted by file. A test checks that every
 // file in this folder is named here.
 import type { HandlerFile } from "../core/dispatch.ts";
+import * as availability from "./availability.ts";
 
-export const handlerFiles: readonly HandlerFile[] = [];
+export const handlerFiles: readonly HandlerFile[] = [{ file: "availability.ts", handlers: availability.handlers }];

@@ -77,8 +77,18 @@ describe("a drain from before a restart", () => {
     await dropDrainFromBeforeBoot(d);
     expect(existsSync(d.paths.drain)).toBe(false);
   });
-  test("taskbox stop --drain records the boot", () => {
-    expect(readFileSync(new URL("../../src/stopstart.ts", import.meta.url), "utf8")).toContain("boot: await bootId(");
+  test("a forced drain's deadline is on this boot's monotonic clock: a clock step forces nothing", async () => {
+    const { applyControl, initialControl } = await import("../../src/availability.ts");
+    const sys = new FakeSys();
+    const at = (s: FakeSys) => ({ wall: s.now(), at: { boot: s.bootUuid, mono: s.now() + s.monoOffset } });
+    const s0 = applyControl(initialControl(), { kind: "drain", actor: "service", force: true, timeout: "30m", timeoutMs: 30 * 60_000 }, at(sys)).state;
+    step(sys, 400 * 86_400_000);
+    expect(applyControl(s0, { kind: "tick" }, at(sys)).changed).toBe(false);
+    sys.bootUuid = "99999999-2222-3333-4444-555555555555";
+    sys.clock += 31 * 60_000;
+    expect(applyControl(s0, { kind: "tick" }, at(sys)).changed).toBe(false);
+    sys.bootUuid = "11111111-2222-3333-4444-555555555555";
+    expect(applyControl(s0, { kind: "tick" }, at(sys)).state.forcing).toBe(true);
   });
 });
 

@@ -4,12 +4,12 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
-import { appendJob, type JobRecord, jobOfVm, newJobId, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
+import { appendJob, type JobRecord, jobOfVm, newJobId, stopJob, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
 import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
 import { rows } from "./rows/index.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import { eventLog } from "./core/events.ts";
-import { loopState } from "./core/paths.ts";
+import { loopState, rootStateOf } from "./core/paths.ts";
 import { afterEnd, beforeStart, type JobHook, jobStarted, type TokenSource, withHookFields } from "./core/hooks.ts";
 import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
@@ -36,7 +36,7 @@ import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from 
 import { sourceStep } from "./sourcefail.ts";
 import type { Snapshot } from "./source.ts";
 import { mirrorJson } from "./shared.ts";
-import { clearStopped, markStopped } from "./stopstart.ts";
+import { clearStopped, controlGate, type Gate, markStopped } from "./availability.ts";
 import type { Sys } from "./sys.ts";
 import { engineFor, IMAGE_GONE, type NetPolicy, type VmEngine } from "./vm.ts";
 
@@ -201,6 +201,7 @@ export class Slots {
   oldHoldEnded = false;
   // The slots that are empty and waiting on a drain (taskbox drain). All of them: drained.
   readonly drained = new Set<number>();
+  emptyFor: number | undefined; // the control gen the loop last said every slot was empty for
   drainedAt: number | undefined; // when the last slot found the drain done
   drainShown: number | undefined; // the drain's start, as the loop's state shows it
   holdShown: string | undefined; // the hold's reason, as the loop's state shows it
@@ -718,10 +719,17 @@ const NONE: WorkspacesNow = { views: [] };
 export const heldNow = (d: Pick<LoopDeps, "workspaces" | "box" | "cfg">): number => heldOf(d.workspaces?.() ?? NONE, d.box?.count ?? slotCount(d.cfg));
 const slotHeld = (d: LoopDeps): boolean => isHeld(d.slot, d.box?.count ?? slotCount(d.cfg), heldNow(d));
 
-// The waits that end a VM waiting for a job, and let a running one finish. A drain (taskbox stop
-// --drain) goes first. Then a slot held for a workspace, which starts no VM.
+// The box's availability, from root's control.json (availability.ts): read on every turn, inside the
+// start gate, and every few seconds while a job runs.
+export const gateOf = (d: Pick<LoopDeps, "paths" | "checks">): Gate => controlGate(rootStateOf(d.paths).control, d.checks.rootUid ?? 0);
+
+// The waits that end a VM waiting for a job, and let a running one finish. A drain from v2.6.1 (its
+// drain file) goes first, then the box's availability (paused, draining, drained or stopped). Then a
+// slot held for a workspace, which starts no VM.
 function drainOrHold(d: LoopDeps): { key: string; text: string } | undefined {
   if (existsSync(d.paths.drain)) return { key: "drain", text: "taskbox drain: running jobs finish, then the loop stops" };
+  const g = gateOf(d);
+  if (g.wait) return g.wait;
   // A held slot always has a reason: a Whole, or a state the loop can't trust.
   if (slotHeld(d)) return { key: "workspace", text: holdReason(d.workspaces?.() ?? NONE)!.text };
   return undefined;
@@ -1184,8 +1192,20 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     let drainRefusals = 0;
     let keepForDrain = false;
     let beatAt = booted;
+    let forced = false;
     while (!exited) {
       await d.sys.sleep(5000);
+      // A forced drain or stop at its deadline: the job's VM stops, as job cancel stops it, and the
+      // job ends as stopped by it.
+      if (started !== undefined && !forced) {
+        const by = gateOf(d).forcing;
+        const id = jobOfVm(vm);
+        if (by && id) {
+          forced = true;
+          const r = await stopJob({ paths: d.paths, engine: t, now: () => d.sys.now() }, { id, vm }, by);
+          d.log.write(r.stopped ? `${by} stopped the job's VM` : `${by} couldn't stop the job's VM: ${r.why}`);
+        }
+      }
       // A VM waiting for a job beats each minute; a running job's beat lasts to its ceiling.
       if (started === undefined && d.sys.now() - beatAt >= 60_000) {
         beatAt = d.sys.now();
@@ -1286,7 +1306,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
         // A drain or a held slot promises no job fails, so the runner goes from GitHub first, as a
         // give-way's does. GitHub refuses to delete a runner it gave a job a moment ago: then the VM
         // keeps waiting.
-        const freeing = w?.key === "drain" || w?.key === "workspace";
+        const freeing = w?.key === "drain" || w?.key === "paused" || w?.key === "workspace";
         if (!freeing) drainRefusals = 0;
         if (freeing && started === undefined) {
           const freed = await d.gh
@@ -1294,7 +1314,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
             .then((tk) => d.gh.deleteRunner(tk, jit.runnerId))
             .then(
               () => true,
-              (e: Error) => (d.log.write(`the VM kept waiting through the ${w.key === "drain" ? "drain" : "hold for a workspace"}: GitHub didn't delete its runner (${e.message})`), false),
+              (e: Error) => (d.log.write(`the VM kept waiting through the ${w.key === "workspace" ? "hold for a workspace" : w.key === "paused" ? "pause" : "drain"}: GitHub didn't delete its runner (${e.message})`), false),
             );
           if (!freed) drainRefusals++;
           keepForDrain = !freed && drainRefusals < DRAIN_REFUSALS;
@@ -1493,7 +1513,7 @@ export function relabelDue(d: Pick<LoopDeps, "paths" | "log">, oldName: boolean)
   };
 }
 
-// A drain names the boot it was asked in (stopstart.ts). After a restart, which ended its jobs, it is
+// A drain from v2.6.1 names the boot it was asked in. After a restart, which ended its jobs, it is
 // dropped. The boot is kern.bootsessionuuid, which a clock step leaves alone, so a step never drops
 // the owner's drain. A drain with no boot (from before v3) is kept: the owner resumes it.
 export async function dropDrainFromBeforeBoot(d: Pick<LoopDeps, "sys" | "paths" | "log">): Promise<void> {
@@ -1604,7 +1624,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
     // The proof, once Linux's image and runner are in place, and again 6 hours after a failure.
     // With more than one slot, a pass that tried no other job VM is proved again once one is up, so
     // the box shows one job VM can't reach another. Linux jobs run meanwhile: the pass still holds.
-    proofDue: () => !existsSync(d.paths.drain) && heldNow({ ...d, box }) === 0 && c.held.has("linux") && servedKinds(d).includes("linux") && d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()),
+    proofDue: () => !existsSync(d.paths.drain) && !gateOf(d).wait && heldNow({ ...d, box }) === 0 && c.held.has("linux") && servedKinds(d).includes("linux") && d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()),
     served: () => servedKinds(d).filter((k) => c.held.has(k) && (k !== "linux" || proven())),
     choose:
       d.chooseKind ??
@@ -1704,13 +1724,32 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     // Written on a change only.
     // A deliberate guard: a slot reaches here only with no occupant, and the mark checks it anyway,
     // since the guard lets a Whole go active on it. A slot that still holds one is never empty.
-    const heldEmpty = (w?.key === "workspace" || (w?.key === "drain" && slotHeld(d))) && !c.box.held.has(d.slot);
+    const heldEmpty = (w?.key === "workspace" || ((w?.key === "drain" || w?.key === "paused") && slotHeld(d))) && !c.box.held.has(d.slot);
     if (heldEmpty !== heldEmptyShown) {
       heldEmptyShown = heldEmpty;
       writeLoopState(d.paths, {}, { slot: d.slot, patch: { heldEmpty: heldEmpty || undefined } });
     }
     // A slot here holds no VM, so a drain is done once every slot waits on it.
-    if (w?.key === "drain") {
+    if (w?.key === "paused") {
+      c.box.drained.add(d.slot);
+      // Every slot empty: said for the state seen, so the guard moves a drain on. Stopped: the loop
+      // exits 0, and launchd keeps it down until taskbox start.
+      if (c.box.drained.size === c.box.count && c.box.halt === undefined) {
+        const g = gateOf(d);
+        if (g.gen >= 0 && c.box.emptyFor !== g.gen) {
+          c.box.emptyFor = g.gen;
+          writeLoopState(d.paths, { controlEmpty: g.gen });
+        }
+        if (g.stopped) {
+          c.box.drainedAt = d.sys.now();
+          markStopped(d.paths, d.sys.now());
+          d.log.write("stopped: every job finished, so the loop stops until taskbox start");
+          markEnding(d);
+          c.box.halt = 0;
+          return 0;
+        }
+      }
+    } else if (w?.key === "drain") {
       c.box.drained.add(d.slot);
       if (c.box.drained.size === c.box.count && c.box.halt === undefined) {
         c.box.drainedAt = d.sys.now();
@@ -1758,7 +1797,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const onDisk = (k: Kind) => (listed.has(forKind(d.cfg, k).image) ? 0 : 1);
         for (const k of due.sort((a, b) => onDisk(a) - onDisk(b))) {
           c.box.downloadGB = forKind(d.cfg, k).imageGB ?? 0;
-          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (existsSync(d.paths.drain) && "a drain began (taskbox drain); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after"))
+          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (existsSync(d.paths.drain) && "a drain began (taskbox drain); it starts again after") || (gateOf(d).wait && "the box isn't active (taskbox pause, drain or stop); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after"))
             .finally(() => (c.box.downloadGB = 0))
             .catch((e: Error) => {
               const why = `the ${KIND_WORD[k]} image: ${e.message}`;
@@ -1767,7 +1806,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
               return "failed" as const;
             });
           // A drain or a hold stops a download, and the slot then waits on it at the top, like the others.
-          if (got === "stopped" && c.box.halt === undefined && !c.updated() && (existsSync(d.paths.drain) || slotHeld(d))) {
+          if (got === "stopped" && c.box.halt === undefined && !c.updated() && (existsSync(d.paths.drain) || gateOf(d).wait || slotHeld(d))) {
             stoppedToWait = true;
             break;
           }

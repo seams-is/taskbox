@@ -12,7 +12,7 @@ import { CHECK_EXTRA, serviceNamesRow, tailscaleRow } from "../src/checks.ts";
 import { handOver, relabelDue, RESTART, underOldLabel } from "../src/loop.ts";
 import { Log } from "../src/log.ts";
 import { reloadToken, remove, restartServices } from "../src/ops.ts";
-import { start, stop } from "../src/stopstart.ts";
+import { startHere as start, stopHere as stop } from "../src/availability.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, quietBox, servicesObey, socketDirOk, tempRoot, testBox } from "./helpers.ts";
 

@@ -34,7 +34,7 @@ import { timingsLine } from "./timings.ts";
 import { readJobs } from "./jobs.ts";
 import { currentSession, loadBlind, readLoad } from "./load.ts";
 import { AGENTS_FIX, computeState, footer, headline, NOTHING, type State, UPDATE_FIX } from "./state.ts";
-import { loopRunning, readStopped } from "./stopstart.ts";
+import { availabilityLine, loopRunning, readStopped } from "./availability.ts";
 import type { Sys } from "./sys.ts";
 import { readLoopState, runningJobs, slotsShown } from "./watch.ts";
 import { commandList, firstWords, registry, shellCommands } from "./registry.ts";
@@ -167,6 +167,8 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   const running = asService(d) ? await loopRunning(d.sys, d.uid, d.paths.loopLabels) : undefined;
   d.say(`${d.paths.project}: ${headline(s)}`);
   d.say(`  Installed: ${installedLine(d.paths)}`);
+  const avail = availabilityLine(rootStateOf(d.paths).control, d.rootUid ?? 0);
+  if (avail) d.say(`  Available: ${avail}`);
   d.say(`  Download:  ${pullLine(readPull(d.paths.pull), d.sys.now(), running, readStopped(d.paths)?.at)}`);
   const linux = readPull(d.paths.pullLinux);
   if (linux) d.say(`  Linux:     ${pullLine(linux, d.sys.now(), running, readStopped(d.paths)?.at)}`);

@@ -122,7 +122,7 @@ export function loadVersions(dir: string): Versions {
 }
 
 // The longest any launchctl call may take. A bootout returns at once, and the job stays listed while
-// its process exits (stopstart.ts, install.ts gone); a minute covers a hung launchctl.
+// its process exits (availability.ts, install.ts gone); a minute covers a hung launchctl.
 export const LAUNCHCTL_MS = 60_000;
 // launchd's names for taskbox's three services, and their plist files' names (LABEL_PREFIX).
 export const AGENT_LABEL = `${LABEL_PREFIX}.loop`;

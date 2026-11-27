@@ -33,7 +33,7 @@ As the service account:
 - `taskbox job list` and `taskbox job timings` show past jobs and their timings.
 - `taskbox size list` shows the VM sizes, what fits, and which jobs suit another size. A job picks a size by its label, such as `runs-on: [self-hosted, taskbox-linux-small]`.
 - `taskbox logs` shows the last day.
-- `taskbox stop`, `taskbox start` and `taskbox drain` pause and resume jobs.
+- `taskbox pause` takes no new jobs; `taskbox drain` also waits for running ones; `taskbox resume` undoes both. `taskbox stop` drains, then stops the loop, and `taskbox start` starts it.
 - `taskbox template show test-job` prints a working job for your repo.
 - `taskbox policy show` prints the Tailscale policy entries.
 - `taskbox load start` runs a load test from a test repo of your own.

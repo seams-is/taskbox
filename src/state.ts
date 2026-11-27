@@ -5,7 +5,7 @@ import { serviceName } from "./names.ts";
 import { beatState, restartsState } from "./beat.ts";
 import { githubState } from "./ghfail.ts";
 import { clean, type PullState, pullLine } from "./progress.ts";
-import { stoppedLine } from "./stopstart.ts";
+import { stoppedLine } from "./availability.ts";
 import { type LoopView, runningJobs } from "./watch.ts";
 
 export type StateWord = "Stopped" | "Downloading" | "Ready" | "Running" | "Waiting" | "Updating" | "Needs you" | "Failing";

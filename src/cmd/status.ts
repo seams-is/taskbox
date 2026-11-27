@@ -47,7 +47,7 @@ async function watchBox(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Prom
   const { readSeen, recentLine } = await import("../logins.ts");
   const { typist } = await import("../ops.ts");
   const { updateUnfinished } = await import("../layout.ts");
-  const { loopRunning, readStopped } = await import("../stopstart.ts");
+  const { loopRunning, readStopped } = await import("../availability.ts");
   const { watch } = await import("../watch.ts");
   const dir = typeof c.opts.state === "string" ? c.opts.state : undefined;
   // Another state folder is for testing a pull, as the service account. Anyone else reads the box's own copies.

@@ -79,9 +79,9 @@
     "reads": 6,
     "why": "installedAt labels, the lock's time, and the wait for Tailscale to start: a step only waits less or more"
   },
-  "stopstart.ts": {
+  "availability.ts": {
     "reads": 4,
-    "why": "a drain's and a stop's time labels (the drain is judged by its boot uuid), and how long stop waits for the loop: a step only waits less or more"
+    "why": "control.json's since and a stop's time labels, and how long the break-glass stop waits for the loop: a step only waits less or more. A forced deadline is on this boot's mono (forceAt)"
   },
   "loadcmd.ts": {
     "reads": 1,
@@ -144,8 +144,8 @@
     "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
   },
   "loop.ts": {
-    "reads": 101,
-    "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both"
+    "reads": 104,
+    "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A stop mark's time and the stop record's label when the loop stops for taskbox stop."
   },
   "cmd/daemons.ts": {
     "reads": 2,
@@ -182,5 +182,9 @@
   "jobs.ts": {
     "reads": 1,
     "why": "when a stop was asked: a label in the stop's file"
+  },
+  "passes/control.ts": {
+    "reads": 1,
+    "why": "the time label on a control.json written again as paused"
   }
 }

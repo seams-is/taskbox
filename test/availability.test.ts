@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { paths } from "../src/config.ts";
-import { ALREADY, drain, start, STOP_WAIT_MS, stop, type StopDeps } from "../src/stopstart.ts";
+import { ALREADY, startHere as start, STOP_WAIT_MS, stopHere as stop, type StopDeps } from "../src/availability.ts";
 import { screen } from "../src/watch.ts";
 import { FakeSys } from "./fake.ts";
 import { tempRoot, testBox } from "./helpers.ts";
@@ -27,7 +27,7 @@ function box(running: boolean, opts: { bootoutFails?: boolean; slot?: string; an
   return { d, said, sys, up: () => up };
 }
 
-describe("taskbox stop", () => {
+describe("stop at the box with the guard down (break-glass)", () => {
   test("stops the loop and says until when", async () => {
     const b = box(true);
     expect(await stop(b.d)).toBe(0);
@@ -191,44 +191,7 @@ describe("taskbox stop", () => {
   });
 });
 
-describe("taskbox drain", () => {
-  test("writes the drain, names the running jobs, and changes nothing else", async () => {
-    const b = box(true);
-    writeFileSync(b.d.paths.loopState, JSON.stringify({ slots: { "1": { slot: "running a job", job: "app/test" }, "2": { slot: "waiting for a job" } } }));
-    expect(await drain(b.d)).toBe(0);
-    expect(existsSync(b.d.paths.drain)).toBe(true);
-    expect(b.up()).toBe(true);
-    expect(existsSync(b.d.paths.stopped)).toBe(false);
-    expect(b.said).toEqual(["Draining: app/test finishes, then the loop stops. No new job starts.", "Jobs that come meanwhile wait on GitHub. taskbox status -w shows the drain, and taskbox start cancels it."]);
-  });
-
-  test("with no job running, it says the loop stops within a minute", async () => {
-    const b = box(true);
-    expect(await drain(b.d)).toBe(0);
-    expect(b.said[0]).toBe("Draining: no job is running, so the loop stops within a minute, or once a download under way stops. No new job starts.");
-  });
-
-  test("a stopped loop needs no drain", async () => {
-    const b = box(false);
-    expect(await drain(b.d)).toBe(ALREADY);
-    expect(existsSync(b.d.paths.drain)).toBe(false);
-  });
-
-  test("taskbox start cancels a drain on a running loop, and starts a drained one", async () => {
-    const on = box(true);
-    writeFileSync(on.d.paths.drain, "{}");
-    expect(await start(on.d)).toBe(0);
-    expect(existsSync(on.d.paths.drain)).toBe(false);
-    expect(on.said.at(-1)).toBe("Drain cancelled. The loop carries on and starts jobs again.");
-    const off = box(false);
-    writeFileSync(off.d.paths.drain, "{}");
-    expect(await start(off.d)).toBe(0);
-    expect(existsSync(off.d.paths.drain)).toBe(false);
-    expect(off.up()).toBe(true);
-  });
-});
-
-describe("taskbox start", () => {
+describe("start at the box with the guard down", () => {
   test("starts a stopped loop and clears the stop", async () => {
     const b = box(false);
     writeFileSync(b.d.paths.stopped, JSON.stringify({ at: 1 }));
