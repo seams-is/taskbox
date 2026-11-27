@@ -22,6 +22,7 @@ import { ROTATE } from "./optypes/keys.ts";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 
+export const grouped = (fp: string) => `SHA256:${fp.replace(/^SHA256:/, "").match(/.{1,4}/g)!.join(" ")}`;
 export const KEY_TYPE = "sk-ecdsa-sha2-nistp256@openssh.com";
 // A key's base64 alone travels as a word: no space for the agent shell to split.
 export const KEY_B64 = /^[A-Za-z0-9+/]{100,400}={0,2}$/;
@@ -84,6 +85,8 @@ export async function trustApprover(d: AtBox): Promise<number> {
   if (!offer) return (d.say("No controller has offered its approver key in the last hour. On the controller: taskbox box add, then type this again."), 1);
   const fp = fingerprint(offer.key);
   d.say(`The key a controller offered this box: ${fp}`);
+  // In groups of four, as the controller's box add shows it, so the two are compared group by group.
+  d.say(`  ${grouped(fp)}`);
   d.say("Pin it only if it is the fingerprint your controller shows. It then signs every owner's request to this box.");
   if (!d.yes && (await d.ask("Type yes to pin it: ")).trim().toLowerCase() !== "yes") return (d.say("Not pinned. Nothing changed."), 1);
   const r = await updateApprovers(d.state.approvers, w(d), (s) => trustFirst(s, offer.key, d.sys.now(), "screen"));

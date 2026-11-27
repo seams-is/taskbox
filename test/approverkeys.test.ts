@@ -57,6 +57,7 @@ describe("key trust approver: the first key, from a controller's offer, at the b
     b.answers.push("yes");
     expect(await trustApprover(b.at)).toBe(0);
     expect(b.said).toContain(`The key a controller offered this box: ${fingerprint(k)}`);
+    expect(b.said.some((l) => /^  SHA256:(\S{4} ){10}\S{3}$/.test(l))).toBe(true);
     const a = readApprovers(b.state.approvers, me);
     expect(a.kind === "ok" && a.value.keys.map((x) => [x.fingerprint, x.how])).toEqual([[fingerprint(k), "screen"]]);
     expect(b.eventsText()).toContain("key.trusted");
