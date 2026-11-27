@@ -411,3 +411,47 @@ describe("temporary admin SSH", () => {
     expect(await adminSshRow(ctx(ended, { SSHPolicy: { rules: [] } }))).toMatchObject({ status: "OK", detail: expect.stringMatching(/no longer let it in/) });
   });
 });
+
+describe("the update window and the drain", () => {
+  test("a commit that changes a job VM waits for the window, then a drain, then applies and resumes; the rest apply at once", async () => {
+    const { takeDeferred } = await import("../src/settings/op.ts");
+    const { settingsGate } = await import("../src/update/gate.ts");
+    const { DEFAULT_UPDATE } = await import("../src/settings/update.ts");
+    const b = box({ v2: BASE });
+    let open = false;
+    let drained = false;
+    const did: string[] = [];
+    b.d.hold = {
+      gate: (keys, dr) => settingsGate({ keys, u: DEFAULT_UPDATE, now: open ? Date.UTC(2026, 10, 27, 3) : Date.UTC(2026, 10, 27, 12), offsetMin: 0, drained: dr }),
+      drained: () => drained,
+      drain: async (op) => void did.push(`drain ${op}`),
+      resume: async (op) => void did.push(`resume ${op}`),
+    };
+    await readHead(b.d);
+    const first = b.inForce().sha;
+    b.commit(2, { ...BASE, timings: { pollSeconds: 30 } });
+    b.t.now += 2 * 3600_000;
+    await readHead(b.d);
+    expect(b.inForce().sha).toBe(sha(2));
+    b.commit(3, { ...BASE, timings: { pollSeconds: 30 }, vmMemoryMB: 4096 });
+    b.t.now += 2 * 3600_000;
+    await readHead(b.d);
+    const df = b.st().deferred!;
+    expect(df.sha).toBe(sha(3));
+    expect(b.op(df.op).phase).toBe("waiting");
+    expect(b.inForce().sha).toBe(sha(2));
+    open = true;
+    await takeDeferred(b.d);
+    expect(b.op(df.op).phase).toBe("draining");
+    expect(did).toEqual([`drain ${df.op}`]);
+    await takeDeferred(b.d);
+    expect(b.inForce().sha).toBe(sha(2));
+    drained = true;
+    await takeDeferred(b.d);
+    expect(b.inForce().sha).toBe(sha(3));
+    expect(b.op(df.op).state).toBe("succeeded");
+    expect(did).toEqual([`drain ${df.op}`, `resume ${df.op}`]);
+    expect(b.st().deferred).toBeUndefined();
+    expect(first).toBe(sha(1));
+  });
+});

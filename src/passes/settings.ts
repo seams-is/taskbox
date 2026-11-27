@@ -5,7 +5,7 @@ import { eventLog } from "../core/events.ts";
 import type { PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { readState, settingsFiles } from "../settings/inforce.ts";
-import { READ_EVERY_MS, readHead, takeConfirmed } from "../settings/op.ts";
+import { READ_EVERY_MS, readHead, takeConfirmed, takeDeferred } from "../settings/op.ts";
 import { settingsDepsOf } from "../settings/repo.ts";
 
 export const settingsPass: PlacedMaker = {
@@ -24,6 +24,7 @@ export const settingsPass: PlacedMaker = {
       said(await takeConfirmed(d));
       last = c.sys.now();
       said([await readHead(d)]);
+      said([await takeDeferred(d)]);
     };
     return {
       name: "settings",
@@ -34,6 +35,7 @@ export const settingsPass: PlacedMaker = {
         const v = s.kind === "ok" ? s.value : undefined;
         if (v?.confirmed?.length) return async () => said(await takeConfirmed(d));
         if (v?.readNow || now - last >= READ_EVERY_MS) return read;
+        if (v?.deferred) return async () => said([await takeDeferred(d)]);
         return undefined;
       },
     };

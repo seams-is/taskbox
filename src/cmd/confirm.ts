@@ -8,7 +8,7 @@ import type { BoxCtx, CommandSpec, Outcome } from "../command.ts";
 
 const PC = (v: string) => /^pc_[0-9A-HJKMNP-TV-Z]{26}$/.test(v);
 // The kinds this release applies on a yes. Any other waits, and says so.
-const APPLIES = new Set(["settings"]);
+const APPLIES = new Set(["settings", "signers"]);
 
 // The closure of VM starts while Screen Sharing is on: shown, and on a yes put on trial. undefined when
 // the box isn't closed.
@@ -92,6 +92,17 @@ async function confirm(c: BoxCtx): Promise<Outcome> {
     if (item.kind === "settings") {
       const sha = (item.payload as { sha?: unknown } | null)?.sha;
       if (typeof sha === "string") await updateState(files, own, (s) => ({ state: { ...s, confirmed: [...(s.confirmed ?? []), { pending: id, sha, by: "an admin", at: sys.now(), yes }].slice(-20) }, out: undefined }));
+    }
+    // A release signer removal: the yes is left for the guard, which settles signers.json.
+    if (item.kind === "signers" && yes) {
+      const sha = (item.payload as { sha?: unknown } | null)?.sha;
+      const { signerFiles } = await import("../update/signerwatch.ts");
+      const { writeOwnedText } = await import("../core/rootfile.ts");
+      const { mkdirSync } = await import("node:fs");
+      if (typeof sha === "string") {
+        mkdirSync(signerFiles(state).work, { recursive: true, mode: 0o755 });
+        writeOwnedText(signerFiles(state).yes, `${JSON.stringify({ sha })}\n`, { mode: 0o644, owner: root, ...(c.chown ? { chown: c.chown } : {}) });
+      }
     }
     events.write({ type: yes ? "confirm.confirmed" : "confirm.refused", actor: "an admin", subject: item.subject, ...(item.op ? { op: item.op } : {}), text: `An admin ${yes ? "confirmed" : "refused"} a ${item.kind} change at the box.`, data: { id } });
     return undefined;

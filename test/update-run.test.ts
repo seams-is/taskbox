@@ -10,7 +10,7 @@ import { statementFor } from "./release-fixture.ts";
 
 const L = (version: string) => ({ version, publishedAt: 0 });
 
-function env(o: { listed?: string[]; verdict?: Verdict; signals?: (n: number) => Signals; drain?: ("draining" | "drained" | "gone")[]; installed?: string; goBack?: string; liveUntil?: string; stage?: string; marks?: Marks; kept?: { version: string; dir: string; record?: InstallRecord }[] } = {}) {
+function env(o: { listed?: string[]; verdict?: Verdict; signals?: (n: number) => Signals; drain?: ("draining" | "drained" | "gone")[]; installed?: string; goBack?: string; liveUntil?: string; stage?: string; marks?: Marks; kept?: { version: string; dir: string; record?: InstallRecord }[]; held?: number } = {}) {
   const did: string[] = [];
   const reports: Report[] = [];
   let t = 0;
@@ -44,6 +44,7 @@ function env(o: { listed?: string[]; verdict?: Verdict; signals?: (n: number) =>
     plan: async () => (did.push("plan"), { lines: [] }),
     drain: async (x) => (did.push(`drain${x.force ? " force" : ""}`), undefined),
     drained: () => o.drain?.[drainPolls++] ?? "drained",
+    hold: () => (o.held && o.held-- > 0 ? "workspace nova-1 (active)" : undefined),
     resume: async () => void did.push("resume"),
     install: async () => (did.push("install"), "/opt/taskbox-3.0.1-bbbbbb"),
     placeWatch: async (x) => void did.push(`watch ${x.version} back ${x.back}`),
@@ -111,6 +112,13 @@ describe("the update op", () => {
     x = env();
     await runUpdate(x.e, { force: true, timeout: "30m" }, { proveMs: 0 });
     expect(x.did).toContain("drain force");
+  });
+
+  test("a workspace holding the box delays the install until it is saved or ended", async () => {
+    const x = env({ held: 3 });
+    expect(await runUpdate(x.e, {}, { proveMs: 0 })).toMatchObject({ state: "succeeded" });
+    expect(x.reports.some((r) => r.progress?.text === "held by workspace nova-1 (active), until it is saved or ended")).toBe(true);
+    expect(x.time()).toBeGreaterThanOrEqual(3 * 5_000);
   });
 
   test("a failed proof after the swap goes back, marks the release bad, and ends failed naming why", async () => {

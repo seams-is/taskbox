@@ -80,6 +80,8 @@ export interface UpdateEnv {
   plan(stage: Stage, s: Statement): Promise<{ lines: string[]; problem?: string }>;
   drain(o: { force: boolean; deadline?: number }): Promise<string | undefined>;
   drained(): "drained" | "draining" | "gone";
+  // A workspace holding the box (auto.ts workspaceHold): its line, or undefined.
+  hold(): string | undefined;
   resume(): Promise<void>;
   install(stage: Stage, s: Statement, d: Downloaded): Promise<string>; // the install folder
   placeWatch(o: { version: string; to: string; back: string }): Promise<void>;
@@ -130,7 +132,9 @@ async function drainPhase(e: UpdateEnv, o: { force?: boolean; timeout?: number; 
   for (;;) {
     await checkLive(e, true);
     const d = e.drained();
-    if (d === "drained") return;
+    const held = e.hold();
+    if (d === "drained" && !held) return;
+    if (held) say(e, `held by ${held}, until it is saved or ended`);
     if (d === "gone") {
       // Someone resumed the box: the drain this update began is over, so is the update.
       throw new Stop({ state: "cancelled", why: "the box was resumed during the update's drain" });

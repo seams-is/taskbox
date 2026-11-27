@@ -9,6 +9,8 @@ import type { Channel } from "../release.ts";
 import { inWindow, type UpdateSettings } from "../settings/update.ts";
 import { type Listed, pick } from "./pick.ts";
 import type { Marks } from "./records.ts";
+import { HOLDS } from "../workspace/model.ts";
+import { readStateFile } from "../workspace/read.ts";
 
 export const CHECK_EVERY_MS = 3_600_000;
 
@@ -16,6 +18,16 @@ export const CHECK_EVERY_MS = 3_600_000;
 // workspaces package names it; with none, nothing holds.
 export type Hold = () => string | undefined;
 export const noHold: Hold = () => undefined;
+
+// The box's own hold: a workspace approved (starting), running or saving holds the box, of any size
+// (Whole today; Heavy and Light join the same phases). A state that can't be read holds it too.
+export function workspaceHold(path: string, rootUid = 0): string | undefined {
+  const r = readStateFile(path, rootUid);
+  if (r.kind === "missing") return undefined;
+  if (r.kind !== "ok") return "workspaces whose state can't be read";
+  const w = r.state.workspaces.find((x) => (HOLDS as readonly string[]).includes(x.phase));
+  return w ? `workspace ${w.name.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40)} (${w.phase})` : undefined;
+}
 
 export interface AutoInput {
   now: number;

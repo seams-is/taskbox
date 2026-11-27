@@ -8,6 +8,7 @@ import type { Answer as Asked, Asker } from "../broker.ts";
 import type { Answer } from "../core/dispatch.ts";
 import type { EventLog } from "../core/events.ts";
 import { begin, end, listOps, type Op, opEvent, readOp, toPhase, writeOp } from "../core/ops.ts";
+import type { Gate } from "../update/gate.ts";
 import { drop, type Moment, raise, readPending, updatePending, waiting as live } from "../core/pending.ts";
 import type { RootState } from "../core/paths.ts";
 import type { WriteRules } from "../core/rootfile.ts";
@@ -36,6 +37,15 @@ export interface SettingsDeps {
   // v2.6.1's own taskbox.json, read once, for the first commit's diff (the hop), or undefined.
   v2?(): Doc | undefined;
   moment(): Promise<Moment>;
+  // The update window and the drain (update/gate.ts, availability.ts): absent, everything applies at once.
+  hold?: SettingsHold;
+}
+
+export interface SettingsHold {
+  gate(keys: string[], drained: boolean): Gate;
+  drain(op: string): Promise<string | undefined>; // why it couldn't, or undefined
+  drained(): boolean;
+  resume(op: string): Promise<void>;
 }
 
 const short = (sha: string) => sha.slice(0, 12);
@@ -131,11 +141,14 @@ export async function takeCommit(d: SettingsDeps, a: { repo: string; sha: string
   // With the guarded keys held back the settings must still pass; if they don't, nothing applies
   // until the owner's yes lets the whole commit through.
   const stands = docProblem(composed) === undefined;
-  if (stands) {
-    writeInForce(d.files, inForceOf(v, composed, held, now), w(d));
-    const keys = changedKeys(base.doc, composed);
-    d.events.write({ type: "settings.applied", actor: "taskbox", subject: "settings", op: op.id, text: `Settings commit ${short(v.sha)} applied${keys.length ? `: ${keys.join(", ")}` : ", with nothing new"}${held.length ? `; ${held.length} guarded held back` : ""}.`.slice(0, 240), data: { sha: v.sha, keys, held } });
+  // Keys that change a job VM wait for the update window and a drain; the rest apply at once. The
+  // box's first commit applies at once: nothing ran under settings in force before it.
+  const gate = stands && d.hold && !base.first ? d.hold.gate(changedKeys(base.doc, composed), d.hold.drained()) : { phase: "applying" as const };
+  if (stands && gate.phase !== "applying" && !widening.length) {
+    await updateState(d.files, w(d), (s) => ({ state: { ...s, repo: a.repo, head: { sha: v.sha, ...(a.etag ? { etag: a.etag } : {}), readAt: now }, problem: undefined, waiting: undefined, passed: undefined, deferred: { sha: v.sha, op: op.id, held } }, out: undefined }));
+    return await takeDeferred(d);
   }
+  if (stands) applyInForce(d, v, base.doc, composed, held, now, op.id);
   if (!widening.length) {
     endOp(d, op.id, "succeeded", { result: { sha: v.sha } });
     await updateState(d.files, w(d), (s) => ({ state: { ...s, repo: a.repo, head: { sha: v.sha, ...(a.etag ? { etag: a.etag } : {}), readAt: now }, inUse: v.sha, problem: undefined, waiting: undefined, passed: undefined }, out: undefined }));
@@ -151,6 +164,49 @@ export async function takeCommit(d: SettingsDeps, a: { repo: string; sha: string
   d.events.write({ type: "settings.waiting", actor: "taskbox", subject: "settings", op: op.id, text: `Settings commit ${short(v.sha)} changes ${all.length} guarded key${all.length === 1 ? "" : "s"} (${all.map((x) => x.path).join(", ")}): ${base.first ? "taskbox confirm at the box" : `taskbox settings apply ${v.sha}`}.`.slice(0, 240), data: { sha: v.sha, paths: all.map((x) => x.path) } });
   await updateState(d.files, w(d), (s) => ({ state: { ...s, repo: a.repo, head: { sha: v.sha, ...(a.etag ? { etag: a.etag } : {}), readAt: now }, ...(stands ? { inUse: v.sha } : {}), problem: undefined, waiting: wait, passed: undefined }, out: undefined }));
   return `settings: commit ${short(v.sha)} waits for ${base.first ? "confirm" : "settings apply"}`;
+}
+
+function applyInForce(d: SettingsDeps, v: Validated, before: Doc, composed: Doc, held: string[], now: number, op: string): void {
+  writeInForce(d.files, inForceOf(v, composed, held, now), w(d));
+  const keys = changedKeys(before, composed);
+  d.events.write({ type: "settings.applied", actor: "taskbox", subject: "settings", op, text: `Settings commit ${short(v.sha)} applied${keys.length ? `: ${keys.join(", ")}` : ", with nothing new"}${held.length ? `; ${held.length} guarded held back` : ""}.`.slice(0, 240), data: { sha: v.sha, keys, held } });
+}
+
+// A deferred commit, each tick: its window, then its drain, then it applies and the box resumes.
+export async function takeDeferred(d: SettingsDeps): Promise<string> {
+  const s = readStateOr(d);
+  const df = s.deferred;
+  if (!df) return "";
+  const op = readSettingsOp(d, df.op);
+  const val = readValidated(d.files, df.sha, d.rootUid);
+  if (!op || op.state !== "running" || val.kind !== "ok") {
+    if (df.drained && d.hold) await d.hold.resume(df.op);
+    await updateState(d.files, w(d), (x) => ({ state: { ...x, deferred: undefined }, out: undefined }));
+    return `settings: the deferred commit ${short(df.sha)} was dropped`;
+  }
+  const base = baselineOf(d);
+  const composed = holdBack(val.value.doc, base.doc, df.held);
+  const g = d.hold ? d.hold.gate(changedKeys(base.doc, composed), d.hold.drained()) : { phase: "applying" as const };
+  if (g.phase === "waiting") {
+    phase(d, op, "waiting", `waiting for ${g.until}`);
+    return "";
+  }
+  if (g.phase === "draining") {
+    phase(d, op, "draining", "pausing, then waiting for running jobs");
+    if (!df.drained && d.hold) {
+      const why = await d.hold.drain(df.op);
+      if (why) return `settings: the drain for ${short(df.sha)} couldn't start: ${why}`;
+      await updateState(d.files, w(d), (x) => ({ state: { ...x, deferred: x.deferred ? { ...x.deferred, drained: true } : undefined }, out: undefined }));
+    }
+    return "";
+  }
+  const now = d.now();
+  const ready = phase(d, op, "applying");
+  applyInForce(d, val.value, base.doc, composed, df.held, now, ready.id);
+  if (df.drained && d.hold) await d.hold.resume(df.op);
+  endOp(d, op.id, "succeeded", { result: { sha: df.sha } });
+  await updateState(d.files, w(d), (x) => ({ state: { ...x, inUse: df.sha, deferred: undefined }, out: undefined }));
+  return `settings: commit ${short(df.sha)} applied after its window and drain`;
 }
 
 // A commit this release won't use: its op fails, and the row names the first problem.

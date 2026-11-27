@@ -25,17 +25,21 @@ import { hashTree } from "../checks.ts";
 import { type Config, GUARD_LABEL, type Installed, type Paths, readJson, readStateJson } from "../config.ts";
 import { SUDO } from "../elevate.ts";
 import { BROKER_LABEL, GUARDWATCH_LABEL, readBeat, watchPaths } from "../guardwatch.ts";
-import { gitTreeSha, gunzippedSize, placeRollbackWatch, publicRelease, readRollbackWatch, removeRollbackWatch, ROLLBACK_AFTER_MS, SAFE_UNTAR, TARBALL_LIMIT, tarListProblem, UNPACKED_LIMIT, writeRollbackWatch } from "../hop.ts";
+import { gitTreeSha, gunzippedSize, MAX_HOLD_MS, placeRollbackWatch, publicRelease, readRollbackWatch, removeRollbackWatch, ROLLBACK_AFTER_MS, SAFE_UNTAR, TARBALL_LIMIT, tarListProblem, UNPACKED_LIMIT, writeRollbackWatch } from "../hop.ts";
 import { BROKER_ACCOUNT } from "../keys.ts";
+import { type JobRecord, readJobs } from "../jobs.ts";
 import { linkTarget, relink, withUpdateLock } from "../layout.ts";
+import { installedCommit, readProof } from "../proof.ts";
 import { undo } from "../ops.ts";
 import { bare, NAMESPACE, PRINCIPAL, signerLines, SSH_KEYGEN, type Statement, signersProblem, verifyRelease, type VerifyDeps, verifySigned } from "../release.ts";
 import { meet, parseSignerState, type SignerState, TRANSITION, TRANSITION_SIG } from "../release/signers.ts";
 import { readInForce, settingsFiles } from "../settings/inforce.ts";
 import { updateOf } from "../settings/update.ts";
+import { rollbackSettings } from "./narrow.ts";
 import type { Sys } from "../sys.ts";
 import { listedReleases } from "./pick.ts";
 import type { BeatName } from "./prove.ts";
+import { workspaceHold } from "./auto.ts";
 import { type InstallRecord, keptInstalls, type Marks, readInstallRecord, readMarks, writeInstallRecord, writeMarks } from "./records.ts";
 import type { Downloaded, RollbackEnv, Running } from "./run.ts";
 
@@ -186,6 +190,7 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
       const r = await changeControl(ctl, requestOf("drain", { reason: `${d.type} ${d.op}`, ...(o.force && o.deadline ? { force: true, timeout: `${Math.max(1, Math.ceil((o.deadline - d.sys.now()) / 1000))}s` } : {}) }, actor));
       return r.ok ? undefined : r.said;
     },
+    hold: () => workspaceHold(d.p.workspaces, root),
     drained() {
       const c = readControl(d.state.control, root);
       if (c.kind !== "ok") return "gone";
@@ -242,7 +247,11 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
       const w = watchPaths(d.p);
       return ["guard", ...(existsSync(w.brokerPlist) ? (["keeper"] as const) : []), "loop"] as BeatName[];
     },
-    testJob: () => false,
+    // A test job is expected when the jobs repo ran one in the last 7 days (template show test-job).
+    testJob: () => {
+      const jobs = jobsNow(d);
+      return jobs.some((j) => isTestJob(j) && j.endedAt > d.sys.now() - 7 * 86_400_000);
+    },
     async signals(o) {
       const w = watchPaths(d.p);
       const mono = await monoNow(d.sys);
@@ -256,7 +265,23 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
         loop: loopBeat,
       };
       const all = this.need().every((b) => beats[b]);
-      return { beats, ...(all ? { rows: await checkRows(d) } : {}), selftest: "none" as const };
+      // The selftest: the Linux proof the loop runs again for each install, on a Linux box.
+      let selftest: "passed" | "failed" | "running" | "none" = "none";
+      if (d.cfg.linux) {
+        const to = linkTarget(d.p.opt);
+        const commit = to ? installedCommit(join(to, "installed.json")) : "";
+        const pr = readProof(d.p.projectState);
+        if (pr && pr.commit === commit && pr.at >= swapWall) selftest = pr.ok ? "passed" : "failed";
+        else if (d.sys.now() - swapWall < SELFTEST_MS) {
+          selftest = "running";
+          extendWatch(d, d.sys.now() + 30 * 60_000);
+        }
+      }
+      const since = jobsNow(d).filter((j) => j.endedAt > swapWall);
+      const t = since.find(isTestJob);
+      const testJob = t ? { conclusion: t.result === "passed" ? ("success" as const) : t.result === "cancelled" ? ("cancelled" as const) : t.result === "failed" || t.result === "box failure" ? ("failure" as const) : ("other" as const) } : undefined;
+      const jobs = since.filter((j) => !isTestJob(j)).map((j) => ({ name: j.workflow ?? j.job ?? "a job", outcome: j.result === "passed" ? "succeeded" : j.result }));
+      return { beats, ...(all ? { rows: await checkRows(d) } : {}), selftest, ...(testJob ? { testJob } : {}), jobs };
     },
     // The watch file's deadline is wall time, as v2.6.1's watcher reads it; here it is put on clock()'s scale.
     watchDeadline: () => {
@@ -284,10 +309,9 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
       const r = readInstallRecord(dir, root);
       if (r.kind === "ok") writeInstallRecord(dir, { ...r.value, ended: how, ...(why ? { why: why.replace(/[^\x20-\x7e]/g, " ").slice(0, 240) } : {}) }, { rootUid: root, ...own });
     },
-    async rollbackSettings(_record) {
-      // The settings package puts back the commit recorded at that install, narrowed where the
-      // state now is narrower (update/narrow.ts); until it lands, settings stay in each install.
-      return undefined;
+    async rollbackSettings(record) {
+      if (!record) return undefined;
+      return rollbackSettings(settingsFiles(d.state.dir), record.settingsCommit, { rootUid: root, ...own, now: d.sys.now() }).catch((e: Error) => String(e?.message ?? e).slice(0, 160));
     },
     kept() {
       const cur = linkTarget(d.p.opt);
@@ -309,6 +333,27 @@ function keptV2(p: Paths, cur: string | undefined): { version: string; dir: stri
   } catch {
     return [];
   }
+}
+
+// The Linux proof's longest run (beat.ts "proving Linux"), past which the proof goes on without it.
+export const SELFTEST_MS = 95 * 60_000;
+const isTestJob = (j: JobRecord) => typeof j.workflow === "string" && /^taskbox test job\b/.test(j.workflow);
+function jobsNow(d: BoxEnvDeps): JobRecord[] {
+  try {
+    const st = lstatSync(d.p.jobsFile);
+    return readJobs(d.p, st.uid) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// The new guard may move the watch's deadline later while proving waits on the selftest, up to
+// MAX_HOLD_MS after it was placed, as v2.6.1's watcher allows.
+function extendWatch(d: BoxEnvDeps, to: number): void {
+  const w = readRollbackWatch(d.p);
+  if (!w || w.proved) return;
+  const deadline = Math.min(Math.max(w.deadline, to), w.placedAt + MAX_HOLD_MS);
+  if (deadline !== w.deadline) writeRollbackWatch(d.p, { ...w, deadline });
 }
 
 // check's rows, from `taskbox check --json` of the install in place, run as the service account.

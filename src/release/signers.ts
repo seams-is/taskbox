@@ -88,6 +88,7 @@ export interface Pending {
   removes: string[];
   kept: string[];
   seenAt: number; // when the box first verified it: an add waits ADD_WAIT_MS from here
+  version?: string; // the release that carries it, where a revoke is published
   confirmed?: number; // when an admin at the box confirmed its removals
   addsDone?: true;
   removesDone?: true;
@@ -121,7 +122,7 @@ export function meet(s: SignerState, text: string, version: string, now: number)
   if (s.pending) return s.pending.sha === sha ? { state: s, said: "" } : { why: "another signer change is waiting at this box" };
   const c = changeOf(s.pinned, t, version);
   if (typeof c === "string") return { why: `its signer transition can't apply: ${c}` };
-  const pending: Pending = { sha, text, newText: c.newText, adds: c.adds, removes: c.removes, kept: c.kept, seenAt: now, ...(c.adds.length ? {} : { addsDone: true as const }), ...(c.removes.length ? {} : { removesDone: true as const }) };
+  const pending: Pending = { sha, text, newText: c.newText, adds: c.adds, removes: c.removes, kept: c.kept, seenAt: now, version, ...(c.adds.length ? {} : { addsDone: true as const }), ...(c.removes.length ? {} : { removesDone: true as const }) };
   return { state: { ...s, pending }, said: changeLine(pending) };
 }
 
@@ -182,4 +183,9 @@ export function settle(s: SignerState, now: number): { state: SignerState; said:
     return { state: { ...rest, pinned }, said };
   }
   return { state: { ...s, pinned, pending: next }, said };
+}
+
+// What confirm at the box shows for a removal, in the box's own words.
+export function removalShows(p: Pending): string[] {
+  return [`The release signers change removes ${p.removes.join(", ")}.`, `Kept: ${p.kept.join(", ") || "none"}; added after its 7 days: ${p.adds.join(", ") || "none"}.`, "Confirm only if you, the owner, made this change. Refuse a change you didn't make."];
 }

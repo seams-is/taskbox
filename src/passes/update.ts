@@ -3,7 +3,8 @@
 //   carries on (optypes/update.ts says it resumes), before the ops pass would fail it;
 // - an auto-update begins when update/auto.ts says so, with the public repo read at most hourly.
 import { rmSync } from "node:fs";
-import { bootId } from "../core/boot.ts";
+import { bootId, monoNow } from "../core/boot.ts";
+import { raiseRemoval, readRevoke, takeSignerYes } from "../update/signerwatch.ts";
 import { CHILD_BUN, progressPath, reportsPath, runChild } from "../core/child.ts";
 import { eventLog } from "../core/events.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "../core/rootfile.ts";
@@ -12,7 +13,7 @@ import { listOps } from "../core/ops.ts";
 import type { PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { updateOf } from "../settings/update.ts";
-import { autoStep, CHECK_EVERY_MS, noHold } from "../update/auto.ts";
+import { autoStep, CHECK_EVERY_MS, workspaceHold } from "../update/auto.ts";
 import { runningOf, updateFiles } from "../update/box.ts";
 import { listedReleases, type Listed } from "../update/pick.ts";
 import { readMarks, writeMarks } from "../update/records.ts";
@@ -31,6 +32,7 @@ export const updatePass: PlacedMaker = {
     let listed: Listed[] | undefined;
     let listedAt = -Infinity;
     let heldSaid = "";
+    let revokeAt = -Infinity;
     const job = async () => {
       const boot = await bootId(c.sys);
       if (!boot) return;
@@ -50,6 +52,19 @@ export const updatePass: PlacedMaker = {
       }
       const u = updateOf(c.cfg);
       const now = c.sys.now();
+      // An admin's yes for a removal, a revoke read hourly, the removal raised for confirm.
+      const wd = { sys: c.sys, state: s, ...(c.cfg.publicRepo ? { repo: c.cfg.publicRepo } : {}), rootUid: root, moment: async () => ({ wall: c.sys.now(), mono: await monoNow(c.sys), boot }), log };
+      const yes = takeSignerYes(wd);
+      if (yes) events.write({ type: "update.signers", actor: "an admin", subject: "box", text: `The box's ${yes}.`.slice(0, 240) });
+      if (c.sys.now() - revokeAt >= CHECK_EVERY_MS) {
+        revokeAt = c.sys.now();
+        const r = await readRevoke(wd).catch(() => undefined);
+        if (r) {
+          log(r);
+          events.write({ type: "update.signers", actor: "taskbox", subject: "box", text: `${r}.`.slice(0, 240) });
+        }
+        await raiseRemoval(wd).catch((e: Error) => log(`the signer removal couldn't be raised for confirm: ${e.message.slice(0, 120)}`));
+      }
       // A signer change past its wait, or confirmed at the box, moves the pin (release/signers.ts).
       const sf = updateFiles(s).signers;
       const sr = readOwnedJson(sf, { owner: root, max: 64 * 1024 }, (v) => parseSignerState(v) ?? "out of shape");
@@ -69,7 +84,7 @@ export const updatePass: PlacedMaker = {
       }
       const offsetMin = -new Date(now).getTimezoneOffset();
       const fresh = now - listedAt < CHECK_EVERY_MS ? listed : undefined;
-      let step = autoStep({ now, offsetMin, u, channel: u.channel, installed, marks, running: all, hold: noHold(), listed: fresh, tried });
+      let step = autoStep({ now, offsetMin, u, channel: u.channel, installed, marks, running: all, hold: workspaceHold(c.p.workspaces, root), listed: fresh, tried });
       if (step.kind === "list") {
         if (!c.cfg.publicRepo) return;
         try {
@@ -84,7 +99,7 @@ export const updatePass: PlacedMaker = {
           listed = [];
           return;
         }
-        step = autoStep({ now, offsetMin, u, channel: u.channel, installed, marks, running: all, hold: noHold(), listed, tried });
+        step = autoStep({ now, offsetMin, u, channel: u.channel, installed, marks, running: all, hold: workspaceHold(c.p.workspaces, root), listed, tried });
       }
       if (step.kind === "held" && step.line !== heldSaid) {
         heldSaid = step.line;
