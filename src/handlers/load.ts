@@ -6,6 +6,7 @@
 import type { Answer, HandlerCtx, SignedHandler } from "../core/dispatch.ts";
 import type { Args } from "../core/statement.ts";
 import { loadRepoOf, vmsAtMostOf } from "../config.ts";
+import { beginLoadOp, reconcileLoadOps } from "../loadop.ts";
 import { isPattern, LOAD_MAX_MS, LOAD_MIN_MS, openSession, parseFor, PATTERNS, stopSession } from "../load.ts";
 
 const hhmm = (ms: number) => new Date(ms).toISOString().slice(11, 16);
@@ -40,13 +41,15 @@ export async function applyStart(c: HandlerCtx, a: Args, actor: string): Promise
   if (typeof s === "string") return { ok: false, code: "busy", said: `A load test session is on already: ${s}. taskbox load stop ends it.` };
   const said = `Load test session ${s.n} (${s.pattern}) is on until ${hhmm(s.until)} UTC, ${only ? "with the box to itself: the real repo's jobs wait on GitHub" : "beside the real repo, never taking its last slot"}.`;
   tell(c, "load.started", `${actor} opened load test session ${s.n} (${s.pattern}${only ? ", the box to itself" : ""}) until ${hhmm(s.until)} UTC.`, actor);
-  return { ok: true, said };
+  const op = beginLoadOp(c, s, actor, c.now);
+  return { ok: true, said: op ? `${said} Its op is ${op}: taskbox op show ${op} -w follows it.` : said, ...(op ? { op } : {}) };
 }
 
 export async function applyStop(c: HandlerCtx, actor: string): Promise<Answer> {
   const s = await stopSession(c.p, c.now, actor, { rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) });
   if (!s) return { ok: true, said: "No load test session is on." };
   tell(c, "load.stopped", `${actor} ended load test session ${s.n}. Its running test VMs stop.`, actor);
+  reconcileLoadOps(c, c.now);
   return { ok: true, said: `Load test session ${s.n} is off. Its running test VMs stop now, and no new one starts.` };
 }
 

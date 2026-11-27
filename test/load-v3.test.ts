@@ -17,6 +17,8 @@ import { currentSession, loadNow, readLoad, rootLoadFile } from "../src/load.ts"
 import { checkLoadValues, loadValues, loadWorkflowYaml, loadYamlFrom } from "../src/loadcmd.ts";
 import { loadReport, replayDay } from "../src/loadreport.ts";
 import { LOAD_ENDED, stopFor } from "../src/loop.ts";
+import { listOps } from "../src/core/ops.ts";
+import { reconcileLoadOps } from "../src/loadop.ts";
 import { ADDRESS, controllerConfig, deps, INSTALL_ID, pairing, runLine, StandIn, World } from "./controller-fake.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, tempRoot, testBox } from "./helpers.ts";
@@ -54,7 +56,7 @@ describe("the owner's signed session", () => {
   test("opens a numbered session in root's file, with its pattern and who signed it; a second is busy; stop ends it", async () => {
     const { c, p, events } = ctx();
     const a = await applyStart(c, { pattern: "day", for: "2h" }, OWNER);
-    expect(a).toEqual({ ok: true, said: "Load test session 1 (day) is on until 12:00 UTC, beside the real repo, never taking its last slot." });
+    expect(a).toMatchObject({ ok: true, said: expect.stringMatching(/^Load test session 1 \(day\) is on until 12:00 UTC, beside the real repo, never taking its last slot\. Its op is op_\w+: taskbox op show op_\w+ -w follows it\.$/), op: expect.stringMatching(/^op_/) });
     const s = currentSession(readLoad(p, false, ME), NOW + M)!;
     expect(s).toMatchObject({ n: 1, pattern: "day", only: false, by: OWNER, until: NOW + 120 * M });
     // Root's file, 0644: the loop and every user read it, and only the guard writes it.
@@ -66,7 +68,7 @@ describe("the owner's signed session", () => {
     expect(await applyStop({ ...c, now: NOW + 7 * M }, OWNER)).toEqual({ ok: true, said: "No load test session is on." });
     // The next one is numbered on.
     expect((await applyStart({ ...c, now: NOW + 8 * M }, { pattern: "merge", only: true }, OWNER)).said).toContain("session 2 (merge)");
-    expect(events.map((e) => e.type)).toEqual(["load.started", "load.stopped", "load.started"]);
+    expect(events.map((e) => e.type)).toEqual(["load.started", "op.started", "load.stopped", "op.cancelled", "load.started", "op.started"]);
   });
 
   test("refuses with no test repo, and beside the real repo with one VM at a time", async () => {
@@ -99,6 +101,59 @@ describe("the owner's signed session", () => {
     expect(loadNow(p, NOW + M, ME + 1)).toBeUndefined();
     writeFileSync(rootLoadFile(p), JSON.stringify({ v: 2, sessions: [] }), { mode: 0o644 });
     expect(loadNow(p, NOW + M, ME)).toBeUndefined();
+  });
+});
+
+describe("a session is an op", () => {
+  const ops = (c: HandlerCtx) => listOps({ dir: c.state.ops, owner: ME }).ops;
+  test("load start begins it with the session's number and end; load stop cancels it as its named opposite", async () => {
+    const { c } = ctx();
+    const a = await applyStart(c, { pattern: "burst", for: "1h" }, OWNER);
+    const op = ops(c)[0]!;
+    expect(op).toMatchObject({ id: a.op, type: "load", subject: "load", state: "running", phase: "running", params: { session: 1, pattern: "burst", only: false }, deadline: NOW + 60 * M, actor: OWNER });
+    await applyStop({ ...c, now: NOW + 5 * M }, OWNER);
+    expect(ops(c)[0]).toMatchObject({ state: "cancelled", why: `ended by taskbox load stop (${OWNER})` });
+  });
+  test("op cancel ends the session as load stop does, from the controller or the service account", async () => {
+    const { cancelOp } = await import("../src/opcancel.ts");
+    for (const role of ["owner", "service"] as const) {
+      const { c, p } = ctx();
+      const a = await applyStart(c, { pattern: "day" }, OWNER);
+      const r = await cancelOp({ ...c, now: NOW + M }, a.op!, role, role === "owner" ? OWNER : "service");
+      expect(r).toMatchObject({ ok: true, said: expect.stringContaining("Load test session 1 is off") });
+      expect(loadNow(p, NOW + 2 * M, ME)).toBeUndefined();
+      expect(ops(c)[0]!.state).toBe("cancelled");
+    }
+    // An admin doesn't start one, so doesn't cancel one.
+    const { c } = ctx();
+    const a = await applyStart(c, { pattern: "day" }, OWNER);
+    expect(await cancelOp(c, a.op!, "admin", "an admin")).toMatchObject({ ok: false, code: "denied" });
+  });
+  test("the guard's pass ends it when the session ends another way: its --for, a stop at the box, the box", async () => {
+    const run = (c: HandlerCtx, now: number) => reconcileLoadOps(c, now);
+    const t = ctx();
+    await applyStart(t.c, { pattern: "burst", for: "10m" }, OWNER);
+    expect(run(t.c, NOW + 5 * M)).toEqual([]);
+    expect(run(t.c, NOW + 11 * M)).toHaveLength(1);
+    expect(ops(t.c)[0]).toMatchObject({ state: "succeeded", why: "its --for ran out" });
+    const s = ctx();
+    await applyStart(s.c, { pattern: "burst" }, OWNER);
+    const { loadOff, loadFailed } = await import("../src/load.ts");
+    // The service's copies are what root reads.
+    loadOff(s.p, NOW + M, ME);
+    run(s.c, NOW + 2 * M);
+    expect(ops(s.c)[0]).toMatchObject({ state: "cancelled", why: "ended by taskbox load stop (the service account, at the box)" });
+    const f = ctx();
+    await applyStart(f.c, { pattern: "burst" }, OWNER);
+    loadFailed(f.p, NOW + M, "no runner group named taskbox-load", ME);
+    run(f.c, NOW + 2 * M);
+    expect(ops(f.c)[0]).toMatchObject({ state: "failed", why: "the box ended it: no runner group named taskbox-load" });
+  });
+  test("the pass is in the guard's list, and the type is declared once", async () => {
+    const { passMakers } = await import("../src/passes/index.ts");
+    expect(passMakers().map((m) => m.name)).toContain("load");
+    const { declOf } = await import("../src/optypes/index.ts");
+    expect(declOf("load")).toMatchObject({ who: ["owner", "service"], wayBack: "taskbox load stop ends it." });
   });
 });
 
