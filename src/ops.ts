@@ -30,6 +30,7 @@ import { adminState } from "./elevate.ts";
 import { activePull, clean as noControl, pullLine, readPull } from "./progress.ts";
 import { type Config, forKind, KIND_WORD, kindsOf, loadRepoOf, MACOS_MAX, sourceOf, vmsAtMostOf } from "./config.ts";
 import { LAST_CLASS } from "./classes.ts";
+import { readRate } from "./sourcerate.ts";
 import { timingsLine } from "./timings.ts";
 import { readJobs } from "./jobs.ts";
 import { currentSession, loadBlind, readLoad } from "./load.ts";
@@ -227,7 +228,7 @@ export async function check(c: CheckContext, d: OpsDeps, versions: Versions, jso
   }
   d.say(`Slots:      ${slotsLine(c.cfg)}`);
   d.say(`Job source: ${sourceLine(c.cfg)}`);
-  d.say(`Timings:    ${timingsLine(c.cfg, readJobs(d.paths, c.serviceUid) ?? [])}`);
+  d.say(`Timings:    ${timingsLine(c.cfg, readJobs(d.paths, c.serviceUid) ?? [], c.serviceUid === undefined ? [] : readRate(d.paths, c.serviceUid))}`);
   if (kindsOf(c.cfg).length > 1) d.say(`Linux proof: ${linuxProofLine(readLoopState(d.paths.loopState).linuxProof)}`);
   const choosing = choiceLine(readLoopState(d.paths.loopState), kindsOf(c.cfg).length);
   if (choosing) d.say(`Choosing:   ${choosing}${loopChoiceFix(readLoopState(d.paths.loopState).kindChoice)}`);

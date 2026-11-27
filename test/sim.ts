@@ -7,7 +7,8 @@
 // v221 is the rule before v2.4.0 without the queue, kept here only to compare against.
 import type { Budget, ClassRule, Kind, Timings } from "../src/config.ts";
 import { DEFAULT_TIMINGS, MACOS_MAX, runnerDefaults } from "../src/config.ts";
-import { decide, type Decision, type KindHistory, type KindView, type SlotState } from "../src/scheduler.ts";
+import { decide, type Decision, type KindHistory, type KindView, type SizeView, type SlotState } from "../src/scheduler.ts";
+import { OVER_SHARE, SUITS_SHARE } from "../src/usage.ts";
 import type { JobRecord } from "../src/jobs.ts";
 import type { WaitingItem } from "../src/source.ts";
 
@@ -195,22 +196,79 @@ export function asJobLines(runs: SimRun[], withSource: boolean, t0 = 1_800_000_0
   }));
 }
 
-// A day of the box's own jobs, from taskbox job list --all --json, as a replay: each job's kind, its
-// labels (the merge label for a job of a ranked class), when it was queued and how long it ran. Names
-// are dropped, so a saved day names none of the repo's jobs. Jobs with no queue time (no source)
-// are taken as queued when their VM was asked for.
-export function replayFromJobs(answer: { jobs: { vmKind: string | null; className: string | null; jobAt: number | null; endedAt: number | null; phases: Record<string, number> | null }[] }, labels = LABELS): { jobs: SimJob[]; bootMs: Record<Kind, number> } {
+// A day of the box's own jobs, from taskbox job list --all --json, or a load test's day session, as
+// a replay: each job's kind, its labels (the merge label for a job of a ranked class), when it was
+// queued, how long it ran, and the peak its use record holds. Names are dropped, so a saved day names
+// none of the repo's jobs. Jobs with no queue time (no source) are taken as queued when their VM was
+// asked for. With sizes, each job asks for the size its peak suits, by the size suggestions' rules.
+export interface DayJob {
+  vmKind: string | null;
+  className: string | null;
+  jobAt: number | null;
+  endedAt: number | null;
+  phases: Record<string, number> | null;
+  usage?: { memPeakMB: number; cpuPeak: number; memSpikeMB?: number } | null;
+}
+export interface ReplayJob extends SimJob {
+  peakMB?: number;
+  cpuPeak?: number;
+}
+export function replayFromJobs(answer: { jobs: DayJob[] }, labels = LABELS, kinds?: KindView[]): { jobs: ReplayJob[]; bootMs: Record<Kind, number> } {
   const rows = answer.jobs.filter((j) => j.jobAt && j.endedAt && j.phases && j.phases.jobStarted !== undefined && (j.vmKind === "macos" || j.vmKind === "linux"));
   const asked = (j: (typeof rows)[number]) => j.jobAt! - j.phases!.jobStarted!;
   const queued = (j: (typeof rows)[number]) => asked(j) + (j.phases!.queued ?? 0);
   const t0 = Math.min(...rows.map(queued));
   const boots: Record<Kind, number[]> = { macos: [], linux: [] };
-  const jobs = rows.map((j, i) => {
+  const jobs = rows.map((j, i): ReplayJob => {
     const kind = j.vmKind as Kind;
     if (j.phases!.runnerStarted !== undefined) boots[kind].push(j.phases!.runnerStarted);
     const merge = !!j.className && j.className !== "jobs";
-    return { name: `${kind}-${i}`, kind, labels: [labels[kind][merge ? 1 : 0] ?? labels[kind][0]!], queuedAt: queued(j) - t0, minutes: Math.max(0.1, ((j.phases!.jobDone ?? j.endedAt! - asked(j)) - j.phases!.jobStarted!) / 60_000), ...(merge ? { event: "merge_group" } : {}) };
+    const peakMB = j.usage ? Math.max(j.usage.memPeakMB, j.usage.memSpikeMB ?? 0) : undefined;
+    const size = peakMB !== undefined && kinds ? sizeForPeak(kinds.find((k) => k.kind === kind), peakMB, j.usage!.cpuPeak) : undefined;
+    const label = size ? (size.labels[merge ? 1 : 0] ?? size.labels[0]!) : (labels[kind][merge ? 1 : 0] ?? labels[kind][0]!);
+    return { name: `${kind}-${i}`, kind, labels: [label], queuedAt: queued(j) - t0, minutes: Math.max(0.1, ((j.phases!.jobDone ?? j.endedAt! - asked(j)) - j.phases!.jobStarted!) / 60_000), ...(merge ? { event: "merge_group" } : {}), ...(peakMB !== undefined ? { peakMB, cpuPeak: j.usage!.cpuPeak } : {}) };
   });
   const med = (xs: number[], d: number) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]! : d);
   return { jobs, bootMs: { macos: med(boots.macos, 150_000), linux: med(boots.linux, 60_000) } };
+}
+
+// The size one run's peak suits, as the size suggestions judge a job (usage.ts): past 85% of the
+// default, the next size up; else the smallest it fits within 60% of, CPUs included; else the default.
+export function sizeForPeak(k: KindView | undefined, peakMB: number, cpuPeak: number): SizeView | undefined {
+  const sizes = [...(k?.sizes ?? [])].sort((a, b) => a.memoryMB - b.memoryMB || a.cpus - b.cpus);
+  const def = sizes.find((z) => z.name === "default");
+  if (!def) return undefined;
+  if (peakMB > OVER_SHARE * def.memoryMB) return sizes.find((z) => z.memoryMB > def.memoryMB) ?? def;
+  return sizes.find((z) => z.memoryMB <= def.memoryMB && peakMB <= SUITS_SHARE * z.memoryMB && cpuPeak <= z.cpus) ?? def;
+}
+
+// One replay's outcome: how many jobs ran at once at most, and how long jobs waited.
+export interface Outcome {
+  jobs: number;
+  atOnce: number;
+  waitP90: number;
+  waitMax: number;
+  lastEnd: number;
+}
+export function outcomeOf(runs: SimRun[]): Outcome {
+  const waits = runs.map((r) => r.wait).sort((a, b) => a - b);
+  return {
+    jobs: runs.length,
+    atOnce: Math.max(0, ...runs.map((r) => runs.filter((x) => x.startedAt <= r.startedAt && x.endedAt > r.startedAt).length)),
+    waitP90: waits.length ? waits[Math.min(waits.length - 1, Math.ceil(0.9 * waits.length) - 1)]! : 0,
+    waitMax: waits.at(-1) ?? 0,
+    lastEnd: Math.max(0, ...runs.map((r) => r.endedAt)),
+  };
+}
+
+// A saved day under v2.6.0's rules (a fixed number of slots, one size, the source) and v3's (the
+// sizes each job's peak suits, packed into the VMs' budget).
+export function compareRules(answer: { jobs: DayJob[] }, v3: { kinds: KindView[]; budget: Budget; slots: number }, v260 = { slots: 2 }): { v260: Outcome; v3: Outcome } {
+  const before = replayFromJobs(answer);
+  const after = replayFromJobs(answer, LABELS, v3.kinds);
+  const strip = (jobs: ReplayJob[]): SimJob[] => jobs.map(({ peakMB: _p, cpuPeak: _c, ...j }) => j);
+  return {
+    v260: outcomeOf(simulate({ jobs: strip(before.jobs), slots: v260.slots, mode: "source", classes: MERGE, bootMs: before.bootMs }).runs),
+    v3: outcomeOf(simulate({ jobs: strip(after.jobs), slots: v3.slots, mode: "source", classes: MERGE, bootMs: after.bootMs, kinds: v3.kinds, budget: v3.budget }).runs),
+  };
 }

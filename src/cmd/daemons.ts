@@ -294,7 +294,9 @@ export const commands: CommandSpec[] = [
         // a loop before this one left stands (jobs.ts).
         const { recordQueued, startJobFiles } = await import("../jobs.ts");
         startJobFiles(p);
-        const source = recordQueued(sourceFor(cfg, reader, timingsOf(cfg).sourcePollSeconds * 1000), p);
+        // Each look's cost to GitHub's rate limit is kept for job timings (sourcerate.ts).
+        const { recordRate } = await import("../sourcerate.ts");
+        const source = recordQueued(recordRate(sourceFor(cfg, reader, timingsOf(cfg).sourcePollSeconds * 1000), reader instanceof QueueReader ? reader : undefined, p, cu), p);
         // Still under the old label: the next update writes the new LaunchAgent, and then this loop
         // restarts, once no job runs, so handOver moves it.
         const relabeled = relabelDue({ paths: p, log }, await underOldLabel({ sys, cfg }, uid, process.pid));

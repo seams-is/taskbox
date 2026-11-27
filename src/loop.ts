@@ -24,6 +24,7 @@ import { RunnerChain } from "./ghfail.ts";
 import { beatFor, RESTARTS_WINDOW_MS, staleBeat } from "./beat.ts";
 import { holdsLine } from "./sizes.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
+import { countPfStart, pfProven } from "./pfstarts.ts";
 import { readLoop } from "./watch.ts";
 import { heldOf, holdReason, isHeld, type WorkspacesNow } from "./held.ts";
 import { readKick } from "./loopwatch.ts";
@@ -737,7 +738,7 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
   }
   const hold = drainOrHold(d);
   if (hold) return hold;
-  if (readState(d).guardClosed === true && !d.cfg.vmnetPfProven && (await screenSharingOn(d.sys))) {
+  if (readState(d).guardClosed === true && !pfProven(d.cfg, readState(d)) && (await screenSharingOn(d.sys))) {
     return { key: "guard", text: "the guard's rules went missing when a VM started, so no VM starts while Screen Sharing is on" };
   }
   const mem = await (d.memory ?? (() => readMemory(d.sys)))();
@@ -1034,13 +1035,16 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // A VM start is when vmnet could reload pf. The guard reads its rules every 2 s, so by now it has
     // read them since the start; a time in missingAt after the start means they went missing then.
     const besides = (d.box?.windows ?? []).filter((w) => w.slot !== d.slot);
-    const guardAtStart = vmStartGuard(readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0), vmStartedAt, besides, vmStartedMono);
+    const guardRead = readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0);
+    const guardAtStart = vmStartGuard(guardRead, vmStartedAt, besides, vmStartedMono);
     const meUp = d.box?.held.get(d.slot);
     if (meUp) meUp.vm = vm;
     mark("guestUp");
     startDone?.(d.sys.now());
     guardSeen = guardAtStart.rulesWentMissing ? "rules went missing at start" : guardAtStart.read ? "ok" : "not read";
     writeState(d, { vmStartGuard: { ...guardAtStart, at: vmStartedAt, slot: d.slot } });
+    // Each start counts toward the box's proof that starts leave the rules alone (pfstarts.ts).
+    await countPfStart({ sys: d.sys, paths: d.paths, log: d.log, state: readState(d), write: (patch) => writeState(d, patch) }, { at: vmStartedAt, readAt: guardRead?.at, lost: guardAtStart.rulesWentMissing }, screenSharingOn);
     if (guardAtStart.rulesWentMissing) {
       d.log.write(
         guardAtStart.shared
@@ -1049,7 +1053,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
       );
       // Until a box-check job shows VM starts leave the rules alone, fail closed: no VM while
       // Screen Sharing is on, this one included.
-      if (!d.cfg.vmnetPfProven) {
+      if (!pfProven(d.cfg, readState(d))) {
         writeState(d, { guardClosed: true });
         if (await screenSharingOn(d.sys)) {
           d.log.write("VM deleted: the guard's rules went missing at its start while Screen Sharing is on");

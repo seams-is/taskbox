@@ -35,10 +35,28 @@ export const commands: CommandSpec[] = [
     },
     answer: async (c) => {
       const { statusJson } = await import("../ops.ts");
-      return v3Answer(c, (ops) => statusJson(ops, c.deps.user()));
+      const a = await v3Answer(c, (ops) => statusJson(ops, c.deps.user()));
+      if (a.v3.kind !== "status") return a;
+      // Version 4 also carries the timings line, for the controller's screen. Version 3's line stays as it was.
+      const { resultOf } = await import("../envelope.ts");
+      return { ...a, result: { ...resultOf(a.v3), timings: await timingsNow(c) } };
     },
   },
 ];
+
+// The box's timings line, as check shows it, or null when the settings or the jobs can't be read.
+async function timingsNow(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Promise<string | null> {
+  const { loadConfig } = await import("../config.ts");
+  const { readJobs } = await import("../jobs.ts");
+  const { readRate } = await import("../sourcerate.ts");
+  const { timingsLine } = await import("../timings.ts");
+  try {
+    const jobs = c.cu === undefined ? undefined : readJobs(c.p, c.cu);
+    return jobs ? timingsLine(loadConfig(c.p.app, c.p.boxSettings), jobs, readRate(c.p, c.cu!)) : null;
+  } catch {
+    return null;
+  }
+}
 
 // The screen, drawn again as the box changes. --state reads another state folder, as the service account.
 async function watchBox(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Promise<number> {
