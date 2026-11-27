@@ -10,7 +10,7 @@ import { verifyRelease } from "../release.ts";
 import { check } from "./check.ts";
 import { eventLine, readEvents } from "./events.ts";
 import { asciiJson, forward } from "./forward.ts";
-import { agentProblem, findBox, GITHUB_NAME, home, NAME, ownVersion } from "./home.ts";
+import { agentProblem, findBox, GITHUB_NAME, home, NAME, ownVersion, readConfig } from "./home.ts";
 import { readLines, serve } from "./mcp.ts";
 import { AFTER, boxRemove, boxUse, pair } from "./pair.ts";
 import { configOrStop, connectBox, type Deps, isStop, tailnetOrStop } from "./reach.ts";
@@ -43,6 +43,7 @@ export const CONTROLLER: CommandSpec[] = [
   spec(["self", "rollback"], "Back to the release kept beside the one in use."),
   spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing.", { flags: ["json"] }),
   spec(["self", "events"], "This controller's own event log: pairings, defaults, self updates.", { flags: ["since", "json"] }),
+  spec(["sign"], "Signs a draft release with this Mac's release key and publishes it, through your GitHub session. --fingerprint shows the pinned keys; --revoke a release's signer change.", { args: { name: "VERSION", min: 0, max: 1, check: (v) => /^v?\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.[1-9]\d{0,3})?$/.test(v) }, options: [{ name: "--fingerprint" }, { name: "--revoke" }, { name: "--key", value: "FILE" }, { name: "--repo", value: "OWNER/NAME", check: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(v) }] }),
   spec(["statusline"], "One line for Claude Code's status line, from the last status read."),
   spec(["mcp"], "The stdio MCP server for Claude Code.", { internal: true }),
   spec(["install"], "The first install, from install-controller.sh.", { internal: true, options: [{ name: "--from", value: "REPO" }, { name: "--bootstrap", value: "FOLDER" }] }),
@@ -183,6 +184,8 @@ export async function dispatch(d: UpdateDeps, argv: string[], io: Io): Promise<n
       else for (const l of list.length ? list.map(eventLine) : ["No events on this controller yet."]) io.out(l);
       return EXIT.ok;
     }
+    case "sign":
+      return signCommand(d, p.args[0], p.opts, io);
     case "statusline":
       // Reads status.json only: no SSH call and no Tailscale call. What Claude Code sends on stdin is ignored.
       io.out(statusLine(readSaved(d.home), d.now()));
@@ -197,6 +200,32 @@ export async function dispatch(d: UpdateDeps, argv: string[], io: Io): Promise<n
       io.out(`taskbox ${key} runs only as Claude Code starts it.`);
       return EXIT.usage;
   }
+}
+
+// taskbox sign (release/sign.ts): the repo is the one this controller updates from, unless named;
+// the key is the release key's handle in this controller's folder, unless named.
+async function signCommand(d: UpdateDeps, version: string | undefined, opts: Record<string, unknown>, io: { out(l: string): void }): Promise<number> {
+  const { existsSync, mkdirSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { fingerprints, GH, revokeTransition, sign } = await import("../release/sign.ts");
+  const { pinFile, signersIn } = await import("./update.ts");
+  if (opts.fingerprint === true) {
+    const file = existsSync(pinFile(d.home)) ? pinFile(d.home) : signersIn(join(d.home.current, "app"));
+    for (const l of existsSync(file) ? fingerprints(readFileSync(file, "utf8")) : ["  No release key is pinned on this controller."]) io.out(l);
+    return EXIT.ok;
+  }
+  if (!version) return io.out("taskbox sign takes the release's version, such as 3.0.1."), EXIT.usage;
+  const c = readConfig(d.home);
+  const repo = typeof opts.repo === "string" ? opts.repo : c.ok && c.config.source ? `${c.config.source.owner}/${c.config.source.repo}` : undefined;
+  if (!repo) return io.out("taskbox sign needs the public repo: --repo OWNER/NAME."), EXIT.usage;
+  const gh = GH.find((g) => existsSync(g));
+  if (!gh) return io.out("taskbox sign uses your own GitHub session through gh, and gh isn't installed on this Mac."), EXIT.failed;
+  const key = typeof opts.key === "string" ? opts.key : join(d.home.dir, "release-key", "id_ecdsa_sk_rk");
+  if (!existsSync(key)) return io.out(`No release key at ${key}. Name its file with --key.`), EXIT.failed;
+  const work = join(d.home.dir, "sign");
+  mkdirSync(work, { recursive: true, mode: 0o700 });
+  const sd = { run: d.run, gh, key, repo, work, ask: d.ask, out: io.out, tty: d.tty };
+  return opts.revoke === true ? revokeTransition(sd, version) : sign(sd, version.replace(/^v/, ""));
 }
 
 export function realDeps(): UpdateDeps {

@@ -230,3 +230,14 @@ describe("install records and marks", () => {
     expect(frozenLine({ ...noMarks(), checkedAt: T }, T + 7 * 24 * H)).toBe("couldn't read the releases for 7 days");
   });
 });
+
+describe("when a settings commit may apply", () => {
+  const { settingsGate } = require("../src/update/gate.ts") as typeof import("../src/update/gate.ts");
+  const at = (h: number) => Date.UTC(2026, 10, 27, h);
+  test("keys that change a job VM wait for the window, then a drain; the rest apply at once", () => {
+    expect(settingsGate({ keys: ["timings.x", "classes"], u: DEFAULT_UPDATE, now: at(12), offsetMin: 0, drained: false })).toEqual({ phase: "applying" });
+    expect(settingsGate({ keys: ["sizes"], u: DEFAULT_UPDATE, now: at(12), offsetMin: 0, drained: false })).toEqual({ phase: "waiting", until: "the update window, 02:00-05:00" });
+    expect(settingsGate({ keys: ["sizes"], u: DEFAULT_UPDATE, now: at(3), offsetMin: 0, drained: false })).toEqual({ phase: "draining" });
+    expect(settingsGate({ keys: ["image"], u: { ...DEFAULT_UPDATE, auto: false }, now: at(12), offsetMin: 0, drained: true })).toEqual({ phase: "applying" });
+  });
+});

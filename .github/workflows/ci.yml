@@ -1,6 +1,7 @@
 # taskbox's own CI: the test suite on macOS, the same suite under stress, the engine compiled to one
 # binary and run, and the typecheck on Linux, on GitHub-hosted runners.
-# A box never runs this repo's jobs. No secrets, read-only token, every action pinned by commit SHA.
+# A box never runs this repo's jobs. Read-only token, every action pinned by commit SHA, and no secret
+# but the name search's word list (NAME_SEARCH), which only that step reads.
 # Bun is fetched from its release by version and checked against its SHA-256. The macOS pin is the
 # one versions.json pins for the box (test/install.test.ts checks they match).
 
@@ -193,3 +194,51 @@ jobs:
       - run: bun --version
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+
+  # The PR check: gitleaks, pinned by SHA-256, over the change's commits, and the name search over
+  # its added lines (release/namesearch.ts). A hit fails the PR. NAME_SEARCH holds the repo's own
+  # private words, one a line; a PR from a fork has none, and the search runs on its fixed rules.
+  pr-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BUN_ZIP: bun-linux-x64
+      BUN_SHA256: bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
+      GITLEAKS_VERSION: '8.30.1'
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch and check bun and gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_ZIP}.zip"
+          echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
+          f="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/$f" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$f"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP/gitleaks" gitleaks
+      - name: gitleaks over the PR's commits
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --no-banner --redact --log-opts="$BASE..$HEAD" .
+      - name: The name search over the PR's added lines
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          NAME_SEARCH: ${{ secrets.NAME_SEARCH }}
+        run: |
+          set -euo pipefail
+          git diff --unified=0 "$BASE...$HEAD" | bun release/namesearch.ts

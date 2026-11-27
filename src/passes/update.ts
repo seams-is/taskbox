@@ -6,7 +6,8 @@ import { rmSync } from "node:fs";
 import { bootId } from "../core/boot.ts";
 import { CHILD_BUN, progressPath, reportsPath, runChild } from "../core/child.ts";
 import { eventLog } from "../core/events.ts";
-import { isObj } from "../core/rootfile.ts";
+import { isObj, readOwnedJson, writeOwnedText } from "../core/rootfile.ts";
+import { parseSignerState, settle } from "../release/signers.ts";
 import { listOps } from "../core/ops.ts";
 import type { PassMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
@@ -48,6 +49,16 @@ export const updatePass: PassMaker = {
       }
       const u = updateOf(c.cfg);
       const now = c.sys.now();
+      // A signer change past its wait, or confirmed at the box, moves the pin (release/signers.ts).
+      const sf = updateFiles(s).signers;
+      const sr = readOwnedJson(sf, { owner: root, max: 64 * 1024 }, (v) => parseSignerState(v) ?? "out of shape");
+      if (sr.kind === "ok" && sr.value.pending) {
+        const st = settle(sr.value, now);
+        if (st.said.length) {
+          writeOwnedText(sf, `${JSON.stringify(st.state)}\n`, { mode: 0o644, owner: root });
+          for (const l of st.said) events.write({ type: "update.signers", actor: "taskbox", subject: "box", text: `The box ${l}.`.slice(0, 240) });
+        }
+      }
       const marks = readMarks(updateFiles(s).marks, root);
       let installed: string;
       try {

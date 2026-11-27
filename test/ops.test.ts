@@ -150,8 +150,8 @@ describe("taskbox status", () => {
     expect(commandsFor(d, { remote: false, admin: false })).toBe(commandList());
     expect(commandList()).toBe("Commands: check, drain, image, job, load, logins, logs, op, pause, policy, prune, release, resume, rollback, settings, withdraw, size, connect, start, status, stop, template, tool, update, workspace, queue, wait, progress, deny, signed, workspaces, and as your admin user: confirm, connect, disconnect, key, remove, unlock, workspace.");
     expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: check, drain, hello, image, job, load, logins, logs, nonce, op, pause, release, resume, rollback, settings, withdraw, size, start, status, stop, template, tool, update, workspace, queue, wait, progress, deny, signed, workspaces.");
-    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, image, job, load, logins, logs, op, policy, settings, size, connect, status, template, tool, workspaces, and confirm, connect, disconnect, key, remove, rollback, unlock, update, workspace.");
-    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, image, job, load, logins, logs, op, policy, settings, size, connect, status, template, tool, workspaces.");
+    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: check, image, job, load, logins, logs, op, policy, release, settings, size, connect, status, template, tool, workspaces, and confirm, connect, disconnect, key, remove, unlock, workspace.");
+    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: check, image, job, load, logins, logs, op, policy, release, settings, size, connect, status, template, tool, workspaces.");
     expect(commandsFor(notCi, undefined)).toBe(commandList());
   });
 

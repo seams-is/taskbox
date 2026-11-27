@@ -12,6 +12,12 @@ name: build-tailscale
 
 on:
   workflow_dispatch:
+  # The release workflow runs it too, for the asset its draft carries, with attach off.
+  workflow_call:
+    inputs:
+      attach:
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -146,7 +152,7 @@ jobs:
   # taskbox release, which is a v* tag (src/github.ts).
   release:
     needs: compare
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.attach != false
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

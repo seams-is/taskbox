@@ -31,6 +31,7 @@ import { linkTarget, relink, withUpdateLock } from "../layout.ts";
 import { undo } from "../ops.ts";
 import { bare, NAMESPACE, PRINCIPAL, signerLines, SSH_KEYGEN, type Statement, signersProblem, verifyRelease, type VerifyDeps, verifySigned } from "../release.ts";
 import { meet, parseSignerState, type SignerState, TRANSITION, TRANSITION_SIG } from "../release/signers.ts";
+import { readInForce, settingsFiles } from "../settings/inforce.ts";
 import { updateOf } from "../settings/update.ts";
 import type { Sys } from "../sys.ts";
 import { listedReleases } from "./pick.ts";
@@ -206,7 +207,7 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
         cpSync(join(cur.dir, name), join(dir, name), { recursive: true, verbatimSymlinks: true, preserveTimestamps: true });
       }
       renameSync(stage.dir, join(dir, "app"));
-      const rec: InstallRecord = { v: 1, version: s.version, statement: new TextDecoder().decode(dl.statement), signature: new TextDecoder().decode(dl.signature), sha256: s.sha256, settingsCommit: null, at: d.sys.now(), by: d.actor.slice(0, 120), from: cur.version, ended: "installing" };
+      const rec: InstallRecord = { v: 1, version: s.version, statement: new TextDecoder().decode(dl.statement), signature: new TextDecoder().decode(dl.signature), sha256: s.sha256, settingsCommit: settingsCommitOf(d), at: d.sys.now(), by: d.actor.slice(0, 120), from: cur.version, ended: "installing" };
       d.chown?.(dir, root, 0);
       await run("/usr/sbin/chown", ["-R", `${root}:0`, dir]);
       await run("/bin/chmod", ["-R", "go-w", dir]);
@@ -231,7 +232,8 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
         relink(d.p.prev, basename(cur.dir));
         relink(d.p.opt, basename(to));
       });
-      await reloadDaemons(d, to);
+      // Past the links nothing throws: a daemon that doesn't reload is the rollback watcher's to judge.
+      await reloadDaemons(d, to).catch((e: Error) => d.log(`the daemons' reload failed: ${String(e?.message ?? e).slice(0, 160)}; the rollback watcher acts if the guard never starts`));
     },
     async baseline() {
       return checkRows(d);
@@ -336,11 +338,19 @@ async function reloadDaemons(d: BoxEnvDeps, to: string): Promise<void> {
   for (const x of daemons) {
     const fresh = join(to, "app/launchd", `${x.label}.plist`);
     if (!existsSync(x.plist) && x.name !== "guard") continue;
-    if (existsSync(fresh)) writeOwnedText(x.plist, readFileSync(fresh, "utf8"), { mode: 0o644, owner: root, ...(d.chown ? { chown: d.chown } : {}) });
     const job = oneShotLabel(`${x.name}-update`);
-    const ok = await reloadThroughLaunchd({ sys: d.sys, chown: d.chown ?? (() => {}), timeoutMs: 20_000, rootUid: root }, { job, target: x.label, plist: x.plist, token: join(updateFiles(d.state).dir, `${x.name}.token`), self: join(dirname(d.p.guardPlist), `${job}.plist`), waitS: 20 });
+    const ok = await (async () => {
+      if (existsSync(fresh)) writeOwnedText(x.plist, readFileSync(fresh, "utf8"), { mode: 0o644, owner: root, ...(d.chown ? { chown: d.chown } : {}) });
+      return reloadThroughLaunchd({ sys: d.sys, chown: d.chown ?? (() => {}), timeoutMs: 20_000, rootUid: root }, { job, target: x.label, plist: x.plist, token: join(updateFiles(d.state).dir, `${x.name}.token`), self: join(dirname(d.p.guardPlist), `${job}.plist`), waitS: 20 });
+    })().catch((e: Error) => (d.log(`${x.label}: ${String(e?.message ?? e).slice(0, 120)}`), false));
     if (!ok) d.log(`launchd didn't take the one-shot that reloads ${x.label}; the rollback watcher acts if it never starts`);
   }
+}
+
+// The settings commit in force (settings/inforce.ts), recorded at an install for its rollback.
+function settingsCommitOf(d: BoxEnvDeps): string | null {
+  const r = readInForce(settingsFiles(d.state.dir), d.rootUid ?? 0);
+  return r.kind === "ok" ? r.value.sha : null;
 }
 
 export const cleanWork = (s: Pick<RootState, "dir">, op: string) => {
