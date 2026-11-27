@@ -143,12 +143,12 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [cleanLine(why)], { code: "usage", message: cleanLine(why), fix: null, who: null }) };
   }
   const signed = !spec.raw && (spec.flags ?? []).includes("signed") && spec.who.includes("owner") && p.flags.signed === undefined;
-  const stream = !spec.raw && spec.streams === true && p.flags.watch === true;
+  const stream = !spec.raw && spec.streams === true && (p.flags.watch === true || p.flags.follow === true);
   if (stream && cut.sel === "all") {
-    const l = `${name} -w follows one box. Name it with --box.`;
+    const l = `${name} ${p.flags.watch === true ? "-w" : "-f"} follows one box. Name it with --box.`;
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [l], { code: "usage", message: l, fix: null, who: null }) };
   }
-  return { spec, parsed: p, sel: cut.sel, words: stream ? [...words, "-w"] : words, json, watch: !spec.raw && p.flags.watch === true && !stream, signed, stream };
+  return { spec, parsed: p, sel: cut.sel, words: stream && p.flags.watch === true ? [...words, "-w"] : words, json, watch: !spec.raw && p.flags.watch === true && !stream, signed, stream };
 }
 
 export type One = { box: Paired; stop?: Stop; envelopes?: Envelope[]; raw?: string[]; exit: number };
