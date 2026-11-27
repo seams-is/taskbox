@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { type Config, paths } from "../src/config.ts";
 import { oneJob, Slots } from "../src/loop.ts";
 import type { Proc, RunResult } from "../src/sys.ts";
+import { Evaluator } from "../src/net/rules.ts";
 import { TartEngine } from "../src/tart.ts";
 import { type BaseRecord, baseNameFor, cloneSourceOf, pinKey, readBases, writeBase } from "../src/tools/base.ts";
 import { BAKE_NET, bake, type BakeDeps } from "../src/tools/bake.ts";
@@ -129,6 +130,9 @@ class Engine implements VmEngine {
   }
   netRecord() {
     return {};
+  }
+  evaluator() {
+    return new Evaluator({ block: [], allow: [] });
   }
 }
 

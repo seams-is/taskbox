@@ -10,6 +10,7 @@ import type { UsageProbe } from "./guest.ts";
 import type { Proc, RunResult, Sys } from "./sys.ts";
 import type { UsageSample } from "./usage.ts";
 import { IMAGE_GONE } from "./imagegone.ts";
+import { Evaluator, gatewayOf } from "./net/rules.ts";
 import type { EngineKit, NetPolicy, VmEngine, VmInfo } from "./vm.ts";
 
 export interface TartVM {
@@ -251,6 +252,10 @@ export class TartEngine implements VmEngine {
   netRecord(net: NetPolicy): Record<string, unknown> {
     const r = softnetRules(net);
     return { softnetBlock: r.block, softnetAllow: r.allow };
+  }
+  // The evaluator reads softnetRules, the lists start and startBake pass Softnet, so the two can't drift.
+  evaluator(net: NetPolicy, vmIp?: string): Evaluator {
+    return new Evaluator(softnetRules(net), vmIp ? gatewayOf(vmIp) : undefined);
   }
 }
 

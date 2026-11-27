@@ -10,6 +10,8 @@ export { RELOAD_JOB, reloadPlistPath };
 import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLock } from "./layout.ts";
 import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, treeProblem } from "./checks.ts";
 import { GUARDWATCH_LABEL, guardStaleSince, watchPaths } from "./guardwatch.ts";
+import { removeNetwatch, stopBridges } from "./net/netwatch.ts";
+import { NETWATCH_LABEL } from "./net/paths.ts";
 import { sourceWords } from "./sourcefail.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
 import { checkAnswer, logAnswer, statusAnswer } from "./answers.ts";
@@ -574,6 +576,8 @@ export async function undo(d: OpsDeps, o: { yes?: boolean; keep?: string[]; lock
   const gone = await bootOutUnknown(d.sys, d.paths, o.keep ?? [...KNOWN_DAEMONS, ...ships], d.serviceUid, notEnded).catch(() => [] as string[]);
   for (const m of notEnded) d.say(`  An op job couldn't be ended: ${noControl(m).slice(0, 120)}.`);
   if (gone.length) did += ` Stopped ${gone.join(", ")}, which this install doesn't run.`;
+  // netwatch gone: so are the captures it started, which launchd would keep running.
+  if (gone.includes(NETWATCH_LABEL)) await stopBridges(d.sys, d.paths).catch(() => {});
   // Back across the label move: the kept code knows only the old labels (install.ts, labelsBack).
   const back = d.paths.previousLabelPrefix ? await labelsBack({ ...d, sys: d.sys }, d.paths.previousLabelPrefix).catch((e: Error) => `The services' names weren't put back: ${noControl(e.message).slice(0, 80)}. Type taskbox update.`) : undefined;
   if (back) did += ` ${back}`;
@@ -828,6 +832,8 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
     rmSync(watchPlist, { force: true });
     done.push("removed guardwatch, which restarted a stuck guard");
   }
+  // Network capture: netwatch, then each bridge's capture and parser it started.
+  if (await removeNetwatch(d.sys, d.paths).catch(() => false)) done.push("removed network capture");
   for (const label of [GUARD_LABEL, ...(old ? [old.guard] : [])]) await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
   // Every running op's job, booted out by its label, which ends its child and what that started:
   // launchd owns them, so no pid is signalled. A job that can't be booted out is said.

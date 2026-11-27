@@ -75,6 +75,8 @@ export async function proofTargets(sys: Sys, pub: string | string[]): Promise<Ta
   if (ts) t.push({ name: "the box's tailnet address", host: ts, ports: PROOF_PORTS });
   t.push({ name: "Tailscale's DNS address", host: "100.100.100.100", ports: [53, 80] });
   for (const p of typeof pub === "string" ? [pub] : pub) t.push({ name: "the box's public address", host: p, ports: PROOF_PORTS });
+  // Link-local, where a cloud's metadata service would answer: Softnet drops it by itself.
+  t.push({ name: "a link-local address", host: "169.254.169.254", ports: [80] });
   return t;
 }
 
@@ -101,7 +103,8 @@ export function proofScript(targets: Target[]): string {
     else for (const p of t.ports) lines.push(`timeout ${TRY_S} bash -c "</dev/tcp/${host}/${p}" 2>/dev/null; echo "T ${i} ${p} $?"`);
   });
   lines.push('getent hosts github.com >/dev/null && echo "DNS ok" || echo "DNS failed"');
-  lines.push('c=$(timeout 15 curl -s -o /dev/null -w "%{http_code}" https://github.com); echo "WEB $c"');
+  // The address curl reached too, for the rules' agreement table (net/agree.ts).
+  lines.push('c=$(timeout 15 curl -s -o /dev/null -w "%{http_code} %{remote_ip}" https://github.com); echo "WEB $c"');
   return `${lines.join("\n")}\n`;
 }
 
@@ -119,7 +122,7 @@ export function proofResult(targets: Target[], out: string): { ok: boolean; deta
   if (tries !== want) return { ok: false, detail: `the guest reported ${tries} of ${want} tries` };
   if (leaks.length) return { ok: false, detail: `a Linux VM under Softnet reached ${leaks.slice(0, 5).join(", ")}` };
   if (!/^DNS ok$/m.test(out)) return { ok: false, detail: "DNS through Softnet failed in the guest" };
-  const web = /^WEB (\d{3})$/m.exec(out)?.[1];
+  const web = /^WEB (\d{3})(?: [0-9.]*)?$/m.exec(out)?.[1];
   if (!web || web === "000") return { ok: false, detail: "the guest couldn't reach the internet" };
   const names = [...new Set(targets.map((t) => t.name))];
   return { ok: true, detail: `a Linux VM under Softnet reached none of ${names.join(", ")}, ${want} tries; DNS and the internet worked` };

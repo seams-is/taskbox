@@ -190,6 +190,11 @@ async function show(c: BoxCtx): Promise<Outcome> {
       () => isLive(j) && misses < 3,
     );
   } else for (const l of lines(j)) c.say(l);
+  // --net: the record's places with the rules' word beside each (net/attribute.ts).
+  if (c.opts.net === true) {
+    const { netDetailLines } = await import("../net/attribute.ts");
+    for (const l of j.record ? netDetailLines(j.record.net) : ["Network: the record comes once the job ends."]) c.say(l);
+  }
   for (const l of footer(await stateNow(c.ops), `Showed job ${j.id ?? j.githubJob ?? ""}.`)) c.say(l);
   return { exit: 0, result: { job: asJson(j) } };
 }
@@ -417,6 +422,7 @@ export const commands: CommandSpec[] = [
     summary: "Every field of one job, by the box's id or GitHub's.",
     who: ["anyone"],
     flags: ["json", "watch"],
+    options: [{ name: "--net" }],
     args: ID_ARG,
     check: noStream,
     shell: true,

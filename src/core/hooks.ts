@@ -5,13 +5,17 @@
 //   with a reason: the loop starts nothing, deletes the runner, and logs the reason. A hook that
 //   throws holds the start too, so a hook that can't tell never lets a VM start unwatched.
 // - jobStarted: when the runner takes a job (its "Running job" line). The loop doesn't wait for it,
-//   and a hook that throws is logged.
+//   and a hook that throws is logged. note puts one short line under the slot in status.
+// - runnerEnded: once the runner is done and before the VM stops, for a VM whose guest answered. A
+//   hook may read the guest once, within HOOK_MS. What the guest says is the job's word, since the job
+//   had root in it. A hook that throws is logged.
 // - afterEnd: once the VM is stopped and deleted, for every start beforeStart let through, whatever
 //   the outcome. A hook may add fields to the job's line in jobs.jsonl; the loop's own fields win.
 //   A hook that throws is logged; the job's line and the cleanup never wait on it.
 import type { Config, Kind, Paths } from "../config.ts";
 import type { Log } from "../log.ts";
-import type { Sys } from "../sys.ts";
+import type { RunResult, Sys } from "../sys.ts";
+import type { NetPolicy } from "../vm.ts";
 import { badKey } from "./rootfile.ts";
 
 // How long the loop waits for one hook's afterEnd: it runs in the job's cleanup.
@@ -38,6 +42,17 @@ export interface JobStart {
   labels: string[];
   role?: string; // "load" for the load test's VMs
   className?: string;
+  net?: NetPolicy; // what the VM may reach, as the loop gives it to the engine
+}
+
+// The VM's guest while it is up: its address, and one fixed command in it.
+export interface GuestAccess {
+  ip(): Promise<string>;
+  exec(cmd: string[], timeoutMs: number): Promise<RunResult>;
+}
+
+export interface JobRunEnd extends JobStart {
+  guest: GuestAccess;
 }
 
 export interface JobEnd extends JobStart {
@@ -49,12 +64,15 @@ export interface JobEnd extends JobStart {
 export interface JobRunning extends JobStart {
   at: number; // when the runner took it
   name: string; // the runner's name for the job: the job's own text, cleaned
+  guest?: GuestAccess;
+  note?: (text: string) => void; // one short line under the slot in status, or "" for none
 }
 
 export interface JobHook {
   name: string;
   beforeStart?(d: HookDeps, j: JobStart): Promise<{ hold: string } | undefined>;
   jobStarted?(d: HookDeps, j: JobRunning): Promise<void>;
+  runnerEnded?(d: HookDeps, j: JobRunEnd): Promise<void>;
   afterEnd?(d: HookDeps, j: JobEnd): Promise<Record<string, unknown> | undefined>;
 }
 
@@ -79,6 +97,20 @@ export function jobStarted(hooks: readonly JobHook[], d: HookDeps, j: JobRunning
     void Promise.resolve()
       .then(() => h.jobStarted!(d, j))
       .catch((e) => d.log.write(`slot ${j.slot}: ${h.name} at the job's start: ${String((e as Error)?.message ?? e).replace(/[^\x20-\x7e]/g, " ").slice(0, 120)}`));
+  }
+}
+
+// Each hook reads the guest once, in hook order, each within HOOK_MS. Nothing they throw reaches the loop.
+export async function runnerEnded(hooks: readonly JobHook[], d: HookDeps, j: JobRunEnd): Promise<void> {
+  for (const h of hooks) {
+    if (!h.runnerEnded) continue;
+    try {
+      let cancel = () => {};
+      const limit = new Promise<never>((_, no) => (cancel = d.sys.after(HOOK_MS, () => no(new Error(`no answer in ${HOOK_MS / 1000} s`)))));
+      await Promise.race([h.runnerEnded(d, j), limit]).finally(() => cancel());
+    } catch (e) {
+      d.log.write(`slot ${j.slot}: ${h.name} at the runner's end: ${String((e as Error)?.message ?? e).replace(/[^\x20-\x7e]/g, " ").slice(0, 120)}`);
+    }
   }
 }
 

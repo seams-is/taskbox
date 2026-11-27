@@ -80,6 +80,7 @@ describe("the targets", () => {
       ["the box's tailnet address", "100.101.102.103"],
       ["Tailscale's DNS address", "100.100.100.100"],
       ["the box's public address", "203.0.113.7"],
+      ["a link-local address", "169.254.169.254"],
     ]);
     expect(t[0]!.ports).toEqual(PROOF_PORTS);
     expect(PROOF_PORTS).not.toContain(53);
@@ -285,15 +286,15 @@ describe("one job VM can't reach another", () => {
   });
 
   test("an answer or a refusal from the other VM fails the proof", async () => {
-    // The six fixed targets come first (bridge, LAN, router, tailnet, Tailscale's DNS, public), so the other VM is 6.
-    const { r } = await withPeer((l) => (l.includes('"T 6 22 ') ? "1" : "124"));
+    // The seven fixed targets come first (bridge, LAN, router, tailnet, Tailscale's DNS, public, link-local), so the other VM is 7.
+    const { r } = await withPeer((l) => (l.includes('"T 7 22 ') ? "1" : "124"));
     expect(r.ok).toBe(false);
     expect(r.detail).toBe("a Linux VM under Softnet reached another job VM port 22 refused");
   });
 
   test("no route to the other VM is blocked, as Softnet dropping it shows; no route anywhere else still fails", async () => {
     const { NO_ROUTE } = await import("../src/proof.ts");
-    const peer = await withPeer((l) => (l.includes('"T 6 ') ? String(NO_ROUTE) : "124"));
+    const peer = await withPeer((l) => (l.includes('"T 7 ') ? String(NO_ROUTE) : "124"));
     expect(peer.r.ok).toBe(true);
     const lan = await withPeer((l) => (l.includes('"T 1 22 ') ? String(NO_ROUTE) : "124"));
     expect(lan.r.ok).toBe(false);

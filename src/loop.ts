@@ -10,11 +10,13 @@ import { rows } from "./rows/index.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import { eventLog } from "./core/events.ts";
 import { loopState, rootStateOf } from "./core/paths.ts";
-import { afterEnd, beforeStart, type JobHook, jobStarted, type TokenSource, withHookFields } from "./core/hooks.ts";
+import { afterEnd, beforeStart, type GuestAccess, type JobHook, jobStarted, runnerEnded, type TokenSource, withHookFields } from "./core/hooks.ts";
 import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
 import { AGENT_LABEL, awayOf, budgetOf, DEFAULT_SIZE, keepsOf, forKind, forSize, sizeOf, sizesOf, sizeWord, smallestSize, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf, vmsAtMostOf } from "./config.ts";
 import { guestOf } from "./guest.ts";
+import { recordAgreement } from "./net/agree.ts";
+import { verdictWords } from "./net/words.ts";
 import { installedCommit, peerTargets, PROOF_RETRY_MS, proofHolds, proofResult, proofScript, proofTargets, readProof, writeProof } from "./proof.ts";
 import { type KindChooser, type Occupant, QUEUE_POLL_MS, schedule, type Turn } from "./kinds.ts";
 import type { KindHistory } from "./scheduler.ts";
@@ -527,7 +529,7 @@ export async function ensureImage(d: LoopDeps, stopIf: () => boolean | string = 
 
 // Each slot's own fields (v2.2.0) go under slots, by slot number. The top-level copies are the
 // busiest slot's, so a reader from before v2.2.0 still reads one slot.
-export const SLOT_KEYS = ["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "runner", "registeredAt", "waitingFor", "labels", "why", "beat"];
+export const SLOT_KEYS = ["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "runner", "registeredAt", "waitingFor", "labels", "why", "beat", "net"];
 // Busiest first: a job running anywhere is what the box is doing.
 // A slot that waits for memory while another has a VM up shows that VM: the box is ready.
 const SLOT_ORDER = ["running a job", "checks failed", "no public address", "proving Linux", "starting a VM", "waiting for a job", "waiting", "cleaning up", "idle"];
@@ -833,6 +835,8 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
     const r = await t.exec(vm, ["/bin/bash", "-s"], proofScript(targets), 600_000);
     if (r.code !== 0) return { ok: false, detail: `the proof script ended with exit ${r.code}` };
     const res = proofResult(targets, r.stdout);
+    // The rules evaluator beside what the guest met, for the "Network rules" row (net/agree.ts).
+    recordAgreement(d, t.evaluator(net), verdictWords(net), targets, r.stdout);
     // With more than one slot, a pass says when it tried no other job VM.
     const none = d.box && d.box.count > 1 && !peerList.length && res.ok ? "; no other job VM was up to try" : "";
     return { ...res, detail: `${res.detail}${none}`, peers: peerList.length };
@@ -1018,8 +1022,10 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   let from: Awaited<ReturnType<typeof cloneSource>> = { source: d.cfg.image };
   // Set once every hook let this start through, so each hook hears of its end (core/hooks.ts).
   const hooks = d.hooks ?? jobHooks();
-  const hookJob = { slot: d.slot, kind, vm, labels, ...(turn.role ? { role: turn.role } : {}), ...(turn.className ? { className: turn.className } : {}) };
+  const hookJob = { slot: d.slot, kind, vm, labels, ...(turn.role ? { role: turn.role } : {}), ...(turn.className ? { className: turn.className } : {}), net };
   let hooked = false;
+  // The guest while it is up, for the hooks: set once it answered, so a hook reads only a guest that did.
+  let guestUp: GuestAccess | undefined;
   try {
     const hold = await beforeStart(hooks, d, hookJob);
     if (hold) {
@@ -1070,6 +1076,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     const meUp = d.box?.held.get(d.slot);
     if (meUp) meUp.vm = vm;
     mark("guestUp");
+    guestUp = { ip: () => t.ip(vm), exec: (cmd: string[], ms: number) => t.exec(vm, cmd, undefined, ms) };
     startDone?.(d.sys.now());
     guardSeen = guardAtStart.rulesWentMissing ? "rules went missing at start" : guardAtStart.read ? "ok" : "not read";
     writeState(d, { vmStartGuard: { ...guardAtStart, at: vmStartedAt, slot: d.slot } });
@@ -1192,7 +1199,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
         }
         d.box?.jobStarted(kind, started, labels);
         jobName = clean(m[1]!).slice(0, 120);
-        jobStarted(hooks, d, { ...hookJob, at: started, name: jobName });
+        jobStarted(hooks, d, { ...hookJob, at: started, name: jobName, ...(guestUp ? { guest: guestUp } : {}), note: (text) => writeState(d, { net: text ? clean(text).slice(0, 80) : undefined }) });
         const me = d.box?.held.get(d.slot);
         if (me) me.job = true;
         writeState(d, { why: undefined, slot: "running a job", job: clean(m[1]!).slice(0, 120), slotAt: started, vmSize: `${sizeWord(kind, turn.size)}, ${d.cfg.vmCpus} CPUs, ${d.cfg.vmMemoryMB / 1024} GB`, beside });
@@ -1385,8 +1392,10 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     let deleted = { code: -1 };
     // Each on its own: a state file it can't write, such as on a disk this VM filled, never skips the delete.
     try {
-      writeState(d, { slot: "cleaning up", slotAt: d.sys.now(), vmSize: undefined, beside: undefined });
+      writeState(d, { slot: "cleaning up", slotAt: d.sys.now(), vmSize: undefined, beside: undefined, net: undefined });
     } catch {}
+    // The hooks read the guest once before it stops (core/hooks.ts).
+    if (hooked && guestUp) await runnerEnded(hooks, d, { ...hookJob, guest: guestUp }).catch(() => {});
     const stopDone = d.box?.window(d.slot, "stop", d.sys.now());
     try {
       await t.stop(vm, 30);

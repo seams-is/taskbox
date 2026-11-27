@@ -716,7 +716,9 @@ describe("the rollback watcher and undo", () => {
 
   test("only a tag that says v2 drops guardwatch; a missing or unreadable tag keeps it, so the guard stays watched", async () => {
     const { laterDaemons } = await import("../src/hop.ts");
-    for (const t of ["v3.0.0-rc.1", "v4.0.0", undefined, "", 3, "3.0.0", "taskbox"]) expect(laterDaemons(t)).toEqual(["local.taskbox.guardwatch"]);
+    for (const t of [undefined, "", 3, "3.0.0", "taskbox"]) expect(laterDaemons(t)).toEqual(["local.taskbox.guardwatch"]);
+    // netwatch only with a tag that says v3 or later: an older install has no netwatch to run.
+    for (const t of ["v3.0.0-rc.1", "v4.0.0"]) expect(laterDaemons(t)).toEqual(["local.taskbox.guardwatch", "local.taskbox.netwatch"]);
     for (const t of ["v2.6.1", "v2.0.0"]) expect(laterDaemons(t)).toEqual([]);
   });
 

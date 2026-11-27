@@ -11,6 +11,10 @@
     "reads": 3,
     "why": "a progress record's updatedAt and its rate: display"
   },
+  "rows/net.ts": {
+    "reads": 1,
+    "why": "whether netwatch's record is fresh, for the Network diagnostics row only"
+  },
   "watch.ts": {
     "reads": 1,
     "why": "the watch screen's now: display"
@@ -74,6 +78,22 @@
   "ops.ts": {
     "reads": 21,
     "why": "screens and log reads, the undo's lock time, a pin's label, the hourly line for an unreadable watch, and the rollback watch's wall time: decideWatch uses it only for a watch with no mono count (v2.6.1's, or a clock it can't read), capped at 3 h. Remove's op record takes its start, end and phase times from it, for people to read; no deadline or lapse rests on them. A stale or stopped remove's end time, and the update lock's note of when remove took it, too."
+  },
+  "hooks/net.ts": {
+    "reads": 4,
+    "why": "network diagnostics: the netwatch record's age, a job's window end and the detail files' age; nothing but a diagnostics file past keepDays is removed on it"
+  },
+  "net/agree.ts": {
+    "reads": 1,
+    "why": "when the selftest compared taskbox's rules with Softnet: the row's time label"
+  },
+  "net/netparse.ts": {
+    "reads": 4,
+    "why": "netparse's hello and beat lines and its pruning: only its own rings past keepDays go on it"
+  },
+  "net/netwatch.ts": {
+    "reads": 1,
+    "why": "netwatch's tick: its record's age, the day's gap count and how old the pf reading is; nothing is removed or accepted on it"
   },
   "install.ts": {
     "reads": 6,

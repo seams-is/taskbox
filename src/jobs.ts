@@ -3,6 +3,7 @@
 // user, so the owner and agents can read it as remote too. Nothing leaves the box.
 // A job controls its own name and the runner's lines, so every text field is cleaned when written
 // and again when shown. Times, numbers and results come from the loop.
+import { netLine } from "./net/attribute.ts";
 import { type JobUsage, usageLine, validUsage } from "./usage.ts";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -63,6 +64,7 @@ export interface JobRecord {
   reason?: FailReason;
   stoppedBy?: string;
   tools?: string; // the tool cache's generation the VM's base carried (tools/), short
+  net?: unknown; // v3: the job's network record (net/attribute.ts), read through netLine
 }
 
 // The runner's own word for a job's end, from "Job <name> completed with result: <Result>".
@@ -243,6 +245,8 @@ export function jobLines(r: JobRecord, repoWidth = 16): string[] {
   const slot = r.slot ? ` Slot ${r.slot}.` : "";
   if (size || pressure || waited || slot) out.push(`${" ".repeat(14)}${size ? `${size}${beside}.` : ""}${slot}${pressure}${waited}`.replace(/^(\s+) /, "$1"));
   if (r.usage) out.push(`${" ".repeat(14)}${usageLine(r.usage)}`);
+  const net = netLine(r.net);
+  if (net) out.push(`${" ".repeat(14)}${net}`);
   const p = r.phases;
   if (p && p.runnerStarted !== undefined) {
     const s = (ms?: number) => {

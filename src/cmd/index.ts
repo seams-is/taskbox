@@ -21,6 +21,7 @@ import * as key from "./key.ts";
 import * as load from "./load.ts";
 import * as logins from "./logins.ts";
 import * as logs from "./logs.ts";
+import * as netwatch from "./netwatch.ts";
 import * as nonce from "./nonce.ts";
 import * as op from "./op.ts";
 import * as pause from "./pause.ts";
@@ -55,6 +56,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "load.ts", module: load },
   { file: "logins.ts", module: logins },
   { file: "logs.ts", module: logs },
+  { file: "netwatch.ts", module: netwatch },
   { file: "nonce.ts", module: nonce },
   { file: "op.ts", module: op },
   { file: "pause.ts", module: pause },
