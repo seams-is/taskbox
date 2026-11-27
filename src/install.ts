@@ -629,6 +629,50 @@ function freeBytes(path: string): number | undefined {
   }
 }
 
+// A box installed under an earlier label prefix runs its services under those names. The guard and
+// tailscaled run as root: they are booted out here, before the new ones load. If either is still
+// loaded after that, two tailscaleds would fight over one socket, so nothing new is loaded: any old
+// daemon that did stop is loaded again from its file, every old file is kept, and the update stops. The move from v2.6.1 (migrate/box.ts) runs it for v2's earlier prefix.
+// Once both are gone, their files go. The loop runs in the service's login session, maybe with a job: only its
+// file is removed here, so the next login loads the new one. A loop that is running sees the new
+// LaunchAgent in place and restarts as for an update, once no job runs; then it moves to the new name
+// (loop.ts, relabelDue and handOver).
+export async function retirePrevious(d: Pick<InstallDeps, "sys" | "paths" | "say">, prefix: string): Promise<void> {
+  const old = previousLabels(prefix);
+  const daemons = dirname(d.paths.guardPlist);
+  const pairs = [[old.guard, "the guard"], [old.tailscaled, "tailscaled"]] as const;
+  const loaded = async (label: string) => (await d.sys.run("/bin/launchctl", ["print", `system/${label}`], { timeoutMs: LAUNCHCTL_MS })).code === 0;
+  const was: string[] = [];
+  for (const [label] of pairs) {
+    if (await loaded(label)) was.push(label);
+    await d.sys.run("/bin/launchctl", ["bootout", `system/${label}`], { timeoutMs: LAUNCHCTL_MS });
+  }
+  const stuck: string[] = [];
+  for (const [label, what] of pairs) if (!(await gone(d.sys, `system/${label}`))) stuck.push(what);
+  if (stuck.length) {
+    for (const [label] of pairs) {
+      const file = join(daemons, `${label}.plist`);
+      if (was.includes(label) && !(await loaded(label)) && existsSync(file)) await d.sys.run("/bin/launchctl", ["bootstrap", "system", file], { timeoutMs: LAUNCHCTL_MS });
+    }
+    throw new Stop(`${stuck.join(" and ")} under the old name didn't stop, so the services keep their old names and nothing new was loaded. Type taskbox update again; if it says this twice, restart the Mac, then type taskbox update.`, true);
+  }
+  // Each new plist is written right before its old one goes, so a power cut here leaves one of the
+  // two on disk for every service, never none: the box starts it at boot, and the next update
+  // finishes. The install writes the new ones again later, the same bytes.
+  const app = join(d.paths.app, "launchd");
+  for (const [now, then, file] of [
+    [GUARD_LABEL, old.guard, d.paths.guardPlist],
+    [TAILSCALED_LABEL, old.tailscaled, d.paths.tailscaledPlist],
+    [AGENT_LABEL, old.loop, d.paths.agentPlist],
+  ] as const) {
+    if (existsSync(join(app, `${now}.plist`))) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, plist(readFileSync(join(app, `${now}.plist`), "utf8")), { mode: 0o644 });
+    }
+    rmSync(join(dirname(file), `${then}.plist`), { force: true });
+  }
+}
+
 // taskbox rollback to an install from before the label move: that install's code knows only the old
 // labels, so its services go back under them. The new guard and tailscaled are booted out, then the
 // old ones loaded from the kept install's own plists, one at a time, so two never run at once. The
