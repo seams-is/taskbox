@@ -210,8 +210,8 @@ describe("agent shell", () => {
     expect((await runLine(d as never, ["agent", "shell", "x"])).code).toBe(2);
   }, CEILING);
 
-  test("deny rules: each account's ssh forms, accounts named once", () => {
-    expect(denyRules(["remote", "remote", "bad name"])).toEqual(["Bash(*ssh *remote@*)", "Bash(*ssh *-l remote*)", "Bash(*ssh *-lremote*)", "Bash(*ssh *User=remote*)", "Bash(*tailscale ssh *remote@*)"]);
+  test("deny rules: each account's ssh forms, accounts named once, and the workspace accounts", () => {
+    expect(denyRules(["remote", "remote", "bad name"])).toEqual(["Bash(*ssh *remote@*)", "Bash(*ssh *-l remote*)", "Bash(*ssh *-lremote*)", "Bash(*ssh *User=remote*)", "Bash(*tailscale ssh *remote@*)", "Bash(*ssh *taskbox-ws*@*)", "Bash(*ssh *-l taskbox-ws*)", "Bash(*ssh *-ltaskbox-ws*)", "Bash(*ssh *User=taskbox-ws*)", "Bash(*tailscale ssh *taskbox-ws*@*)"]);
     void readFileSync;
   });
 });

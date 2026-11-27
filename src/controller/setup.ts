@@ -2,6 +2,7 @@
 // is theirs alone, with their own GitHub and Claude Code sign-ins. Your user has no access to the
 // folder: their work reaches you through PRs, in your own clones, so nothing they write runs as you.
 // Each step says whether it is done; a re-run resumes at the first that isn't. self check reads them.
+import { DEFAULT_POOL } from "../access.ts";
 import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ACCOUNT, GH_LOGIN, type Home, readConfig, REPO, writeConfig } from "./home.ts";
@@ -123,13 +124,16 @@ const ownerGh = (_d: SetupDeps, gh: string, args: string[]) => [gh, ...args];
 const isTaskboxRepo = (r: string, src: { owner: string; repo: string } | null | undefined) => !!src && r.toLowerCase() === `${src.owner}/${src.repo}`.toLowerCase();
 
 // The deny rules in the agents user's Claude Code settings: no shell reaching a box's agent account
-// by ssh behind taskbox's back, for each paired box's account.
+// or a workspace account by ssh behind taskbox's back, for each paired box's account. Advisory only.
 export function denyRules(accounts: string[]): string[] {
   const out: string[] = [];
   for (const a of [...new Set(accounts)].sort()) {
     if (!ACCOUNT.test(a)) continue;
     out.push(`Bash(*ssh *${a}@*)`, `Bash(*ssh *-l ${a}*)`, `Bash(*ssh *-l${a}*)`, `Bash(*ssh *User=${a}*)`, `Bash(*tailscale ssh *${a}@*)`);
   }
+  // The workspace accounts too, by the default pool's name with any number after it.
+  const w = DEFAULT_POOL;
+  out.push(`Bash(*ssh *${w}*@*)`, `Bash(*ssh *-l ${w}*)`, `Bash(*ssh *-l${w}*)`, `Bash(*ssh *User=${w}*)`, `Bash(*tailscale ssh *${w}*@*)`);
   return out;
 }
 const accounts = (d: SetupDeps) => {
