@@ -2,12 +2,13 @@
 // or write its own state, so the guard says so in root's event log, once until the account is back.
 // The "Service account" row fails meanwhile. By the one writer only.
 import { eventLog } from "../core/events.ts";
-import { everyPass, type PassMaker } from "../core/passes.ts";
+import { everyPass, type PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { GUARD_FULL_MS } from "../guard.ts";
 
-export const accountsPass: PassMaker = {
+export const accountsPass: PlacedMaker = {
   name: "accounts",
+  order: 700,
   make(c) {
     if (!c.writer) return undefined;
     const events = eventLog("guard", { dir: rootStateOf(c.p).events, owner: c.rootUid ?? 0 }, c.sys);

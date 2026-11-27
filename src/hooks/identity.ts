@@ -3,7 +3,7 @@
 // and records who stopped it. The tie is GitHub's word: the job whose runner_name is this VM's runner.
 // A job can't change that name, so it can't claim another job's ids.
 import { loadRepoOf } from "../config.ts";
-import type { HookDeps, JobEnd, JobHook, JobRunning } from "../core/hooks.ts";
+import type { HookDeps, JobEnd, JobRunning, PlacedHook } from "../core/hooks.ts";
 import { eventLog } from "../core/events.ts";
 import { loopState } from "../core/paths.ts";
 import { clean } from "../progress.ts";
@@ -179,8 +179,9 @@ async function keepLog(d: HookDeps, id: string, repo: string, githubJob: number)
   d.log.write(`GitHub's log for job ${id} wasn't kept: ${missing}`);
 }
 
-export const identityHook: JobHook = {
+export const identityHook: PlacedHook = {
   name: "the job's identity",
+  order: 100,
 
   async jobStarted(d: HookDeps, j: JobRunning) {
     const id = jobOfVm(j.vm);
