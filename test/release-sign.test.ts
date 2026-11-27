@@ -31,7 +31,7 @@ function tree(pin: string, extra: Record<string, string> = {}) {
   return { tgz: new Uint8Array(readFileSync(join(dir, "t.tgz"))), tree: gitTreeSha(top) };
 }
 
-type Gh = { pr?: Record<string, unknown>; compare?: string; runs?: Record<string, unknown>[]; latest?: { list: string } | "none"; moved?: string; list?: string | null };
+type Gh = { pr?: Record<string, unknown>; compare?: string; runs?: readonly Record<string, unknown>[]; latest?: { list: string } | "none"; moved?: string; list?: string | null };
 function world(o: { draft?: boolean; commit?: string; treeOverride?: string; answer?: string; signer?: ReturnType<typeof keyPair>; extra?: Record<string, string>; gh?: Gh; tty?: boolean } = {}) {
   const key = keyPair();
   const t = tree(key.line, o.extra);

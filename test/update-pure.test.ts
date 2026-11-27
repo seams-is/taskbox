@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { begin } from "../src/core/ops.ts";
 import { opType } from "../src/optypes/index.ts";
 import { signerFingerprint, statementText } from "../src/release.ts";
+import { listProblem, takeList } from "../src/release/revokes.ts";
 import { ADD_WAIT_MS, changeOf, confirm, meet, parseRevoke, parseTransition, revoke, settle, shaOf, type SignerState } from "../src/release/signers.ts";
 import { checkUpdate, DEFAULT_UPDATE, inWindow, updateOf } from "../src/settings/update.ts";
 import { autoStep } from "../src/update/auto.ts";
@@ -149,14 +150,19 @@ describe("release signer changes", () => {
   const transition = (old: ReturnType<typeof keyPair>[], next: ReturnType<typeof keyPair>[]) => `${JSON.stringify({ v: 1, type: "signers", old: old.map(fp).sort(), new: next.map((k) => k.line.trim()), fromVersion: "3.0.4" })}\n`;
   const pinned = (...ks: ReturnType<typeof keyPair>[]) => ks.map((k) => k.line).join("");
   const s0: SignerState = { v: 1, pinned: pinned(a) };
+  // A read of the revoke list at `at` that found no revoke of the change.
+  const readAt = (st: SignerState, at: number): SignerState => takeList(st, { v: 1, type: "revokes", transitions: [] }, fp(a), at).state;
 
   test("an add waits 7 days, then the pin moves", () => {
     const t = transition([a], [a, b]);
     const m = meet(s0, t, "3.0.4", T);
     if ("why" in m) throw new Error(m.why);
-    expect(m.said).toBe(`release signers change: adds ${fp(b)} (waits 7 days)`);
-    expect(settle(m.state, T + ADD_WAIT_MS - 1).state.pinned).toBe(s0.pinned);
-    const done = settle(m.state, T + ADD_WAIT_MS);
+    expect(m.said).toBe(`release signers change: adds ${fp(b)} (waits 7 days, then for a read of the revoke list)`);
+    expect(settle(readAt(m.state, T + ADD_WAIT_MS - 1), T + ADD_WAIT_MS - 1).state.pinned).toBe(s0.pinned);
+    // Past the 7 days, the add waits for a read of the revoke list after them, and for no failed read since.
+    expect(settle(readAt(m.state, T + ADD_WAIT_MS - 1), T + ADD_WAIT_MS).state.pinned).toBe(s0.pinned);
+    expect(settle(listProblem(readAt(m.state, T + ADD_WAIT_MS), "v3.0.4's revoke list can't be read"), T + ADD_WAIT_MS).state.pinned).toBe(s0.pinned);
+    const done = settle(readAt(m.state, T + ADD_WAIT_MS), T + ADD_WAIT_MS);
     expect(done.state.pending).toBeUndefined();
     expect(done.state.pinned.trim().split("\n").map((l) => signerFingerprint(l))).toEqual([fp(a), fp(b)]);
     // The same transition met again changes nothing.
@@ -173,6 +179,10 @@ describe("release signer changes", () => {
     if ("why" in ok) throw new Error(ok.why);
     expect(ok.state.pending).toBeUndefined();
     expect(settle(ok.state, T + ADD_WAIT_MS).state.pinned).toBe(s0.pinned);
+    // A revoke list names it: by a kept key it is dropped; by the thief's, it isn't, and it isn't a good read.
+    const listed = { v: 1 as const, type: "revokes" as const, transitions: [shaOf(t)] };
+    expect(takeList(m.state, listed, fp(a), T).state.pending).toBeUndefined();
+    expect(takeList(m.state, listed, fp(thief), T + ADD_WAIT_MS).state.pending?.revokeReadAt).toBeUndefined();
     // A revoked transition is never taken again.
     expect(meet(ok.state, t, "3.0.5", T)).toEqual({ why: "it carries a signer transition that was revoked" });
   });
@@ -187,7 +197,7 @@ describe("release signer changes", () => {
     if (typeof c === "string") throw new Error(c);
     const early = settle(c, T + 2);
     expect(early.state.pinned.trim().split("\n").map((l) => signerFingerprint(l))).toEqual([fp(a)]);
-    const late = settle(early.state, T + ADD_WAIT_MS);
+    const late = settle(readAt(early.state, T + ADD_WAIT_MS), T + ADD_WAIT_MS);
     expect(late.state.pending).toBeUndefined();
     expect(late.state.pinned.trim().split("\n").map((l) => signerFingerprint(l))).toEqual([fp(a), fp(thief)]);
   });
@@ -203,7 +213,7 @@ describe("release signer changes", () => {
     const c = confirm(m.state, m.state.pending!.sha, T);
     if (typeof c === "string") throw new Error(c);
     expect(settle(c, T + 1).state.pinned).toBe(s0.pinned);
-    expect(settle(c, T + ADD_WAIT_MS).state.pinned.trim()).toBe(b.line.trim());
+    expect(settle(readAt(c, T + ADD_WAIT_MS), T + ADD_WAIT_MS).state.pinned.trim()).toBe(b.line.trim());
     expect(meet(m.state, transition([a], [a, thief]), "3.0.5", T)).toEqual({ why: "another signer change is waiting at this box" });
   });
 });
