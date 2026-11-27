@@ -423,7 +423,7 @@ describe("the owner's signed requests", () => {
     const { contractProblem } = await import("../src/core/dispatch.ts");
     const { registry } = await import("../src/registry.ts");
     expect(contractProblem(registry(), requestHandlers())).toBeUndefined();
-    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "key.add", "key.rotate", "load.start", "load.stop", "op.cancel", "pause", "resume", "settings.apply", "settings.repo", "start", "stop", "withdraw", "workspace.approve", "workspace.clear", "workspace.end", "workspace.jump", "workspace.pause", "workspace.resume", "workspace.rule.add", "workspace.rule.delete", "workspace.rush"]);
+    expect(requestHandlers().signed.map((h) => h.action).sort()).toEqual(["drain", "key.add", "key.rotate", "load.start", "load.stop", "op.cancel", "pause", "resume", "rollback", "settings.apply", "settings.repo", "start", "stop", "update", "withdraw", "workspace.approve", "workspace.clear", "workspace.end", "workspace.jump", "workspace.pause", "workspace.resume", "workspace.rule.add", "workspace.rule.delete", "workspace.rush"]);
   });
 });
 
@@ -824,5 +824,28 @@ describe("the review's other fixes", () => {
     expect(readdirSync(dir).sort()[0]).toBe(`rq_01J${String(5).padStart(23, "0")}.json`);
   });
 
-  test.todo("start is refused while an update is past its drain, naming the update (scenario 9, with the releases package)");
+  test("start is refused while an update is past its drain, naming the update (scenario 9); during its drain, resume cancels it", async () => {
+    const b = await box();
+    await b.send("stop");
+    b.loop({ controlEmpty: (b.control() as { gen: number }).gen });
+    await b.job();
+    expect(b.control()).toMatchObject({ availability: "stopped" });
+    mkdirSync(b.s.ops, { recursive: true });
+    const u = begin([], opType("update"), { subject: "box", params: { to: "3.0.1" }, actor: "an admin" }, T);
+    if (u.kind !== "start") throw new Error("no update");
+    const ops = { dir: b.s.ops, owner: me };
+    writeOp(ops, { ...u.op, phase: "installing" });
+    for (const a of ["start", "resume"] as const) {
+      const r = await b.send(a);
+      expect(r).toMatchObject({ ok: false, code: "busy", said: expect.stringContaining(`the update ${u.op.id}, which is installing`) });
+    }
+    expect(b.control()).toMatchObject({ availability: "stopped" });
+    // The update's own resume, once it is installed, is its own.
+    const own = await changeControl({ sys: b.sys, state: b.s, rootUid: me, events: eventLog("guard", { dir: b.s.events, owner: me }, b.sys), log: () => {} }, { kind: "start", actor: `update ${u.op.id}` });
+    expect(own).toMatchObject({ ok: true });
+    // Back in its drain, a start or a resume isn't held: it ends the drain, which the update reads as cancelled.
+    writeOp(ops, { ...u.op, phase: "draining" });
+    await b.send("drain");
+    expect(await b.send("resume")).toMatchObject({ ok: true });
+  });
 });

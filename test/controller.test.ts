@@ -109,7 +109,7 @@ describe("one ssh function", () => {
     await expect(call({ ...t, address: "taskbox-1" }, "hello")).rejects.toThrow();
     await expect(call({ ...t, node: "-oProxyCommand=x" }, "hello")).rejects.toThrow();
     // Only a line this release's agent shell would run, or one of v2.6.1's reads.
-    for (const line of ["hello; id", "update", "prune", "unlock", "remove -y", "confirm", "status --json --box `id`"]) await expect(call(t, line)).rejects.toThrow();
+    for (const line of ["hello; id", "install", "prune", "unlock", "remove -y", "confirm", "status --json --box `id`"]) await expect(call(t, line)).rejects.toThrow();
     await expect(call({ ...t, user: "-oProxyCommand=x" }, "hello")).rejects.toThrow();
     expect(w.calls).toEqual([]);
     for (const line of ["hello", "status --json", "log --json", "check --json", "jobs 200 --json", "hello --json --answers 4,3", "job list -n 20 --json --answers 4", "check --away --json --answers 4"]) expect((await call(t, line)).ok !== undefined).toBe(true);

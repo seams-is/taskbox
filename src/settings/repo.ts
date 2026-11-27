@@ -8,6 +8,7 @@ import type { Paths } from "../config.ts";
 import { bootId, monoNow } from "../core/boot.ts";
 import type { EventLog } from "../core/events.ts";
 import type { RootState } from "../core/paths.ts";
+import { settingsHold } from "../update/gate.ts";
 import { safeParse, type WriteRules } from "../core/rootfile.ts";
 import { brokerPathsOf } from "../keys.ts";
 import type { Sys } from "../sys.ts";
@@ -66,5 +67,6 @@ export function settingsDepsOf(c: SettingsCtx, o: { ask?: Asker; box?: string } 
       const [boot, mono] = [await bootId(c.sys), await monoNow(c.sys)];
       return { wall: c.sys.now(), mono, boot };
     },
+    hold: settingsHold(c),
   };
 }

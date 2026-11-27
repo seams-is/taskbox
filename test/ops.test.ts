@@ -112,7 +112,7 @@ describe("taskbox status", () => {
     linked(p);
     expect(await status(d)).toBe(0);
     expect(said[0]).toBe("app: Ready. Waiting for a job.");
-    expect(said.join("\n")).toContain("Commands: check, drain, image, job, key, load, logins, logs, op, pause, policy, prune, resume, settings, withdraw, size, connect, start, status, stop, template, tool");
+    expect(said.join("\n")).toContain("Commands: check, drain, image, job, key, load, logins, logs, op, pause, policy, prune, release, resume, rollback, settings, withdraw, size, connect, start, status, stop, template, tool, update");
     expect(tail(said)).toEqual(["Now: Ready. Waiting for a job.", "Did: Nothing changed.", "Next: Nothing to do."]);
   });
 
@@ -163,7 +163,9 @@ describe("taskbox status", () => {
       "pause",
       "policy",
       "prune",
+      "release",
       "resume",
+      "rollback",
       "settings",
       "withdraw",
       "size",
@@ -173,6 +175,7 @@ describe("taskbox status", () => {
       "stop",
       "template",
       "tool",
+      "update",
       "workspace",
     ], "as your admin user: ", [
       "confirm",
@@ -180,9 +183,7 @@ describe("taskbox status", () => {
       "disconnect",
       "key",
       "remove",
-      "rollback",
       "unlock",
-      "update",
     ]));
     expect(commandsFor(notCi, { remote: true, admin: false })).toBe(says([
       "check",
@@ -198,7 +199,9 @@ describe("taskbox status", () => {
       "op",
       "pause",
       "poll",
+      "release",
       "resume",
+      "rollback",
       "settings",
       "withdraw",
       "size",
@@ -207,6 +210,7 @@ describe("taskbox status", () => {
       "stop",
       "template",
       "tool",
+      "update",
       "workspace",
     ]));
     expect(commandsFor(notCi, { remote: false, admin: true })).toBe(says([
@@ -219,6 +223,7 @@ describe("taskbox status", () => {
       "logs",
       "op",
       "policy",
+      "release",
       "settings",
       "size",
       "connect",
@@ -232,9 +237,7 @@ describe("taskbox status", () => {
       "disconnect",
       "key",
       "remove",
-      "rollback",
       "unlock",
-      "update",
     ]));
     expect(commandsFor(notCi, { remote: false, admin: false })).toBe(says([
       "check",
@@ -246,6 +249,7 @@ describe("taskbox status", () => {
       "logs",
       "op",
       "policy",
+      "release",
       "settings",
       "size",
       "connect",

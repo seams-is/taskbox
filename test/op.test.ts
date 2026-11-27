@@ -18,11 +18,12 @@ import { declOf, opDecls, opType, opTypeFiles } from "../src/optypes/index.ts";
 import { controlJob } from "../src/passes/control.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
+import { readEnvelopes } from "../src/schema.ts";
 
 const me = process.getuid!();
 const T = Date.UTC(2026, 10, 27, 12, 0, 0);
 const SLOW = 30_000;
-const UPDATE: OpDecl = { who: ["owner", "admin"], wayBack: "taskbox rollback undoes it once it ends.", type: "update", phases: ["downloading", "draining", "swap", "proving"], pointOfNoReturn: "swap", onBoot: () => "fail" };
+const UPDATE: OpDecl = { who: ["owner", "admin"], wayBack: "taskbox rollback undoes it once it ends.", type: "selftest", phases: ["downloading", "draining", "swap", "proving"], pointOfNoReturn: "swap", onBoot: () => "fail" };
 
 async function box() {
   const root = tempRoot();
@@ -95,10 +96,10 @@ describe("op list", () => {
       b.sys.clock += 60_000;
       const d = await b.drain();
       const all = await b.cli(["op", "list"]);
-      expect(all.said.slice(0, 2)).toEqual([`${d}  drain  running (draining)  by service  2026-11-27 12:01 UTC`, `${u.id}  update  failed  by owner (signed, key x)  2026-11-27 12:00 to 2026-11-27 12:00 UTC`]);
+      expect(all.said.slice(0, 2)).toEqual([`${d}  drain  running (draining)  by service  2026-11-27 12:01 UTC`, `${u.id}  selftest  failed  by owner (signed, key x)  2026-11-27 12:00 to 2026-11-27 12:00 UTC`]);
       expect((await b.cli(["op", "list", "--state", "running"])).said[0]).toStartWith(d);
       expect((await b.cli(["op", "list", "--state", "done"])).said[0]).toStartWith(u.id);
-      expect((await b.cli(["op", "list", "--type", "update"])).said[0]).toStartWith(u.id);
+      expect((await b.cli(["op", "list", "--type", "selftest"])).said[0]).toStartWith(u.id);
       expect((await b.cli(["op", "list", "--since", "30s", "--state", "done"])).said[0]).toBe("No ops.");
       const j = JSON.parse((await b.cli(["op", "list", "--json"])).said.at(-1)!);
       expect(j).toMatchObject({ command: "op.list", ok: true, result: { ops: [{ id: d, type: "drain", state: "running", cancellable: true }, { id: u.id, state: "failed", why: "the proof failed" }] } });
@@ -135,13 +136,31 @@ describe("op show", () => {
       expect(ok.code).toBe(0);
       expect(ok.said).toContain("Now draining.");
       expect(ok.said).toContain("1 job running.");
-      expect(ok.said).toContain("The update succeeded.");
+      expect(ok.said).toContain("The selftest succeeded.");
       const v = b.update();
       const bad = await b.cli(["op", "show", v.id, "-w"], { after: () => writeOp(b.f, end(b.op(v.id)!, "failed", b.sys.now(), { why: "the proof failed" })) });
-      expect([bad.code, bad.said.filter((l) => l.startsWith("The update"))]).toEqual([1, ["The update failed: the proof failed."]]);
+      expect([bad.code, bad.said.filter((l) => l.startsWith("The selftest"))]).toEqual([1, ["The selftest failed: the proof failed."]]);
       const w = b.update();
       const late = await b.cli(["op", "show", w.id, "-w", "--timeout", "6s"]);
       expect(late.code).toBe(3);
+    },
+    SLOW,
+  );
+
+  test(
+    "-w --json is JSON Lines: one envelope a change, then the final one, which the shared schema reads as a stream",
+    async () => {
+      const b = await box();
+      const u = b.update();
+      const r = await b.cli(["op", "show", u.id, "-w", "--json"], { after: (n) => (n === 0 ? writeOp(b.f, toPhase(b.op(u.id)!, "draining", { text: "1 job running" })) : n === 2 ? writeOp(b.f, end(b.op(u.id)!, "succeeded", b.sys.now())) : undefined) });
+      expect(r.code).toBe(0);
+      const lines = r.said.map((l) => JSON.parse(l));
+      expect(lines.map((e) => e.final)).toEqual([false, true]);
+      expect(lines[0]).toMatchObject({ command: "op.show", lines: ["Now draining.", "1 job running."], result: { op: { id: u.id, state: "running", phase: "draining" } } });
+      expect(lines[1]).toMatchObject({ exit: 0, result: { op: { state: "succeeded" } } });
+      expect(readEnvelopes(`${r.said.join("\n")}\n`, { stream: true }).ok).toBe(true);
+      // Without -w, one envelope, as before.
+      expect((await b.cli(["op", "show", u.id, "--json"])).said).toHaveLength(1);
     },
     SLOW,
   );
@@ -156,7 +175,7 @@ describe("op show", () => {
       let n = 0;
       const r = await opShow(c, { interrupt: { hit: () => ++n > 1, off: () => {} } });
       expect(r).toMatchObject({ exit: 130 });
-      expect(said.at(-1)).toBe(`Stopped watching. The update carries on. taskbox op show ${u.id} -w watches again.`);
+      expect(said.at(-1)).toBe(`Stopped watching. The selftest carries on. taskbox op show ${u.id} -w watches again.`);
       expect(b.op(u.id)?.state).toBe("running");
     },
     SLOW,
@@ -250,7 +269,7 @@ describe("op cancel", () => {
       const rm = b.remove();
       expect(await h.apply(b.ctx() as never, { id: "rq_2", statement: st(rm.id), by })).toMatchObject({ ok: false, code: "denied" });
       const u = b.update();
-      expect(await h.apply(b.ctx() as never, { id: "rq_3", statement: st(u.id), by })).toMatchObject({ ok: false, code: "failed", said: "The update can't be cancelled: this release doesn't declare it." });
+      expect(await h.apply(b.ctx() as never, { id: "rq_3", statement: st(u.id), by })).toMatchObject({ ok: false, code: "failed", said: "The selftest can't be cancelled: this release doesn't declare it." });
     },
     SLOW,
   );
@@ -261,7 +280,7 @@ describe("op cancel", () => {
       const b = await box();
       const decls: OpDecl[] = [{ ...UPDATE, who: ["owner", "admin"], wayBack: "taskbox rollback undoes it once it ends.", cancel: (c, op, actor) => endAsCancelled(c, op, actor) }];
       const past = b.update("swap");
-      expect(await cancelOp(b.ctx() as never, past.id, "owner", "owner", decls)).toMatchObject({ ok: false, said: "The update is past swap, so it can't be cancelled. taskbox rollback undoes it once it ends." });
+      expect(await cancelOp(b.ctx() as never, past.id, "owner", "owner", decls)).toMatchObject({ ok: false, said: "The selftest is past swap, so it can't be cancelled. taskbox rollback undoes it once it ends." });
       const u = b.update();
       expect(await cancelOp(b.ctx() as never, u.id, "owner", "owner", decls)).toMatchObject({ ok: true });
       expect(b.op(u.id)).toMatchObject({ state: "cancelled", why: "cancelled by owner" });
@@ -289,7 +308,7 @@ describe("op cancel", () => {
       const written = listOps(b.f).ops.map((o) => o.type);
       expect(new Set(written)).toEqual(new Set(["drain", "stop", "remove"]));
       for (const t of written) expect(declOf(t)).toBeDefined();
-      expect(() => opType("update")).toThrow("isn't declared in src/optypes");
+      expect(() => opType("selftest")).toThrow("isn't declared in src/optypes");
       // The index names every file in src/optypes/ but decl.ts and itself.
       const listed = readdirSync(join(import.meta.dir, "../src/optypes")).filter((f) => f !== "decl.ts" && f !== "index.ts").sort();
       expect(opTypeFiles.map((f) => f.file).sort()).toEqual(listed);

@@ -4,7 +4,7 @@
 {"file": "awaychecks.ts", "reads": 7, "why": "how long ago the loop's last request and beat were: rows that say OK with a time; the power log's last 30 days, a WARN only; when a lasting change lapses, with mono and the boot beside it"}
 {"file": "broker.ts", "reads": 3, "why": "the hour the GitHub key keeper's counts are kept under, and GitHub's Date against the box's for the clock guard: display and a reason"}
 {"file": "checks.ts", "reads": 5, "why": "the guard's and the workspaces state's freshness (a stale read FAILs, so a step fails closed) and how recent a loss or a moved log is: display"}
-{"file": "cli.ts", "reads": 3, "why": "the answers envelope's at, for a usage error, a rename and every answer: a label"}
+{"file": "cli.ts", "reads": 4, "why": "the answers envelope's at, for a usage error, a rename and every answer: a label; a streamed line's at: a label"}
 {"file": "clock.ts", "reads": 1, "why": "the real Clock itself: every other read goes through it or Sys"}
 {"file": "cmd/confirm.ts", "reads": 2, "why": "the id of the declined event, made before the admin's entry that names it: a label; and the moment the waiting changes are judged at, by the box's boot and monotonic clock as well, so a step either way lapses an item, never keeps one"}
 {"file": "cmd/connect.ts", "reads": 2, "why": "when the connect op began, and how long the listener may live inside the op's deadline: the op's record and GitHub's created_at decide"}
@@ -55,6 +55,7 @@
 {"file": "passes/keeping.ts", "reads": 1, "why": "the wall part of a Moment: a pending change and an outcome lapse on the wall clock too, and mono and the boot hold them to their limits"}
 {"file": "passes/requests.ts", "reads": 1, "why": "a statement's 5 minutes and a request's time when the spool is over its cap, and a dropped request's outcome time: times another machine wrote, or a label; nothing is removed by it but what the spool's cap already removes"}
 {"file": "passes/settings.ts", "reads": 1, "why": "when the settings repo was last read, for the hourly read: a step only moves the next read"}
+{"file": "passes/update.ts", "reads": 4, "why": "the update window is the box's own wall time, as the owner sets it, and the hourly look at a signer change: a step moves the window or the next look, never a limit"}
 {"file": "passes/v2.ts", "reads": 1, "why": "the logins keeper's minute: a timer"}
 {"file": "pfstarts.ts", "reads": 3, "why": "the time on the guard's record of starts when it changes, a lock file's age, and the id of an event made before the admin's entry that names it: a step only makes a lock look stale or fresh sooner, the record's order is its sequence number, and an id's time is a label"}
 {"file": "progress.ts", "reads": 3, "why": "a progress record's updatedAt and its rate: display"}
@@ -66,13 +67,17 @@
 {"file": "rows/net.ts", "reads": 1, "why": "whether netwatch's record is fresh, for the Network diagnostics row only"}
 {"file": "rows/settings.ts", "reads": 3, "why": "how long since the settings repo was read, and whether the temporary admin SSH window is open: display"}
 {"file": "settings/check.ts", "reads": 1, "why": "when update --check asked for the read, so only a problem from that read is said: display"}
-{"file": "settings/op.ts", "reads": 5, "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot"}
+{"file": "settings/op.ts", "reads": 6, "why": "the time of a settings read, an op's phases and the settings in force: records and display; confirm's lapse uses the monotonic clock and the boot"}
 {"file": "settings/repo.ts", "reads": 2, "why": "the settings op's now, and the wall part of a confirm's moment, judged with the monotonic clock and the boot (pending.ts)"}
 {"file": "shell.ts", "reads": 1, "why": "the agent shell's refusal envelope's at: a label"}
 {"file": "tools/bake.ts", "reads": 3, "why": "the bake's wait for its guest to shut down, and the base record's time: a step only ends a wait sooner or later, and the time is a label"}
 {"file": "tools/inloop.ts", "reads": 6, "why": "a baking slot's beat and times, as every slot's are written, and a refresh op's end time: labels and beats"}
 {"file": "tools/pass.ts", "reads": 3, "why": "when the store's hashes were last checked and when a failed fetch or bake is tried again: a step only checks sooner or later"}
 {"file": "tsrotate.ts", "reads": 3, "why": "the waits for the sign-in and for the box to be online: a step only ends a wait sooner or later"}
+{"file": "update/box.ts", "reads": 12, "why": "labels in the install record, the marks and the watch file (whose placedAt and deadline v2.6.1's watcher reads; v3's counts mono), the deadline put on the monotonic clock's scale and moved later within the watch's cap, and whether a job or a proof came after the swap"}
+{"file": "update/cmd.ts", "reads": 1, "why": "the 7-day line about the release check, for display"}
+{"file": "update/gate.ts", "reads": 2, "why": "the update window for a settings commit is the box's own wall time: a step moves the window, never a limit"}
+{"file": "update/signerwatch.ts", "reads": 1, "why": "when an admin's yes for a signer removal was given: the record's label; the 7-day wait is judged by signers.ts on the time it was first seen"}
 {"file": "watch.ts", "reads": 1, "why": "the watch screen's now: display"}
 {"file": "watchdog.ts", "reads": 3, "why": "a JWT, and whether the hourly workflows check and the last run are recent: a row's SKIP and display"}
 {"file": "workspace/caps.ts", "reads": 1, "why": "the memory caps' 60 s over the size, on the guard's 2 s tick: a step forward asks a save or warns a minute early, a step back late; the stop at 150% reads no clock"}

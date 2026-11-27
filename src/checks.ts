@@ -256,7 +256,7 @@ export function listFiles(dir: string, base = dir): string[] {
     if (st.isDirectory()) out.push(...listFiles(p, base));
     else out.push(relative(base, p));
   }
-  return out.filter((f) => f !== "installed.json").sort();
+  return out.filter((f) => f !== "installed.json" && f !== "install.json").sort();
 }
 
 export function listDirs(dir: string, base = dir): string[] {

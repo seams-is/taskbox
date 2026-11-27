@@ -1,8 +1,9 @@
 // An admin's answer at the box to a lasting change waiting in root's pending.json (core/pending.ts).
 // taskbox confirm, at the box's own screen, sends the answer through root's admin spool; the guard,
 // the one writer of root's state, takes the item out and applies it here. These kinds apply: a standing
-// rule (workspace/standing.ts); a rotated or second approver key (approverkeys.ts); and a settings
-// commit, whose answer is left in the settings state for the settings pass, the one writer of what is
+// rule (workspace/standing.ts); a rotated or second approver key (approverkeys.ts); a release signer
+// removal, whose yes is left for the update pass to settle signers.json (update/signerwatch.ts); and a
+// settings commit, whose answer is left in the settings state for the settings pass, the one writer of what is
 // in force (settings/op.ts takeConfirmed). Which admin
 // answered goes in root's private record, under the id of the event that says "an admin".
 import type { ErrorCode } from "./command.ts";
@@ -14,13 +15,16 @@ import { rootStateOf } from "./core/paths.ts";
 import { answer, lapse, type Moment, type Pending, updatePending } from "./core/pending.ts";
 import type { Paths } from "./config.ts";
 import { SHA, settingsFiles, updateState } from "./settings/inforce.ts";
+import { writeOwnedText } from "./core/rootfile.ts";
+import { signerFiles } from "./update/signerwatch.ts";
+import { mkdirSync } from "node:fs";
 import type { Sys } from "./sys.ts";
 import { addRule, type RuleAsk, ruleProblem } from "./workspace/standing.ts";
 import { change } from "./workspace/write.ts";
 
 export const CONFIRM = "confirm";
 // The kinds this release applies on a yes.
-export const APPLIES: readonly Pending["kind"][] = ["approver-add", "approver-rotate", "rule", "settings"];
+export const APPLIES: readonly Pending["kind"][] = ["approver-add", "approver-rotate", "rule", "settings", "signers"];
 const APPROVER: readonly Pending["kind"][] = ["approver-add", "approver-rotate"];
 
 export function confirmProblem(b: Record<string, unknown>): string | undefined {
@@ -71,6 +75,17 @@ export async function applyConfirm(d: ConfirmDeps, b: { id: string; yes: boolean
     }
     said({ type: b.yes ? "confirm.confirmed" : "confirm.refused", subject: item.subject, ...(item.op ? { op: item.op } : {}), text: `An admin at the box ${b.yes ? "confirmed" : "refused"} settings commit ${sha.slice(0, 12)}.` });
     return { ok: true, said: b.yes ? "Confirmed: the guard applies it on its next tick." : "Refused: it won't apply, and the rest of that commit stays in force." };
+  }
+  if (item.kind === "signers") {
+    const sha = (item.payload as { sha?: unknown } | null)?.sha;
+    if (b.yes) {
+      if (typeof sha !== "string") return { ok: false, said: "The waiting signer change names nothing to keep, so nothing changed.", code: "failed" };
+      const f = signerFiles(rootStateOf(d.p));
+      mkdirSync(f.work, { recursive: true, mode: 0o755 });
+      writeOwnedText(f.yes, `${JSON.stringify({ sha })}\n`, { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
+    }
+    said({ type: b.yes ? "confirm.confirmed" : "confirm.refused", subject: item.subject, ...(item.op ? { op: item.op } : {}), text: `An admin at the box ${b.yes ? "confirmed" : "refused"}: ${item.shows[0] ?? "a release signer change"}`.slice(0, 240) });
+    return { ok: true, said: b.yes ? "Confirmed: the guard settles the release signers on its next look." : "Refused: the release signers stay as they are." };
   }
   if (APPROVER.includes(item.kind)) {
     const k = { sys: d.sys, state: rootStateOf(d.p), rootUid: d.rootUid, ...(d.chown ? { chown: d.chown } : {}), events: d.events };

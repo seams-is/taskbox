@@ -13,6 +13,7 @@ import { checkTools, type ToolsSettings } from "../tools/settings.ts";
 import { checkKeys, type KeysSettings } from "./keys.ts";
 import { checkWorkspaces, type WorkspaceSettings } from "./workspaces.ts";
 import { checkNetwork, type NetworkSettings } from "../net/settings.ts";
+import { checkUpdate, type UpdateSettings } from "./update.ts";
 
 export interface Config extends BudgetSettings {
   org: string; // the GitHub organisation that holds the App, taskbox's repo and the runner group
@@ -120,6 +121,8 @@ export interface Config extends BudgetSettings {
   keys?: KeysSettings;
   // Network diagnostics (net/settings.ts): per-job records from capture on the vmnet bridges.
   network?: NetworkSettings;
+  // v3: signed updates, their window and channel (settings/update.ts).
+  update?: Partial<UpdateSettings>;
   // Set by forKind: which kind this view of the settings is for (absent means macOS), and the
   // settings as loaded, so a view of one kind can still give the other's.
   kind?: Kind;
@@ -171,6 +174,7 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
   checkWorkspaces(c);
   checkKeys(c);
   checkNetwork(c);
+  checkUpdate(c);
   if ("turnIdleMinutes" in c && (!Number.isInteger(c.turnIdleMinutes) || c.turnIdleMinutes! < 1 || c.turnIdleMinutes! > 60)) throw new Error("taskbox.json: turnIdleMinutes is 1 to 60");
   if ("quietTurnMinutes" in c && (!Number.isInteger(c.quietTurnMinutes) || c.quietTurnMinutes! < (c.turnIdleMinutes ?? DEFAULT_TURN_IDLE_MINUTES) || c.quietTurnMinutes! > 240)) throw new Error("taskbox.json: quietTurnMinutes is turnIdleMinutes to 240");
   if ("engine" in c && !(ENGINES as readonly unknown[]).includes(c.engine)) throw new Error(`taskbox.json: engine is one of ${ENGINES.join(", ")}`);

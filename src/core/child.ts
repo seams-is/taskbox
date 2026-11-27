@@ -490,10 +490,11 @@ function trimLog(path: string): void {
 // What undo does before it swaps, and the hop's sweep: every running op's job is booted out and its op
 // cancelled with why, then every op job launchd lists that no record names. So no op child of a newer
 // release runs on against an older install. The ops cancelled, and the labels it couldn't end.
-export async function endOpJobs(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, why: string): Promise<{ cancelled: Op[]; missed: string[] }> {
+// keep: an op whose own child is the caller (an update or a rollback going back), left running.
+export async function endOpJobs(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, why: string, keep?: string): Promise<{ cancelled: Op[]; missed: string[] }> {
   const missed: string[] = [];
-  const cancelled = await stopChildren({ ...d, log: (l) => (missed.push(l), d.log(l)) }, why);
-  missed.push(...(await bootOutListed(d.sys, new Set(cancelled.map((o) => jobLabel(o.id))))));
+  const cancelled = await stopChildren({ ...d, log: (l) => (missed.push(l), d.log(l)) }, why, keep);
+  missed.push(...(await bootOutListed(d.sys, new Set([...cancelled.map((o) => jobLabel(o.id)), ...(keep ? [jobLabel(keep)] : [])]))));
   return { cancelled, missed };
 }
 
@@ -512,11 +513,11 @@ export async function bootOutListed(sys: Pick<Sys, "run">, skip: ReadonlySet<str
 
 // What remove does first: every running op's job is booted out, which ends its child and what that
 // started, and its op cancelled with why. A job launchd can't boot out is said.
-export async function stopChildren(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, why: string): Promise<Op[]> {
+export async function stopChildren(d: Pick<ChildDeps, "sys" | "ops" | "events" | "log">, why: string, keep?: string): Promise<Op[]> {
   const out: Op[] = [];
   for (const op of listOps(d.ops).ops) {
     const c = childOf(op);
-    if (op.state !== "running" || !c) continue;
+    if (op.state !== "running" || !c || op.id === keep) continue;
     const next = applyReport(d, op, { end: { state: "cancelled", why } });
     const s = await settle(d, next);
     if (!childOf(s)?.done) d.log(`${op.id}: its job ${c.label} couldn't be booted out, so its child may still run`);

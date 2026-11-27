@@ -202,7 +202,7 @@ describe("key rotate tailscale", () => {
     const r = (await draftTailscale(b.d)) as { node: string };
     const real = b.sys.sleep.bind(b.sys);
     b.sys.sleep = async (ms) => {
-      Object.assign(b.t, { state: "Running", url: "", tailnet: "someone-else.ts.net" });
+      Object.assign(b.t, { state: "Running", url: "", tailnet: "other.example.ts.net" });
       return real(ms);
     };
     expect(await followTailscale(b.d, r.node)).toBe(1);

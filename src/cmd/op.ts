@@ -18,9 +18,10 @@ export const commands: CommandSpec[] = [
   },
   {
     path: ["op", "show"],
-    summary: "One operation: phases, progress, result. -w follows it until it ends.",
+    summary: "One operation: phases, progress, result. -w follows it until it ends; with --json, as JSON Lines.",
     who: ["anyone"],
     flags: ["json", "watch", "timeout"],
+    streams: true,
     args: { name: "ID", min: 1, max: 1, check: OP_ID },
     check: (p) => (p.flags.timeout !== undefined && p.flags.watch === undefined ? "--timeout goes with -w" : undefined),
     shell: true,

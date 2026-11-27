@@ -98,7 +98,9 @@ export class World {
       const box = this.standIns[addr];
       if (box) {
         const r = await box.answer(line);
-        return { code: r.code, stdout: r.stdout, stderr: "", timedOut: false, tooBig: false };
+        // A stream: its lines handed over one by one, as ssh's would come.
+        if (_o.onLine) for (const l of r.stdout.split("\n").slice(0, -1)) _o.onLine(l);
+        return { code: r.code, stdout: _o.onLine ? "" : r.stdout, stderr: "", timedOut: false, tooBig: false };
       }
       const own = this.byAddress[addr]?.[line];
       if (own !== undefined) return { code: 0, stdout: `${own}\n`, stderr: "", timedOut: false, tooBig: false };
@@ -166,7 +168,7 @@ export function deps(w: World, answers: string[] = []): TestDeps {
     web,
     fetched,
     verified,
-    verdict: { ok: false, why: "no verdict set" },
+    verdict: { ok: false, code: "signature", why: "no verdict set" },
     fetch,
     verify: async (o) => {
       verified.push(o);

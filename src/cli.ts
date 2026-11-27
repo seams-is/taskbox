@@ -327,6 +327,16 @@ async function text(c: BoxCtx, say: (l: string) => void): Promise<number> {
   return exitOf(o);
 }
 
+// Which box answers: its name, install ID and release.
+function boxOf(c: BoxCtx, name: string | null): BoxId {
+  let release: string | null = null;
+  try {
+    const tag = readJson<{ tag?: unknown }>(c.own.installed).tag;
+    release = typeof tag === "string" && /^v\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.\d{1,4})?$/.test(tag) ? tag.slice(1) : null;
+  } catch {}
+  return { name, installId: readInstallId(c.own.installId) ?? null, release };
+}
+
 // --json: one envelope. Its lines are the text form's, footer included; its result is the
 // command's own fields, the same as its version 3 line. A reader that asked for version 3 gets that line.
 async function answer(c: BoxCtx, name: string | null): Promise<number> {
@@ -356,7 +366,9 @@ async function answer(c: BoxCtx, name: string | null): Promise<number> {
     if (a) result = a.result ?? resultOf(a.v3);
     const said: string[] = [];
     const push = (l: string) => void said.push(l);
-    const t: BoxCtx = { ...quiet, say: push, err: push, ops: { ...c.ops, say: push } };
+    // A streaming command's changes go out as they come, each its own envelope, before the final one.
+    const stream = spec.streams && c.flags.watch ? (ls: string[], r?: Record<string, unknown>) => c.say(JSON.stringify(envelope({ command, box: boxOf(c, name), at: c.ops.sys.now(), exit: 0, result: r ?? {}, lines: ls, final: false }))) : undefined;
+    const t: BoxCtx = { ...quiet, say: push, err: push, ops: { ...c.ops, say: push }, ...(stream ? { stream } : {}) };
     let o: Outcome;
     if (a && spec.linesFrom) {
       said.push(...spec.linesFrom(result!));
@@ -373,12 +385,7 @@ async function answer(c: BoxCtx, name: string | null): Promise<number> {
     if (!a && result === null) result = {};
     if (!spec.verdict) error ??= errorOf(exit, lines);
   }
-  let release: string | null = null;
-  try {
-    const tag = readJson<{ tag?: unknown }>(c.own.installed).tag;
-    release = typeof tag === "string" && /^v\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.\d{1,4})?$/.test(tag) ? tag.slice(1) : null;
-  } catch {}
-  const box: BoxId = { name, installId: readInstallId(c.own.installId) ?? null, release };
+  const box = boxOf(c, name);
   const known = (w: string[]) => {
     const r = parseLine(w, c.deps.specs);
     return r.ok && !r.spec.internal ? pathOf(r.spec) : undefined;

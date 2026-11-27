@@ -82,13 +82,15 @@ export interface Ssh {
 
 // Runs one of the box's commands as the agent account. exit 255 is ssh's own failure; any other code
 // is the command's, and its stdout is returned for the caller to read as data.
-export async function boxCall(d: Ssh, t: Target, line: string, limitMs: number, maxBytes = 2_000_000): Promise<SshResult> {
+// limitMs 0 with onLine: a stream, each line handed over as it comes, until the box ends it.
+export async function boxCall(d: Ssh, t: Target, line: string, limitMs: number, maxBytes = 2_000_000, onLine?: (l: string) => void): Promise<SshResult> {
   if (!isTailscaleAddress(t.address)) throw new Error("not a Tailscale address");
   if (!NODE.test(t.node)) throw new Error("not a StableNodeID");
   if (typeof t.user !== "string" || !ACCOUNT.test(t.user)) throw new Error("not an account name");
   if (!sendable(line)) throw new Error("not a command the controller sends");
-  const connect = Math.max(1, Math.min(10, Math.floor(limitMs / 2000)));
-  const r = await d.run([d.path ?? SSH, ...sshOptions(t, connect), "--", t.address, line], { limitMs, maxBytes });
+  if (!limitMs && !onLine) throw new Error("only a stream runs with no time limit");
+  const connect = limitMs ? Math.max(1, Math.min(10, Math.floor(limitMs / 2000))) : 10;
+  const r = await d.run([d.path ?? SSH, ...sshOptions(t, connect), "--", t.address, line], { limitMs, maxBytes, ...(onLine ? { onLine } : {}) });
   if (r.timedOut || r.tooBig || r.code === 255 || r.code === null) return { ok: false, why: cause(r), code: r.code };
   return { ok: true, stdout: r.stdout, code: r.code };
 }
