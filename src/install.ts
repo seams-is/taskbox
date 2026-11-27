@@ -99,8 +99,9 @@ const SMALL_MAX = 16_384;
 const SETTINGS_MAX = 512_000;
 // What a guest test skips, said on its own line each time.
 export const GUEST_SKIPS = ["FileVault's disk unlock", "the Tailscale sign-in", "the GitHub Apps (connect github)"] as const;
-// The preflight rows a guest VM can't pass, whatever the release: its SSH is how it is reached.
-export const GUEST_ROWS = ["Sharing services off", "FileVault", "SSD health", "Free disk"];
+// The preflight rows a guest VM can't pass, whatever the release: its SSH is how it is reached, and
+// Tart's macOS images run with SIP off (Tart run of #51).
+export const GUEST_ROWS = ["Sharing services off", "FileVault", "System Integrity Protection", "SSD health", "Free disk"];
 
 // The install's check of a new approver key: the old key's signature, by ssh-keygen -Y verify as
 // nobody, in root's folder for checking signatures, made only when a key change comes. Anything that
