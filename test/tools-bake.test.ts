@@ -495,13 +495,20 @@ describe("the review's fixes", () => {
     expect(m).toContain("/bin/launchctl disable system/com.openssh.sshd");
     expect(m).toContain("/bin/launchctl bootout system/com.openssh.sshd");
     expect(m).toContain("-setv6off");
+    // Each service's own setting is saved before it goes off, and one set by hand stops the bake.
+    expect(m.indexOf("networksetup -getinfo")).toBeLessThan(m.indexOf("-setv6off"));
+    expect(m).toContain("which the bake can't put back");
     const man = { v: 1 as const, os: "macos" as const, entries: [] };
-    expect(bakeScript("macos", "a".repeat(64), man, DEFAULT_TOOL_CACHE, "admin")).toContain("-setv6automatic");
+    const end = bakeScript("macos", "a".repeat(64), man, DEFAULT_TOOL_CACHE, "admin");
+    expect(end).toContain('Automatic) /usr/sbin/networksetup -setv6automatic "$s"');
+    expect(end).toContain('"Link-local only") /usr/sbin/networksetup -setv6LinkLocal "$s"');
+    expect(end).toContain("done < /private/var/taskbox-ipv6-saved");
     expect(bakeScript("linux", "a".repeat(64), { ...man, os: "linux" }, DEFAULT_TOOL_CACHE, "admin")).not.toContain("setv6");
   });
   test("a Linux base is left with no machine-id and no saved random seed; the manifest's hash is checked in the guest", () => {
     const l = bakeScript("linux", "a".repeat(64), { v: 1, os: "linux", entries: [] }, DEFAULT_TOOL_CACHE, "admin");
-    for (const x of ["/bin/rm -f /var/lib/systemd/random-seed", ": > /etc/machine-id", "systemctl stop systemd-random-seed.service", "cloud-init clean --logs --seed"]) expect(l).toContain(x);
+    for (const x of ["/bin/rm -f /var/lib/systemd/random-seed", ": > /etc/machine-id", "systemctl stop systemd-random-seed.service"]) expect(l).toContain(x);
+    expect(l).not.toContain("cloud-init clean");
     expect(l).toContain(`check "$D.new/manifest.json" '${"a".repeat(64)}'`);
     expect(bakeScript("macos", "a".repeat(64), { v: 1, os: "macos", entries: [] }, DEFAULT_TOOL_CACHE, "admin")).not.toContain("machine-id");
   });

@@ -49,11 +49,15 @@ export function toolCacheOf(said: string): string {
 // The command that prints the image's own RUNNER_TOOL_CACHE, run as the guest user in its login shell.
 export const TOOL_CACHE_PROBE = 'printf %s "${RUNNER_TOOL_CACHE:-}"';
 
+// Where the macOS seal keeps each service's IPv6 setting until the bake's end.
+const IPV6_SAVED = "/private/var/taskbox-ipv6-saved";
+const SERVICES = "/usr/sbin/networksetup -listallnetworkservices | /usr/bin/tail -n +2 | /usr/bin/sed 's/^\\*//'";
+
 // The bake's first step, as root, before anything is copied in: SSH off, as every job VM's seal does,
 // so the image's known password reaches nothing, and IPv6 off for the boot, whose Softnet rules are
 // IPv4's. The password stays the image's: each job VM's seal needs it to set a new one.
-// Linux's sysctl lasts for this boot only. macOS turns IPv6 back on at the end of the bake script,
-// so job VMs keep the image's own setting.
+// Linux's sysctl lasts for this boot only. macOS puts each service's own setting back at the end of
+// the bake script, so job VMs keep the image's.
 export function sealScript(kind: Kind): string {
   const lines =
     kind === "linux"
@@ -63,7 +67,13 @@ export function sealScript(kind: Kind): string {
           "/bin/launchctl disable system/com.openssh.sshd",
           // 3 is No such process: SSH wasn't running.
           'rc=0; /bin/launchctl bootout system/com.openssh.sshd 2>/dev/null || rc=$?; [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]',
-          "/usr/sbin/networksetup -listallnetworkservices | /usr/bin/tail -n +2 | /usr/bin/sed 's/^\\*//' | while IFS= read -r s; do /usr/sbin/networksetup -setv6off \"$s\"; done",
+          // Each service's own IPv6 setting is saved first, so the bake's end puts back exactly that.
+          // One set by hand can't be put back, so the bake stops before it changes anything.
+          `: > ${IPV6_SAVED}`,
+          // getinfo says "IPv6: Automatic" or "IPv6: Off"; link-local only prints no such line, only its
+          // address lines (Tart proof, macOS 27.2).
+          `${SERVICES} | while IFS= read -r s; do i=$(/usr/sbin/networksetup -getinfo "$s"); v=$(printf '%s\\n' "$i" | /usr/bin/sed -n 's/^IPv6: //p' | /usr/bin/head -n 1); if [ -z "$v" ] && printf '%s\\n' "$i" | /usr/bin/grep -q '^IPv6 IP address'; then v="Link-local only"; fi; case "$v" in Automatic|Off|"Link-local only"|"") ;; *) echo "$s has IPv6 set by hand ($v), which the bake can't put back" >&2; exit 5;; esac; printf '%s\\t%s\\n' "$v" "$s" >> ${IPV6_SAVED}; done`,
+          `${SERVICES} | while IFS= read -r s; do /usr/sbin/networksetup -setv6off "$s"; done`,
         ];
   return `${[...lines, "echo sealed"].join("\n")}\n`;
 }
@@ -144,9 +154,12 @@ export function bakeScript(kind: Kind, genId: string, m: Manifest, toolCache: st
       "/bin/rm -f /var/lib/systemd/random-seed",
       ": > /etc/machine-id",
       "[ -L /var/lib/dbus/machine-id ] || /bin/rm -f /var/lib/dbus/machine-id",
-      "if command -v cloud-init >/dev/null 2>&1; then cloud-init clean --logs --seed; fi",
+      // cloud-init is left as the image had it. Cleaned, it ran again in each clone (Tart proof: new
+      // SSH host keys, and 1.2 s more to boot); uncleaned, its instance id, the same in every
+      // clone, keeps it from running again.
     );
-  else lines.push("/usr/sbin/networksetup -listallnetworkservices | /usr/bin/tail -n +2 | /usr/bin/sed 's/^\\*//' | while IFS= read -r s; do /usr/sbin/networksetup -setv6automatic \"$s\"; done");
+  // macOS: each service's IPv6 back to what the seal saved, so job VMs have the image's own setting.
+  else lines.push(`TAB=$(printf '\\t'); while IFS="$TAB" read -r v s; do case "$v" in Automatic) /usr/sbin/networksetup -setv6automatic "$s";; "Link-local only") /usr/sbin/networksetup -setv6LinkLocal "$s";; esac; done < ${IPV6_SAVED}`, `/bin/rm -f ${IPV6_SAVED}`);
   lines.push("/bin/sync", "echo baked");
   return `${lines.join("\n")}\n`;
 }
