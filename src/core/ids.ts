@@ -32,14 +32,6 @@ export function ulid(now: number, rand: Rand = realRand): string {
   return time + tail;
 }
 
-// The time a ULID carries, or undefined.
-export function ulidTime(id: string): number | undefined {
-  if (!ULID.test(id)) return undefined;
-  let t = 0;
-  for (const c of id.slice(0, 10)) t = t * 32 + B32.indexOf(c);
-  return t;
-}
-
 export const PREFIXES = ["ev", "op", "rq", "pc"] as const;
 export type Prefix = (typeof PREFIXES)[number];
 export const idOf = (prefix: Prefix, now: number, rand: Rand = realRand) => `${prefix}_${ulid(now, rand)}`;

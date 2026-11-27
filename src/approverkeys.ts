@@ -8,12 +8,12 @@
 // fingerprint for the admin to compare with the controller's before the typed yes. Anyone with the
 // agent account can offer a key; only the admin's yes, against what the box itself shows, pins one.
 import { approverKeyProblem, fingerprint, FINGERPRINT } from "./approver.ts";
-import { pinnedKeys, readApprovers, replaceKey, resetKeys, trustFirst, updateApprovers, addKey, type Change } from "./core/approvers.ts";
+import { readApprovers, replaceKey, resetKeys, trustFirst, updateApprovers, addKey, type Change } from "./core/approvers.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import type { Answer, HandlerCtx, UnsignedHandler } from "./core/dispatch.ts";
 import type { EventLog } from "./core/events.ts";
 import { begin, end, listOps, type Op, type OpFolder, readOp, toPhase, writeOp, opEvent } from "./core/ops.ts";
-import { drop, type Moment, type Pending, raise, type Raised, readPending, updatePending, waiting } from "./core/pending.ts";
+import { drop, type Moment, type Pending, raise, type Raised, updatePending } from "./core/pending.ts";
 import type { RootState } from "./core/paths.ts";
 import { isObj, readOwnedJson, writeOwnedText, type WriteRules } from "./core/rootfile.ts";
 import type { Sys } from "./sys.ts";
@@ -223,18 +223,4 @@ export async function dropApproverWait(c: Pick<HandlerCtx, "state" | "rootUid" |
   return out;
 }
 
-// The rotations still waiting, for key list: which key, to which, since when.
-export function approverWaits(s: Pick<RootState, "pending">, rootUid: number, m: Moment): Pending[] {
-  const r = readPending(s.pending, rootUid);
-  return r.kind === "ok" ? waiting(r.value, m).filter((p) => p.kind === "approver-rotate" || p.kind === "approver-add") : [];
-}
-
-export const pinnedFingerprints = (s: Pick<RootState, "approvers">, rootUid: number): string[] | undefined => {
-  const a = readApprovers(s.approvers, rootUid);
-  return a.kind === "bad" ? undefined : a.kind === "ok" ? a.value.keys.map((k) => k.fingerprint) : [];
-};
-export const hasPinned = (s: Pick<RootState, "approvers">, rootUid: number) => {
-  const a = readApprovers(s.approvers, rootUid);
-  return a.kind === "ok" && pinnedKeys(a.value).length > 0;
-};
 export type { Op };

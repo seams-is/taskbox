@@ -148,7 +148,6 @@ const SLOT_WORDS: Record<string, string> = {
   "checks failed": "Not starting VMs: a check failed.",
   "no public address": "Not starting VMs: the box can't read its public address. It tries again in a minute.",
   waiting: "Waiting: no new VM for now.",
-  held: "Held, by a hold from before v2.2.0. It ends when the loop restarts.",
 };
 
 // What one slot's VM is doing, in words.
@@ -206,14 +205,10 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   return lines;
 }
 
-export async function watch(o: { pullFile: string; pullLinuxFile?: string; loopFile: string; loopRunning: () => Promise<boolean | undefined>; stoppedAt?: () => number | undefined; others?: () => Promise<string[]>; unfinished?: () => boolean; logins?: () => Promise<string | undefined>; once: boolean; clock?: Clock }): Promise<void> {
+export async function watch(o: { pullFile: string; pullLinuxFile?: string; loopFile: string; loopRunning: () => Promise<boolean | undefined>; stoppedAt?: () => number | undefined; others?: () => Promise<string[]>; unfinished?: () => boolean; logins?: () => Promise<string | undefined>; clock?: Clock }): Promise<void> {
   const clock = o.clock ?? realClock;
   for (;;) {
     const lines = screen({ ...o, now: clock.now(), loopRunning: await o.loopRunning(), stoppedAt: o.stoppedAt?.(), others: await o.others?.(), unfinished: o.unfinished?.(), logins: await o.logins?.() });
-    if (o.once) {
-      console.log(lines.join("\n"));
-      return;
-    }
     // Clear the screen and draw from the top.
     process.stdout.write("\x1b[H\x1b[2J" + lines.join("\n") + "\n");
     await clock.sleep(2000);

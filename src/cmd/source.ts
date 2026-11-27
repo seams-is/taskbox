@@ -7,6 +7,7 @@ export const commands: CommandSpec[] = [
     summary: "Both GitHub Apps, their keys' ages, and an unfinished connect.",
     who: ["anyone"],
     flags: ["json"],
+    shell: true,
     did: "Showed the GitHub Apps.",
     async run(c) {
       const { dirname, join } = await import("node:path");

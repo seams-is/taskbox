@@ -287,7 +287,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
   }
 
   // A typed confirmation with no terminal and no --yes is a usage error.
-  if (spec.typed && c.flags.yes === undefined && !(deps.terminal?.() ?? true)) {
+  if (spec.typed && c.flags.yes === undefined && c.flags.dryRun === undefined && !(deps.terminal?.() ?? true)) {
     // A command with --yes asks a typed yes; one without needs a person at the terminal itself (remove's
     // typed name and deletes, unlock's fdesetup).
     const line = (spec.flags ?? []).includes("yes") ? `taskbox ${pathOf(spec)} asks for a typed yes, and there is no terminal here. Add --yes to answer it.` : `taskbox ${pathOf(spec)} asks a person at the terminal, and there is no terminal here. Run it at the box's own terminal.`;
@@ -367,7 +367,7 @@ async function answer(c: BoxCtx, name: string | null): Promise<number> {
     const said: string[] = [];
     const push = (l: string) => void said.push(l);
     // A streaming command's changes go out as they come, each its own envelope, before the final one.
-    const stream = spec.streams && c.flags.watch ? (ls: string[], r?: Record<string, unknown>) => c.say(JSON.stringify(envelope({ command, box: boxOf(c, name), at: c.ops.sys.now(), exit: 0, result: r ?? {}, lines: ls, final: false }))) : undefined;
+    const stream = spec.streams && (c.flags.watch || c.flags.follow) ? (ls: string[], r?: Record<string, unknown>) => c.say(JSON.stringify(envelope({ command, box: boxOf(c, name), at: c.ops.sys.now(), exit: 0, result: r ?? {}, lines: ls, final: false }))) : undefined;
     const t: BoxCtx = { ...quiet, say: push, err: push, ops: { ...c.ops, say: push }, ...(stream ? { stream } : {}) };
     let o: Outcome;
     if (a && spec.linesFrom) {

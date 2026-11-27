@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendAdmin, appendEvent, type Event, eventLine, eventLog, eventProblem, keepEvents, looksSecret, newEvent, readEvents } from "../../src/core/events.ts";
-import { idOf, isId, ulid, ulidTime } from "../../src/core/ids.ts";
+import { idOf, isId, ulid } from "../../src/core/ids.ts";
 
 const uid = process.getuid!();
 const T = Date.UTC(2026, 10, 23, 14, 2, 11, 204);
@@ -20,11 +20,10 @@ const rand = (k: number) => {
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-events-"));
 
 describe("ids", () => {
-  test("a ULID is 26 characters, carries its time, and sorts by time as text", () => {
+  test("a ULID is 26 characters and sorts by time as text", () => {
     const a = ulid(T, rand);
     const b = ulid(T + 1, rand);
     expect(a).toHaveLength(26);
-    expect(ulidTime(a)).toBe(T);
     expect(a < b).toBe(true);
     expect(ulid(0, rand).startsWith("0000000000")).toBe(true);
   });

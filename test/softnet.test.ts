@@ -3,8 +3,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { computeState, softnetFix } from "../src/state.ts";
-import { etimeSeconds, rootSoftnets, SOFTNET_CHECK_TRIES, SOFTNET_DROP_GRACE_S, softnetAsRoot, softnetRootProblem } from "../src/tart.ts";
+import { etimeSeconds, rootSoftnets, SOFTNET_CHECK_TRIES, SOFTNET_DROP_GRACE_S, softnetRootProblem } from "../src/tart.ts";
 import { FakeSys } from "./fake.ts";
+
+// Whether a Softnet still root halts the box.
+const softnetAsRoot = async (sys: Parameters<typeof softnetRootProblem>[0], service: string) => (await softnetRootProblem(sys, service))?.halt === true;
 
 const SOFTNET = "/opt/taskbox/bin/softnet";
 // The service account (accounts.service) of the box the fixture was captured on.

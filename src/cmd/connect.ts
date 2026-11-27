@@ -38,12 +38,14 @@ async function connect(c: BoxCtx, which: "connect" | "disconnect"): Promise<numb
   const quiet = { ...base, event: () => {} };
   const ops = { dir: state.ops, owner: 0, chown: c.chown };
   const running = flow.connectRunning(ops);
-  if (which === "disconnect") return running ? (say(`A connect (${running.id}) is running. Wait for it, or taskbox op cancel ${running.id}, then disconnect.`), 1) : flow.disconnectGithub(quiet);
+  if (which === "disconnect") return running ? (say(`A connect (${running.id}) is running. Wait for it, or taskbox op cancel ${running.id}, then disconnect.`), 1) : flow.disconnectGithub(quiet, async (app) => c.flags.yes === true || (await c.ask(`Disconnect the job source App ${app}? Its key on this box is deleted. Type yes to go on: `)).trim().toLowerCase() === "yes");
   const boot = await bootId(sys);
   if (!boot) return (say("This boot's identity can't be read, so the connect can't be recorded. Nothing changed."), 1);
   const load = c.opts.load === "off" ? ("off" as const) : typeof c.opts.load === "string" ? { name: c.opts.load, role: "load" as const, runnerGroup: c.opts.group as string } : undefined;
   const jobs = typeof c.opts.jobs === "string" ? c.opts.jobs : undefined;
-  const opened = flow.openConnectOp({ ops, now: sys.now(), boot, actor: `admin ${adminName}`, params: { from: "box", ...(jobs ? { jobs } : {}), ...(load ? { load: load === "off" ? "off" : load.name } : {}) } });
+  const { duration } = await import("../command.ts");
+  const limitMs = typeof c.flags.timeout === "string" ? duration(c.flags.timeout) || undefined : undefined;
+  const opened = flow.openConnectOp({ ops, now: sys.now(), boot, actor: `admin ${adminName}`, ...(limitMs ? { limitMs } : {}), params: { from: "box", ...(jobs ? { jobs } : {}), ...(load ? { load: load === "off" ? "off" : load.name } : {}) } });
   if ("why" in opened) return (say(opened.why), 1);
   const { op, send } = opened;
   const { readOp } = await import("../core/ops.ts");
@@ -122,6 +124,7 @@ export const commands: CommandSpec[] = [
     who: ["owner", "admin"],
     root: true,
     did: "Ran connect github.",
+    flags: ["timeout", "json"],
     options: [
       { name: "--jobs", value: "REPO", check: (v) => REPO.test(v) },
       { name: "--load", value: "REPO", check: (v) => v === "off" || REPO.test(v) },
@@ -145,5 +148,5 @@ export const commands: CommandSpec[] = [
     internal: true,
     run: async () => (await import("../listen.ts")).listenMain(),
   },
-  { path: ["disconnect", "github"], summary: "Uninstalls the job source App, keeps none as the source, and deletes its key.", who: ["owner", "admin"], root: true, did: "Ran disconnect github.", run: (c) => connect(c, "disconnect") },
+  { path: ["disconnect", "github"], summary: "Uninstalls the job source App, keeps none as the source, and deletes its key, after a typed yes.", who: ["owner", "admin"], root: true, typed: true, flags: ["yes", "json"], did: "Ran disconnect github.", run: (c) => connect(c, "disconnect") },
 ];

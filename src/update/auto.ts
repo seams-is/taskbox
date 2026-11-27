@@ -17,7 +17,6 @@ export const CHECK_EVERY_MS = 3_600_000;
 // What holds an auto-update besides the box's own ops: a workspace ready, starting or saving. The
 // workspaces package names it; with none, nothing holds.
 export type Hold = () => string | undefined;
-export const noHold: Hold = () => undefined;
 
 // The box's own hold: a workspace approved, starting, ready, saving or ending holds the box, of any
 // size (workspace/model.ts HOLDS, and approved, which waits to start). A state that can't be read

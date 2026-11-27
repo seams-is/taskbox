@@ -31,8 +31,6 @@ export const GLOBAL_FLAGS = {
   signed: { names: ["--signed"], value: "WORD" },
 } as const;
 export type GlobalFlag = keyof typeof GLOBAL_FLAGS;
-// Taken by every command: --help, --version, --answers (the reader's version) and --box.
-export const ALWAYS = ["--help", "--version", "--answers", "--box"] as const;
 
 // A duration: 90s, 30m, 1h, 2d, or 0 for no limit. In ms, or undefined when it isn't one.
 export function duration(v: string): number | undefined {
@@ -85,7 +83,7 @@ export interface CommandSpec {
   typed?: boolean;
   // Readers that anyone but the service account and root reads from the copies every user may read (shared.ts).
   sharedReads?: boolean;
-  // With -w and --json it prints JSON Lines: one envelope a change, final on the last (ctx.stream).
+  // With -w or -f and --json it prints JSON Lines: one envelope a change, final on the last (ctx.stream).
   streams?: boolean;
   // Its own parser checks every word. No flag is read here, and the agent shell runs none.
   raw?: boolean;

@@ -490,9 +490,11 @@ async function loadOff(d: FlowDeps, w: Wants): Promise<number> {
 type NoCode = Omit<FlowDeps, "code" | "phase" | "since" | "box" | "open">;
 
 // taskbox disconnect github: the source App uninstalled with its own key, none kept, its key gone.
-export async function disconnectGithub(d: NoCode): Promise<number> {
+// yes: the typed yes, asked once there is an App to disconnect.
+export async function disconnectGithub(d: NoCode, yes: (app: string) => Promise<boolean> = async () => true): Promise<number> {
   const kept = keptApp(d.cfg, "source");
   if (!kept) return (d.say("This box has no job source App. Nothing changed."), 0);
+  if (!(await yes(kept.slug ?? `App ${kept.appId}`))) return (d.say("Not disconnected. Nothing changed."), 1);
   const pem = heldKey(d, "source", kept.appId);
   const app = pem ? clientFor(d, kept.appId, pem) : undefined;
   const slug = kept.slug ?? (app ? await slugOf(app) : undefined);
@@ -721,10 +723,12 @@ export async function adoptSource(d: ReleaseSourceDeps, cfg: Config = d.cfg): Pr
 // At the box the admin's command runs the flow and writes the op's first record; from then on it holds
 // the lease and sends reports, and the guard's follow is the record's only writer. from: "box" or
 // "controller", which says where the code comes from.
-export function openConnectOp(o: { ops: OpFolder; now: number; boot: string; actor: string; params: Record<string, Json> }): { op: Op; send: (r: Report) => void } | { why: string } {
-  const b = begin(listOps(o.ops).ops, opType(CONNECT_OP.type), { subject: "box", params: o.params, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
+// limitMs: --timeout, at most CONNECT_MS, the manifest code's life on GitHub.
+export function openConnectOp(o: { ops: OpFolder; now: number; boot: string; actor: string; limitMs?: number; params: Record<string, Json> }): { op: Op; send: (r: Report) => void } | { why: string } {
+  const limitMs = Math.min(o.limitMs ?? CONNECT_MS, CONNECT_MS);
+  const b = begin(listOps(o.ops).ops, opType(CONNECT_OP.type), { subject: "box", params: o.params, actor: o.actor, deadline: o.now + limitMs }, o.now);
   if (b.kind !== "start") return { why: b.kind === "busy" ? b.why : `A connect (${b.op.id}) is running already. taskbox op show ${b.op.id} -w follows it.` };
-  const op = { ...b.op, child: { label: jobLabel(b.op.id), boot: o.boot, spawnedAt: o.now, applied: 0, events: ["connect."], limitMs: CONNECT_MS } };
+  const op = { ...b.op, child: { label: jobLabel(b.op.id), boot: o.boot, spawnedAt: o.now, applied: 0, events: ["connect."], limitMs } };
   writeOp(o.ops, op);
   const r = reporter({ op: op.id, reports: reportsPath(o.ops, op.id), progress: progressPath(o.ops, op.id), lease: leasePath(o.ops, op.id), exit: (c) => process.exit(c) });
   return { op, send: (x) => r.send(x) };

@@ -58,7 +58,6 @@ async function confirm(c: BoxCtx): Promise<Outcome> {
   const { rootStateOf } = await import("../core/paths.ts");
   const { readPending, waiting } = await import("../core/pending.ts");
   const { askGuard } = await import("../opcmd.ts");
-  const { APPLIES } = await import("../confirmapply.ts");
   const { readState, settingsFiles } = await import("../settings/inforce.ts");
   const sys = c.ops.sys;
   const root = c.ops.rootUid ?? 0;
@@ -82,10 +81,6 @@ async function confirm(c: BoxCtx): Promise<Outcome> {
   for (const item of items) {
     c.say(`${item.id}, asked by ${item.actor}:`);
     for (const l of item.shows) c.say(`  ${l}`);
-    if (!refuse && !APPLIES.includes(item.kind)) {
-      c.say("  This release can't apply that kind of change. It waits until it lapses.");
-      continue;
-    }
     const yes = refuse ? false : (await c.ask("Type yes to make this change, anything else to leave it: ")).trim().toLowerCase() === "yes";
     if (!yes && !refuse) {
       c.say(`  Left waiting. taskbox confirm --refuse ${item.id} says no to it.`);

@@ -1,5 +1,5 @@
 // Small helpers the files in src/cmd/ share. Nothing here loads the box: see command.ts.
-import type { BoxCtx } from "./command.ts";
+import { type BoxCtx, type ErrorBody, EXIT, type Outcome } from "./command.ts";
 import type { OpsDeps } from "./ops.ts";
 
 // A v2.x handler's lines, run with its own say: for a v3 answer it prints as one line of JSON.
@@ -25,6 +25,21 @@ export async function v3Answer(c: BoxCtx, f: (ops: OpsDeps) => Promise<number>):
   const r = await captured(c, f);
   const v = oneJsonLine(r.lines);
   return v ? { v3: v, exit: r.exit } : { v3: UNREADABLE, exit: 1 };
+}
+
+export const err = (code: ErrorBody["code"], message: string, who: ErrorBody["who"] = null): ErrorBody => ({ code, message, fix: null, who });
+
+// A typed yes, unless -y answers it. Undefined goes on; anything else is the outcome that ends the command.
+export async function typedYes(c: Pick<BoxCtx, "flags" | "deps" | "ask" | "say">, what: string, prompt: string): Promise<Outcome | undefined> {
+  if (c.flags.yes !== undefined) return undefined;
+  if (c.deps.terminal?.() === false) {
+    const line = `${what} asks a typed yes, and there is no terminal here. Add -y to answer it.`;
+    c.say(line);
+    return { exit: EXIT.usage, error: err("usage", line, "at-the-box") };
+  }
+  if ((await c.ask(`${prompt ? `${prompt} ` : ""}Type yes to go on: `)).trim().toLowerCase() === "yes") return undefined;
+  c.say("Nothing changed.");
+  return { exit: EXIT.failed, did: "Nothing changed." };
 }
 
 // The box's settings, or undefined when they can't be read: the handler says so in its own words.

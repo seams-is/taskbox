@@ -53,7 +53,6 @@ export function ip4(s: string): number | undefined {
   if (o.some((x) => x > 255)) return undefined;
   return ((o[0]! << 24) >>> 0) + (o[1]! << 16) + (o[2]! << 8) + o[3]!;
 }
-export const ip4Text = (n: number) => [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
 const maskOf = (len: number) => (len === 0 ? 0 : (0xffffffff << (32 - len)) >>> 0);
 export function inPrefix(a: number, net: number, len: number): boolean {
   const m = maskOf(len);

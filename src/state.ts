@@ -132,10 +132,6 @@ function baseState(i: StateInputs): State {
   // rate limit's wait reads Waiting. After Stopped, ci away and Downloading, which keep their words.
   const gh = githubState(i.loop.github, i.now);
   if (gh?.word === "Failing") return { word: gh.word, detail: gh.detail, next: gh.next, notify: true };
-  // The slot an older loop wrote while held. The new loop ends the hold when it starts.
-  if (i.loop.slot === "held") {
-    return { word: "Waiting", detail: "a hold from before v2.2.0, which ends when the loop restarts after the update", next: "Nothing to do. It carries on by itself.", notify: false };
-  }
   if (i.loop.slot === "waiting" && i.loop.waitingFor) {
     return { word: "Waiting", detail: clean(i.loop.waitingFor), next: "Nothing to do. It carries on by itself.", notify: false };
   }

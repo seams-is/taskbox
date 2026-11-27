@@ -40,11 +40,11 @@ As the service account:
 - `taskbox load start --pattern burst|day|merge`, on the controller, runs a load test in the test repo the box's settings name.
 
 As your admin user:
-- `taskbox update [VERSION]` installs the newest release, or the one named.
+- `taskbox update [--to VERSION]` installs the newest release, or the one named.
 - `taskbox rollback` goes back to the kept install.
 - `taskbox connect github` makes the box's two GitHub Apps true. `taskbox connect status` shows them. `taskbox disconnect github` takes the job source off.
 - `taskbox remove` takes taskbox off the box.
 
-Type `taskbox help` for all commands, and a command with `--help` for its flags. Agents log in as the agent account. Its shell runs the read commands and the workspace requests (`queue`, `wait`, `progress`) only.
+Type `taskbox help` for all commands, and a command with `--help` for its flags. Agents log in as the agent account. Its shell runs the read commands and the workspace requests (`workspace request`, `wait`, `progress`) only.
 
 On the controller, agents run as their own user, `taskbox-agents`, with a projects folder that is theirs alone. Their work reaches you as PRs; work in your own clones.

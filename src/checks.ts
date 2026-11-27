@@ -379,11 +379,6 @@ export async function publicAddresses(sys: Sys, names: readonly PublicAddressSou
   return { addresses: [...new Set(ok.map((g) => g.ip))], answered: ok.map((g) => g.n) };
 }
 
-// The first address, for callers that want one. Any failure is null.
-export async function publicIPv4(sys: Sys, names?: readonly PublicAddressSource[]): Promise<string | null> {
-  return (await publicAddresses(sys, names)).addresses[0] ?? null;
-}
-
 export const PUBLIC_FIX = "The box can't read its public address, so it starts no VM. It tries again in a minute, and carries on by itself once the network is back.";
 
 // What each source answered. The address itself goes to ci and root only: remote reads this screen.

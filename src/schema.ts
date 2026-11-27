@@ -65,17 +65,6 @@ export const obj =
     }
     return undefined;
   };
-export const anyOf =
-  (...shapes: Shape[]): Shape =>
-  (v) => {
-    let first: string | undefined;
-    for (const s of shapes) {
-      const why = s(v);
-      if (!why) return undefined;
-      first ??= why;
-    }
-    return first;
-  };
 
 // The word lists the box's answers use. The box and the controller are one program, so they are one list.
 export const OUTCOMES = ["done", "ceiling", "update", "no-guest", "failed", "softnet-root", "held-back", "prestart-failed", "pressure", "guard-closed", "halted"] as const;

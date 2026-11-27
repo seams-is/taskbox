@@ -366,7 +366,6 @@ export async function removable(sys: Sys, rec: AccountsRecord, people: readonly 
   return out;
 }
 
-
 // Screen Sharing's "Only these users" list. macOS keeps it in this group; with no group, every user
 // may use Screen Sharing (read: checks.ts screenSharingAccess). Not checked on a Mac: that adding
 // and removing members with dseditgroup changes what System Settings shows and what macOS allows.
@@ -796,12 +795,6 @@ export async function removeGroup(sys: Sys, rec: PoolRecord, group: string): Pro
   if (now !== g.gid) return `${group} (its ID isn't the one taskbox made)`;
   const r = await sys.run("/usr/bin/dscl", [".", "-delete", `/Groups/${group}`], { timeoutMs: 10_000 });
   return r.code === 0 && (await groupGid(sys, group)) === undefined ? undefined : `${group} (dscl couldn't delete it)`;
-}
-
-// remove: whether the pool account is a record dscl has that never got its ID: made by an install
-// that stopped half way. Only such a record pool.json names is offered.
-export async function halfMade(sys: Sys, name: string): Promise<boolean> {
-  return (await halfMadeState(sys, name)) === "half";
 }
 
 // "half": a record with no UniqueID; "none": dscl says there is no such record; "unknown": dscl

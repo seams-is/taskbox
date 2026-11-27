@@ -33,8 +33,3 @@ export function ranked(items: WaitingItem[], rules: ClassRule[]): (WaitingItem &
     .sort((a, b) => a.rank - b.rank || a.queuedAt - b.queuedAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
-// What taskbox check says about rules a source can never match: a rule that names events, with a
-// source that reports none.
-export function rulesNeedingEvents(rules: ClassRule[]): string[] {
-  return rules.filter((r) => r.when.event?.length).map((r) => r.name);
-}

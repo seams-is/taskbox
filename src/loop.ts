@@ -1,7 +1,7 @@
 // The runner loop. One fresh VM per job, deleted after it.
 // It runs as ci, in ci's login session, from the LaunchAgent.
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { within } from "./clock.ts";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
@@ -35,7 +35,6 @@ import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
 import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readLogicalCpus, readMemory } from "./memory.ts";
 import { clean, mirrorPull, PullRecorder, writeReady } from "./progress.ts";
-import { clearRequests } from "./requests.ts";
 import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from "./load.ts";
 import { sourceStep } from "./sourcefail.ts";
 import type { Snapshot } from "./source.ts";
@@ -212,8 +211,6 @@ export class Slots {
   fatal: unknown;
   // The GB a download between VMs may still write, counted in every other slot's disk check.
   downloadGB = 0;
-  // Whether this loop run has ended a hold kept from before v2.2.0 (endOldHold).
-  oldHoldEnded = false;
   // The slots that are empty and waiting on a drain (taskbox drain). All of them: drained.
   readonly drained = new Set<number>();
   emptyFor: number | undefined; // the control gen the loop last said every slot was empty for
@@ -427,7 +424,8 @@ function recordName(d: LoopDeps, ref: string, name: string): void {
 
 // Only the pinned image stays. A finished image that isn't the pin is deleted once the pin is
 // ready. Each removal gets a line the owner sees in watch and check.
-export async function removeOldImages(d: LoopDeps): Promise<string[]> {
+// dry: names each one that would go, and removes nothing.
+export async function removeOldImages(d: LoopDeps, dry = false): Promise<string[]> {
   const notes: string[] = [];
   const t = engineOf(d);
   let vms;
@@ -439,14 +437,19 @@ export async function removeOldImages(d: LoopDeps): Promise<string[]> {
   const names = readNames(d);
   for (const vm of vms) {
     if (!vm.image || kindsOf(d.cfg).some((k) => forKind(d.cfg, k).image === vm.name)) continue;
+    // Its name from when this loop pulled it; an image an older loop pulled is named by its repo.
+    const name = clean(names[vm.name] ?? `${vm.name.replace(/@sha256:.*/, "").replace(/^ghcr\.io\/cirruslabs\//, "")}, an older image`);
+    // The engine's size is whole gigabytes, rounded down.
+    const gb = vm.sizeGB ? `, about ${vm.sizeGB} GB` : "";
+    if (dry) {
+      notes.push(`Old image ${name}${gb}.`);
+      continue;
+    }
     const del = await t.delete(vm.name);
     if (del.code !== 0) continue;
-    // Its name from when this loop pulled it; an image an older loop pulled is named by its repo.
-    const name = names[vm.name] ?? `${vm.name.replace(/@sha256:.*/, "").replace(/^ghcr\.io\/cirruslabs\//, "")}, an older image`;
-    // The engine's size is whole gigabytes, rounded down.
-    notes.push(`Removed old image ${clean(name)}${vm.sizeGB ? `, about ${vm.sizeGB} GB freed` : ""}.`);
+    notes.push(`Removed old image ${name}${gb ? `${gb} freed` : ""}.`);
   }
-  if (notes.length) {
+  if (notes.length && !dry) {
     writeState(d, { cleanup: notes.join(" "), cleanupAt: d.sys.now() });
     for (const n of notes) d.log.write(n);
   }
@@ -706,28 +709,6 @@ export function netFor(cfg: Config, pub: string | string[]): NetPolicy {
 // A job's ceiling: its own time limit plus 10 min.
 export const ceilingMs = (cfg: Config) => (cfg.jobTimeoutMinutes + 10) * 60_000;
 
-// hold and share are gone in v2.2.0. A hold kept in the state from before, and any request
-// left in the old requests folder, end at the loop's first read after the update, with one log line. The
-// folder is ci's, so ci may remove what anyone left there; the next install removes the folder.
-export function endOldHold(d: LoopDeps): void {
-  const st = readState(d);
-  const h = st.hold as { until?: unknown; by?: unknown } | undefined;
-  const kept = h && typeof h === "object" && typeof h.until === "number" && h.until > d.sys.now() && typeof h.by === "string" ? { until: h.until, by: h.by } : undefined;
-  // Never walks into what someone else left (requests.ts).
-  const cleared = clearRequests(d.paths.requests);
-  const left = cleared.files;
-  if (st.hold !== undefined || st.holdUse !== undefined) writeState(d, { hold: undefined, holdUse: undefined });
-  if (kept || left) {
-    const what = [kept ? `${clean(kept.by).slice(0, 32)}'s hold until ${new Date(kept.until).toISOString()}` : "", left ? `${left} request${left > 1 ? "s" : ""} left for one` : ""].filter(Boolean).join(" and ");
-    d.log.write(`hold: ${what} ended: hold is gone in v2.2.0`);
-  }
-  // A folder someone left there with files in it stays, and the install can't remove the folder.
-  if (cleared.left && !st.requestsLeftSaid) {
-    d.log.write(`the old requests folder keeps ${cleared.left} name${cleared.left > 1 ? "s" : ""} another user left, so it stays. Nothing reads it`);
-    writeState(d, { requestsLeftSaid: true });
-  }
-}
-
 // The memory of the other slots' VMs, in MB: each one's own size.
 function othersMB(d: LoopDeps): number {
   return (d.box?.othersUp(d.slot) ?? []).reduce((n, o) => n + (o.memoryMB ?? sizeOf(d.cfg, o.kind, o.size).vmMemoryMB), 0);
@@ -794,11 +775,6 @@ function drainOrHold(d: LoopDeps): { key: string; text: string } | undefined {
 // Why the box starts no VM now, or undefined. A drain or a hold first, then the guard, then memory.
 // up: this slot's VM is already up and waits for a job, so its own memory is in use already.
 export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; text: string } | undefined> {
-  // Once per loop run, so files someone keeps leaving in the old folder can't fill the log.
-  if (!d.box?.oldHoldEnded) {
-    endOldHold(d);
-    if (d.box) d.box.oldHoldEnded = true;
-  }
   const hold = drainOrHold(d);
   if (hold) return hold;
   // A waiting VM that no longer fits beside what Lights and Heavies hold gives way to them.

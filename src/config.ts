@@ -189,7 +189,6 @@ export interface Paths {
   cronAllow: string; // /usr/lib/cron/cron.allow: when there, the only users cron takes
   atAllow: string; // /usr/lib/cron/at.allow: when there, the only users at takes
   jobsFile: string; // one line per job, for all time
-  requests: string; // /opt/taskbox-state/<project>-requests: where holds and shares were left before v2.2.0; cleared, then removed
   rmPlist: string; // Screen Sharing's VNC password and permission settings
   vncPassword: string;
   service: string; // accounts.service, the account that runs the loop
@@ -266,7 +265,6 @@ export function paths(root: string, box: BoxNames): Paths {
     atAllow: join(root, "usr/lib/cron/at.allow"),
     ...(agent !== undefined ? { agent, agentHome: join(root, "private/var", `taskbox-${agent}`) } : {}),
     jobsFile: join(root, "opt/taskbox-state", project, "jobs.jsonl"),
-    requests: join(root, "opt/taskbox-state", `${project}-requests`),
     rmPlist: join(root, "Library/Preferences/com.apple.RemoteManagement.plist"),
     vncPassword: join(root, "Library/Preferences/com.apple.VNCSettings.txt"),
     service,

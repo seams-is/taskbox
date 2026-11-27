@@ -13,13 +13,13 @@ export const commands: CommandSpec[] = [
     who: ["anyone"],
     flags: ["json"],
     options: [
-      { name: "--login", value: "LOGIN", check: (v) => LOGIN.test(v) },
+      { name: "--owner", value: "LOGIN", check: (v) => LOGIN.test(v) },
       { name: "--admin", value: "NAME", check: (v) => SHORT.test(v), repeat: true },
       { name: "--whole" },
     ],
     file: (c) => c.opts.whole === true,
     // The controller reads --json, and its answer must name the real owner, never a placeholder.
-    check: ({ opts, flags }) => (flags.json !== undefined && typeof opts.login !== "string" ? "policy show --json needs --login with your Tailscale login, which the controller passes." : undefined),
+    check: ({ opts, flags }) => (flags.json !== undefined && typeof opts.owner !== "string" ? "policy show --json needs --owner with your Tailscale login, which the controller passes." : undefined),
     did: "Printed the policy. Nothing changed.",
     async run(c) {
       const { loadConfig, tagOf } = await import("../config.ts");
@@ -29,7 +29,7 @@ export const commands: CommandSpec[] = [
       const { trustedKey } = await import("../approver.ts");
       const { readPin, readPoolRecord } = await import("../pin.ts");
       const { policyAnswer, policyEntries, policyFor, policyText } = await import("../policy.ts");
-      const owner = typeof c.opts.login === "string" ? c.opts.login : undefined;
+      const owner = typeof c.opts.owner === "string" ? c.opts.owner : undefined;
       const extra = Array.isArray(c.opts.admin) ? c.opts.admin : [];
       const cfg = loadConfig(c.p.app, c.p.boxSettings);
       // The box's admins, always read here: --admin only adds names. Each role is also checked on its
@@ -79,7 +79,7 @@ export const commands: CommandSpec[] = [
         print(policyEntries(pol));
       }
       if (own.notYet.length) (c.opts.whole ? c.err : c.say)(`${own.notYet.join(" and ")} ${own.notYet.length === 1 ? "isn't" : "aren't"} made yet, so the policy leaves ${own.notYet.length === 1 ? "it" : "them"} out. Type this again after taskbox update.`);
-      if (owner === undefined) (c.opts.whole ? c.err : c.say)("Put your Tailscale login in place of YOUR_LOGIN, or type taskbox policy show --login <your login>.");
+      if (owner === undefined) (c.opts.whole ? c.err : c.say)("Put your Tailscale login in place of YOUR_LOGIN, or type taskbox policy show --owner <your login>.");
       // The controller builds one block for every paired box from each box's result.
       const { readInstallId } = await import("../answers.ts");
       const installId = readInstallId(c.own.installId);

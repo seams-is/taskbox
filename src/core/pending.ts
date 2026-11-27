@@ -5,7 +5,7 @@
 //
 // `shows` is the box's own text for the change, made when it is raised from the checked request,
 // never text a controller or an agent sent. `payload` is what the guard applies on the yes; the kind's
-// owner (keys, rules, settings, channel, rollback) reads it. Nothing secret goes in either: the file
+// owner (keys, rules, settings, signers) reads it. Nothing secret goes in either: the file
 // is readable by every account on the box.
 import { createHash } from "node:crypto";
 import { looksSecret } from "./events.ts";
@@ -20,13 +20,13 @@ export const PENDING_MAX = 20;
 export const SHOWS_MAX = 10;
 export const PAYLOAD_MAX = 8 * 1024;
 export const PENDING_MAX_BYTES = 256 * 1024;
-export const KINDS = ["approver-add", "approver-rotate", "rule", "settings", "channel", "rollback-v2", "signers"] as const;
+export const KINDS = ["approver-add", "approver-rotate", "rule", "settings", "signers"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export interface Pending {
   id: string; // pc_<ULID>
   kind: Kind;
-  subject: string; // what it changes: a key's fingerprint, a rule's id, "settings", "channel", "rollback"
+  subject: string; // what it changes: a key's fingerprint, a rule's id, "settings", "signers"
   shows: string[]; // the lines `confirm` shows, the box's own words
   actor: string; // who asked, as events say it
   askedAt: number;

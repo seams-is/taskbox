@@ -269,7 +269,7 @@ export async function keyRows(c: Pick<BoxCtx, "p" | "deps" | "ops" | "uid">): Pr
   const { fingerprint } = await import("./approver.ts");
   const offer = readOffer(state, rootUid, now);
   // A controller's offer, for a paired controller to approve: its base64 is public, as any key's.
-  if (offer) rows.push({ key: "approver", fingerprint: fingerprint(offer.key), offered: offer.key.split(" ")[1]!, note: "offered by a controller, not pinned: a paired controller approves it with taskbox key add approver" });
+  if (offer) rows.push({ key: "approver", fingerprint: fingerprint(offer.key), offered: offer.key.split(" ")[1]!, note: "offered by a controller and waiting: a paired controller approves it with taskbox key add approver" });
   const tn = readTailnetPin(tailnetPinPath(state.dir), rootUid);
   rows.push({ key: "tailscale", ...(tn ? { note: `pinned to its tailnet` } : { note: "its tailnet is pinned at the first rotation" }), ...(rotation("tailscale") ? { rotation: rotation("tailscale")! } : {}) });
   return rows;

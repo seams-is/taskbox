@@ -8,7 +8,6 @@ import type { Network } from "./settings.ts";
 
 // A query with no answer this long is a timeout; a connect with no answer, no answer.
 export const DNS_TIMEOUT_MS = 5_000;
-export const CONNECT_WAIT_MS = 10_000;
 export const TOP = 20;
 export const NAMES = 10;
 // What Softnet itself refused: it logs nothing (Softnet 0.25.0), so taskbox can't say.

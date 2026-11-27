@@ -18,7 +18,6 @@ import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SH
 import { checkAnswer, logAnswer, statusAnswer } from "./answers.ts";
 import { cleanLeftovers, engineOf, isJobVm, type LoopDeps, removeOldImages } from "./loop.ts";
 import { kitFor } from "./vm.ts";
-import { removeRequests } from "./requests.ts";
 import { rows } from "./rows/index.ts";
 import { bootId, isBootId, monoNow } from "./core/boot.ts";
 import { endOpJobs, oneShotPlist, oneShotScript, pidAlive, reloadThroughLaunchd, stopChildren } from "./core/child.ts";
@@ -28,8 +27,7 @@ import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { canUnlock, halfMadeState, lookup, readRecord, UNLOCK_UNKNOWN, removable, removeGroup, stillMade, stopProcesses, undenyIn, undoScreenSharing, uidOf, writeRecord } from "./accounts.ts";
 import { readBoxFile } from "./boxsettings.ts";
-import { fingerprint } from "./approver.ts";
-import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "./pin.ts";
+import { type PoolRecord, readPoolRecord, writePoolRecord } from "./pin.ts";
 import { adminState } from "./elevate.ts";
 import { activePull, clean as noControl, pullLine, readPull } from "./progress.ts";
 import { type Config, forKind, KIND_WORD, kindsOf, loadConfig, loadRepoOf, MACOS_MAX, sourceOf, vmsAtMostOf } from "./config.ts";
@@ -272,7 +270,8 @@ export async function check(c: CheckContext, d: OpsDeps, versions: Versions, jso
 
 // Leftover VMs and images that aren't the pin. The loop does this too after
 // each new image; this is for freeing space now.
-export async function cleanBox(d: OpsDeps, loop: LoopDeps): Promise<number> {
+// What is to go is shown first, and goes after a typed yes; --dry-run shows it and stops.
+export async function cleanBox(d: OpsDeps, loop: LoopDeps, o: { dryRun?: boolean; yes?: boolean } = {}): Promise<number> {
   if (!asService(d)) {
     d.say(`Run taskbox prune as ${d.paths.service}: the images and VMs are ${d.paths.service}'s.`);
     return 1;
@@ -284,9 +283,19 @@ export async function cleanBox(d: OpsDeps, loop: LoopDeps): Promise<number> {
   // and a restarting loop names its new VMs afresh.
   const running = await loopRunning(d.sys, d.uid, d.paths.loopLabels);
   // A leftover VM is only left over when no job could be using it.
-  const cleaned = leftovers && !running ? await cleanLeftovers(loop) : { removed: 0, failed: 0 };
   // While the loop downloads, its download is left alone.
   const downloading = running && [d.paths.pull, d.paths.pullLinux].some((f) => readPull(f)?.state === "downloading");
+  const plan = [...(downloading ? [] : await removeOldImages(loop, true)), ...(leftovers && !running ? [`${leftovers} leftover VM${leftovers > 1 ? "s" : ""}.`] : [])];
+  if (plan.length && (o.dryRun || !o.yes)) {
+    d.say(o.dryRun ? "taskbox prune would remove:" : "taskbox prune removes:");
+    for (const l of plan) d.say(`  ${l}`);
+    const go = !o.dryRun && (await d.ask("Type yes to remove them: ")).trim().toLowerCase() === "yes";
+    if (!go) {
+      for (const l of footer(await stateNow(d), "Nothing changed.")) d.say(l);
+      return o.dryRun ? 0 : 1;
+    }
+  }
+  const cleaned = leftovers && !running ? await cleanLeftovers(loop) : { removed: 0, failed: 0 };
   const notes = downloading ? [] : await removeOldImages(loop);
   if (downloading) d.say("Old images left alone: the loop is downloading. Type taskbox prune again once it's done.");
   const freed = (await df()) - before;
@@ -301,14 +310,14 @@ export async function cleanBox(d: OpsDeps, loop: LoopDeps): Promise<number> {
   return 0;
 }
 
-// The last day, in plain sentences. Only the loop's own lines: no job output reaches the log.
-export function plainLogEntries(lines: string[], now: number): { at: number; text: string }[] {
+// The lines from since on, in plain sentences. Only the loop's own lines: no job output reaches the log.
+export function plainLogEntries(lines: string[], since: number): { at: number; text: string }[] {
   const out: { at: number; text: string }[] = [];
   for (const raw of lines) {
     const m = /^(\S+) (.*)$/.exec(raw);
     if (!m) continue;
     const t = Date.parse(m[1]!);
-    if (!Number.isFinite(t) || now - t > 24 * 3600_000) continue;
+    if (!Number.isFinite(t) || t < since) continue;
     const msg = noControl(m[2]!);
     const job = /^job (\S+) (\S+)$/.exec(msg);
     // A VM that gave way to the other kind ran nothing: one every few minutes would bury the day.
@@ -336,19 +345,14 @@ const FIXED: [RegExp, string][] = [
   [/^pre-start check failed/, "No VM started: a check failed."],
   [/^removed leftover VM/, "Removed a VM left from before."],
   [/^loop stopped/, "The loop stopped."],
-  // v2.2.0: the one hold line left, as a hold kept from before ends. Lines from before still read as they did.
-  [/^hold: .* ended: hold is gone in v2\.2\.0$/, "A hold from before v2.2.0 ended: jobs share the box all the time."],
-  [/^hold: /, "The box was held."],
-  [/^share: /, "The box was shared again."],
-  [/^no new VM: held/, "No new VM started: the box is held."],
 ];
-export function jsonLogEntries(lines: string[], now: number): { at: number; text: string }[] {
+export function jsonLogEntries(lines: string[], since: number): { at: number; text: string }[] {
   const out: { at: number; text: string }[] = [];
   for (const raw of lines) {
     const m = /^(\S+) (.*)$/.exec(raw);
     if (!m) continue;
     const t = Date.parse(m[1]!);
-    if (!Number.isFinite(t) || now - t > 24 * 3600_000) continue;
+    if (!Number.isFinite(t) || t < since) continue;
     const job = /^job (\S+) (\S+)$/.exec(m[2]!);
     const s = job ? JOB_SENTENCES[job[2]!] : FIXED.find(([re]) => re.test(m[2]!))?.[1];
     if (s) out.push({ at: t, text: s });
@@ -356,20 +360,59 @@ export function jsonLogEntries(lines: string[], now: number): { at: number; text
   return out;
 }
 
-export function plainLog(lines: string[], now: number): string[] {
-  return plainLogEntries(lines, now).map((e) => `${new Date(e.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}  ${e.text}`);
-}
+const plainLines = (es: { at: number; text: string }[]) => es.map((e) => `${new Date(e.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}  ${e.text}`);
+// The last day before now, in plain sentences.
+export const plainLog = (lines: string[], now: number): string[] => plainLines(plainLogEntries(lines, now - 24 * 3600_000));
 
-export async function log(d: OpsDeps, json = false): Promise<number> {
-  // The log before its last move, then the log, so the last day reads whole across a move.
-  const lines = `${readStateTail(`${d.paths.log}.1`)}\n${readStateTail(d.paths.log)}`.split("\n");
-  if (json) {
-    d.say(JSON.stringify(logAnswer(jsonLogEntries(lines, d.sys.now()))));
+// What taskbox logs reads: which daemon, the times, how many lines, the words, and -f's watch.
+export interface LogRead {
+  from?: string; // loop (the default) or guard; the rest keep no file
+  since?: number;
+  until?: number;
+  tail?: number;
+  grep?: string;
+  follow?: { stopped(): boolean; stream?(lines: string[], result: Record<string, unknown>): void };
+}
+export const LOG_FROM = ["loop", "guard", "capture", "keys", "install"] as const;
+
+export async function log(d: OpsDeps, json = false, o: LogRead = {}): Promise<number> {
+  const file = !o.from || o.from === "loop" ? d.paths.log : o.from === "guard" ? d.paths.guardLog : undefined;
+  if (!file) {
+    d.say(json ? JSON.stringify(logAnswer([])) : `The ${o.from} daemon keeps no log file on this box. taskbox logs --from loop or --from guard reads the two that do.`);
     return 0;
   }
-  const out = plainLog(lines, d.sys.now());
-  if (!out.length) d.say("No log yet for the last day.");
-  for (const l of out) d.say(l);
+  const now = d.sys.now();
+  const since = o.since ?? now - 24 * 3600_000;
+  // The log before its last move, then the log, so the last day reads whole across a move.
+  const read = (from: number) => {
+    const lines = `${readStateTail(`${file}.1`)}\n${readStateTail(file)}`.split("\n");
+    const keep = (e: { at: number; text: string }) => e.at >= from && (o.until === undefined || e.at <= o.until) && (!o.grep || e.text.toLowerCase().includes(o.grep.toLowerCase()));
+    const plain = plainLogEntries(lines, from).filter(keep);
+    const fixed = jsonLogEntries(lines, from).filter(keep);
+    return o.tail ? { plain: plain.slice(-o.tail), fixed: fixed.slice(-o.tail) } : { plain, fixed };
+  };
+  const first = read(since);
+  if (json && !o.follow) {
+    d.say(JSON.stringify(logAnswer(first.fixed)));
+    return 0;
+  }
+  if (!first.plain.length) d.say(o.since === undefined && !o.grep ? "No log yet for the last day." : "No log lines match.");
+  for (const l of plainLines(first.plain)) d.say(l);
+  // -f: each new line as it comes, until Ctrl-C.
+  if (o.follow) {
+    let last = Math.max(since - 1, ...first.plain.map((e) => e.at));
+    while (!o.follow.stopped()) {
+      await d.sys.sleep(2_000);
+      const next = read(last + 1);
+      if (!next.plain.length) continue;
+      const lines = plainLines(next.plain);
+      for (const l of lines) d.say(l);
+      o.follow.stream?.(lines, { lines: logAnswer(next.fixed).lines });
+      last = Math.max(last, ...next.plain.map((e) => e.at));
+    }
+    d.say("Stopped following. taskbox logs -f follows again.");
+  }
+  if (json) return 0;
   const s = await stateNow(d);
   for (const l of footer(s, "Nothing changed.")) d.say(l);
   return 0;
@@ -500,7 +543,6 @@ export function reloadScript(label: string, plist: string, token: string, self: 
 export function reloadPlist(script: string): string {
   return oneShotPlist(RELOAD_JOB, script);
 }
-
 
 function readText(path: string): string | undefined {
   try {
@@ -975,16 +1017,6 @@ async function removeLocked(d: OpsDeps, o: RemoveOpts): Promise<number> {
       missed.push(`the job history (${noControl((e as Error).message).slice(0, 80)})`);
     }
   }
-  try {
-    if (lstatExists(d.paths.requests)) {
-      // Never walks into a folder a user left there (requests.ts).
-      const r = removeRequests(d.paths.requests);
-      if (!r.removed) throw new Error(r.left ? `${r.left} folders another user left in it` : "it couldn't be removed");
-      done.push("removed the requests folder");
-    }
-  } catch (e) {
-    missed.push(`the requests folder (${noControl((e as Error).message).slice(0, 80)})`);
-  }
   // The service's own folder is deleted as the service, so a link it swaps in mid-delete can only reach its own files.
   if (lstatExists(d.paths.state)) {
     const r = await runAsService(d.sys, o.serviceUid, ["/bin/rm", "-rf", "--", d.paths.state]);
@@ -1233,38 +1265,6 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
     missed.push(`the workspace account's record (${noControl((e as Error).message).slice(0, 80)})`);
   }
   return { kept };
-}
-
-// taskbox key reset approver: clears the approver key the box
-// trusts, for a lost controller, at the box only, after a typed yes. Workspaces stay off until the next
-// taskbox update pins the key taskbox.json names, after its own yes.
-export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {
-  if (o.overSsh) {
-    for (const l of ["taskbox key reset approver runs at the box only: the key it clears is the one that proves you approved a workspace.", "", "Now: unchanged.", "Did: Nothing changed.", "Next: At the box, log in as your admin user and type taskbox key reset approver."]) d.say(l);
-    return 1;
-  }
-  const pin = readPin(d.paths.approverPin, d.rootUid ?? 0);
-  if (pin.state === "none" || pin.state === "cleared") {
-    for (const l of footer(await stateNow(d), "No approver key is pinned on this box. Nothing changed.", NOTHING)) d.say(l);
-    return 0;
-  }
-  d.say(pin.state === "pinned" ? `This box trusts the approver key ${fingerprint(pin.key)}.` : "This box's pinned approver key isn't root's plain file.");
-  d.say("Clearing it turns workspaces off, and this box never takes that key again. The next taskbox update shows the key taskbox.json names, with its fingerprint, and pins it after your yes. Clear it when the controller that holds the key is lost.");
-  if ((await d.ask("Type yes to clear it: ")).trim().toLowerCase() !== "yes") {
-    for (const l of footer(await stateNow(d), "Nothing changed.", NOTHING)) d.say(l);
-    return 1;
-  }
-  // The file stays, with no key: its generation and the cleared fingerprint keep every old statement
-  // and the cleared key out. A file that couldn't be read gets a generation past any count it held.
-  const next = pin.state === "pinned" ? { key: null, gen: pin.gen, cleared: [...pin.cleared.filter((c) => c !== fingerprint(pin.key)), fingerprint(pin.key)] } : { key: null, gen: Math.floor(d.sys.now() / 1000), cleared: [] };
-  try {
-    writePin({ chown: o.chown ?? (() => {}), rootUid: d.rootUid ?? 0 }, d.paths.approverPin, next);
-  } catch (e) {
-    for (const l of footer(await stateNow(d), `The key wasn't cleared (${noControl((e as Error).message).slice(0, 80)}).`, "Nothing to do: agents fix it.")) d.say(l);
-    return 1;
-  }
-  for (const l of footer(await stateNow(d), "Cleared the approver key. Workspaces are off.", "Make a new key on the controller, put it in taskbox.json in a PR, then type taskbox update at the box, and check its fingerprint.")) d.say(l);
-  return 0;
 }
 
 // taskbox unlock: lets the service account unlock the disk after a restart, so the FileVault screen takes one password.

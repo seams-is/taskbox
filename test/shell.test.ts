@@ -23,7 +23,7 @@ describe("remote's shell", () => {
     for (const line of ["clean"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
   });
   test("refuses a flag or word the command doesn't take, with the command's own line", () => {
-    expect(commandFor("status --force")).toEqual({ no: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]" });
+    expect(commandFor("status --force")).toEqual({ no: "taskbox status doesn't take --force. Usage: taskbox status [--json] [--watch]" });
     for (const line of ["status myproject", "job list -n x", "job list --tail", "job", "check --away --away", "logs --json=1", "template show nothing", "policy show", "connect github", "key reset approver"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
   });
   test("takes the workspace commands, each word checked by the registry's parser", () => {
@@ -93,8 +93,8 @@ describe("the shell", () => {
 
   // A refusal is a usage error, exit 2, and an envelope when the line asked for --json.
   test("a refusal is exit 2, and with --json an error envelope", () => {
-    expect(refusal("status --force")).toEqual({ out: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]", code: 2 });
-    const r = refusal("logs -f --json");
+    expect(refusal("status --force")).toEqual({ out: "taskbox status doesn't take --force. Usage: taskbox status [--json] [--watch]", code: 2 });
+    const r = refusal("size list -f --json");
     expect(r?.code).toBe(2);
     const e = JSON.parse(r!.out);
     expect([e.answers, e.ok, e.exit, e.error.code]).toEqual([4, false, 2, "usage"]);

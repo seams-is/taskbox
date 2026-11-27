@@ -148,26 +148,6 @@ export function policyEntries(p: Policy): string {
   return out.join("\n");
 }
 
-// What `taskbox policy show` was given on its command line, or why it can't run.
-export function policyArgs(rest: readonly string[]): { owner?: string; admins: string[]; whole: boolean } | string {
-  const admins: string[] = [];
-  let owner: string | undefined;
-  let whole = false;
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i]!;
-    if (a === "--whole") whole = true;
-    else if (a === "--login" || a === "--admin") {
-      const v = rest[++i];
-      // A Tailscale login is an email or a GitHub name with a domain; an admin is a short name.
-      const ok = a === "--login" ? v !== undefined && /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$/.test(v) : v !== undefined && /^[A-Za-z_][A-Za-z0-9._-]{0,31}$/.test(v);
-      if (!ok) return `${a} needs ${a === "--login" ? "your Tailscale login, such as you@example.com" : "an admin account's short name"}`;
-      if (a === "--login") owner = v;
-      else admins.push(v!);
-    } else return "taskbox policy show [--login <your Tailscale login>] [--admin <name>]... [--whole]";
-  }
-  return { ...(owner !== undefined ? { owner } : {}), admins, whole };
-}
-
 // The people with Tailscale SSH under a box's settings, read loosely from its taskbox.json. Before
 // accounts.ssh, every person (screenSharingUsers, then accounts.people) was in check mode, as the
 // doc's policy had it.

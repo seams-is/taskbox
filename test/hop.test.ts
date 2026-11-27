@@ -172,7 +172,7 @@ describe("the statement", () => {
   test.serial("must be newer than the release in place, at most one major past it, and allow it as a start", () => {
     const st = statementFor("e".repeat(40));
     expect(statementProblem(st, TAG, "v2.6.1")).toBeUndefined();
-    expect(statementProblem(st, "v3.0.0-rc.2", "v2.6.1")).toBe("the signed statement is for v3.0.0-rc.1, not v3.0.0-rc.2");
+    expect(statementProblem(st, "v3.0.0-rc.2", "v2.6.1")).toBe("the signed statement is for v3.0.0-rc.1, and this is v3.0.0-rc.2");
     expect(statementProblem(st, TAG, "v3.0.0-rc.1")).toBe("v3.0.0-rc.1 isn't newer than v3.0.0-rc.1, the installed release");
     expect(statementProblem(st, TAG, undefined)).toContain("has no version taskbox reads");
     expect(statementProblem({ ...statementFor("e".repeat(40)), version: "4.0.0", tag: "v4.0.0" }, "v4.0.0", "v2.6.1")).toBe("v4.0.0 is more than one major version past v2.6.1");

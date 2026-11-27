@@ -6,8 +6,9 @@
 import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { BoxCtx, ErrorBody, Outcome } from "../command.ts";
+import type { BoxCtx, Outcome } from "../command.ts";
 import { duration, EXIT } from "../command.ts";
+import { err, typedYes } from "../cmdkit.ts";
 import { argsOf } from "../core/statement.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { loadConfig } from "../config.ts";
@@ -21,7 +22,6 @@ import { frozenLine, isBad, keptInstalls, readMarks, statementOf } from "./recor
 import { type UpdateKind, updateArgsProblem } from "./start.ts";
 import { dirname } from "node:path";
 
-const err = (code: ErrorBody["code"], message: string, who: ErrorBody["who"] = null): ErrorBody => ({ code, message, fix: null, who });
 const clean = (t: string, n = 120) => t.replace(/[^\x20-\x7e]/g, " ").slice(0, n);
 
 async function listed(c: BoxCtx): Promise<Listed[] | string> {
@@ -124,28 +124,19 @@ export async function updateRun(c: BoxCtx, kind: UpdateKind): Promise<Outcome> {
     const to = typeof args.to === "string" ? args.to : kept.find((k) => compareVersions(k.record.version, installed) < 0)?.record.version;
     c.say(`This takes the box back from ${installed} to ${to ?? "the install before"}, with the settings it was installed with, narrowed where the box's state is narrower now. Running jobs finish first.`);
   }
-  if (c.flags.yes === undefined) {
-    if (c.deps.terminal?.() === false) {
-      const line = `${kind} asks a typed yes, and there is no terminal here. Add -y to answer it.`;
-      c.say(line);
-      return { exit: EXIT.usage, error: err("usage", line, "at-the-box") };
-    }
-    if ((await c.ask("Type yes to go on: ")).trim().toLowerCase() !== "yes") {
-      c.say("Nothing changed.");
-      return { exit: EXIT.failed, did: "Nothing changed." };
-    }
-  }
+  const no = await typedYes(c, kind, "");
+  if (no) return no;
   const r = await askGuard(c, "admin", kind, args);
   if (!r.ok) return r.out;
   const o = r.outcome;
   c.say(o.said);
-  if (!o.ok) return { exit: EXIT.failed, result: { request: r.id, ...(o.op ? { op: o.op } : {}) }, error: err(o.code ?? "failed", o.said) };
+  if (!o.ok) return { exit: o.code === "expired" || o.code === "denied" ? EXIT.denied : EXIT.failed, result: { request: r.id, ...(o.op ? { op: o.op } : {}) }, error: err(o.code ?? "failed", o.said) };
   if (!o.op || c.flags.detach !== undefined) {
     if (o.op) c.say(`Its op is ${o.op}. taskbox op show ${o.op} -w watches it.`);
     return { exit: EXIT.ok, changed: true, result: { request: r.id, ...(o.op ? { op: o.op } : {}) } };
   }
   const limit = typeof c.flags.timeout === "string" ? duration(c.flags.timeout)! : 0;
-  c.say(`Ctrl-C stops watching; the ${kind} carries on. taskbox op show ${o.op} -w watches it again.`);
+  c.say(`Ctrl-C stops watching; the ${kind} carries on. taskbox op show ${o.op} -w watches it again; taskbox op cancel ${o.op} cancels it before its swap.`);
   const interrupt = onInterrupt();
   try {
     const f = await followOp(c, o.op, { polls: limit ? Math.ceil(limit / WATCH_MS) : 0, interrupt, again: `taskbox op show ${o.op} -w`, undo: `taskbox op cancel ${o.op}`, done: kind === "update" ? "Installed and proved." : "Rolled back." });

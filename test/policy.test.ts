@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Accounts, POOL_USER, poolNames, validateAccounts } from "../src/access.ts";
-import { type BoxPolicy, policyAnswer, policyArgs, policyBlock, policyEntries, policyFor, policyOfAnswer, policyText } from "../src/policy.ts";
+import { type BoxPolicy, policyAnswer, policyBlock, policyEntries, policyFor, policyOfAnswer, policyText } from "../src/policy.ts";
 
 const root = join(import.meta.dir, "..");
 const fixture = (name: string) => readFileSync(join(root, "test/fixtures/policy", name), "utf8");
@@ -186,19 +186,6 @@ describe("one block for every paired box", () => {
   });
   test("an install ID that could break the comment is refused", () => {
     expect(() => policyBlock([{ installId: "x\n}", policy: policyFor(a) }])).toThrow(/install ID/);
-  });
-});
-
-describe("taskbox policy show's arguments", () => {
-  test("an owner, admins and --whole", () => {
-    expect(policyArgs([])).toEqual({ admins: [], whole: false });
-    expect(policyArgs(["--login", "you@example.com", "--admin", "boss", "--admin", "deputy", "--whole"])).toEqual({ owner: "you@example.com", admins: ["boss", "deputy"], whole: true });
-  });
-  test("anything else is refused with one line, before anything is read", () => {
-    expect(policyArgs(["--login"])).toMatch(/--login needs your Tailscale login/);
-    expect(policyArgs(["--login", "not a login"])).toMatch(/--login needs/);
-    expect(policyArgs(["--admin", "a b"])).toMatch(/--admin needs/);
-    expect(policyArgs(["--apply"])).toMatch(/^taskbox policy show \[--login/);
   });
 });
 

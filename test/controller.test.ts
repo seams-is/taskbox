@@ -263,8 +263,6 @@ describe("box commands over ssh, from a v3 box", () => {
       const r = await runLine(d, argv);
       expect({ argv, code: r.code, said: r.lines[0] }).toEqual({ argv, code: 1, said: expect.stringMatching(/runs at the box/) });
     }
-    const j = await runLine(d, ["policy", "show", "--login", "me@example.com", "--json"]);
-    expect(JSON.parse(j.lines[0]!)).toMatchObject({ error: { code: "refused-over-ssh", who: "at-the-box" } });
     expect(w.calls).toEqual([]);
   }, CEILING);
 

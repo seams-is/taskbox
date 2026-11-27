@@ -27,7 +27,7 @@ function atLight(s: WsState, w: Workspace, r: Rules, now: number, done: boolean)
 export function downsized(s: WsState, o: { name: string; agent: string }, r: Rules, now: number): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
-  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s. ${o.agent} can't act on it.`);
   if (w.state !== "saving" || w.to !== "light") return no(`${w.name} is ${w.state}. --downsized answers a downsize the box asked for.`);
   const a = atLight(s, w, r, now, true);
   return { ok: true, state: a.state, name: w.name, said: `${w.name} is Light now. CI has the rest of the box.`, steps: a.steps };
@@ -166,7 +166,7 @@ export const REACH_MS = 60_000;
 export function reach(s: WsState, o: { name: string; agent: string }, now: number): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
-  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s. ${o.agent} can't act on it.`);
   if (w.state !== "ready" && w.state !== "saving") return no(`${w.name} is ${w.state}: connect works while it is ready or saving.`);
   return { ok: true, state: put(s, { ...w, reach: { at: now } }), name: w.name, said: `${w.name} runs as ${w.user}: its gate opens a session within a minute.`, steps: [] };
 }

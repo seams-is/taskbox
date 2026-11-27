@@ -227,7 +227,7 @@ export async function guardOnce(sys: Sys, cfg: Config, last?: GuardRecord): Prom
     // A Tailscale address on another interface means tailscaled isn't on its fixed utun.
     const all = await sys.run("/sbin/ifconfig", [], { timeoutMs: 10_000 });
     const elsewhere = all.code === 0 && tunAddress(all.stdout) !== null;
-    detail = `pf drops port ${SCREEN_SHARING_PORT} everywhere. ${elsewhere ? `Tailscale is on another interface, not ${tun}` : `Tailscale isn't up on ${tun}`}, so Screen Sharing reaches nowhere`;
+    detail = `pf drops port ${SCREEN_SHARING_PORT} everywhere. ${elsewhere ? `Tailscale is on another interface than ${tun}` : `Tailscale isn't up on ${tun}`}, so Screen Sharing reaches nowhere`;
   }
   // The rules are in place now, read back above.
   return { ...done(true, detail), tunUp: up, ...(missingAt !== undefined ? { missingAt } : {}), ...(missingMono !== undefined ? { missingMono } : {}), ...(missingUnread ? { missingUnread } : {}), ...(boot !== undefined ? { inPlaceBoot: boot } : {}) };
