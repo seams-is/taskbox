@@ -1,4 +1,4 @@
-// drain and stop: the owner from the controller, or the service account at the box, starts them, and
+// drain and stop: signed from the controller, or the service account at the box, starts them, and
 // they are cancelled as resume and start cancel them (the one cancel grammar). After a restart they
 // carry on: control.json, on disk, still says draining.
 import type { OpDecl } from "./decl.ts";
