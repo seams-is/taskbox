@@ -9,7 +9,7 @@
 //
 // The agent's and the owner's requests reach the guard through the agent spool (core/dispatch.ts),
 // never as files of their own.
-import { AGENT, BOOT, FINAL, isSize, isState, KEEPS, MAX_WORKSPACES, NAME, NAME_SEQ_MAX, NOTE_MAX, OPEN, PAUSED_BY, POOL_USER, RQ, STATE_V, STEP_MAX, WORDS_RE, type Workspace, type WsState } from "./model.ts";
+import { AGENT, BOOT, FINAL, isSize, isState, KEEPS, MAX_WORKSPACES, NAME, NAME_SEQ_MAX, NOTE_MAX, OPEN, PAUSED_BY, PERSON, POOL_USER, RQ, STATE_V, STEP_MAX, WORDS_RE, type Workspace, type WsState } from "./model.ts";
 
 import { CLAIM } from "./claim.ts";
 import { CLEARING_MAX } from "./signedclear.ts";
@@ -46,7 +46,7 @@ export function workspaceProblem(w: unknown): string | undefined {
       ["size", isSize(w.size) && isSize(w.asked) && RANK[w.size] <= RANK[w.asked]],
       ["why", str(w.why, WORDS_RE)],
       ["state", isState(w.state)],
-      ["user", orNull(w.user, (u) => str(u, POOL_USER))],
+      ["user", orNull(w.user, (u) => str(u, POOL_USER) || (w.own === true && str(u, PERSON)))],
       ["clear", typeof w.clear === "boolean"],
       ["hold", orNull(w.hold, holdOk)],
       ["at", time(w.at)],
@@ -89,6 +89,7 @@ const FLOW_FIELDS: [string, (v: unknown) => boolean][] = [
   ["claim", (v) => isObj(v) && str(v.key, CLAIM) && count(v.n, Number.MAX_SAFE_INTEGER)],
   ["rule", (v) => str(v, RULE_ID)],
   ["reach", (v) => isObj(v) && time(v.at)],
+  ["own", (v) => v === true],
   ["usage", (v) => isObj(v) && count(v.memoryMB, 64 * 1024 * 1024) && typeof v.cpu === "number" && Number.isFinite(v.cpu) && v.cpu >= 0 && v.cpu <= 4096 && time(v.at)],
 ];
 function flowsProblem(w: Record<string, unknown>): string | undefined {
@@ -118,7 +119,7 @@ function stateProblem(v: Record<string, unknown>): string | undefined {
   const live = ws.filter((w) => ["starting", "ready", "saving", "ending"].includes(w.state));
   if (live.some((w) => w.size === "whole") && live.length > 1) return "a Whole holds the box beside another workspace";
   if (!isObj(v.accounts) || Object.keys(v.accounts).length > 8 || !Object.entries(v.accounts).every(([u, a]) => POOL_USER.test(u) && isObj(a) && str(a.agent, AGENT) && time(a.usedAt))) return "the state's accounts aren't ones taskbox reads";
-  if (!ws.every((w) => w.user === null || FINAL.includes(w.state) || (v.accounts as Record<string, { agent: string }>)[w.user]?.agent === w.agent)) return "a workspace's account isn't recorded as its agent's";
+  if (!ws.every((w) => w.user === null || w.own === true || FINAL.includes(w.state) || (v.accounts as Record<string, { agent: string }>)[w.user]?.agent === w.agent)) return "a workspace's account isn't recorded as its agent's";
   if (Object.hasOwn(v, "fence") && !(isObj(v.fence) && typeof v.fence.ok === "boolean" && line(v.fence.why, 240))) return "the state's fence note isn't one taskbox reads";
   if (Object.hasOwn(v, "proof") && !(isObj(v.proof) && str(v.proof.user, POOL_USER) && time(v.proof.at) && typeof v.proof.ok === "boolean" && line(v.proof.why, 240))) return "the state's proof note isn't one taskbox reads";
   if (Object.hasOwn(v, "notes") && !notesOk(v.notes)) return "the state's notes aren't ones taskbox reads";

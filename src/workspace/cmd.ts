@@ -98,7 +98,9 @@ async function claimAndProof(c: BoxCtx, agent: string, size: string): Promise<{ 
 }
 
 export async function requestRun(c: BoxCtx): Promise<Outcome> {
-  const agent = c.opts.as as string;
+  // The owner's own Whole comes signed, through the --signed hook: unsigned there is nobody to sign.
+  if (typeof c.opts.as !== "string") return failed(c, "The owner's own Whole is signed with Touch ID: run taskbox workspace request --size whole --why TEXT from the controller.", "denied");
+  const agent = c.opts.as;
   const size = (c.opts.size as string | undefined) ?? "light";
   let r: Awaited<ReturnType<typeof send>> | undefined;
   // A nonce that moved on (another request applied first) is fetched and signed again, once.
@@ -262,6 +264,13 @@ export async function connectRun(c: BoxCtx): Promise<Outcome> {
   const w = s ? find(s, id) : undefined;
   if (!w) return failed(c, `No workspace ${id} on this box.`, "not-found");
   if (w.state !== "ready" && w.state !== "saving") return failed(c, `${id} is ${w.state}: connect works while it is ready or saving.`);
+  // The owner's own Whole: Screen Sharing to its person account, which asks that account's password.
+  if (w.own) {
+    if (c.opts.screen !== true) return failed(c, `${id} is the owner's own Whole, in ${w.user}: taskbox workspace connect ${id} --screen opens Screen Sharing to it.`, "usage");
+    c.say(`${id} runs in ${w.user}, at the box's screen. From the controller, --screen opens Screen Sharing there; it asks ${w.user}'s password unless the controller's keychain holds it.`);
+    return { exit: EXIT.ok, result: { id, user: w.user, screen: true } };
+  }
+  if (c.opts.screen === true) return failed(c, `${id} runs in a pool account, which has no screen: taskbox workspace connect ${id} opens a shell.`, "usage");
   // The gate opens only after a proof by the workspace's claim key.
   if (!w.claim) return failed(c, `${id} isn't bound to an agent's claim key, so nobody connects to it this way.`, "denied");
   const proof = proofHere(c, "connect", id);

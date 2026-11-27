@@ -142,7 +142,9 @@ export function readLine(d: Deps, argv: readonly string[], specs: readonly Comma
     const why = line === undefined ? "Those words have characters the box's shell doesn't take." : (commandFor(line) as { no?: string }).no ?? "The box's shell doesn't take those words.";
     return { shown: refusal(d, json, spec.path.join("."), EXIT.usage, [cleanLine(why)], { code: "usage", message: cleanLine(why), fix: null, who: null }) };
   }
-  const signed = !spec.raw && (spec.flags ?? []).includes("signed") && spec.who.includes("owner") && p.flags.signed === undefined;
+  // workspace request is the agent's, unsigned, unless it is the owner's own Whole: no --as.
+  const ownRequest = spec.path.join(" ") === "workspace request";
+  const signed = !spec.raw && (spec.flags ?? []).includes("signed") && spec.who.includes("owner") && p.flags.signed === undefined && (!ownRequest || p.opts.as === undefined);
   const stream = !spec.raw && spec.streams === true && p.flags.watch === true;
   if (stream && cut.sel === "all") {
     const l = `${name} -w follows one box. Name it with --box.`;
@@ -368,7 +370,13 @@ async function onBox(d: Deps, c: Connected, a: Ask): Promise<One> {
   if (a.spec.raw) return { box: c.box, raw: r.stdout.split("\n").filter((l) => l !== "").slice(0, 1000).map(cleanLine), exit: r.code };
   const e = readEnvelopes(r.stdout, { installId: c.box.installId, stream: true });
   if (!e.ok) return { box: c.box, stop: { stop: `${name}'s answer doesn't match what taskbox reads (${e.detail}), so the command stopped.`, next: "Update taskbox on this controller and on the box. If they match, agents look." }, exit: EXIT.failed };
-  return { box: c.box, envelopes: e.envelopes, exit: e.envelopes.at(-1)!.exit };
+  // The owner's own Whole: Screen Sharing over Tailscale, to the account the box names.
+  const last = e.envelopes.at(-1)!;
+  const r0 = last.result as Record<string, unknown> | undefined;
+  if (a.spec.path.join(" ") === "workspace connect" && a.parsed.opts.screen === true && last.exit === 0 && r0?.screen === true && typeof r0.user === "string" && /^[a-z_][a-z0-9_.-]{0,31}$/.test(r0.user) && /^[0-9a-f.:]{3,45}$/i.test(c.target.address)) {
+    await d.run(["/usr/bin/open", `vnc://${r0.user}@${c.target.address.includes(":") ? `[${c.target.address}]` : c.target.address}`], { limitMs: 10_000, maxBytes: 4096 }).catch(() => undefined);
+  }
+  return { box: c.box, envelopes: e.envelopes, exit: last.exit };
 }
 
 export function show(d: Deps, a: Ask, list: One[]): Shown {

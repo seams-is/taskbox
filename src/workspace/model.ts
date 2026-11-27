@@ -110,6 +110,7 @@ export interface Workspace {
   rule?: string | null; // the standing rule that approved it
   usage?: { memoryMB: number; cpu: number; at: number } | null; // its account's last sample (caps.ts)
   reach?: { at: number } | null; // its agent's last connect with a claim proof: the gate opens within REACH_MS of it
+  own?: true | null; // the owner's own Whole, in a person account: no pool account, no fence (scenario 19)
 }
 
 // What the guard last found of the fence (fence.ts), and its last proof before ready (probe.ts),
@@ -378,6 +379,35 @@ export function assign(s: WsState, pool: readonly string[], now: number): { stat
     steps.push({ name: w.name, type: "account", text: `${w.name} given ${user}${clear ? `; clears ${prev!.agent}'s files in ${user} before it opens` : ""}` });
   }
   return { state: st, steps };
+}
+
+// ---- The owner's own Whole (scenario 19) ----
+// Signed with Touch ID, it approves itself with the same touch. It runs in a person account from
+// accounts.people, at the owner's own screen, with no pool fence; it keeps the drain, the hold, the
+// card, end and the power-cut words. Its quiet rule reads the account's own activity (seen).
+export const OWNER_AGENT = "owner";
+export const PERSON = /^[a-z_][a-z0-9_.-]{0,31}$/;
+export function ownWhole(s: WsState, o: { user: string; why: string; by: string; rq?: string }, r: Rules, now: number): Result {
+  if (!PERSON.test(o.user)) return no("That isn't a person account's name.", "usage");
+  const why = cleanWords(o.why);
+  if (!why) return no(`The why takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`, "usage");
+  if (s.workspaces.some((w) => w.own && !isFinal(w))) return no("The owner's own Whole is live on this box already: end it first.", "busy");
+  if (s.workspaces.filter((w) => !isFinal(w)).length >= MAX_WORKSPACES) return no(`${MAX_WORKSPACES} workspaces are live on this box already.`, "busy");
+  const n = s.nameSeq + 1;
+  if (n > NAME_SEQ_MAX) return no("taskbox has used every workspace number on this box.", "busy");
+  const w: Workspace = { name: `${OWNER_AGENT}-${n}`, agent: OWNER_AGENT, asked: "whole", size: "whole", why, state: "approved", user: o.user, clear: false, hold: null, at: now, changedAt: now, approvedAt: now, by: o.by.slice(0, 120), order: s.orderSeq + 1, saveAskedAt: null, pausedBy: null, saved: null, reason: null, endedBy: null, boot: null, word: null, rq: o.rq !== undefined && RQ.test(o.rq) ? o.rq : null, own: true };
+  const st = trim({ ...s, nameSeq: n, orderSeq: s.orderSeq + 1, workspaces: [...s.workspaces, w] });
+  void r;
+  return yes(st, w.name, `${w.name} (Whole) approved in ${o.user}, the owner's own account. It starts once CI's jobs finish.`, [{ name: w.name, type: "approved", text: `${w.name} (Whole), the owner's own in ${o.user}, approved by ${o.by}`.slice(0, 240) }]);
+}
+
+// The owner's own Whole is in use: Screen Sharing connected, or its account's processes using CPU.
+// It counts as the agent's word does for the quiet rule.
+export function seen(s: WsState, name: string, text: string, now: number): WsState {
+  const w = find(s, name);
+  if (!w?.own || !OPEN.includes(w.state)) return s;
+  if (w.word && now - w.word.at < 60_000) return s;
+  return put(s, { ...w, word: { at: now, text: cleanWords(text) ?? "in use", step: null } });
 }
 
 // The account's last agent's files are gone (the guard cleared them): it may open.

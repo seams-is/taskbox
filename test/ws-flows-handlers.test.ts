@@ -32,7 +32,7 @@ const me = process.getuid!();
 const owner = keyPair();
 const WSCFG: Config = { ...CFG, accounts: { ...CFG.accounts, workspaces: { pool: "taskbox-ws", size: 2 } } };
 
-async function box() {
+async function box(cfg: Config = WSCFG) {
   const root = tempRoot();
   const p = paths(root, testBox());
   const s = rootStateOf(p);
@@ -53,7 +53,7 @@ async function box() {
     return undefined;
   });
   const handlers = handlersFor({ state: p.workspaces, rootUid: me });
-  const c = { sys, cfg: WSCFG, p, log: { write: () => {} }, writer: true, rootUid: me };
+  const c = { sys, cfg, p, log: { write: () => {} }, writer: true, rootUid: me };
   const job = requestsJob({ c, handlers, verify: verifyDeps(), chown: () => {} });
   await job();
   const d: AskDeps = { spool: s.agentSpool, outcomes: s.outcomes("agent"), nonces: s.nonces, uid: me, rootUid: me, clock: sys, sleep: () => job(), polls: 3 };
@@ -293,5 +293,30 @@ describe("claim keys and standing rules", () => {
     expect(await applyConfirm({ sys: b.sys, p: b.p, rootUid: me, events }, { id, yes: false, admin: "admin" })).toMatchObject({ ok: true, said: expect.stringContaining("nothing changed") });
     const after = readStateFile(b.p.workspaces, me);
     expect(after.kind === "ok" ? (after.state.rules ?? []) : []).toEqual([]);
+  });
+});
+
+describe("the owner's own Whole (scenario 19)", () => {
+  const PEOPLE: Config = { ...WSCFG, accounts: { ...WSCFG.accounts, people: ["person1"] } };
+  test("signed, it approves itself with the same touch, in the box's person account; only a Whole is ever owner-signed", async () => {
+    const b = await box(PEOPLE);
+    expect(await b.signed("workspace.request", { size: "light", why: "Unreal" }, "box")).toMatchObject({ ok: false, code: "usage" });
+    const r = await b.signed("workspace.request", { size: "whole", why: "Unreal" }, "box");
+    expect(r).toMatchObject({ ok: true, said: expect.stringContaining("owner-1 (Whole) approved in person1") });
+    expect(find(b.state(), "owner-1")).toMatchObject({ state: "approved", size: "whole", user: "person1", own: true, agent: "owner" });
+    // No pool account is given it, and a second one waits for the first to end.
+    expect(b.state().accounts).toEqual({});
+    expect(await b.signed("workspace.request", { size: "whole", why: "Again" }, "box")).toMatchObject({ ok: false, code: "busy" });
+    // An agent can't ask as the owner, and the owner's own takes no unsigned agent step.
+    expect(await b.send("workspace-request", { agent: "owner", size: "whole", why: "x" })).toMatchObject({ ok: false, code: "usage" });
+    expect(await b.send("workspace-end", { name: "owner-1", agent: "owner", proof: undefined })).toMatchObject({ ok: false, code: "denied" });
+    // The owner's signed end gives CI back.
+    expect(await b.signed("workspace.end", { words: ["owner-1"] })).toMatchObject({ ok: true });
+  });
+  test("a person account the box doesn't name, or none, is refused", async () => {
+    const b = await box(PEOPLE);
+    expect(await b.signed("workspace.request", { size: "whole", why: "Unreal", user: "someone" }, "box")).toMatchObject({ ok: false, code: "usage", said: expect.stringContaining("isn't one of the box's people") });
+    const none = await box();
+    expect(await none.signed("workspace.request", { size: "whole", why: "Unreal" }, "box")).toMatchObject({ ok: false, code: "usage" });
   });
 });

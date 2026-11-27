@@ -81,7 +81,7 @@ describe("the handlers", () => {
     const h = handlersFor({ state: "/x", rootUid: 0 });
     expect(handlersProblem(h)).toBeUndefined();
     expect(h.unsigned.map((u) => u.kind)).toEqual(["workspace-request", "workspace-progress", "workspace-end", "workspace-deny", "workspace-connect"]);
-    expect(h.signed.map((s) => s.action)).toEqual(["workspace.approve", "workspace.pause", "workspace.resume", "workspace.end", "workspace.jump", "workspace.rush", "workspace.clear", "workspace.rule.add", "workspace.rule.delete"]);
+    expect(h.signed.map((s) => s.action)).toEqual(["workspace.approve", "workspace.pause", "workspace.resume", "workspace.end", "workspace.jump", "workspace.rush", "workspace.request", "workspace.clear", "workspace.rule.add", "workspace.rule.delete"]);
   });
 });
 

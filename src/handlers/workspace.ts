@@ -26,7 +26,7 @@ import { currentNonce, rotated, updateNonces } from "../core/nonces.ts";
 import { downsize, downsized, jump, pauseNow, reach, rush, thaw } from "../workspace/flows.ts";
 import { askClear } from "../workspace/signedclear.ts";
 import { approveByRule, askRule, deleteRule, matchRule, minuteOf, RULE_ID } from "../workspace/standing.ts";
-import { AGENT, approve, cleanWords, end, find, isFinal, isSize, NAME, pause, progress, put, request, resume, type Result, type Size, saved, STEP_MAX, deny as denyStep, type WsState, type Step } from "../workspace/model.ts";
+import { AGENT, approve, cleanWords, end, find, isFinal, isSize, NAME, ownWhole, pause, PERSON, progress, put, request, resume, type Result, type Size, saved, STEP_MAX, deny as denyStep, type WsState, type Step } from "../workspace/model.ts";
 import { readStateFile } from "../workspace/read.ts";
 import { rulesOf } from "../workspace/rules.ts";
 import { change } from "../workspace/write.ts";
@@ -270,12 +270,31 @@ export function handlersFor(o: { state: string; rootUid: number }) {
         },
         at,
       ),
+      ownRequest,
       clearHandler,
       ruleAdd,
       ruleDelete,
     ],
   };
 }
+
+// workspace request --size whole, signed: the owner's own Whole (scenario 19). The one touch signs
+// it and approves it. It runs in a person account from accounts.people: the one named with --user,
+// or the box's only person. Only a Whole is ever owner-signed; no pool workspace is.
+const OWN_ARGS = ["size", "why", "user"];
+const ownRequest: SignedHandler = {
+  action: "workspace.request",
+  subject: (a) => (a.words === undefined ? "box" : undefined),
+  check: (a) => (Object.keys(a).every((k) => OWN_ARGS.includes(k)) && a.size === "whole" && typeof a.why === "string" && words(a.why) && (a.user === undefined || (typeof a.user === "string" && PERSON.test(a.user))) ? undefined : "the owner's own request is --size whole with --why, and may name --user"),
+  async apply(c, r) {
+    const a = r.statement.args as { why: string; user?: string };
+    const people = c.cfg.accounts.people;
+    const user = a.user ?? (people.length === 1 ? people[0] : undefined);
+    if (!user) return { ok: false, code: "usage", said: people.length ? `The box has ${people.length} people: name the account with --user (${people.join(", ")}).` : "The box names no person in accounts.people, so the owner's own Whole has no account to run in." };
+    if (!people.includes(user)) return { ok: false, code: "usage", said: `${user} isn't one of the box's people (accounts.people).` };
+    return step(c, r.by.actor, (s) => ownWhole(s, { user, why: a.why, by: r.by.actor, rq: r.id }, rules(c), c.now));
+  },
+};
 
 // workspace clear AGENT, signed: the guard clears that agent's idle pool files on its next pass.
 // Its subject is the box: an agent's name has no nonce of its own.

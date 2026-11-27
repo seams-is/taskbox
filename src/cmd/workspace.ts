@@ -5,7 +5,7 @@ import type { BoxCtx, CommandSpec, Outcome } from "../command.ts";
 import { EXIT } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
 import { CLAIM, FINGERPRINT, PROOF, REQUEST_PROOF } from "../workspace/claim.ts";
-import { AGENT, cleanWords, isSize, isState, NAME } from "../workspace/model.ts";
+import { AGENT, cleanWords, isSize, isState, NAME, PERSON } from "../workspace/model.ts";
 import { parseWindow, RULE_ID } from "../workspace/standing.ts";
 
 const ID = (v: string) => NAME.test(v);
@@ -22,9 +22,11 @@ const signedOnly = (verb: string) => async (c: BoxCtx): Promise<Outcome> => {
 export const commands: CommandSpec[] = [
   {
     path: ["workspace", "request"],
-    summary: "Asks for a workspace: --as AGENT, --size light, heavy or whole, and --why.",
-    who: ["agent"],
-    flags: ["json"],
+    summary: "Asks for a workspace: --as AGENT, --size light, heavy or whole, and --why. The owner's own Whole, signed: --size whole --why, no --as.",
+    who: ["agent", "owner"],
+    flags: ["json", "signed"],
+    // An agent's runs unsigned; the owner's own Whole only signed (handlers/workspace.ts ownRequest).
+    unsigned: true,
     options: [
       { name: "--as", value: "AGENT", check: (v) => AGENT.test(v) },
       { name: "--size", value: "SIZE", check: isSize },
@@ -33,8 +35,19 @@ export const commands: CommandSpec[] = [
       { name: "--claim", value: "KEY", check: (v) => CLAIM.test(v) },
       // A proof by that key over the box's claims nonce, which the controller signs.
       { name: "--proof", value: "PROOF", check: (v) => REQUEST_PROOF.test(v) },
+      // The owner's own Whole: the person account it runs in, when the box has more than one.
+      { name: "--user", value: "ACCOUNT", check: (v) => PERSON.test(v) },
     ],
-    check: (p) => (p.opts.as === undefined || p.opts.why === undefined ? "workspace request needs --as AGENT and --why TEXT" : undefined),
+    check: (p) =>
+      p.opts.why === undefined
+        ? "workspace request needs --why TEXT"
+        : p.opts.as === undefined
+          ? p.opts.size !== "whole" || p.opts.claim !== undefined || p.opts.proof !== undefined
+            ? "workspace request needs --as AGENT; the owner's own request, signed, is --size whole with no --as"
+            : undefined
+          : p.opts.user !== undefined
+            ? "--user is for the owner's own Whole, with no --as"
+            : undefined,
     shell: true,
     run: run("requestRun"),
   },
@@ -70,18 +83,21 @@ export const commands: CommandSpec[] = [
   },
   {
     path: ["workspace", "connect"],
-    summary: "The account a ready workspace runs as; the controller opens the shell there.",
-    who: ["agent"],
+    summary: "The account a ready workspace runs as; the controller opens the shell there, or with --screen, Screen Sharing to the owner's own Whole.",
+    who: ["agent", "owner"],
     flags: ["json"],
     args: { name: "ID", min: 1, max: 1, check: ID },
-    options: [{ name: "--proof", value: "PROOF", check: (v) => PROOF.test(v) }],
+    // --screen: the owner's own Whole, by Screen Sharing to its person account.
+    options: [{ name: "--proof", value: "PROOF", check: (v) => PROOF.test(v) }, { name: "--screen" }],
     shell: true,
     run: run("connectRun"),
   },
   {
     path: ["workspace", "progress"],
     summary: "The agent's words on its work; the answer says carry on, save or stop.",
-    who: ["agent", "pool"],
+    // From the agent account, with the claim key's proof. A pool account has no spool in v3.0.0: its
+    // agent reports from where it asked.
+    who: ["agent"],
     flags: ["json"],
     args: { name: "ID TEXT", min: 2, max: 2 },
     options: [

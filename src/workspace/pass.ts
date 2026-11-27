@@ -39,7 +39,7 @@ import { loopFrom, runningJobs, type SlotView } from "../watch.ts";
 import { type PoolAccount, poolAccounts, workspacesOn } from "./box.ts";
 import { anchorsInOrder, bootOut, bridgesAbove, BRIDGES, fenceExpected, fenceMatches, fenceRules, killAllAs, killVMs, lanAddresses, ownPrefixes, PFCTL, PGREP, PREFIX_MAX, removeCrontab, SCREEN_SHARING_ANCHOR, stopAll, vmsOf, WS_ANCHOR } from "./fence.ts";
 import { deleteMoved, type HandoverDeps, launchAgentsPlaceholder, moveAside } from "./handover.ts";
-import { assign, boxPause, cleared, emptyState, ended, failed, held, NOTE_MAX, onBoot, OPEN, parseBoot, ready, type Rules, start, type Step, tick, whyNotStart, type Workspace, type WsNotes, type WsState } from "./model.ts";
+import { assign, boxPause, cleared, emptyState, ended, failed, held, NOTE_MAX, onBoot, OPEN, parseBoot, ready, type Rules, seen, start, type Step, tick, whyNotStart, type Workspace, type WsNotes, type WsState } from "./model.ts";
 import { flowsTick } from "./flows.ts";
 import { type ProbeDeps, proveFence, realListen } from "./probe.ts";
 import { clearAsked } from "./signedclear.ts";
@@ -279,6 +279,17 @@ export function afterReset(s: WsState, pool: readonly string[], now: number): Ws
   return { ...s, accounts: { ...accounts, ...s.accounts }, nameSeq: Math.max(s.nameSeq, Math.floor((now - Date.UTC(2020, 0, 1)) / 60_000)) };
 }
 
+// What the owner's own Whole is doing, or undefined when nothing: a Screen Sharing session
+// connected, or the person account's processes using a CPU's tenth or more.
+export const OWN_BUSY_CPU = 10;
+export async function ownActivity(sys: WsDeps["sys"], user: string): Promise<string | undefined> {
+  const n = await sys.run("/usr/sbin/netstat", ["-an", "-p", "tcp"], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
+  if (n.code === 0 && n.stdout.split("\n").some((l) => /\.5900\s+\S+\s+ESTABLISHED/.test(l))) return "Screen Sharing connected";
+  const p = await sys.run("/bin/ps", ["-U", user, "-o", "%cpu="], { timeoutMs: 5_000 }).catch(() => ({ code: 1, stdout: "" }));
+  const cpu = p.stdout.split("\n").reduce((t, l) => t + (Number(l.trim()) || 0), 0);
+  return cpu >= OWN_BUSY_CPU ? `busy, ${Math.round(cpu)}% CPU` : undefined;
+}
+
 export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassReport> {
   const { sys, cfg, p } = d;
   const root = d.rootUid ?? 0;
@@ -448,6 +459,12 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
   }
   for (const w of snap().workspaces.filter((x) => x.state === "approved")) note(w.name, whyNotStart(snap(), w, rules) ?? "starting on the next pass");
 
+  // The owner's own Whole in use counts as its word: Screen Sharing connected, or its account busy.
+  for (const w of snap().workspaces.filter((x) => x.own && x.user && OPEN.includes(x.state))) {
+    const text = await ownActivity(sys, w.user!);
+    if (text) await apply((s) => ({ state: seen(s, w.name, text, now), steps: [] }));
+  }
+
   // 10. The fence note, the notes, the heartbeat, and the write.
   await apply((s) => {
     const next: WsState = { ...s, fence: { ok: f.ok, why: f.why.slice(0, 240) }, notes };
@@ -461,6 +478,12 @@ export async function workspacePass(d: WsDeps, mem: WsMemory): Promise<PassRepor
 // Why a starting workspace isn't ready yet, or undefined once it may be: its account clear and
 // empty, the disk above its floor, its room free, the fence holding and proved for its account.
 async function readyWhy(d: WsDeps, mem: WsMemory, s: WsState, w: Workspace, o: { boot: string; low: boolean; fence: FenceRead; emptyNow: Map<string, boolean>; budget: Budget; pool: readonly PoolAccount[]; now: number }): Promise<string | undefined> {
+  // The owner's own Whole: no pool account and no fence, only the disk and its room.
+  if (w.own) {
+    if (!w.user || !d.cfg.accounts.people.includes(w.user)) return `${w.user ?? "its account"} isn't one of the box's people`;
+    if (o.low) return "free disk above the box's floor";
+    return roomWhy(d, s, w, o.budget, o.now);
+  }
   if (!w.user || !o.pool.some((a) => a.name === w.user)) return `${w.user ?? "its account"} isn't one of the box's pool accounts`;
   if (w.clear) return `clearing ${w.user}'s last agent's files`;
   if (o.low) return "free disk above the box's floor";
