@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { envelope } from "../src/envelope.ts";
 import { writeConfig } from "../src/controller/home.ts";
 import { agentPlist, holdOf, notifyOnce, OFFLINE_MS, postArgv, readMemory } from "../src/controller/notify.ts";
-import { KEYS, ownerScreen } from "../src/controller/screen.ts";
+import { CARD_KEYS, cardsOf, HELP, KEYS, ownerScreen } from "../src/controller/screen.ts";
 import type { Signer } from "../src/controller/signer.ts";
 import { handlers, readPolls } from "../src/handlers/poll.ts";
 import { rootStateIn } from "../src/core/paths.ts";
@@ -144,9 +144,9 @@ describe("the owner's screen", () => {
     const code = await ownerScreen(d, { out: () => {}, draw: (l) => drawn.push(l), keys: keys(["p", "q"]) });
     expect(code).toBe(0);
     expect(drawn[0]![0]).toBe("> taskbox-1");
-    expect(drawn[0]!.slice(-2)).toEqual(["Up and down pick a box. p pause, x drain, r resume, each signed with Touch ID. q quits.", "Your agents' work reaches you as PRs: review and merge them, and work in your own clones."]);
+    expect(drawn[0]!.slice(-2)).toEqual([HELP, "Your agents' work reaches you as PRs: review and merge them, and work in your own clones."]);
     expect(JSON.parse(signed[0]!)).toMatchObject({ action: "pause", subject: "box" });
-    expect(drawn.at(-1)!.some((l) => l.startsWith("pause taskbox-1: not done."))).toBe(true);
+    expect(drawn.at(-1)!.some((l) => l.startsWith("pause on taskbox-1: not done."))).toBe(true);
     // x drains; d is kept for deny.
     expect(KEYS).toEqual({ p: ["pause"], x: ["drain"], r: ["resume"] });
   }, CEILING);
@@ -191,5 +191,42 @@ describe("the box keeps each controller's poll", () => {
     expect(r.kind === "ok" && r.value.polls.map((p) => [p.controller.slice(-1), p.at])).toEqual([["3", 99], ["9", 9], ["8", 8], ["7", 7], ["6", 6], ["5", 5], ["4", 4], ["2", 2]]);
     expect(statSync(state.polls).mode & 0o777).toBe(0o644);
     expect(readFileSync(state.polls, "utf8")).not.toContain("taskbox");
+  }, CEILING);
+});
+
+describe("workspace cards on the screen", () => {
+  const ws = (list: unknown[]) => ({ stdout: `${JSON.stringify(envelope({ command: "workspace.list", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: 0, lines: ["x"], result: { workspaces: list } }))}\n`, code: 0 });
+  const nonce = (line: string) => (line.startsWith("nonce ") ? { stdout: `${JSON.stringify(envelope({ command: "nonce", box: { name: "taskbox-1", installId: INSTALL_ID, release: "3.0.0" }, at: 0, exit: 0, lines: ["x"], result: { nonce: "a".repeat(32) } }))}\n`, code: 0 } : undefined);
+  async function* keys(list: string[]) {
+    for (const k of list) yield k;
+  }
+
+  test("a card per live workspace, from its id, state and size; the agent's words cleaned and cut; ended ones left off", () => {
+    const c = cardsOf("taskbox-1", { workspaces: [{ id: "nova-3", agent: "nova", state: "requested", size: "heavy", expires: "2026-11-27T15:00:00Z", why: "build \u001b[2J the thing" }, { id: "nova-2", state: "ended", size: "light" }, { id: "bad id", state: "ready", size: "light" }, { id: "nova-4", state: "approve-me", size: "light" }] });
+    expect(c).toEqual([{ box: "taskbox-1", id: "nova-3", agent: "nova", state: "requested", size: "heavy", expires: "2026-11-27T15:00:00Z", why: "build [2J the thing" }]);
+  });
+
+  test("down picks the card; a approves it signed, with the workspace as the subject; d denies it unsigned", async () => {
+    const { d, box } = v3();
+    const signed: string[] = [];
+    (d as TestDeps).signerFor = () => async (m) => (signed.push(new TextDecoder().decode(m)), { ok: false, reason: "declined", why: "declined" });
+    box.hook = async (line) => (line.startsWith("workspace list") ? ws([{ id: "nova-3", agent: "nova", state: "requested", size: "heavy", why: "a build" }]) : nonce(line));
+    const drawn: string[][] = [];
+    await ownerScreen(d, { out: () => {}, draw: (l) => drawn.push(l), keys: keys(["\x1b[B", "a", "d", "q"]) });
+    expect(drawn[0]!.some((l) => l === '    [nova-3] requested, Heavy, agent nova: "a build"')).toBe(true);
+    expect(drawn.some((f) => f.includes('>   [nova-3] requested, Heavy, agent nova: "a build"'))).toBe(true);
+    expect(JSON.parse(signed[0]!)).toMatchObject({ action: "workspace.approve", subject: "nova-3" });
+    expect(box.sent).toContain("workspace deny nova-3 --json --answers 4");
+    expect(drawn.at(-1)!.at(-2)).toBe(HELP);
+  }, CEILING);
+
+  test("on a box, the keys are the box's: x drains, a does nothing", async () => {
+    const { d, box } = v3();
+    const signed: string[] = [];
+    (d as TestDeps).signerFor = () => async (m) => (signed.push(new TextDecoder().decode(m)), { ok: false, reason: "declined", why: "declined" });
+    box.hook = async (line) => (line.startsWith("workspace list") ? ws([]) : nonce(line));
+    await ownerScreen(d, { out: () => {}, draw: () => {}, keys: keys(["a", "x", "q"]) });
+    expect(signed.map((s) => JSON.parse(s).action)).toEqual(["drain"]);
+    expect(CARD_KEYS).toEqual({ a: ["workspace", "approve"], d: ["workspace", "deny"], p: ["workspace", "pause"], r: ["workspace", "resume"], e: ["workspace", "end"] });
   }, CEILING);
 });
