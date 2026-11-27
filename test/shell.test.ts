@@ -13,14 +13,14 @@ describe("remote's shell", () => {
     expect(commandFor("  ")).toEqual({ args: ["status"] });
   });
   test("refuses su, other programs, admin commands and anything a shell would read as more than words", () => {
-    for (const line of ["su admin", "su -", "sudo -i", "taskbox update", "taskbox rollback", "taskbox remove", "taskbox unlock", "bash", "/bin/zsh", "scp -t /tmp", "sftp-server", "status; su admin", "status && sh", "status | sh", "status $(id)", "status `id`", "status > /tmp/x", "hold --reason 'a\\nb'", "status\nsu", "cd /tmp", "export PATH=/tmp"]) {
+    for (const line of ["su admin", "su -", "sudo -i", "taskbox remove", "taskbox unlock", "bash", "/bin/zsh", "scp -t /tmp", "sftp-server", "status; su admin", "status && sh", "status | sh", "status $(id)", "status `id`", "status > /tmp/x", "hold --reason 'a\\nb'", "status\nsu", "cd /tmp", "export PATH=/tmp"]) {
       expect("no" in commandFor(line)).toBe(true);
     }
   });
   test("passes v2.6.0's old names whose new command it runs, so taskbox says what they became", () => {
-    for (const line of ["watch", "watch --once", "jobs 50", "timings", "log", "away --json", "watchdog", "canary", "load", "load workflow", "load on", "load off", "stop --drain"]) expect({ line, ok: "args" in commandFor(line) }).toEqual({ line, ok: true });
+    for (const line of ["watch", "watch --once", "jobs 50", "timings", "log", "away --json", "watchdog", "canary", "load", "load workflow", "load on", "load off", "stop --drain", "undo"]) expect({ line, ok: "args" in commandFor(line) }).toEqual({ line, ok: true });
     // The new command is the service account's or root's: refused here, as before.
-    for (const line of ["clean", "undo"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
+    for (const line of ["clean"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
   });
   test("refuses a flag or word the command doesn't take, with the command's own line", () => {
     expect(commandFor("status --force")).toEqual({ no: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]" });

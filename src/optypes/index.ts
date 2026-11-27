@@ -9,6 +9,7 @@ import * as load from "./load.ts";
 import * as remove from "./remove.ts";
 import * as settings from "./settings.ts";
 import * as tools from "./tools.ts";
+import * as update from "./update.ts";
 import * as workspace from "./workspace.ts";
 
 export const opTypeFiles: readonly { file: string; optypes: readonly OpDecl[] }[] = [
@@ -19,6 +20,7 @@ export const opTypeFiles: readonly { file: string; optypes: readonly OpDecl[] }[
   { file: "remove.ts", optypes: remove.optypes },
   { file: "settings.ts", optypes: settings.optypes },
   { file: "tools.ts", optypes: tools.optypes },
+  { file: "update.ts", optypes: update.optypes },
   { file: "workspace.ts", optypes: workspace.optypes },
 ];
 

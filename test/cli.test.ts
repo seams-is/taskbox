@@ -2,17 +2,15 @@
 // reads, and the owner's words. Each row runs main on the fake box with a recording terminal and
 // a recording question, so no real command runs and no question goes unseen.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { errorAnswer } from "../src/answers.ts";
 import { readEnvelopes } from "../src/schema.ts";
 import { type CliDeps, main } from "../src/cli.ts";
 import { paths } from "../src/config.ts";
 import { rootPaths, SUDO, TASKBOX } from "../src/elevate.ts";
-import { CANT_REACH } from "../src/install.ts";
-import { AGENTS_THEN_UPDATE } from "../src/state.ts";
-import { FakeSys, githubRoutes } from "./fake.ts";
-import { fakeLaunchd, healthyBox, PEM, quietBox, readAsRoot, tempRoot, testBox } from "./helpers.ts";
+import { FakeSys } from "./fake.ts";
+import { fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
 
 const CI = 502;
 type Caller = { uid: number; user: string; env: Record<string, string> };
@@ -87,18 +85,17 @@ describe("the root commands", () => {
   });
 
   test("a root command given words it doesn't take is refused before the gate", async () => {
-    const r = await run(["update", "main"], CALLERS.admin);
-    expect([r.code, r.said, r.ttys]).toEqual([2, ["taskbox update doesn't take main.\nUsage: taskbox update [VERSION] [--to VERSION] [--check]"], []]);
+    const r = await run(["unlock", "ci"], CALLERS.admin);
+    expect([r.code, r.ttys]).toEqual([2, []]);
+    expect(r.said[0]).toStartWith("taskbox unlock takes no word after it");
   });
 
-  test("root through sudo reaches the command itself", async () => {
-    const r = await run(["rollback"], CALLERS["root via sudo"]);
+  test("an admin's rollback through sudo reaches the command itself", async () => {
+    const r = await run(["rollback", "-y"], CALLERS["root via sudo"]);
     expect(r.code).toBe(1);
-    expect(r.said[0]).toBe("No previous install is kept, so there's nothing to go back to.");
-    expect(r.said.at(-1)).toBe("Next: Type taskbox check.");
+    expect(r.said[0]).toBe("/opt/taskbox isn't a link to an install taskbox made.");
     expect([r.ttys, r.asked]).toEqual([[], []]);
   });
-
   test("install by anyone but root names install.sh", async () => {
     for (const who of [CALLERS.admin, CALLERS["a standard user"], CALLERS.ci]) {
       const r = await run(["install"], who);
@@ -187,51 +184,6 @@ describe("ci's answers for a controller", () => {
   });
 });
 
-describe("an update that stops before it changes anything", () => {
-  // The admin's update, as root through sudo, on a box whose key and settings are in place.
-  async function update(o: { settings?: string; gh?: (sys: FakeSys) => void } = {}) {
-    const { root, p } = box(o.settings);
-    mkdirSync(p.state, { recursive: true });
-    writeFileSync(p.oldKey, PEM);
-    const sys = new FakeSys();
-    healthyBox(sys);
-    (o.gh ?? githubRoutes)(sys);
-    // The update moves the key from before into root's key folder first, and
-    // the test's user can't make a folder root's, so that one folder reads as root's.
-    return readAsRoot((path) => path === p.actionsKeyDir, () => run(["update"], CALLERS["root via sudo"], { root, sys }));
-  }
-
-  // To do: GitHub's client turns a network failure into its own error (ghfail.ts), which cantReach
-  // doesn't read as one, so the owner is sent to agents instead of to the box's network.
-  test.todo("GitHub out of reach: the owner checks the network", async () => {
-    const r = await update({
-      gh: (sys) => {
-        sys.fetch = async () => {
-          throw Object.assign(new Error("Unable to connect"), { code: "ConnectionRefused" });
-        };
-      },
-    });
-    expect(r.code).toBe(1);
-    expect(r.said).toContain(CANT_REACH);
-    expect(r.said.at(-1)).toBe("Next: The step in the line above.");
-  });
-
-  test("settings loadConfig refuses: the owner fixes taskbox.json in their copy", async () => {
-    const own = { ...JSON.parse(readFileSync(join(import.meta.dir, "../taskbox.example.json"), "utf8")), slots: 2 };
-    const r = await update({ settings: JSON.stringify(own) });
-    expect(r.said).toContain("Fix that in taskbox.json in your copy of taskbox, then run this again.");
-    expect(r.said.at(-1)).toBe("Next: The step in the line above.");
-  });
-
-  test("a stop for agents, on a box between the two updates to the links, says what comes after", async () => {
-    const r = await update({ gh: (sys) => githubRoutes(sys, { releases: [] }) });
-    expect(r.said).toContain("taskbox has no release yet, so nothing was installed. Publish the first release (README, A new owner, step 6), then run this again.");
-    expect(r.said.at(-2)).toBe("Did: Not installed. The box keeps v2.0.0, #2 feat: install the box.");
-    expect(r.said.at(-1)).toBe(`Next: ${AGENTS_THEN_UPDATE}`);
-    expect(r.asked).toEqual([]);
-  });
-});
-
 // v2.6.1: the rollback watcher the hop leaves is launchd's, as root (hop.ts).
 describe("taskbox rollback-watch", () => {
   test("is refused to anyone but root, and with no watch, root's run changes nothing", async () => {
@@ -250,25 +202,52 @@ describe("taskbox rollback-watch", () => {
   });
 });
 
-// A trial's tag reaches the update, through the real argv path, as the admin (re-run through sudo)
-// and as root. Root's run reaches the hop, which needs a public repo the example names none of.
-describe("taskbox update with a trial's tag", () => {
-  test("the admin's update re-runs through sudo with the tag, and root's reaches the hop", async () => {
+// v3's update at the box: the admin's runs again through sudo, and root's, from an admin, reads the
+// public repo with no token. Anyone else is told to run it as the admin or from the controller.
+describe("taskbox update at the box", () => {
+  // A box whose /opt/taskbox links to a v3 install.
+  function v3box(settings: Record<string, unknown> = {}) {
+    const root = tempRoot();
+    const p = paths(root, testBox());
+    const dir = join(dirname(p.opt), "taskbox-3.0.0-abcdef");
+    mkdirSync(join(dir, "app"), { recursive: true });
+    writeFileSync(join(dir, "app", "taskbox.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(import.meta.dir, "../taskbox.example.json"), "utf8")), ...settings }));
+    writeFileSync(join(dir, "installed.json"), JSON.stringify({ commit: "c".repeat(40), tag: "v3.0.0", pr: 2, title: "taskbox 3.0.0", mergedAt: "2026-11-12T10:00:00Z", files: {} }));
+    rmSync(p.opt, { recursive: true, force: true });
+    symlinkSync("taskbox-3.0.0-abcdef", p.opt);
+    return { root, p };
+  }
+
+  test("the admin's update re-runs through sudo with its words; a tag that isn't a release is refused first", async () => {
     const admin = await run(["update", "v3.0.0-rc.1"], CALLERS.admin);
     expect([admin.code, admin.ttys]).toEqual([0, [[SUDO, "-p", "Password for %u: ", "--", TASKBOX, "update", "v3.0.0-rc.1"]]]);
-    const { root, p } = box();
-    mkdirSync(p.state, { recursive: true });
-    mkdirSync(dirname(p.key), { recursive: true });
-    writeFileSync(p.key, PEM);
-    const sys = new FakeSys();
-    healthyBox(sys);
-    githubRoutes(sys);
-    const r = await run(["update", "v3.0.0-rc.1"], CALLERS["root via sudo"], { root, sys });
-    expect(r.said.join("\n")).toContain("taskbox.json names no publicRepo, so v3.0.0-rc.1 can't be read.");
-    // Tags that aren't releases are still refused before anything runs.
     for (const bad of ["v3.0.0-rc.01", "v03.0.0", "v3.0.0-beta.1", "main"]) {
       const b = await run(["update", bad], CALLERS.admin);
       expect([b.code, b.ttys]).toEqual([2, []]);
     }
+  });
+
+  test("root's, from an admin, says what it needs: a public repo to read", async () => {
+    const { root } = v3box();
+    const r = await run(["update", "--check"], CALLERS["root via sudo"], { root });
+    expect(r.said[0]).toBe("taskbox.json names no publicRepo, so no release can be read.");
+    const u = await run(["update", "-y"], CALLERS["root via sudo"], { root });
+    expect(u.said[0]).toBe("taskbox.json names no publicRepo, so no release can be read. Nothing was installed.");
+    expect(u.code).toBe(1);
+  });
+
+  test("update --check reads the public repo and says what the box would take, on its channel", async () => {
+    const { root } = v3box({ publicRepo: "example-org/taskbox-public" });
+    const sys = new FakeSys();
+    sys.fetch = async (url) => {
+      expect(String(url)).toBe("https://api.github.com/repos/example-org/taskbox-public/releases?per_page=100");
+      return new Response(JSON.stringify([
+        { tag_name: "v3.1.0-rc.1", draft: false, prerelease: true, published_at: "2026-11-20T10:00:00Z" },
+        { tag_name: "v3.0.1", draft: false, prerelease: false, published_at: "2026-11-19T10:00:00Z" },
+      ]));
+    };
+    const r = await run(["update", "--check"], CALLERS["root via sudo"], { root, sys });
+    expect(r.said.slice(0, 2)).toEqual(["This box runs 3.0.0, on the stable channel. It updates itself in its window, 02:00-05:00 its own time.", "It would take 3.0.1 next."]);
+    expect(r.code).toBe(0);
   });
 });

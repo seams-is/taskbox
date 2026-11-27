@@ -16,6 +16,7 @@ import { opsPass } from "./ops.ts";
 import { probePass } from "./probe.ts";
 import { requestsPass } from "./requests.ts";
 import { settingsPass } from "./settings.ts";
+import { updatePass } from "./update.ts";
 import { loginsPass, loopWatchPass, tailscaledPass, workspacesPass } from "./v2.ts";
 
 const placed: readonly PlacedMaker[] = [
@@ -33,6 +34,7 @@ const placed: readonly PlacedMaker[] = [
   probePass,
   requestsPass,
   settingsPass,
+  updatePass,
   loginsPass,
   loopWatchPass,
   tailscaledPass,

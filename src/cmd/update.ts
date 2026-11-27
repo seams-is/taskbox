@@ -1,31 +1,20 @@
-// taskbox update: the newest release, or the one named. As root, through sudo.
+// taskbox update: the newest signed release on the box's channel, or the one named, as an op the
+// guard runs (update/run.ts). --check says what it would take, and installs nothing.
 import type { CommandSpec } from "../command.ts";
 
-// A release tag: v2.6.1, or a trial's, v3.0.0-rc.1 (github.ts).
-const TAG = /^v(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-rc\.([1-9]\d{0,3}))?$/;
+// A release version, with or without its v: 3.0.1, v3.0.0-rc.2.
+export const VERSION_WORD = (v: string) => /^v?(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-rc\.([1-9]\d{0,3}))?$/.test(v);
 
 export const commands: CommandSpec[] = [
   {
     path: ["update"],
-    summary: "Installs the newest release, or the one named, such as v3.0.0-rc.1.",
-    who: ["admin"],
-    args: { name: "VERSION", min: 0, max: 1, check: (v) => TAG.test(v) },
-    options: [{ name: "--to", value: "VERSION", check: (v) => TAG.test(v) }, { name: "--check" }],
-    root: true,
-    check: ({ args, opts }) => (args.length && opts.to !== undefined ? "Name the release once: taskbox update --to v3.0.0-rc.1." : opts.check !== undefined && (args.length || opts.to !== undefined) ? "update --check says what it would take next; it takes no release." : undefined),
-    async run(c) {
-      // --check installs nothing. It reads the settings repo's head now (settings/check.ts); the
-      // release it would take next is the releases package's line beside it.
-      if (c.opts.check === true) {
-        const { rootStateOf } = await import("../core/paths.ts");
-        const { settingsFiles } = await import("../settings/inforce.ts");
-        const { settingsReadNow } = await import("../settings/check.ts");
-        const r = await settingsReadNow(c.ops.sys, settingsFiles(rootStateOf(c.own).dir), { rootUid: c.ops.rootUid ?? 0, chown: c.chown });
-        for (const l of r.lines) c.say(l);
-        return { exit: 0, result: { settingsRead: r.read }, did: r.read ? "Read the settings repo." : "Nothing changed." };
-      }
-      const { install } = await import("./install.ts");
-      return install(c, false, typeof c.opts.to === "string" ? c.opts.to : c.args[0]);
-    },
+    summary: "Installs the newest signed release on the box's channel, or the one named, then proves it. --check says what it would take.",
+    who: ["owner", "admin"],
+    flags: ["json", "timeout", "force", "detach", "yes", "dryRun", "signed"],
+    options: [{ name: "--to", value: "VERSION", check: VERSION_WORD }, { name: "--repair" }, { name: "--check" }],
+    args: { name: "VERSION", min: 0, max: 1, check: VERSION_WORD },
+    shell: true,
+    check: ({ args, opts }) => (args.length && opts.to !== undefined ? "Name the release once: taskbox update --to 3.0.1." : undefined),
+    run: async (c) => (await import("../update/cmd.ts")).updateRun(c, "update"),
   },
 ];

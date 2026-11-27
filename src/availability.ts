@@ -483,6 +483,12 @@ export async function changeControl(d: ControlDeps, r: ControlRequest, now?: Con
       }
       return { ok: true, said: `The ${was.kind === "ok" ? was.value.type : "op"} ${r.onlyOp} is cancelled. control.json didn't name it, so the box's availability is as it was.`, changed: false, state: s };
     }
+    // An update or a rollback past its drain holds the box down until it ends: a start or
+    // a resume is refused, naming it, unless it is that op's own.
+    if (r.kind === "start" || r.kind === "resume") {
+      const holding = listOps(ops).ops.find((x) => x.state === "running" && (x.type === "update" || x.type === "rollback") && x.phases.indexOf(x.phase) > x.phases.indexOf("draining") && r.actor !== `${x.type} ${x.id}`);
+      if (holding) return { ok: false, code: "busy", said: `The box is down for the ${holding.type} ${holding.id}, which is ${holding.phase}, and starts again when it ends. taskbox op show ${holding.id} -w follows it.`, changed: false, state: s, op: holding.id };
+    }
     const a = applyControl(s, r, at);
     if (!a.changed) return { ok: a.ok, ...(a.code ? { code: a.code } : {}), said: a.said, changed: false, ...(s.op ? { op: s.op } : {}), state: s, ...(a.kick ? { kick: true as const } : {}) };
     let state = a.state;

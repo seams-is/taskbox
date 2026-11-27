@@ -15,7 +15,7 @@ import { ownerScreen } from "./screen.ts";
 import { agentShellArgv, fix, setup } from "./setup.ts";
 import { eventLine, readEvents } from "./events.ts";
 import { asciiJson, forward } from "./forward.ts";
-import { agentProblem, findBox, GITHUB_NAME, home, NAME, ownVersion, REPO } from "./home.ts";
+import { agentProblem, findBox, GITHUB_NAME, home, NAME, ownVersion, readConfig, REPO } from "./home.ts";
 import { readLines, serve } from "./mcp.ts";
 import { AFTER, boxRemove, boxUse, pair } from "./pair.ts";
 import { configOrStop, connectBox, type Deps, isStop, tailnetOrStop } from "./reach.ts";
@@ -44,10 +44,11 @@ export const CONTROLLER: CommandSpec[] = [
   spec(["box", "show"], "One pairing, and its last status.", { args: NAME_WORD, flags: ["json"] }),
   spec(["box", "use"], "Sets the box a command goes to when it names none.", { args: NAME_WORD }),
   spec(["box", "remove"], "Forgets a pairing, after its name is typed. Nothing changes on the box.", { args: NAME_WORD }),
-  spec(["self", "update"], "Updates this controller's taskbox from signed releases.", { options: [{ name: "--check" }, { name: "--to", value: "VERSION" }], flags: ["json"] }),
+  spec(["self", "update"], "Updates this controller's taskbox from signed releases on its channel.", { options: [{ name: "--check" }, { name: "--to", value: "VERSION" }, { name: "--auto" }], flags: ["json"] }),
   spec(["self", "rollback"], "Back to the release kept beside the one in use."),
   spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing. --fix puts right what it can, after one yes.", { flags: ["json"], options: [{ name: "--fix" }] }),
   spec(["self", "events"], "This controller's own event log: pairings, defaults, self updates.", { flags: ["since", "json"] }),
+  spec(["sign"], "Signs a draft release with this Mac's release key and publishes it, through your GitHub session. --fingerprint shows the pinned keys; --revoke a release's signer change.", { args: { name: "VERSION", min: 0, max: 1, check: (v) => /^v?\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.[1-9]\d{0,3})?$/.test(v) }, options: [{ name: "--fingerprint" }, { name: "--revoke" }, { name: "--key", value: "FILE" }, { name: "--repo", value: "OWNER/NAME", check: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(v) }] }),
   spec(["self", "setup"], "Sets up the agents user, the projects folder, their sign-ins and notifications. Re-run, it resumes."),
   spec(["agent", "shell"], "A terminal as the agents user, in the projects folder. With -- COMMAND, that command."),
   spec(["statusline"], "One line for Claude Code's status line, from the last status read."),
@@ -212,7 +213,7 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     case "box remove":
       return print(await boxRemove(d, p.args[0]!));
     case "self update":
-      return answer(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true }));
+      return answer(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true, auto: p.opts.auto === true }));
     case "self rollback":
       return print(rollback(d));
     case "self check":
@@ -227,6 +228,8 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
       else for (const l of list.length ? list.map(eventLine) : ["No events on this controller yet."]) io.out(l);
       return EXIT.ok;
     }
+    case "sign":
+      return signCommand(d, p.args[0], p.opts, io);
     case "self setup": {
       if (!d.term || !d.user || !d.exists) return io.out("taskbox self setup needs a terminal."), EXIT.usage;
       return setup({ run: d.run, home: d.home, user: d.user, uid: d.uid ?? -1, userHome: d.userHome, term: d.term, exists: d.exists, say: io.out, ask: d.ask }, d.ask, d.tty);
@@ -257,6 +260,32 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
       io.out(`taskbox ${key} runs only as Claude Code starts it.`);
       return EXIT.usage;
   }
+}
+
+// taskbox sign (release/sign.ts): the repo is the one this controller updates from, unless named;
+// the key is the release key's handle in this controller's folder, unless named.
+async function signCommand(d: UpdateDeps, version: string | undefined, opts: Record<string, unknown>, io: { out(l: string): void }): Promise<number> {
+  const { existsSync, mkdirSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { fingerprints, GH, revokeTransition, sign } = await import("../release/sign.ts");
+  const { pinFile, signersIn } = await import("./update.ts");
+  if (opts.fingerprint === true) {
+    const file = existsSync(pinFile(d.home)) ? pinFile(d.home) : signersIn(join(d.home.current, "app"));
+    for (const l of existsSync(file) ? fingerprints(readFileSync(file, "utf8")) : ["  No release key is pinned on this controller."]) io.out(l);
+    return EXIT.ok;
+  }
+  if (!version) return io.out("taskbox sign takes the release's version, such as 3.0.1."), EXIT.usage;
+  const c = readConfig(d.home);
+  const repo = typeof opts.repo === "string" ? opts.repo : c.ok && c.config.source ? `${c.config.source.owner}/${c.config.source.repo}` : undefined;
+  if (!repo) return io.out("taskbox sign needs the public repo: --repo OWNER/NAME."), EXIT.usage;
+  const gh = GH.find((g) => existsSync(g));
+  if (!gh) return io.out("taskbox sign uses your own GitHub session through gh, and gh isn't installed on this Mac."), EXIT.failed;
+  const key = typeof opts.key === "string" ? opts.key : join(d.home.dir, "release-key", "id_ecdsa_sk_rk");
+  if (!existsSync(key)) return io.out(`No release key at ${key}. Name its file with --key.`), EXIT.failed;
+  const work = join(d.home.dir, "sign");
+  mkdirSync(work, { recursive: true, mode: 0o700 });
+  const sd = { run: d.run, gh, key, repo, work, ask: d.ask, out: io.out, tty: d.tty };
+  return opts.revoke === true ? revokeTransition(sd, version) : sign(sd, version.replace(/^v/, ""));
 }
 
 export function realDeps(): UpdateDeps {

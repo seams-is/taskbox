@@ -10,6 +10,7 @@ import * as load from "./load.ts";
 import * as op from "./op.ts";
 import * as poll from "./poll.ts";
 import * as settings from "./settings.ts";
+import * as update from "./update.ts";
 import * as workspace from "./workspace.ts";
 
 export const handlerFiles: readonly HandlerFile[] = [
@@ -20,5 +21,6 @@ export const handlerFiles: readonly HandlerFile[] = [
   { file: "op.ts", handlers: op.handlers },
   { file: "poll.ts", handlers: poll.handlers },
   { file: "settings.ts", handlers: settings.handlers },
+  { file: "update.ts", handlers: update.handlers },
   { file: "workspace.ts", handlers: workspace.handlers },
 ];

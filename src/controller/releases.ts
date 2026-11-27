@@ -7,6 +7,7 @@ import type { Source } from "./home.ts";
 
 export const API = "https://api.github.com";
 import { RELEASE_TAG } from "../github.ts";
+import { type Channel, channelOf, compareVersions, onChannel } from "../release.ts";
 export { RELEASE_TAG };
 export const STATEMENT = "statement.json";
 export const SIGNATURE = "statement.json.sig";
@@ -19,16 +20,14 @@ export interface PublicRelease {
   assets: Record<string, string>; // name to download link, for the three files a release carries
 }
 
-export type Got<T> = { ok: true; value: T } | { ok: false; why: "offline" | "not-found" | "refused" | "too-big" | "odd" };
+export type Got<T> = { ok: true; value: T } | { ok: false; why: "offline" | "not-found" | "refused" | "too-big" | "odd" | "off-channel" };
 
 const HEADERS = { Accept: "application/vnd.github+json", "User-Agent": "taskbox", "X-GitHub-Api-Version": "2022-11-28" };
 
+// Whether release tag a is newer than b, as semver orders them (rule 11): v3.0.0-rc.1 < v3.0.0.
 export function newer(a: string, b: string): boolean {
-  const x = RELEASE_TAG.exec(a)?.slice(1).map(Number);
-  const y = RELEASE_TAG.exec(b)?.slice(1).map(Number);
-  if (!x || !y) return false;
-  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! > y[i]!;
-  return false;
+  if (!RELEASE_TAG.test(a) || !RELEASE_TAG.test(b)) return false;
+  return compareVersions(a, b) > 0;
 }
 
 // Reads a body up to max bytes. More than that stops the read.
@@ -69,23 +68,36 @@ export async function get(fetch: Fetch, url: string, max: number, limitMs: numbe
   }
 }
 
-// The newest release, or the one tagged. Drafts and prereleases are never taken.
-export async function findRelease(fetch: Fetch, s: Source, tag?: string, limitMs = 15_000): Promise<Got<PublicRelease>> {
+// The newest release on the channel, or the one tagged. Drafts are never taken; GitHub's prerelease
+// flag must agree with the tag (a trial is beta, every other release stable), and a tag off the
+// channel is refused. stable sees stable releases only; beta sees every release, in semver order.
+export async function findRelease(fetch: Fetch, s: Source, tag?: string, limitMs = 15_000, channel: Channel = "stable"): Promise<Got<PublicRelease>> {
   if (tag !== undefined && !RELEASE_TAG.test(tag)) return { ok: false, why: "odd" };
-  const url = `${API}/repos/${s.owner}/${s.repo}/releases/${tag ? `tags/${tag}` : "latest"}`;
-  const r = await get(fetch, url, 2_000_000, limitMs);
+  if (tag !== undefined && !onChannel(tag, channel)) return { ok: false, why: "off-channel" };
+  const url = `${API}/repos/${s.owner}/${s.repo}/releases${tag ? `/tags/${tag}` : "?per_page=100"}`;
+  const r = await get(fetch, url, 4_000_000, limitMs);
   if (!r.ok) return r;
-  let v: Record<string, unknown>;
+  let v: unknown;
   try {
     v = JSON.parse(new TextDecoder().decode(r.value));
   } catch {
     return { ok: false, why: "odd" };
   }
-  const t = v?.tag_name;
-  if (typeof t !== "string" || !RELEASE_TAG.test(t) || v.draft !== false || v.prerelease !== false || (tag && t !== tag)) return { ok: false, why: "odd" };
+  const fits = (x: Record<string, unknown>) => typeof x?.tag_name === "string" && RELEASE_TAG.test(x.tag_name) && x.draft === false && x.prerelease === (channelOf(x.tag_name) === "beta") && onChannel(x.tag_name, channel);
+  let one: Record<string, unknown> | undefined;
+  if (tag) {
+    const x = v as Record<string, unknown>;
+    if (!fits(x) || x.tag_name !== tag) return { ok: false, why: "odd" };
+    one = x;
+  } else {
+    const all = (Array.isArray(v) ? (v as Record<string, unknown>[]) : []).filter(fits).sort((a, b) => compareVersions(b.tag_name as string, a.tag_name as string));
+    if (!all.length) return { ok: false, why: "not-found" };
+    one = all[0]!;
+  }
+  const t = one.tag_name as string;
   const want = [STATEMENT, SIGNATURE, tarballName(t)];
   const assets: Record<string, string> = {};
-  for (const a of Array.isArray(v.assets) ? v.assets : []) {
+  for (const a of Array.isArray(one.assets) ? one.assets : []) {
     const name = (a as Record<string, unknown>)?.name;
     const link = (a as Record<string, unknown>)?.browser_download_url;
     if (typeof name === "string" && want.includes(name) && link === `https://github.com/${s.owner}/${s.repo}/releases/download/${t}/${name}`) assets[name] = link;
@@ -105,6 +117,8 @@ export function releaseProblem(why: Exclude<Got<unknown>, { ok: true }>["why"], 
       return tag ? `${where} has no release ${tag}.` : `${where} has no release yet.`;
     case "refused":
       return `GitHub refused the request for ${where}'s releases. Try again in an hour.`;
+    case "off-channel":
+      return `${tag ?? "That release"} is a beta release, and this controller is on stable.`;
     case "too-big":
       return `A file in ${where}'s release is larger than taskbox reads, so nothing was installed.`;
     default:

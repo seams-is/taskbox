@@ -9,7 +9,7 @@ const PRODUCT = [
   "image", "imageName", "imageGB", "slots", "jobTimeoutMinutes", "vmnetPfProven", "approverKey", "approverKeyChange", "screenSharingUsers", "linux",
   "turnIdleMinutes", "quietTurnMinutes", "actionsAppId", "classes", "timings", "away", "engine", "maxAtOnce", "sizes", "warmSize", "tools", "workspaces", "keys", "network",
 ];
-const BOX = ["runnerNamePrefix", "vmsAtOnce", "vmsAtMost", "cpuBudget", "boxKeepsGB", "vmCpus", "vmMemoryMB", "minFreeDiskGB", "vmMaxHours", "tailscaleTun", "accounts", "tailnetTag", "adminSsh"];
+const BOX = ["runnerNamePrefix", "vmsAtOnce", "vmsAtMost", "cpuBudget", "boxKeepsGB", "vmCpus", "vmMemoryMB", "minFreeDiskGB", "vmMaxHours", "tailscaleTun", "accounts", "tailnetTag", "adminSsh", "update"];
 const LOCAL = ["sources", "runnerApp", "settingsRepo"];
 // The keys inside linux an overlay may set, for a box with less memory: linux itself is a product key.
 export const BOX_LINUX = ["vmCpus", "vmMemoryMB"] as const;

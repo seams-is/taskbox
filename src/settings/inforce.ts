@@ -88,6 +88,9 @@ export interface SettingsState {
   confirmed?: { pending: string; sha: string; by: string; at: number; yes: boolean }[];
   readNow?: boolean; // read the head on the next tick, not the next hour
   passed?: string; // a commit whose guarded changes were refused or withdrawn: not taken again
+  // A commit whose keys change a job VM: it waits for the update window, then a drain, then applies
+  // (update/gate.ts). held: its guarded paths still held back.
+  deferred?: { sha: string; op: string; held: string[]; drained?: boolean };
 }
 export const noState = (): SettingsState => ({ v: 1 });
 
@@ -125,6 +128,8 @@ export function parseState(v: unknown): SettingsState | string {
   if (v.confirmed !== undefined && !(Array.isArray(v.confirmed) && v.confirmed.length <= 20 && v.confirmed.every((c) => isObj(c) && typeof c.pending === "string" && typeof c.sha === "string" && SHA.test(c.sha) && plain(c.by, 120) && time(c.at) && typeof c.yes === "boolean"))) return "its confirmations aren't ones taskbox reads";
   if (v.readNow !== undefined && typeof v.readNow !== "boolean") return "its readNow isn't true or false";
   if (v.passed !== undefined && !(typeof v.passed === "string" && SHA.test(v.passed))) return "its passed commit isn't a SHA";
+  const df = v.deferred;
+  if (df !== undefined && !(isObj(df) && typeof df.sha === "string" && SHA.test(df.sha) && typeof df.op === "string" && /^op_[0-9A-HJKMNP-TV-Z]{26}$/.test(df.op) && Array.isArray(df.held) && df.held.length <= 60 && df.held.every((h) => plain(h, 120)) && (df.drained === undefined || typeof df.drained === "boolean"))) return "what is deferred isn't one taskbox reads";
   return v as unknown as SettingsState;
 }
 

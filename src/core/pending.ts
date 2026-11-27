@@ -20,7 +20,7 @@ export const PENDING_MAX = 20;
 export const SHOWS_MAX = 10;
 export const PAYLOAD_MAX = 8 * 1024;
 export const PENDING_MAX_BYTES = 256 * 1024;
-export const KINDS = ["approver-add", "approver-rotate", "rule", "settings", "channel", "rollback-v2"] as const;
+export const KINDS = ["approver-add", "approver-rotate", "rule", "settings", "channel", "rollback-v2", "signers"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export interface Pending {
