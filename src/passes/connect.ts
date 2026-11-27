@@ -9,7 +9,7 @@ import { Log } from "../log.ts";
 import { join } from "node:path";
 import type { Asker } from "../broker.ts";
 import { eventLog, type EventLog } from "../core/events.ts";
-import { everyPass, type PassMaker } from "../core/passes.ts";
+import { everyPass, type PlacedMaker } from "../core/passes.ts";
 import { rootStateOf } from "../core/paths.ts";
 import { isObj, readOwnedJson, writeOwnedText } from "../core/rootfile.ts";
 import { brokerPathsOf } from "../keys.ts";
@@ -61,8 +61,9 @@ export async function groupPass(ask: Asker, workflows: string[], events: Pick<Ev
 
 // Each full pass: a connect op that was cancelled or passed its deadline has its pending App dropped,
 // and the keeper's hours not yet in root's log are written there.
-export const connectPass: PassMaker = {
+export const connectPass: PlacedMaker = {
   name: "key-keeper",
+  order: 1000,
   make(c) {
     if (!c.writer) return undefined;
     const s = rootStateOf(c.p);

@@ -59,6 +59,11 @@ export interface JobHook {
   afterEnd?(d: HookDeps, j: JobEnd): Promise<Record<string, unknown> | undefined>;
 }
 
+// A hook in src/hooks: its order is its place in the loop's run, lowest first, kept in its own file.
+export interface PlacedHook extends JobHook {
+  order: number;
+}
+
 // The first hold, or undefined when every hook lets the start through.
 export async function beforeStart(hooks: readonly JobHook[], d: HookDeps, j: JobStart): Promise<string | undefined> {
   for (const h of hooks) {
