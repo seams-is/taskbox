@@ -2,7 +2,7 @@
 // for its imports, which point at src. Its record code rewrites accounts.json without roles it
 // doesn't know: the test in test/pool-record.test.ts runs it against a box with workspaces.
 // The accounts taskbox makes on the box: the service, which runs the loop, and the agent, which
-// agents and laptops reach over Tailscale SSH. People's accounts are never made, changed or deleted.
+// agents and controllers reach over Tailscale SSH. People's accounts are never made, changed or deleted.
 // Each account taskbox makes is recorded by name and user ID in /opt/taskbox-state/accounts.json,
 // root's, so remove offers to delete only those, and only while the ID still matches.
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";

@@ -140,7 +140,7 @@ export function softnetRules(net: NetPolicy): { block: string[]; allow: string[]
 
 // Softnet starts as root, through its setuid bit, makes its network, then drops to the service. A Softnet still
 // root this long after it started never dropped. Younger ones are mid-start, such as another VM's
-// starting beside this one with two VMs at once (v2.4.2: that race halted taskbox-1).
+// starting beside this one with two VMs at once. Before v2.4.2, that race halted the box.
 export const SOFTNET_DROP_GRACE_S = 20;
 // How many times the check waits out a Softnet still in its grace before it decides.
 export const SOFTNET_CHECK_TRIES = 3;

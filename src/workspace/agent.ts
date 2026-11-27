@@ -107,7 +107,7 @@ export function parseAgent(args: readonly string[]): AgentCmd | { no: string } {
       const by = val("--as");
       if (by === undefined) return use;
       if (!AGENT.test(by)) return { no: "A deny names who sends it: a-z and 0-9, starting with a letter, at most 16 characters." };
-      if (RESERVED_BY.includes(by)) return { no: `A deny can't say --as ${by}: it carries no signature, so it never speaks for the owner or the box.` };
+      if (RESERVED_BY.includes(by)) return { no: `A deny can't say --as ${by}: it carries no signature, so it never speaks for an approver or the box.` };
       const r = val("--reason");
       const reason = r === undefined ? "" : cleanWords(r);
       if (reason === undefined) return { no: `The reason: ${wordsWhy}` };
@@ -294,7 +294,7 @@ function stateOr(r: StateRead): { state: WsState } | { why: string } {
 
 // Why a finished workspace ended, for wait's last line.
 function endLine(w: Workspace): string {
-  if (w.phase === "done") return `${w.name} is Done: ${w.endedBy === "owner" ? "the owner ended it" : "it was released"}.`;
+  if (w.phase === "done") return `${w.name} is Done: ${w.endedBy === "owner" ? "it was ended from the controller" : "it was released"}.`;
   return `${w.name}: ${stateLine(w)}.`;
 }
 
@@ -372,7 +372,7 @@ export const PROGRESS_UNWRITTEN = 3;
 
 const PROGRESS_SAY: Record<0 | 1 | 10, (n: string) => string> = {
   0: (n) => `Noted for ${n}. Carry on.`,
-  10: (n) => `The owner asks you to save and pause ${n}. Save, then type taskbox progress ${n} --saved "<what you saved>".`,
+  10: (n) => `You're asked to save and pause ${n}. Save, then type taskbox progress ${n} --saved "<what you saved>".`,
   1: (n) => `${n} isn't Active, so there is nothing to report on.`,
 };
 

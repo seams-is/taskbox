@@ -4,27 +4,27 @@ The box signs in to your tailnet as the tagged device `tag:taskbox`, or the tag 
 
 It allows your own devices to reach the box by Tailscale SSH as the agent account and the workspace accounts, and by Screen Sharing for the accounts in `accounts.people`. A person given as `{ "user": "sam", "tailnet": "sam@example.com" }` is reached from that Tailscale login only. Nothing reaches root, the service account or the admin users. The box reaches nothing on the tailnet.
 
-At the box, type `taskbox policy show --owner <your Tailscale login>` to print the entries for your settings. `--admin <short name>` names an admin user, once for each, in place of `ADMIN`. `--whole` prints a whole file. This is the whole file for `taskbox.example.json` with one person, `pat`, in `accounts.people` and `accounts.ssh`:
+At the box, type `taskbox policy show --login <your Tailscale login>` to print the entries for your settings. `--admin <short name>` names an admin user, once for each, in place of `ADMIN`. `--whole` prints a whole file. This is the whole file for `taskbox.example.json` with one person, `pat`, in `accounts.people` and `accounts.ssh`:
 
 ```json
 {
   "tagOwners": {
-    "tag:taskbox": ["OWNER"]
+    "tag:taskbox": ["YOUR_LOGIN"]
   },
   "grants": [
     { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] },
-    { "src": ["OWNER"], "dst": ["tag:taskbox"], "ip": ["tcp:22", "tcp:5900"] }
+    { "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox"], "ip": ["tcp:22", "tcp:5900"] }
   ],
   "ssh": [
-    { "action": "accept", "src": ["OWNER"], "dst": ["tag:taskbox"], "users": ["taskbox-agent"] },
-    { "action": "check", "src": ["OWNER"], "dst": ["tag:taskbox"], "users": ["pat"] }
+    { "action": "accept", "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox"], "users": ["taskbox-agent"] },
+    { "action": "check", "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox"], "users": ["pat"] }
   ],
   "sshTests": [
-    { "src": "OWNER", "dst": ["tag:taskbox"], "accept": ["taskbox-agent"], "check": ["pat"], "deny": ["root", "taskbox", "ADMIN"] }
+    { "src": "YOUR_LOGIN", "dst": ["tag:taskbox"], "accept": ["taskbox-agent"], "check": ["pat"], "deny": ["root", "taskbox", "ADMIN"] }
   ],
   "tests": [
-    { "src": "OWNER", "accept": ["tag:taskbox:22", "tag:taskbox:5900"] },
-    { "src": "tag:taskbox", "deny": ["OWNER:22", "OWNER:80", "OWNER:443", "OWNER:445", "OWNER:548", "OWNER:3283", "OWNER:5900", "OWNER:7000"] }
+    { "src": "YOUR_LOGIN", "accept": ["tag:taskbox:22", "tag:taskbox:5900"] },
+    { "src": "tag:taskbox", "deny": ["YOUR_LOGIN:22", "YOUR_LOGIN:80", "YOUR_LOGIN:443", "YOUR_LOGIN:445", "YOUR_LOGIN:548", "YOUR_LOGIN:3283", "YOUR_LOGIN:5900", "YOUR_LOGIN:7000"] }
   ]
 }
 ```

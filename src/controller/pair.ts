@@ -101,7 +101,7 @@ export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fres
     // A changed host key or install ID may be another machine: only a person at a terminal, who reads
     // the old and new values and types the box's name, pairs it again. -y never covers it.
     if (before && (before.hostKey !== peer.hostKeys[0] || before.installId !== h.installId)) {
-      if (!d.tty) return none(`${peer.name}'s host key or install ID changed since it was paired, so it wasn't paired again.`, "The owner checks the box, then pairs it again at their own terminal.");
+      if (!d.tty) return none(`${peer.name}'s host key or install ID changed since it was paired, so it wasn't paired again.`, "Check the box, then pair it again in your own terminal.");
       d.out(`${peer.name} changed since it was paired. If you didn't reinstall it, stop here and look at the box.`);
       d.out(`  Host key:   ${keyPrint(before.hostKey)} then, ${keyPrint(peer.hostKeys[0]!)} now`);
       d.out(`  Install ID: ${before.installId} then, ${h.installId} now`);
@@ -138,7 +138,7 @@ export async function boxRemove(d: Deps, sel: string): Promise<Screen> {
   const shown = sel.replace(/[^A-Za-z0-9-]/g, "").slice(0, 64);
   const box = findBox(c.config, sel);
   if (!box) return stopScreen(d, { stop: `No paired box is named ${shown}.`, next: "Type taskbox box list to see them." });
-  if (!d.tty) return stopScreen(d, { stop: "taskbox box remove forgets a box's pinned key, so it asks for the box's name to be typed, in your own terminal.", next: "The owner types it in Terminal." });
+  if (!d.tty) return stopScreen(d, { stop: "taskbox box remove forgets a box's pinned key, so it asks for the box's name to be typed, in your own terminal.", next: "Type it in Terminal." });
   const typed = (await d.ask(`Forget ${box.name}? Nothing changes on the box. Type its name: `)).trim();
   if (typed.toLowerCase() !== box.name.toLowerCase()) return stopScreen(d, { stop: "Not forgotten: the name typed isn't the box's.", next: "Nothing to do." });
   const rest = c.config.boxes.filter((b) => b.node !== box.node);

@@ -69,8 +69,8 @@ const AGENT_VERBS: [string, string][] = [
   ["queue", "Asks for a workspace: --as AGENT --why WORDS."],
   ["wait", "Waits for a workspace to be ready or end."],
   ["progress", "Says where the agent is, and hears whether to carry on, save or pause."],
-  ["deny", "Says no to a workspace, for the owner's laptop."],
-  ["signed", "Carries the owner's signed step."],
+  ["deny", "Says no to a workspace, from the controller."],
+  ["signed", "Carries a signed step from the controller."],
 ];
 
 export const commands: CommandSpec[] = [

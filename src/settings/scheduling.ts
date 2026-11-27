@@ -111,7 +111,7 @@ export function checkScheduling(c: Config, warn: (line: string) => void = () => 
         if (!r || typeof r !== "object" || Array.isArray(r)) throw new Error("taskbox.json: a test repo is { name, role, runnerGroup }");
         for (const k of Object.keys(r)) if (!["name", "role", "runnerGroup"].includes(k)) throw new Error(`taskbox.json: a test repo has no setting ${k.slice(0, 30)}`);
         if (r.role !== "load") throw new Error("taskbox.json: a test repo's role is load");
-        if (typeof r.name !== "string" || !REPO.test(r.name) || r.name.toLowerCase() === c.jobsFrom.toLowerCase()) throw new Error("taskbox.json: a test repo's name is owner/name, and never jobsFrom");
+        if (typeof r.name !== "string" || !REPO.test(r.name) || r.name.toLowerCase() === c.jobsFrom.toLowerCase()) throw new Error("taskbox.json: a test repo's name is org/name, and never jobsFrom");
         // One installation of the App covers one organisation, and both repos must be in it.
         if (r.name.split("/")[0]!.toLowerCase() !== c.jobsFrom.split("/")[0]!.toLowerCase()) throw new Error("taskbox.json: a test repo is in jobsFrom's organisation");
         if (typeof r.runnerGroup !== "string" || !/^[\x21-\x7e][\x20-\x7e]{0,99}$/.test(r.runnerGroup)) throw new Error("taskbox.json: a test repo needs runnerGroup, the name of its runner group as GitHub shows it, 1 to 100 printable characters");

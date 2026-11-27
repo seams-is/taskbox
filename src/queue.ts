@@ -123,7 +123,7 @@ export class QueueReader {
     private deadlineMs = READ_DEADLINE_MS,
   ) {
     const [o, r] = jobsFrom.split("/");
-    if (!o || !r) throw new Error("jobsFrom is owner/repo");
+    if (!o || !r) throw new Error("jobsFrom is org/repo");
     this.owner = o;
     this.repo = r;
   }

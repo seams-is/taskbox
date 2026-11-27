@@ -1,6 +1,6 @@
 // taskbox workspaces, at the box: each workspace with its
 // agent, account, state and disk use, and the last steps the box applied. It reads root's state and
-// nothing on the laptop can change what it shows.
+// nothing on the controller can change what it shows.
 //
 // Every user sees the same names: root's state is 644, so anyone on the box can read them anyway (an
 // accepted residual). Disk use needs root, since each pool account's home is its
@@ -24,7 +24,7 @@ export interface ShowInputs {
   now: number;
   disk: (user: string) => number | undefined; // bytes, when this reader can see them
   word: (name: string) => Word | undefined; // the agent's last word, when this reader can see it
-  // What the owner's laptop signs against: the box's install
+  // What the controller signs against: the box's install
   // ID, and the approver key the box pinned, by its fingerprint and generation. Both files are
   // readable by every user on the box (the install ID 444, the pin 644), so this gives nobody more.
   box?: BoxFacts;
@@ -32,7 +32,7 @@ export interface ShowInputs {
 
 export type BoxFacts = { installId: string | null; approver: { fingerprint: string | null; gen: number } | null };
 
-// The pin as the laptop needs it: a pinned key's fingerprint and the generation a key change names.
+// The pin as the controller needs it: a pinned key's fingerprint and the generation a key change names.
 export function boxFacts(installId: string | undefined, pin: Pin): BoxFacts {
   const approver = pin.state === "pinned" ? { fingerprint: fingerprint(pin.key), gen: pin.gen } : pin.state === "cleared" ? { fingerprint: null, gen: pin.gen } : null;
   return { installId: installId ?? null, approver };

@@ -74,7 +74,7 @@ describe("known only from the verifier", () => {
     log.refused({ type: "workspace.refused", text: "the other key's" }, Verified.signer("SHA256:" + "b".repeat(43)));
     const ev = readEvents([{ ...e, writer: "guard" }]).events;
     expect(ev.filter((x) => x.text === "a stale nonce")).toHaveLength(60);
-    expect(ev.filter((x) => x.text === "a stale nonce").every((x) => x.actor === `owner (signed, key SHA256:${"a".repeat(43)})`)).toBe(true);
+    expect(ev.filter((x) => x.text === "a stale nonce").every((x) => x.actor === `approver (signed, key SHA256:${"a".repeat(43)})`)).toBe(true);
     expect(ev.some((x) => x.text === "the other key's")).toBe(true);
     expect(() => Verified.signer("not a fingerprint")).toThrow();
     expect(JSON.parse(JSON.stringify(key)) instanceof Verified).toBe(false);

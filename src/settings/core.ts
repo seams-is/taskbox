@@ -125,8 +125,8 @@ export function checkConfig(c: Config, warn: (line: string) => void = () => {}):
   if (typeof c.org !== "string" || !GITHUB_NAME.test(c.org)) throw new Error("taskbox.json: org is a GitHub organisation's name");
   if (typeof c.repo !== "string" || !GITHUB_NAME.test(c.repo)) throw new Error("taskbox.json: repo is the name of taskbox's repo in org");
   if ("releaseRepo" in c && (typeof c.releaseRepo !== "string" || !GITHUB_NAME.test(c.releaseRepo))) throw new Error("taskbox.json: releaseRepo is the name of the repo in org that v2 releases come from");
-  if ("publicRepo" in c && (typeof c.publicRepo !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(c.publicRepo))) throw new Error("taskbox.json: publicRepo is the public repo v3 releases come from, as owner/name");
-  if (typeof c.jobsFrom !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(c.jobsFrom)) throw new Error("taskbox.json: jobsFrom is one repo, as owner/name");
+  if ("publicRepo" in c && (typeof c.publicRepo !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(c.publicRepo))) throw new Error("taskbox.json: publicRepo is the public repo v3 releases come from, as org/name");
+  if (typeof c.jobsFrom !== "string" || !/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(c.jobsFrom)) throw new Error("taskbox.json: jobsFrom is one repo, as org/name");
   if (typeof c.project !== "string" || !PROJECT_NAME.test(c.project)) throw new Error("taskbox.json: project is a short name in lower case, such as app");
   if ("previousLabelPrefix" in c && (typeof c.previousLabelPrefix !== "string" || !LABEL_PREFIX_SHAPE.test(c.previousLabelPrefix) || c.previousLabelPrefix === LABEL_PREFIX)) {
     throw new Error(`taskbox.json: previousLabelPrefix is an earlier install's launchd label prefix, never ${LABEL_PREFIX}`);

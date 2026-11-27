@@ -36,7 +36,7 @@ describe("remote's shell", () => {
       'progress nova-1 "Building shaders" --busy',
       'progress nova-1 --saved "Saved after frame 1800"',
       "workspace end nova-1",
-      'deny nova-2 --as laptop --reason "after 6pm"',
+      'deny nova-2 --as controller --reason "after 6pm"',
       "signed eyJhY3Rpb24iOiJhcHByb3ZlIn0 U1NIU0lHAAAAAQ_-",
       "workspaces",
       "taskbox workspaces --json",

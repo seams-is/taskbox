@@ -222,7 +222,7 @@ describe("an update that stops before it changes anything", () => {
 
   test("a stop for agents, on a box between the two updates to the links, says what comes after", async () => {
     const r = await update({ gh: (sys) => githubRoutes(sys, { releases: [] }) });
-    expect(r.said).toContain("taskbox has no release yet, so nothing was installed. Publish the first release (README, A new owner, step 6), then run this again.");
+    expect(r.said).toContain("taskbox has no release yet, so nothing was installed. Publish the first release (README, First setup, step 6), then run this again.");
     expect(r.said.at(-2)).toBe("Did: Not installed. The box keeps v2.0.0, #2 feat: install the box.");
     expect(r.said.at(-1)).toBe(`Next: ${AGENTS_THEN_UPDATE}`);
     expect(r.asked).toEqual([]);

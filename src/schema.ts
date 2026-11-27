@@ -1,4 +1,4 @@
-// The one schema module for the box's answers, shared by the box and the laptop.
+// The one schema module for the box's answers, shared by the box and the controller.
 // Version 4 is the envelope (src/envelope.ts); version 3 is v2.x's one line per answer. A reader
 // takes its own version and the one before. It fails closed: no envelope, one that doesn't parse, an
 // answers version it doesn't take, another install's answer, or a stream with no final line is
@@ -77,7 +77,7 @@ export const anyOf =
     return first;
   };
 
-// The word lists the box's answers use. The box and the laptop are one program, so they are one list.
+// The word lists the box's answers use. The box and the controller are one program, so they are one list.
 export const OUTCOMES = ["done", "ceiling", "update", "no-guest", "failed", "softnet-root", "held-back", "prestart-failed", "pressure", "guard-closed", "halted"] as const;
 export const KINDS = ["macos", "linux"] as const;
 export const WORDS = ["Stopped", "Downloading", "Ready", "Running", "Waiting", "Updating", "Needs you", "Failing"] as const;
@@ -197,7 +197,7 @@ export function readEnvelopes(stdout: string, expect: { command?: string; instal
   return { ok: true, envelopes: out };
 }
 
-// One answer for the laptop's reads, in version 4 or 3, as the version 3 shape the laptop's screens
+// One answer for the controller's reads, in version 4 or 3, as the version 3 shape the controller's screens
 // take. A v4 error comes back as the box's error.
 export type Read<T> =
   | { ok: true; answer: T; version: number }

@@ -247,7 +247,7 @@ describe("the agent's commands, answered by the guard's real pass", () => {
     let t = b.sys.clock;
     d.now = () => (t += 1);
     expect(await runAgent({ cmd: "queue", agent: "nova", why: "Render the launch video", json: false }, d)).toBe(0);
-    expect(out[0]).toBe("nova-1 asks for the whole box. The owner decides.");
+    expect(out[0]).toBe("nova-1 asks for the whole box. An approver decides.");
     expect(b.state().workspaces[0]).toMatchObject({ name: "nova-1", phase: "requested" });
     expect(await runAgent({ cmd: "release", name: "nova-1", json: true }, d)).toBe(0);
     expect(JSON.parse(out.at(-1)!)).toMatchObject({ ok: true, name: "nova-1", said: "nova-1 withdrawn." });

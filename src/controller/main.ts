@@ -190,7 +190,7 @@ export async function dispatch(d: UpdateDeps, argv: string[], io: Io): Promise<n
     case "install": {
       const from = /^([^/]+)\/([^/]+)$/.exec(typeof p.opts.from === "string" ? p.opts.from : "");
       const boot = p.opts.bootstrap;
-      if (!from || !GITHUB_NAME.test(from[1]!) || !GITHUB_NAME.test(from[2]!) || typeof boot !== "string" || !boot.startsWith("/")) return print({ lines: [header(null, d.version), "Type sh install-controller.sh <owner>/<repo>, from the folder you downloaded.", ...footer("Nothing changed.", "Nothing changed.", "Nothing to do.")], code: 1 });
+      if (!from || !GITHUB_NAME.test(from[1]!) || !GITHUB_NAME.test(from[2]!) || typeof boot !== "string" || !boot.startsWith("/")) return print({ lines: [header(null, d.version), "Type sh install-controller.sh <org>/<repo>, from the folder you downloaded.", ...footer("Nothing changed.", "Nothing changed.", "Nothing to do.")], code: 1 });
       return print(await update(d, { first: { from: { owner: from[1]!, repo: from[2]! }, bootstrap: boot } }));
     }
     default:

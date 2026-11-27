@@ -87,16 +87,16 @@ describe("the guard applies requests", () => {
       ["a stale time", signedLine({ ...good, at: T - 6 * 60_000 }), "too old or from the future"],
       ["a time from the future", signedLine({ ...good, at: T + 6 * 60_000 }), "too old or from the future"],
       ["a wrong nonce", signedLine({ ...good, nonce: N(1) }), "already used, or is for an older state"],
-      ["the wrong text", signedLine(good, owner.sign({ ...good, at: T + 1 })), "isn't signed by the owner's approver key"],
+      ["the wrong text", signedLine(good, owner.sign({ ...good, at: T + 1 })), "isn't signed by the approver key"],
       ["text taskbox doesn't make", signedLine(statementText(good).replace(",", ", ")), "The statement isn't one taskbox reads."],
       ["the wrong agent", signedLine({ ...good, agent: "juno", name: "juno-1" }), "No workspace juno-1."],
       ["the wrong agent for its name", signedLine(statement(s, { do: "approve", agent: "juno" })), "The statement isn't one taskbox reads."],
       ["the wrong action", signedLine(statement(s, { do: "resume" })), "Resume is for a paused workspace."],
       ["another box", signedLine({ ...good, box: N(9) }), "for another box"],
-      ["another key", signedLine(good, approver().sign(good)), "isn't signed by the owner's approver key"],
-      ["no presence", signedLine(good, owner.sign(good, { flags: 0 })), "owner was present"],
+      ["another key", signedLine(good, approver().sign(good)), "isn't signed by the approver key"],
+      ["no presence", signedLine(good, owner.sign(good, { flags: 0 })), "signer was present"],
       ["release by another agent", line("release nova-1 juno"), "nova-1 is nova's, not juno's."],
-      ["saved before a pause", line('saved nova-1 nova "Saved"'), "--saved is the answer to the owner's pause"],
+      ["saved before a pause", line('saved nova-1 nova "Saved"'), "--saved is the answer to a request to save"],
     ];
     for (const [why, r, said] of rows) {
       const out = await apply(s, r);
@@ -152,7 +152,7 @@ describe("the guard applies requests", () => {
     let s = emptyState();
     for (let i = 0; i < MAX_REQUESTS; i++) s = (await apply(s, line(`queue a${i} whole "Render"`))).state;
     const out = await apply(s, line('queue nova whole "Render"'));
-    expect([out.ok, out.said]).toEqual([false, "20 requests already wait for the owner. Try again later."]);
+    expect([out.ok, out.said]).toEqual([false, "20 requests already wait for an answer. Try again later."]);
     expect(out.state.workspaces.length).toBe(MAX_REQUESTS);
   });
 

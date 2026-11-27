@@ -2,7 +2,7 @@
 // end and resume each come as one line of JSON signed with the owner's approver key: a Secure Enclave
 // key that asks for Touch ID on each use. The box trusts only the key it pinned (src/approver.ts,
 // trustedKey), and the caller passes that key in as trusted.
-// An agent on the owner's laptop can ask the box for anything, but can't make this signature without
+// An agent on the controller can ask the box for anything, but can't make this signature without
 // the owner's finger.
 //
 // Each statement names this box's install ID, so it can't be used on another box; the workspace's
@@ -42,7 +42,7 @@ export interface Statement {
 const FIELDS = ["v", "box", "do", "name", "agent", "nonce", "at"];
 const APPROVE_FIELDS = ["v", "box", "do", "name", "agent", "size", "nonce", "at"];
 
-// The bytes the owner signs. Fields in one order, so the laptop and the box make the same line.
+// The bytes the owner signs. Fields in one order, so the controller and the box make the same line.
 export function statementText(s: Statement): string {
   const o: Record<string, unknown> = { v: 1, box: s.box, do: s.do, name: s.name, agent: s.agent };
   if (s.do === "approve") o.size = s.size;
@@ -139,7 +139,7 @@ export async function verifySignature(d: VerifyDeps, o: { key: string; message: 
   if (!APPROVER_KEY.test(o.key)) return "No approver key is pinned on this box yet, so nothing can be approved.";
   if (!ARMOUR.test(o.signature)) return "The signature isn't one taskbox reads.";
   const flags = skFlags(new TextEncoder().encode(o.signature), o.namespace);
-  if (flags === undefined || (flags & 0x01) === 0) return "The signature doesn't show the owner was present.";
+  if (flags === undefined || (flags & 0x01) === 0) return "The signature doesn't show its signer was present.";
   const bad = tmpProblem(d.tmp);
   if (bad) return `taskbox's folder for checking signatures ${bad}.`;
   const dir = mkdtempSync(join(d.tmp, "verify-"));
@@ -152,7 +152,7 @@ export async function verifySignature(d: VerifyDeps, o: { key: string; message: 
     chmodSync(signers, 0o644);
     chmodSync(sig, 0o644);
     const r = await d.run(SSH_KEYGEN, ["-Y", "verify", "-f", signers, "-I", PRINCIPAL, "-n", o.namespace, "-s", sig], { stdin: o.message, timeoutMs: 20_000 });
-    if (r.code !== 0) return "The statement isn't signed by the owner's approver key.";
+    if (r.code !== 0) return "The statement isn't signed by the approver key.";
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

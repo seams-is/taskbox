@@ -44,7 +44,7 @@ export const PAUSED_BY = ["owner", "restart", "disk", "off", "noboot"] as const;
 export type PausedBy = (typeof PAUSED_BY)[number];
 export const PAUSED_WORD: Record<PausedBy, string> = { owner: "by you", restart: "by a restart", disk: "by a full disk", off: "while workspaces were off", noboot: "while the box couldn't read its boot" };
 
-// An agent's name, such as nova. A label, never a proof: every agent on the owner's laptop runs as
+// An agent's name, such as nova. A label, never a proof: every agent on the controller runs as
 // the owner.
 export const AGENT = /^[a-z][a-z0-9]{0,15}$/;
 // A workspace's name: its agent and a number the box never gives twice.
@@ -202,7 +202,7 @@ export function queue(s: WsState, o: { agent: string; size: Size; why: string },
   if (!isSize(o.size)) return no(`The size is ${SIZES.join(" or ")}.`);
   const why = cleanWords(o.why);
   if (!why) return no(`The why takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`);
-  if (s.workspaces.filter((w) => w.phase === "requested").length >= MAX_REQUESTS) return no(`${MAX_REQUESTS} requests already wait for the owner. Try again later.`);
+  if (s.workspaces.filter((w) => w.phase === "requested").length >= MAX_REQUESTS) return no(`${MAX_REQUESTS} requests already wait for an answer. Try again later.`);
   const n = s.nameSeq + 1;
   if (n > NAME_SEQ_MAX) return no("taskbox has used every workspace number on this box.");
   const w: Workspace = {
@@ -225,7 +225,7 @@ export function queue(s: WsState, o: { agent: string; size: Size; why: string },
     endedBy: null,
     boot: null,
   };
-  return { ok: true, state: trim({ ...s, nameSeq: n, workspaces: [...s.workspaces, w] }), name: w.name, said: `${w.name} asks for the whole box. The owner decides.` };
+  return { ok: true, state: trim({ ...s, nameSeq: n, workspaces: [...s.workspaces, w] }), name: w.name, said: `${w.name} asks for the whole box. An approver decides.` };
 }
 
 // The pool account an agent gets: the one it had before, or else the one with fewest agents.
@@ -262,7 +262,7 @@ export function deny(s: WsState, o: { name: string; by: string; reason: string }
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`);
   if (!AGENT.test(o.by)) return no("A deny names who sends it, a-z and 0-9, starting with a letter.");
-  if (RESERVED_BY.includes(o.by)) return no(`A deny can't name ${o.by}: it carries no signature, so it never speaks for the owner or the box.`);
+  if (RESERVED_BY.includes(o.by)) return no(`A deny can't name ${o.by}: it carries no signature, so it never speaks for an approver or the box.`);
   if (w.phase !== "requested") return no(`${w.name} is ${PHASE_WORD[w.phase]}. Deny is for a request.`);
   const reason = o.reason === "" ? "" : cleanWords(o.reason);
   if (reason === undefined) return no(`A reason takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`);
@@ -298,7 +298,7 @@ export function saved(s: WsState, o: { name: string; agent: string; words: strin
   if (!w) return no(`No workspace ${o.name}.`);
   const not = mine(w, o.agent);
   if (not) return no(not);
-  if (w.phase !== "saving") return no(`${w.name} is ${PHASE_WORD[w.phase]}. --saved is the answer to the owner's pause.`);
+  if (w.phase !== "saving") return no(`${w.name} is ${PHASE_WORD[w.phase]}. --saved is the answer to a request to save.`);
   const words = cleanWords(o.words);
   if (!words) return no(`What was saved takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`);
   const st = put(s, move(w, "paused", c, { pausedBy: "owner", saved: words, order: null }));

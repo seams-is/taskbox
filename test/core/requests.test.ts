@@ -135,7 +135,7 @@ describe("a signed request through the agent spool", () => {
       const out = await sendSigned(c, b.d);
       expect(out).toMatchObject({ exit: 0, changed: true, result: { op: "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ" } });
       expect(said).toEqual(["Draining.", "Its op is op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ."]);
-      expect(b.applied).toEqual([{ action: "drain", args: { timeout: "1h" }, actor: `owner (signed, key ${fingerprint(owner.key)})`, id: expect.stringMatching(/^rq_/) }]);
+      expect(b.applied).toEqual([{ action: "drain", args: { timeout: "1h" }, actor: `approver (signed, key ${fingerprint(owner.key)})`, id: expect.stringMatching(/^rq_/) }]);
       expect(b.nonce()).not.toBe((n as { nonce: string }).nonce);
       // The spool is empty again: root only read and unlinked.
       expect(readdirSync(b.s.agentSpool)).toEqual([]);
@@ -158,7 +158,7 @@ describe("a signed request through the agent spool", () => {
       // is refused unchecked, as the agent account's.
       const actors = b.events().filter((e) => e.type === "guard.refused").map((e) => e.actor);
       expect(actors).toHaveLength(1);
-      expect([`owner (signed, key ${fingerprint(owner.key)})`, "agent account"]).toContain(actors[0]!);
+      expect([`approver (signed, key ${fingerprint(owner.key)})`, "agent account"]).toContain(actors[0]!);
     },
     SLOW,
   );
@@ -945,7 +945,7 @@ describe("--signed through the box's command line", () => {
     const b = await box();
     const r = await cli(b, ["drain", "--timeout", "1h", "--json"], { ran });
     expect(r.code).toBe(1);
-    expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
+    expect(JSON.parse(r.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs an approver key's signature") } });
     expect(ran).toEqual([]);
     const s = await cli(b, ["drain", "--timeout", "1h"], { uid: me, service: me, ran });
     expect(s.code).toBe(0);

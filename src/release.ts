@@ -122,12 +122,12 @@ export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; s
   }
   if (r.code !== 0) return { ok: false, why: "the release isn't signed by the pinned key" };
   const flags = skFlags(o.signature);
-  if (flags === undefined || (flags & 0x01) === 0) return { ok: false, why: "the signature doesn't show the owner was present" };
+  if (flags === undefined || (flags & 0x01) === 0) return { ok: false, why: "the signature doesn't show its signer was present" };
   const s = parseStatement(new TextDecoder().decode(o.statement));
   if (!s) return { ok: false, why: "the signed statement isn't one taskbox reads" };
   if (o.tag !== undefined && s.tag !== o.tag) return { ok: false, why: `the signed statement is for ${s.tag}` };
   if (o.installed !== null && compareTags(s.tag, o.installed) <= 0) return { ok: false, why: `${s.tag} isn't newer than the installed ${o.installed}` };
-  if (createHash("sha256").update(o.tarball).digest("hex") !== s.tarball.sha256) return { ok: false, why: "the tarball isn't the one the owner signed" };
+  if (createHash("sha256").update(o.tarball).digest("hex") !== s.tarball.sha256) return { ok: false, why: "the tarball isn't the one that was signed" };
   return { ok: true, statement: s };
 }
 

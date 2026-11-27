@@ -41,11 +41,11 @@ describe("the agent commands' words", () => {
     }
   });
   test("deny: a name, --as who sends it, and an optional reason", () => {
-    expect(parseAgent(["deny", "nova-2", "--as", "laptop", "--reason", "after 6pm"])).toEqual({ cmd: "deny", name: "nova-2", by: "laptop", reason: "after 6pm", json: false });
-    expect(parseAgent(["deny", "nova-2", "--as", "laptop"])).toEqual({ cmd: "deny", name: "nova-2", by: "laptop", reason: "", json: false });
-    // Unsigned, so it never speaks for the owner or the box.
-    for (const by of ["owner", "taskbox"]) expect(parseAgent(["deny", "nova-2", "--as", by])).toEqual({ no: expect.stringMatching(/never speaks for the owner or the box/) });
-    for (const a of [["deny", "nova-2"], ["deny", "nova-2", "--reason", "x"], ["deny", "--as", "laptop"], ["deny", "nova-2", "--as", "Owner"], ["deny", "nova-2", "--as", "laptop", "--reason", "<x>"]]) expect({ a, no: "no" in parseAgent(a) }).toEqual({ a, no: true });
+    expect(parseAgent(["deny", "nova-2", "--as", "controller", "--reason", "after 6pm"])).toEqual({ cmd: "deny", name: "nova-2", by: "controller", reason: "after 6pm", json: false });
+    expect(parseAgent(["deny", "nova-2", "--as", "controller"])).toEqual({ cmd: "deny", name: "nova-2", by: "controller", reason: "", json: false });
+    // Unsigned, so it never speaks for an approver or the box.
+    for (const by of ["owner", "taskbox"]) expect(parseAgent(["deny", "nova-2", "--as", by])).toEqual({ no: expect.stringMatching(/never speaks for an approver or the box/) });
+    for (const a of [["deny", "nova-2"], ["deny", "nova-2", "--reason", "x"], ["deny", "--as", "controller"], ["deny", "nova-2", "--as", "Owner"], ["deny", "nova-2", "--as", "controller", "--reason", "<x>"]]) expect({ a, no: "no" in parseAgent(a) }).toEqual({ a, no: true });
   });
   test("signed: two base64url words", () => {
     expect(parseAgent(["signed", "eyJhIjoxfQ", "c2ln_-"])).toEqual({ cmd: "signed", statement: "eyJhIjoxfQ", signature: "c2ln_-", json: false });
@@ -146,7 +146,7 @@ describe("a request written to the spool, and its outcome read back", () => {
 
     f.guard = true;
     expect(await go(f, ["queue", "--as", "nova", "--why", "Render the launch video"])).toBe(0);
-    expect(f.out).toEqual(["nova-1 asks for the whole box. The owner decides.", ...dealLines("nova-1")]);
+    expect(f.out).toEqual(["nova-1 asks for the whole box. An approver decides.", ...dealLines("nova-1")]);
     expect(f.out).toHaveLength(4);
     expect(f.read().workspaces[0]).toMatchObject({ name: "nova-1", phase: "requested" });
     expect(readdirSync(f.spool)).toEqual([]);
@@ -155,7 +155,7 @@ describe("a request written to the spool, and its outcome read back", () => {
     const f = fakeBox();
     expect(await go(f, ["queue", "--as", "nova", "--why", "Render", "--json"])).toBe(0);
     expect(f.out).toHaveLength(1);
-    expect(JSON.parse(f.out[0]!)).toEqual({ ok: true, id: N(1), name: "nova-1", said: "nova-1 asks for the whole box. The owner decides.", deal: dealLines("nova-1") });
+    expect(JSON.parse(f.out[0]!)).toEqual({ ok: true, id: N(1), name: "nova-1", said: "nova-1 asks for the whole box. An approver decides.", deal: dealLines("nova-1") });
   });
   test("a refusal from the guard is one line and exit 1", async () => {
     const f = fakeBox();
@@ -163,7 +163,7 @@ describe("a request written to the spool, and its outcome read back", () => {
     expect(f.out).toEqual(["No workspace nova-1."]);
   });
   test("release, deny and signed each write their own kind", async () => {
-    for (const [args, kind] of [[["release", "nova-1"], "release"], [["deny", "nova-1", "--as", "laptop"], "deny"], [["signed", "eyJ4IjoxfQ", "c2ln"], "signed"]] as const) {
+    for (const [args, kind] of [[["release", "nova-1"], "release"], [["deny", "nova-1", "--as", "controller"], "deny"], [["signed", "eyJ4IjoxfQ", "c2ln"], "signed"]] as const) {
       const f = fakeBox();
       f.guard = false;
       f.deps.answerMs = 0;
@@ -260,11 +260,11 @@ describe("wait", () => {
     f.out.length = 0;
     let denied = false;
     f.onSleep = () => {
-      if (!denied) sendRequest(f.deps, { do: "deny", name: "nova-1", by: "laptop", reason: "after 6pm" });
+      if (!denied) sendRequest(f.deps, { do: "deny", name: "nova-1", by: "controller", reason: "after 6pm" });
       denied = true;
     };
     expect(await go(f, ["wait", "nova-1"])).toBe(1);
-    expect(f.out.at(-1)).toBe("nova-1: Withdrawn by laptop (unsigned): after 6pm.");
+    expect(f.out.at(-1)).toBe("nova-1: Withdrawn by controller (unsigned): after 6pm.");
 
     const c = ctx(T, 900);
     const g = fakeBox(advance(approvedState(c), box(), c.nonce));
@@ -306,7 +306,7 @@ describe("progress", () => {
     const { c, s } = active();
     const f = fakeBox(ok(pause(s, { name: "nova-1" }, c)));
     expect(await go(f, ["progress", "nova-1", "Frame 1800"])).toBe(10);
-    expect(f.out[0]).toMatch(/^The owner asks you to save and pause nova-1/);
+    expect(f.out[0]).toMatch(/^You're asked to save and pause nova-1/);
     expect(await go(f, ["progress", "nova-1", "--saved", "Saved after frame 1800"])).toBe(0);
     expect(f.out[1]).toBe("nova-1 saved and paused. CI starts again.");
     expect(f.read().workspaces[0]).toMatchObject({ phase: "paused", saved: "Saved after frame 1800" });
@@ -342,7 +342,7 @@ describe("progress", () => {
   test("a saved that the model refuses (not Saving) is the guard's one line, exit 1", async () => {
     const f = fakeBox(active().s);
     expect(await go(f, ["progress", "nova-1", "--saved", "early"])).toBe(1);
-    expect(f.out[0]).toMatch(/--saved is the answer to the owner's pause/);
+    expect(f.out[0]).toMatch(/--saved is the answer to a request to save/);
     // The model's saved() is the same rule the guard applies.
     expect(saved(active().s, { name: "nova-1", agent: "nova", words: "x" }, ctx()).ok).toBe(false);
   });

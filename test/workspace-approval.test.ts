@@ -31,10 +31,10 @@ describe("checkSigned, with the real ssh-keygen", () => {
   test("another key, another statement's signature, or no user presence is refused", async () => {
     const other = approver();
     const rows: [string, Promise<Awaited<ReturnType<typeof check>>>, string][] = [
-      ["another key", check(base, other.sign(base)), "isn't signed by the owner's approver key"],
-      ["the wrong text", check(base, owner.sign({ ...base, name: "nova-2" })), "isn't signed by the owner's approver key"],
-      ["a release signature", check(base, owner.sign(base, { namespace: "taskbox-release" })), "owner was present"],
-      ["no user presence", check(base, owner.sign(base, { flags: 0 })), "owner was present"],
+      ["another key", check(base, other.sign(base)), "isn't signed by the approver key"],
+      ["the wrong text", check(base, owner.sign({ ...base, name: "nova-2" })), "isn't signed by the approver key"],
+      ["a release signature", check(base, owner.sign(base, { namespace: "taskbox-release" })), "signer was present"],
+      ["no user presence", check(base, owner.sign(base, { flags: 0 })), "signer was present"],
     ];
     for (const [why, p, said] of rows) {
       const r = await p;
@@ -72,14 +72,14 @@ describe("checkSigned, with the real ssh-keygen", () => {
     const forged = withFlags(owner.sign(base, { flags: 0 }), 1);
     expect(skFlags(new TextEncoder().encode(forged))).toBe(1);
     const r = await check(base, forged);
-    expect(r).toEqual({ ok: false, why: "The statement isn't signed by the owner's approver key." });
+    expect(r).toEqual({ ok: false, why: "The statement isn't signed by the approver key." });
   }, SLOW);
 
   test("ssh-keygen's -n refuses a statement signed under another namespace, even when skFlags passes it", async () => {
     // The armour says taskbox-workspace, so skFlags reads its flags; the bytes signed say taskbox-release.
     const forged = owner.sign(base, { namespace: "taskbox-release", blobNamespace: NAMESPACE });
     expect(skFlags(new TextEncoder().encode(forged))).toBe(5);
-    expect(await check(base, forged)).toEqual({ ok: false, why: "The statement isn't signed by the owner's approver key." });
+    expect(await check(base, forged)).toEqual({ ok: false, why: "The statement isn't signed by the approver key." });
     // And the arguments checkSigned gives ssh-keygen: a signature made wholly under another namespace
     // fails them, where the same statement's own passes.
     let args: string[] = [];

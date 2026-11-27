@@ -148,7 +148,7 @@ describe("GitHub's answers, checked", () => {
     expect(reposProblem(["example-org/app"], ["example-org/app"])).toBeUndefined();
     expect(reposProblem(["example-org/app", "example-org/other"], ["example-org/app"])).toMatchObject({ grew: true });
     expect(reposProblem([], ["example-org/app"])).toMatchObject({ grew: false, waiting: true });
-    expect(reposProblem(["example-org/settings", "example-org/taskbox-archive"], ["example-org/settings"], ["example-org/taskbox-archive"])).toBeUndefined();
+    expect(reposProblem(["example-org/settings", "example-org/example-releases"], ["example-org/settings"], ["example-org/example-releases"])).toBeUndefined();
   });
 });
 

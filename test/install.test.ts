@@ -506,7 +506,7 @@ describe("the service account", () => {
     await expect(install(d, { first: true })).rejects.toThrow(/You typed "no"/);
     expect(said).toContain("  It also makes the account taskbox, which runs jobs. You type its password, then your admin name and password, then its password again, so it can unlock the disk.");
     // A first install says the tagOwners entry before the yes, since the sign-in needs it saved.
-    expect(said).toContain('    "tag:taskbox": ["OWNER"]');
+    expect(said).toContain('    "tag:taskbox": ["YOUR_LOGIN"]');
     expect(ran).toEqual([]);
     expect(sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl" && c.args[0] === "-addUser")).toBe(false);
   });

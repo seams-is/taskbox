@@ -90,7 +90,7 @@ export async function sendSigned(c: Pick<BoxCtx, "spec" | "args" | "opts" | "fla
   const word = c.flags.signed;
   const parts = isSignedWord(word) ? splitSigned(word) : undefined;
   if (!parts || !parseStatement(parts.statement)) {
-    const message = "--signed takes the owner's statement and signature, each base64url, joined by a dot.";
+    const message = "--signed takes the signed statement and its signature, each base64url, joined by a dot.";
     c.say(message);
     return { exit: EXIT.usage, error: { code: "usage", message, fix: null, who: null } };
   }

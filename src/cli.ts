@@ -241,7 +241,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
   const c: BoxCtx = { ...base, names, own, p, S, cu, view, ops: { sys, paths: p, uid, serviceUid: cu, say, ask: deps.ask } };
   const name = boxName(deps);
 
-  // On a box, --box must name this box, so a script written for the laptop runs here unchanged.
+  // On a box, --box must name this box, so a script written for the controller runs here unchanged.
   if (typeof c.flags.box === "string" && c.flags.box.toLowerCase() !== name) {
     const line = `This is ${name ?? "this box"}: --box ${cleanLine(c.flags.box).slice(0, 63)} names another box.`;
     say(c.json ? errorJson(c, spec.path.join("."), EXIT.usage, { code: "usage", message: line, fix: null, who: null }, "usage") : line);
@@ -255,7 +255,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
   if ((spec.flags ?? []).includes("signed")) {
     if (typeof c.flags.signed === "string") {
       const { signedRun } = await import("./core/asker.ts");
-      const s: CommandSpec = { path: spec.path, summary: spec.summary, who: spec.who, ...(spec.flags ? { flags: spec.flags } : {}), shell: true, run: signedRun, did: "Sent the owner's signed request." };
+      const s: CommandSpec = { path: spec.path, summary: spec.summary, who: spec.who, ...(spec.flags ? { flags: spec.flags } : {}), shell: true, run: signedRun, did: "Sent the signed request." };
       const sc: BoxCtx = { ...c, spec: s };
       return sc.json ? answer(sc, name) : text(sc, say);
     }
@@ -266,7 +266,7 @@ export async function main(argv: string[], deps: CliDeps = realDeps()): Promise<
         (c.json ? err : say)(e.say);
         return e.argv ? deps.tty(e.argv) : EXIT.failed;
       }
-      const line = `taskbox ${pathOf(spec)} from here needs the owner's signature: run it from the controller.`;
+      const line = `taskbox ${pathOf(spec)} from here needs an approver key's signature: run it from the controller.`;
       say(c.json ? errorJson(c, spec.path.join("."), EXIT.failed, { code: "denied", message: line, fix: null, who: null }, "usage") : line);
       return EXIT.failed;
     }

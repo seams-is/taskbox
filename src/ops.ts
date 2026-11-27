@@ -1191,7 +1191,7 @@ async function removePool(d: OpsDeps, o: { people?: readonly string[]; chown?: (
 }
 
 // taskbox key reset approver: clears the approver key the box
-// trusts, for a lost laptop, at the box only, after a typed yes. Workspaces stay off until the next
+// trusts, for a lost controller, at the box only, after a typed yes. Workspaces stay off until the next
 // taskbox update pins the key taskbox.json names, after its own yes.
 export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (path: string, uid: number, gid: number) => void }): Promise<number> {
   if (o.overSsh) {
@@ -1204,7 +1204,7 @@ export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (
     return 0;
   }
   d.say(pin.state === "pinned" ? `This box trusts the approver key ${fingerprint(pin.key)}.` : "This box's pinned approver key isn't root's plain file.");
-  d.say("Clearing it turns workspaces off, and this box never takes that key again. The next taskbox update shows the key taskbox.json names, with its fingerprint, and pins it after your yes. Clear it when the laptop that holds the key is lost.");
+  d.say("Clearing it turns workspaces off, and this box never takes that key again. The next taskbox update shows the key taskbox.json names, with its fingerprint, and pins it after your yes. Clear it when the controller that holds the key is lost.");
   if ((await d.ask("Type yes to clear it: ")).trim().toLowerCase() !== "yes") {
     for (const l of footer(await stateNow(d), "Nothing changed.", NOTHING)) d.say(l);
     return 1;
@@ -1218,7 +1218,7 @@ export async function approverReset(d: OpsDeps, o: { overSsh: boolean; chown?: (
     for (const l of footer(await stateNow(d), `The key wasn't cleared (${noControl((e as Error).message).slice(0, 80)}).`, "Nothing to do: agents fix it.")) d.say(l);
     return 1;
   }
-  for (const l of footer(await stateNow(d), "Cleared the approver key. Workspaces are off.", "Make a new key on your laptop, put it in taskbox.json in a PR, then type taskbox update at the box, and check its fingerprint.")) d.say(l);
+  for (const l of footer(await stateNow(d), "Cleared the approver key. Workspaces are off.", "Make a new key on the controller, put it in taskbox.json in a PR, then type taskbox update at the box, and check its fingerprint.")) d.say(l);
   return 0;
 }
 

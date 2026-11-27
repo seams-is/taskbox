@@ -1,5 +1,5 @@
 {
-  "$comment": "Every tool the box runs, pinned by version and SHA-256. A change here is a PR the owner merges.",
+  "$comment": "Every tool the box runs, pinned by version and SHA-256. A change here is a reviewed PR.",
   "$undoFloor": { "bun": "1.4.4" },
   "bun": {
     "version": "1.4.4",

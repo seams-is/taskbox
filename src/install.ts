@@ -288,7 +288,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   // this uses that commit, so a tag moved meanwhile changes nothing.
   const rel = await gh.release(token, opts.tag).catch(missing("releases"));
   if (!rel) {
-    throw new Stop(opts.tag ? `There is no release ${opts.tag} of taskbox. Nothing was installed. Check the release in the update line you typed.` : "taskbox has no release yet, so nothing was installed. Publish the first release (README, A new owner, step 6), then run this again.", opts.tag !== undefined);
+    throw new Stop(opts.tag ? `There is no release ${opts.tag} of taskbox. Nothing was installed. Check the release in the update line you typed.` : "taskbox has no release yet, so nothing was installed. Publish the first release (README, First setup, step 6), then run this again.", opts.tag !== undefined);
   }
   // A v3 release is taken only by name, and only by the hop, signed: never as the newest v2 release.
   if (hopTag(rel.tag)) throw new Stop(`${rel.tag} is a v3 release, so it is installed by name: type taskbox update ${clean(rel.tag).slice(0, 24)}. Nothing was installed.`, true);
@@ -380,8 +380,8 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   }
   // Tailscale refuses the box's tag until the policy names its owner, so the owner saves it first.
   if (opts.first) {
-    d.say(`  Before you type yes: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
-    d.say(`    "${tagOf(relCfg ?? {})}": ["OWNER"]`);
+    d.say(`  Before you type yes: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of YOUR_LOGIN, and save:`);
+    d.say(`    "${tagOf(relCfg ?? {})}": ["YOUR_LOGIN"]`);
   }
   // A new tag moves the box onto other rules of the tailnet's, so it is said before the yes.
   const relTag = typeof relSettings.tailnetTag === "string" && TAILNET_TAG_SHAPE.test(relSettings.tailnetTag) ? relSettings.tailnetTag : TAILNET_TAG;
@@ -648,7 +648,7 @@ export async function settleBox(d: InstallDeps, cfg: Config): Promise<void> {
     ["firewall on", () => run(fw, ["--setglobalstate", "on"])],
     ["stealth mode on", () => run(fw, ["--setstealthmode", "on"])],
     ["never sleeps, display off after 10 min", () => run("/usr/bin/pmset", ["-a", "sleep", "0", "displaysleep", "10"])],
-    // Desktops only: a laptop's pmset has no autorestart.
+    // Desktops only: a portable Mac's pmset has no autorestart.
     ["starts after a power cut", async () => (/^\s*autorestart\s/m.test(pm.stdout) ? run("/usr/bin/pmset", ["-a", "autorestart", "1"]) : undefined)],
     // systemsetup exits 0 even when it refuses ("You need administrator access...", ran in a Tart
     // test Mac), so the step counts only when it reads back on.
@@ -1080,8 +1080,8 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
   }
   // Tailscale refuses the tag until the policy names its owner (tailscale.com/kb/1068), so that
   // entry goes in first. The rest of the policy comes after the sign-in: taskbox policy show prints it.
-  d.say(`Before the box signs in: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of OWNER, and save:`);
-  d.say(`  "${tag}": ["OWNER"]`);
+  d.say(`Before the box signs in: in Tailscale's admin console, Access controls, add this to "tagOwners", with your Tailscale login in place of YOUR_LOGIN, and save:`);
+  d.say(`  "${tag}": ["YOUR_LOGIN"]`);
   // A line for the owner only when Tailscale gives a link: a box that signs in without one needs nothing.
   let asked = false;
   let approve = false;
@@ -1089,7 +1089,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
     onLine: (l) => {
       const login = LOGIN_LINK.exec(l)?.[0];
       if (login) {
-        if (!asked) d.say("Sign the box in to Tailscale: open the link below on your laptop. This waits up to 15 minutes.");
+        if (!asked) d.say("Sign the box in to Tailscale: open the link below on another device you trust. This waits up to 15 minutes.");
         asked = true;
         d.say(`  ${login}`);
         return;
@@ -1097,7 +1097,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
       const admin = APPROVE_LINK.exec(l)?.[0];
       if (admin && !approve) {
         approve = true;
-        d.say("Approve the box in Tailscale's admin console, on your laptop. This waits up to 15 minutes.");
+        d.say("Approve the box in Tailscale's admin console, on another device you trust. This waits up to 15 minutes.");
         d.say(`  ${admin}`);
       }
     },
@@ -1275,7 +1275,7 @@ export async function setSetuid(sys: Sys, path: string, expectRoot = true): Prom
   const st = lstatSync(path);
   const mode = st.mode & 0o7777;
   if (!st.isFile() || mode !== 0o4755 || (expectRoot && (st.uid !== 0 || st.gid !== 0))) {
-    throw new Stop(`${path} is not a root-owned file with mode 4755 (mode ${mode.toString(8)}, owner ${st.uid}:${st.gid}). Nothing was swapped in.`);
+    throw new Stop(`${path} is not a root-owned file with mode 4755 (mode ${mode.toString(8)}, owned by ${st.uid}:${st.gid}). Nothing was swapped in.`);
   }
 }
 

@@ -32,7 +32,7 @@ function release(o: { signer?: ReturnType<typeof keyPair>; pinned?: string; stat
   const statement = new TextEncoder().encode(o.statement ?? statementText(ST));
   const sig = sshsig(o.signer ?? owner, statement, { namespace: o.namespace ?? NAMESPACE, flags: o.flags });
   const signers = join(dir, "allowed_signers");
-  writeFileSync(signers, o.pinned ?? `# the owner's key\n${owner.line}`);
+  writeFileSync(signers, o.pinned ?? `# a release key\n${owner.line}`);
   const sigPath = join(dir, "statement.json.sig");
   writeFileSync(sigPath, sig);
   return { statement, signature: new TextEncoder().encode(sig), tarball: TGZ, sigPath, signers, workRoot: mkdtempSync(join(tmpdir(), "taskbox-work-")), installed: null as string | null };
@@ -56,7 +56,7 @@ describe("verifying a release with ssh-keygen", () => {
   }, 20_000);
 
   test("a tarball that isn't the signed one, or another release, fails after the signature passes", async () => {
-    expect(await verifyRelease(real, { ...release(), tarball: new TextEncoder().encode("other") })).toEqual({ ok: false, why: "the tarball isn't the one the owner signed" });
+    expect(await verifyRelease(real, { ...release(), tarball: new TextEncoder().encode("other") })).toEqual({ ok: false, why: "the tarball isn't the one that was signed" });
     expect(await verifyRelease(real, { ...release(), tag: "v2.2.0" })).toEqual({ ok: false, why: "the signed statement is for v2.1.0" });
   }, 20_000);
 
@@ -64,7 +64,7 @@ describe("verifying a release with ssh-keygen", () => {
     // ssh-keygen -Y verify itself passes it (ran): the check is taskbox's own.
     const r = release({ flags: 0 });
     expect((await real.run("/usr/bin/ssh-keygen", ["-Y", "verify", "-f", r.signers, "-I", "taskbox-release", "-n", NAMESPACE, "-s", r.sigPath], { stdin: r.statement })).code).toBe(0);
-    expect(await verifyRelease(real, r)).toEqual({ ok: false, why: "the signature doesn't show the owner was present" });
+    expect(await verifyRelease(real, r)).toEqual({ ok: false, why: "the signature doesn't show its signer was present" });
     expect((await verifyRelease(real, release({ flags: 0x01 }))).ok).toBe(true);
     expect(skFlags(release({ flags: 0x05 }).signature)).toBe(0x05);
     expect(skFlags(new TextEncoder().encode("not a signature"))).toBeUndefined();

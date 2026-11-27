@@ -137,7 +137,7 @@ jobs:
           done
           echo 0 > "$COUNT_DIR/unreached"
           # Another box's check that names one of this box's labels: that box can take this one's jobs.
-          # This box's test job asks for its own label, so its death still alarms; the owner is told.
+          # This box's test job asks for its own label, so its death still alarms, and you are told.
           for f in $(gh api "repos/$REPO/contents/.github/workflows" --jq '.[].name' 2>/dev/null | grep -E '^taskbox-watchdog-[a-z0-9-]+\.yml$' || true); do
             [ "$f" = "taskbox-watchdog-$BOX.yml" ] && continue
             theirs=$(gh api -H "Accept: application/vnd.github.raw" "repos/$REPO/contents/.github/workflows/$f" 2>/dev/null | sed -n 's/^      LABELS: "\([A-Za-z0-9._ -]*\)"$/\1/p' | tr 'A-Z' 'a-z')

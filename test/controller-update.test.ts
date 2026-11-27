@@ -358,8 +358,8 @@ describe("taskbox update with the real verifyRelease", () => {
   test("another key's signature, or a tarball that isn't the one signed, installs nothing", async () => {
     for (const [o, why] of [
       [{ other: true }, "Not installed: the release isn't signed by the pinned key."],
-      [{ tamper: true }, "Not installed: the tarball isn't the one the owner signed."],
-      [{ flags: 0 }, "Not installed: the signature doesn't show the owner was present."],
+      [{ tamper: true }, "Not installed: the tarball isn't the one that was signed."],
+      [{ flags: 0 }, "Not installed: the signature doesn't show its signer was present."],
     ] as const) {
       const d = signed(o);
       const s = await update(d);

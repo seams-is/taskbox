@@ -577,7 +577,7 @@ describe("the screens", () => {
     expect(GUESTS.macos.ready).toBeUndefined();
   });
 
-  // v2.2.1: a buildkit build on taskbox-1 timed out on DNS when the VM's Softnet /29 fell inside
+  // Before v2.2.1, a buildkit build in a Linux VM timed out on DNS when the VM's Softnet /29 fell inside
   // Docker's 172.17.0.0/16. Docker's networks now sit where Softnet never picks.
   test("Docker's networks in a Linux VM never overlap a subnet Softnet can pick", () => {
     const toInt = (a: string) => a.split(".").reduce((n, o) => n * 256 + Number(o), 0);

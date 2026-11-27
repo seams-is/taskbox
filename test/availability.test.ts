@@ -13,7 +13,7 @@ import { tempRoot, testBox } from "./helpers.ts";
 
 const me = process.getuid!();
 
-// launchd as it was seen in a Tart test Mac (20 Nov 2026): print answers for a loaded label, with
+// launchd as it was seen in a Tart test Mac: print answers for a loaded label, with
 // "state = running", "state = SIGTERMed" while its process exits, or "state = spawn scheduled"
 // while KeepAlive waits out its throttle. bootout returns at once.
 type St = "running" | "spawn scheduled" | { exitsAfter: number } | "stuck";

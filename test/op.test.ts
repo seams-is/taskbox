@@ -41,7 +41,7 @@ async function box() {
   const events = eventLog("guard", { dir: s.events, owner: me }, sys);
   const f = { dir: s.ops, owner: me };
   const update = (phase = "downloading"): Op => {
-    const b = begin([], UPDATE, { subject: "box", params: { to: "3.0.1" }, actor: "owner (signed, key x)" }, sys.now());
+    const b = begin([], UPDATE, { subject: "box", params: { to: "3.0.1" }, actor: "approver (signed, key x)" }, sys.now());
     if (b.kind !== "start") throw new Error("no update");
     const op = phase === "downloading" ? b.op : toPhase(b.op, phase);
     writeOp(f, op);
@@ -95,7 +95,7 @@ describe("op list", () => {
       b.sys.clock += 60_000;
       const d = await b.drain();
       const all = await b.cli(["op", "list"]);
-      expect(all.said.slice(0, 2)).toEqual([`${d}  drain  running (draining)  by service  2026-11-27 12:01 UTC`, `${u.id}  update  failed  by owner (signed, key x)  2026-11-27 12:00 to 2026-11-27 12:00 UTC`]);
+      expect(all.said.slice(0, 2)).toEqual([`${d}  drain  running (draining)  by service  2026-11-27 12:01 UTC`, `${u.id}  update  failed  by approver (signed, key x)  2026-11-27 12:00 to 2026-11-27 12:00 UTC`]);
       expect((await b.cli(["op", "list", "--state", "running"])).said[0]).toStartWith(d);
       expect((await b.cli(["op", "list", "--state", "done"])).said[0]).toStartWith(u.id);
       expect((await b.cli(["op", "list", "--type", "update"])).said[0]).toStartWith(u.id);
@@ -229,7 +229,7 @@ describe("op cancel", () => {
       const b = await box();
       const d = await b.drain();
       const a = await b.cli(["op", "cancel", d, "-y", "--json"], { uid: me + 1 });
-      expect(JSON.parse(a.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs the owner's signature") } });
+      expect(JSON.parse(a.said.at(-1)!)).toMatchObject({ error: { code: "denied", message: expect.stringContaining("needs an approver key's signature") } });
       expect(b.op(d)?.state).toBe("running");
     },
     SLOW,

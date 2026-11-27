@@ -1,28 +1,28 @@
 {
   "tagOwners": {
-    "tag:taskbox": ["OWNER"]
+    "tag:taskbox": ["YOUR_LOGIN"]
   },
   "grants": [
     { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] },
-    { "src": ["OWNER"], "dst": ["tag:taskbox"], "ip": ["tcp:22", "tcp:5900"] },
+    { "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox"], "ip": ["tcp:22", "tcp:5900"] },
     { "src": ["lee@example.com"], "dst": ["tag:taskbox"], "ip": ["tcp:5900"] },
     { "src": ["sam@example.com"], "dst": ["tag:taskbox"], "ip": ["tcp:22", "tcp:5900"] }
   ],
   "ssh": [
-    { "action": "accept", "src": ["OWNER"], "dst": ["tag:taskbox"], "users": ["taskbox-agent"] },
-    { "action": "check", "src": ["OWNER"], "dst": ["tag:taskbox"], "users": ["pat"] },
+    { "action": "accept", "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox"], "users": ["taskbox-agent"] },
+    { "action": "check", "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox"], "users": ["pat"] },
     { "action": "check", "src": ["sam@example.com"], "dst": ["tag:taskbox"], "users": ["sam"] }
   ],
   "sshTests": [
-    { "src": "OWNER", "dst": ["tag:taskbox"], "accept": ["taskbox-agent"], "check": ["pat"], "deny": ["root", "taskbox", "sam", "lee", "ADMIN"] },
+    { "src": "YOUR_LOGIN", "dst": ["tag:taskbox"], "accept": ["taskbox-agent"], "check": ["pat"], "deny": ["root", "taskbox", "sam", "lee", "ADMIN"] },
     { "src": "lee@example.com", "dst": ["tag:taskbox"], "deny": ["root", "taskbox", "taskbox-agent", "pat", "sam", "lee", "ADMIN"] },
     { "src": "sam@example.com", "dst": ["tag:taskbox"], "check": ["sam"], "deny": ["root", "taskbox", "taskbox-agent", "pat", "lee", "ADMIN"] }
   ],
   "tests": [
-    { "src": "OWNER", "accept": ["tag:taskbox:22", "tag:taskbox:5900"] },
+    { "src": "YOUR_LOGIN", "accept": ["tag:taskbox:22", "tag:taskbox:5900"] },
     { "src": "lee@example.com", "accept": ["tag:taskbox:5900"] },
     { "src": "sam@example.com", "accept": ["tag:taskbox:22", "tag:taskbox:5900"] },
-    { "src": "tag:taskbox", "deny": ["OWNER:22", "OWNER:80", "OWNER:443", "OWNER:445", "OWNER:548", "OWNER:3283", "OWNER:5900", "OWNER:7000"] },
+    { "src": "tag:taskbox", "deny": ["YOUR_LOGIN:22", "YOUR_LOGIN:80", "YOUR_LOGIN:443", "YOUR_LOGIN:445", "YOUR_LOGIN:548", "YOUR_LOGIN:3283", "YOUR_LOGIN:5900", "YOUR_LOGIN:7000"] },
     { "src": "tag:taskbox", "deny": ["lee@example.com:22", "lee@example.com:80", "lee@example.com:443", "lee@example.com:445", "lee@example.com:548", "lee@example.com:3283", "lee@example.com:5900", "lee@example.com:7000"] },
     { "src": "tag:taskbox", "deny": ["sam@example.com:22", "sam@example.com:80", "sam@example.com:443", "sam@example.com:445", "sam@example.com:548", "sam@example.com:3283", "sam@example.com:5900", "sam@example.com:7000"] }
   ]

@@ -1,4 +1,4 @@
-// taskbox key reset approver: clears every approver key, for a lost laptop (the laptop's approver --reset).
+// taskbox key reset approver: clears every approver key, for a lost controller (the controller's approver --reset).
 // At the box only.
 import type { CommandSpec } from "../command.ts";
 import { overSsh } from "../cmdkit.ts";
@@ -6,7 +6,7 @@ import { overSsh } from "../cmdkit.ts";
 export const commands: CommandSpec[] = [
   {
     path: ["key", "reset", "approver"],
-    summary: "Clears the approver key this box trusts, for a lost laptop. At the box only.",
+    summary: "Clears the approver key this box trusts, for a lost controller. At the box only.",
     who: ["admin"],
     root: true,
     typed: true,

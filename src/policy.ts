@@ -4,7 +4,7 @@
 import { type Accounts, named, TAILNET_LOGIN } from "./access.ts";
 import { TAILNET_TAG, TAILNET_TAG_SHAPE } from "./config.ts";
 
-export const OWNER = "OWNER";
+export const OWNER = "YOUR_LOGIN";
 export const ADMIN = "ADMIN";
 
 // The ports on the owner's devices the box must never reach. Tests take one port each.
@@ -140,14 +140,14 @@ export function policyArgs(rest: readonly string[]): { owner?: string; admins: s
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
     if (a === "--whole") whole = true;
-    else if (a === "--owner" || a === "--admin") {
+    else if (a === "--login" || a === "--admin") {
       const v = rest[++i];
       // A Tailscale login is an email or a GitHub name with a domain; an admin is a short name.
-      const ok = a === "--owner" ? v !== undefined && /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$/.test(v) : v !== undefined && /^[A-Za-z_][A-Za-z0-9._-]{0,31}$/.test(v);
-      if (!ok) return `${a} needs ${a === "--owner" ? "your Tailscale login, such as you@example.com" : "an admin account's short name"}`;
-      if (a === "--owner") owner = v;
+      const ok = a === "--login" ? v !== undefined && /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$/.test(v) : v !== undefined && /^[A-Za-z_][A-Za-z0-9._-]{0,31}$/.test(v);
+      if (!ok) return `${a} needs ${a === "--login" ? "your Tailscale login, such as you@example.com" : "an admin account's short name"}`;
+      if (a === "--login") owner = v;
       else admins.push(v!);
-    } else return "taskbox policy show [--owner <your Tailscale login>] [--admin <name>]... [--whole]";
+    } else return "taskbox policy show [--login <your Tailscale login>] [--admin <name>]... [--whole]";
   }
   return { ...(owner !== undefined ? { owner } : {}), admins, whole };
 }
@@ -219,7 +219,7 @@ export function policyBlock(boxes: readonly BoxPolicy[]): { text: string } | { r
 export function policyAnswer(p: Policy, installId: string | undefined): Record<string, unknown> {
   const [tag, owners] = Object.entries(p.tagOwners)[0] ?? [TAILNET_TAG, [OWNER]];
   const text = JSON.stringify(p);
-  if (text.includes(`"${OWNER}`) || text.includes(`"${ADMIN}"`)) throw new Error("the policy still names OWNER or ADMIN, so it can't be answered: give --owner, and read the admin group");
+  if (text.includes(`"${OWNER}`) || text.includes(`"${ADMIN}"`)) throw new Error("the policy still names YOUR_LOGIN or ADMIN, so it can't be answered: give --login, and read the admin group");
   return { ...(installId ? { installId } : {}), tag, owners, rules: { grants: p.grants, ssh: p.ssh, sshTests: p.sshTests, tests: p.tests } };
 }
 
@@ -233,12 +233,12 @@ export function policyOfAnswer(a: unknown, pairedId: string, owner: string): Box
   if (!r) return "the answer isn't an object";
   if (!INSTALL_ID.test(pairedId)) return "the paired install ID isn't one";
   if (r.installId !== undefined && r.installId !== pairedId) return "the answer names another box's install ID";
-  if (!TAILNET_LOGIN.test(owner)) return "the controller's owner isn't a Tailscale login";
+  if (!TAILNET_LOGIN.test(owner)) return "the controller's login isn't a Tailscale login";
   const tag = r.tag;
   if (typeof tag !== "string" || tag.length > 64 || !TAILNET_TAG_SHAPE.test(tag)) return "its tag isn't a taskbox tag";
   const words = (v: unknown, max = 32) => (Array.isArray(v) && v.length <= max && v.every((x) => typeof x === "string" && /^[A-Za-z0-9._%+@:*-]{1,300}$/.test(x)) ? (v as string[]) : undefined);
-  if (JSON.stringify(words(r.owners, 4)) !== JSON.stringify([owner])) return "its tag's owner isn't yours";
-  if (/"(OWNER|ADMIN)[":]/.test(JSON.stringify(r.rules ?? {}))) return "it still names OWNER or ADMIN";
+  if (JSON.stringify(words(r.owners, 4)) !== JSON.stringify([owner])) return "its tag isn't owned by your login";
+  if (/"(YOUR_LOGIN|ADMIN)[":]/.test(JSON.stringify(r.rules ?? {}))) return "it still names YOUR_LOGIN or ADMIN";
   const rules = r.rules && typeof r.rules === "object" ? (r.rules as Record<string, unknown>) : {};
   const list = (k: string) => (Array.isArray(rules[k]) && (rules[k] as unknown[]).length <= 64 ? (rules[k] as unknown[]) : undefined);
   const out: Policy = { tagOwners: { [tag]: [owner] }, grants: [], ssh: [], sshTests: [], tests: [] };
