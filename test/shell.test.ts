@@ -13,14 +13,14 @@ describe("remote's shell", () => {
     expect(commandFor("  ")).toEqual({ args: ["status"] });
   });
   test("refuses su, other programs, admin commands and anything a shell would read as more than words", () => {
-    for (const line of ["su admin", "su -", "sudo -i", "taskbox update", "taskbox rollback", "taskbox remove", "taskbox unlock", "taskbox stop", "bash", "/bin/zsh", "scp -t /tmp", "sftp-server", "status; su admin", "status && sh", "status | sh", "status $(id)", "status `id`", "status > /tmp/x", "hold --reason 'a\\nb'", "status\nsu", "cd /tmp", "export PATH=/tmp", 'taskbox hold --for 3h --reason "x"', "share"]) {
+    for (const line of ["su admin", "su -", "sudo -i", "taskbox update", "taskbox rollback", "taskbox remove", "taskbox unlock", "bash", "/bin/zsh", "scp -t /tmp", "sftp-server", "status; su admin", "status && sh", "status | sh", "status $(id)", "status `id`", "status > /tmp/x", "hold --reason 'a\\nb'", "status\nsu", "cd /tmp", "export PATH=/tmp"]) {
       expect("no" in commandFor(line)).toBe(true);
     }
   });
   test("passes v2.6.0's old names whose new command it runs, so taskbox says what they became", () => {
-    for (const line of ["watch", "watch --once", "jobs 50", "timings", "log", "away --json", "watchdog", "canary", "load", "load workflow"]) expect({ line, ok: "args" in commandFor(line) }).toEqual({ line, ok: true });
+    for (const line of ["watch", "watch --once", "jobs 50", "timings", "log", "away --json", "watchdog", "canary", "load", "load workflow", "stop --drain"]) expect({ line, ok: "args" in commandFor(line) }).toEqual({ line, ok: true });
     // The new command is the service account's or root's: refused here, as before.
-    for (const line of ["clean", "undo", "stop --drain", "load on", "load off"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
+    for (const line of ["clean", "undo", "load on", "load off"]) expect({ line, no: "no" in commandFor(line) }).toEqual({ line, no: true });
   });
   test("refuses a flag or word the command doesn't take, with the command's own line", () => {
     expect(commandFor("status --force")).toEqual({ no: "taskbox status doesn't take --force. Usage: taskbox status [--state FOLDER] [--json] [--watch]" });

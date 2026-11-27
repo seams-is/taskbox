@@ -47,7 +47,7 @@ async function watchBox(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Prom
   const { readSeen, recentLine } = await import("../logins.ts");
   const { typist } = await import("../ops.ts");
   const { updateUnfinished } = await import("../layout.ts");
-  const { loopRunning, readStopped } = await import("../stopstart.ts");
+  const { loopRunning, readStopped } = await import("../availability.ts");
   const { watch } = await import("../watch.ts");
   const dir = typeof c.opts.state === "string" ? c.opts.state : undefined;
   // Another state folder is for testing a pull, as the service account. Anyone else reads the box's own copies.
@@ -61,7 +61,7 @@ async function watchBox(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Prom
     pullLinuxFile: dir ? join(dir, "pull-linux.json") : p.pullLinux,
     loopFile: dir ? join(dir, "loop-state.json") : p.loopState,
     once: !c.flags.watch,
-    stoppedAt: () => readStopped(dir ? { ...p, stopped: join(dir, "stopped.json") } : p)?.at,
+    stoppedAt: () => readStopped(p, c.deps.rootUid ?? 0)?.at,
     others: async () => (dir ? [] : otherLogins(c.ops.sys, c.S, typist())),
     logins: dir ? undefined : async () => recentLine(readSeen(c.own), c.ops.sys.now()),
     unfinished: () => !dir && updateUnfinished(p),

@@ -12,7 +12,7 @@ import { type Memory, memoryShort, memoryShortWhileUp } from "../src/memory.ts";
 import { slotsLine } from "../src/ops.ts";
 import { sharedPaths } from "../src/shared.ts";
 import { computeState } from "../src/state.ts";
-import { stop } from "../src/stopstart.ts";
+import { rootStateOf } from "../src/core/paths.ts";
 import { readLoopState, screen } from "../src/watch.ts";
 import { held, heldSlotsEmpty, type WorkspaceView } from "../src/held.ts";
 import { stateHold } from "../src/workspace/hold.ts";
@@ -202,19 +202,6 @@ describe("the screens", () => {
     expect(odd.slots).toEqual({ total: 1, busy: 0 });
   });
 
-  test("taskbox stop names every running job before it stops them", async () => {
-    const sys = new FakeSys();
-    const d = loopDeps(sys, tempRoot());
-    const file = twoJobs();
-    sys.responders.push((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 0, stdout: "state = running", stderr: "" } : undefined));
-    const asked: string[] = [];
-    const said: string[] = [];
-    const code = await stop({ sys, paths: { ...d.paths, loopState: file }, uid: 501, say: (l) => said.push(l), ask: async (q) => (asked.push(q), "no") });
-    expect(code).toBe(1);
-    expect(asked[0]).toBe("2 jobs are running: check and lint. Stopping now fails them all on GitHub. Type yes to stop anyway: ");
-    expect(said).toEqual(["Not stopped. The jobs carry on."]);
-  });
-
   test("a job's line says which slot ran it; a line from before has none", () => {
     const r: JobRecord = { v: 1, startedAt: M, endedAt: M + 60_000, repo: "example-org/ci", result: "passed", vmDeleted: true, guard: "ok", slot: 2, cpus: 4, memoryMB: 8192 };
     expect(validJob(r)).toBe(true);
@@ -234,11 +221,19 @@ describe("the screens", () => {
 // turns of a 2 s poll). One at a time, each test's limit counts its own work. test.serial, since
 // Bun 1.4.4 runs a describe.serial's tests at once under --concurrent.
 describe("the loop with 2 slots", () => {
+  // taskbox stop, as the guard writes it once the loop is empty: control.json says stopped, so waiting
+  // VMs end, running jobs finish, and the loop exits 0 once every slot is empty.
+  function stopBox(d: ReturnType<typeof loopDeps>): void {
+    const f = rootStateOf(d.paths).control;
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, JSON.stringify({ v: 1, availability: "stopped", gen: 3, since: 1, actor: "service" }), { mode: 0o644 });
+  }
+
   function twoSlotDeps() {
     const sys = new FakeSys();
     const d = loopDeps(sys, tempRoot());
     d.cfg = MCFG;
-    d.checks = { ...d.checks, cfg: MCFG };
+    d.checks = { ...d.checks, cfg: MCFG, rootUid: process.getuid!() };
     d.memory = async () => ({ pressure: 1, availableGB: 20, totalGB: 34.36 });
     writeFileSync(d.paths.runnerTarballLinux, "linux runner tarball bytes");
     mkdirSync(d.paths.shared, { recursive: true });
@@ -304,7 +299,7 @@ describe("the loop with 2 slots", () => {
     expect(beats).toEqual([false, true]);
   });
 
-  test.serial("a drain ends the waiting VM, lets the running job finish, starts nothing new, then stops the loop with exit 0", async () => {
+  test.serial("a stop ends the waiting VM, lets the running job finish, starts nothing new, then the loop exits 0", async () => {
     const { sys, d } = twoSlotDeps();
     const image = new Map<string, string>();
     const clonesAt: number[] = [];
@@ -328,7 +323,7 @@ describe("the loop with 2 slots", () => {
         const st = JSON.parse(readFileSync(d.paths.loopState, "utf8"));
         if (Object.values(st.slots).map((s) => (s as { slot: string }).slot).sort().join() !== "running a job,waiting for a job") return;
         // taskbox drain, while one slot runs a job and the other's VM waits for one.
-        writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
+        stopBox(d);
         drainAt = sys.now();
       }
       if (drainAt !== undefined && sys.now() - drainAt > 10 * 60_000) for (const [vm, p] of runners) if (image.get(vm) === CFG.image && !p.killed) p.exit(0);
@@ -344,11 +339,8 @@ describe("the loop with 2 slots", () => {
     expect(mac.endedAt - drainAt!).toBeGreaterThan(10 * 60_000);
     // Nothing new started after the drain, and the loop stopped as taskbox stop does.
     expect(clonesAt.filter((t) => t > drainAt!)).toEqual([]);
-    expect(existsSync(d.paths.drain)).toBe(false);
-    expect(JSON.parse(readFileSync(d.paths.stopped, "utf8")).at).toBeGreaterThan(drainAt!);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("drained: every job finished, so the loop stops");
-    // Status no longer says draining once it's done.
-    expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).drainingSince).toBeUndefined();
+    expect(readFileSync(d.paths.log, "utf8")).toContain("stopped: every job finished, so the loop stops until taskbox start");
+    expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).controlEmpty).toBe(3);
   });
 
   // Slots held for workspaces. Both slots busy at first: one runs a
@@ -601,49 +593,6 @@ describe("the loop with 2 slots", () => {
   // kern.boottime, as the box answers it: this boot began an hour before the test's clock.
   const bootAt = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/usr/sbin/sysctl" && args[1] === "kern.boottime" ? { code: 0, stdout: `{ sec = ${Math.floor((sys.now() - 3600_000) / 1000)}, usec = 0 } Thu Nov 19 10:00:00 2026\n`, stderr: "" } : undefined));
 
-  test.serial("a drain survives the loop's own restart, and the loop stops again once drained", async () => {
-    const { sys, d } = twoSlotDeps();
-    bootAt(sys);
-    // Written in this boot, before an update restarted the loop.
-    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() - 60_000 }));
-    const clones: number[] = [];
-    sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "clone" ? (clones.push(sys.now()), undefined) : undefined));
-    expect(await runLoop(d)).toBe(0);
-    expect(clones).toEqual([]);
-    expect(existsSync(d.paths.drain)).toBe(false);
-    expect(existsSync(d.paths.stopped)).toBe(true);
-  });
-
-  test.serial("a drain from before the box's last boot ends at the loop's start, as a login means run", async () => {
-    const { sys, d } = twoSlotDeps();
-    bootAt(sys);
-    // The drain names the boot it was asked in; this boot's uuid is another (core/boot.ts).
-    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() - 2 * 3600_000, boot: "99999999-2222-3333-4444-555555555555" }));
-    sys.onSpawn = () => {};
-    const t0 = sys.now();
-    const sleep = sys.sleep.bind(sys);
-    sys.sleep = async (ms) => {
-      await sleep(ms);
-      if (sys.now() - t0 > 30 * 60_000) writeFileSync(d.paths.installed, JSON.stringify({ commit: "beef000", files: {} }));
-    };
-    expect(await runLoop(d)).toBe(RESTART);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("a drain from before the restart ended");
-  }, 20_000);
-
-  test.serial("a taskbox start as the drain ends starts the loop again, never leaves it down unasked", async () => {
-    const { sys, d } = twoSlotDeps();
-    bootAt(sys);
-    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
-    // taskbox start removes the stopped record the moment the drain writes it.
-    const sleep = sys.sleep.bind(sys);
-    sys.sleep = async (ms) => {
-      await sleep(ms);
-      if (existsSync(d.paths.stopped)) rmSync(d.paths.stopped);
-    };
-    expect(await runLoop(d)).toBe(RESTART);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("taskbox start came as the drain ended");
-  });
-
   test.serial("a runner GitHub never frees goes after a few asks, so a drain always ends", async () => {
     const { sys, d } = twoSlotDeps();
     let deletes = 0;
@@ -658,7 +607,7 @@ describe("the loop with 2 slots", () => {
       await sleep(ms);
       const st = existsSync(d.paths.loopState) ? JSON.parse(readFileSync(d.paths.loopState, "utf8")) : {};
       if (!drained && Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) {
-        writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
+        stopBox(d);
         drained = true;
       }
     };
@@ -684,7 +633,7 @@ describe("the loop with 2 slots", () => {
     sys.sleep = async (ms) => {
       await sleep(ms);
       if (pulling && drainAt === undefined) {
-        writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
+        stopBox(d);
         drainAt = sys.now();
       }
     };
@@ -692,7 +641,7 @@ describe("the loop with 2 slots", () => {
     expect(await runLoop(d)).toBe(0);
     expect(drainAt).toBeDefined();
     expect(clones.filter((t) => t > drainAt!)).toEqual([]);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("because a drain began (taskbox drain)");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("because the box isn't active (taskbox pause, drain or stop)");
   });
 
   test.serial("a Whole stops a download under way, says why, and starts no VM while it holds", async () => {
@@ -740,7 +689,7 @@ describe("the loop with 2 slots", () => {
       if (drainAt === undefined) {
         const st = existsSync(d.paths.loopState) ? JSON.parse(readFileSync(d.paths.loopState, "utf8")) : {};
         if (Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) {
-          writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
+          stopBox(d);
           drainAt = sys.now();
         }
       }
@@ -748,7 +697,7 @@ describe("the loop with 2 slots", () => {
     bootAt(sys);
     expect(await runLoop(d)).toBe(0);
     expect(runnersDeleted()).toBeGreaterThanOrEqual(3);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("the VM kept waiting through the drain: GitHub didn't delete its runner (422 the runner is busy)");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("the VM kept waiting through the pause: GitHub didn't delete its runner (422 the runner is busy)");
   });
 
   test.serial("a Linux proof that tried no other job VM is proved again once one is up, at most every 30 min", async () => {

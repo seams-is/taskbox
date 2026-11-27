@@ -17,6 +17,7 @@ import { looksSecret } from "./events.ts";
 import { idOf, isId, type Rand, realRand } from "./ids.ts";
 import { isObj, plain, readOwnedJson, type Read, time, writeOwnedText, type WriteRules } from "./rootfile.ts";
 import { canonical, type Json } from "./statement.ts";
+import type { OpDecl } from "../optypes/decl.ts";
 
 export const OP_V = 1;
 export const STATES = ["running", "succeeded", "failed", "cancelled"] as const;
@@ -110,8 +111,9 @@ const same = (a: unknown, b: unknown) => {
   return x !== undefined && y !== undefined && JSON.stringify(x) === JSON.stringify(y);
 };
 
-// Starts an op, attaches to the running one it repeats, or refuses as busy.
-export function begin(running: readonly Op[], t: OpType, o: { subject: string; params: Record<string, Json>; actor: string; deadline?: number | null }, now: number, rand: Rand = realRand): Begun {
+// Starts an op, attaches to the running one it repeats, or refuses as busy. The type is a declared
+// one (src/optypes, through opType), never a bare OpType.
+export function begin(running: readonly Op[], t: OpDecl, o: { subject: string; params: Record<string, Json>; actor: string; deadline?: number | null }, now: number, rand: Rand = realRand): Begun {
   if (!isObj(canonical(o.params))) throw new Error("an op's params are an object of JSON values, with no key that reaches a prototype");
   const live = running.filter((r) => r.state === "running");
   const twin = live.find((r) => r.type === t.type && r.subject === o.subject);
