@@ -393,6 +393,8 @@ describe("the Tailnet policy row and accounts taskbox didn't make", () => {
     const c = checkCtx(agentDir().user("test1", { uid: 501, attrs: { UserShell: "/bin/zsh" } }), { cfg: { accounts: validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [], workspaces: { pool: "test", size: 1 } }), approverKey: key } });
     withAgent(c);
     writePin({ chown: () => {}, rootUid: ME }, c.paths.approverPin, { key, gen: 1, cleared: [] });
+    const { approverPinned } = await import("./helpers.ts");
+    await approverPinned(c.paths);
     c.sys.responders.unshift((cmd, args) => (cmd === c.paths.tailscale && args.includes("netmap") ? { code: 0, stdout: JSON.stringify({ SSHPolicy: { rules: [{ sshUsers: { "taskbox-agent": "=", test1: "=" }, action: { accept: true } }] } }), stderr: "" } : undefined));
     const r = await tailnetPolicyRow(c);
     expect(r.status).toBe("FAIL");

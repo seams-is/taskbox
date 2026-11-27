@@ -423,3 +423,15 @@ export function pfOpen(p: { installId: string; guardState: string }): void {
   writeFileSync(witnessFile(p), JSON.stringify({ v: 1, seq: 1 }), { mode: 0o644 });
   writeFileSync(beganFile(p), JSON.stringify({ v: 1, at: 0 }), { mode: 0o644 });
 }
+
+// An approver key pinned in approvers.json, as key trust approver leaves it: the box then makes and
+// keeps its pool accounts (core/approvers.ts poolTrust).
+export async function approverPinned(p: { installId: string }): Promise<void> {
+  const { mkdirSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { trustFirst, updateApprovers } = await import("../src/core/approvers.ts");
+  const { rootStateOf } = await import("../src/core/paths.ts");
+  const { keyPair } = await import("./sshsig.ts");
+  mkdirSync(dirname(p.installId), { recursive: true });
+  await updateApprovers(rootStateOf(p).approvers, { rootUid: process.getuid!() }, (a) => trustFirst(a, keyPair().key, 1_800_000_000_000, "screen"));
+}

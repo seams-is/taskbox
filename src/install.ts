@@ -46,6 +46,7 @@ import { adoptSource } from "./connectflow.ts";
 import { type AccountDeps, type AccountEvent, agentSteps, applyAccountsStep, applyOldAgentStep, applyScreenSharing, ensureUnlock, guidOf, isAgentRole, makeAgent, makeService, planAccountsStep, planAgent, planScreenSharing, planService, readRecord, recordedIds, screenSharingLines, uidOf as accountUid, writeRecord } from "./accounts.ts";
 import { eventLog } from "./core/events.ts";
 import { rootStateOf } from "./core/paths.ts";
+import { poolTrust } from "./core/approvers.ts";
 import { adminState } from "./elevate.ts";
 import { readActionsKey } from "./queue.ts";
 import { placeTailscaledLog } from "./logins.ts";
@@ -339,7 +340,9 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
   if ("refuse" in approver) throw new Stop(approver.refuse, true);
   // The pool account, while the box trusts the release's key, or pins it at this yes. One taskbox
   // didn't make is left alone.
-  const trusted = "key" in approver ? approver.key : undefined;
+  // approvers.json alone decides it: v2's approver.json, which a release's settings could still
+  // write through the update's yes, no longer makes or keeps a pool account.
+  const trusted = poolTrust(rootStateOf(d.paths).approvers, d.rootUid ?? 0);
   // The rest of the accounts: the pool, taskbox's own two, people to make, and the agent named before.
   const step = await planAccountsStep(d.sys, d.paths, relAccounts, poolOf(relAccounts, trusted), d.paths.agent, REMOTE_SHELL, d.rootUid ?? 0);
   // Screen Sharing's list of users, from accounts.people, with any person made after the yes.

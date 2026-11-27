@@ -12,7 +12,7 @@ import { APPROVER_NAMESPACE, fingerprint, keyChangeText, ROTATE_ASK, type Verifi
 import { earlierWorkspaces, install, type InstallDeps, TRUST_FILES, trustFilesLine } from "../src/install.ts";
 import { FakeSys, githubRoutes } from "./fake.ts";
 import { Dir } from "./fake-dir.ts";
-import { CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
+import { approverPinned, CFG, copyRepo, healthyBox, installDeps, PEM } from "./helpers.ts";
 import { approver, realKeygen } from "./ws-helpers.ts";
 import { keyChangeVerifier, toB64url } from "../src/workspace/approval.ts";
 
@@ -50,7 +50,7 @@ function poolDir(sys: FakeSys, dir = new Dir()): Dir {
 }
 
 // An update of a box whose release names these settings. Each question takes the next answer.
-function update(settings: Record<string, unknown>, answer: string | string[] = "no", o: { verify?: Verifier; pin?: string; gen?: number; dir?: Dir; changed?: (string | { filename: string; previous_filename?: string })[] } = {}) {
+function update(settings: Record<string, unknown>, answer: string | string[] = "no", o: { verify?: Verifier; pin?: string; gen?: number; dir?: Dir; changed?: (string | { filename: string; previous_filename?: string })[]; v3?: boolean } = {}) {
   const sys = new FakeSys();
   healthyBox(sys);
   const dir = poolDir(sys, o.dir);
@@ -74,7 +74,8 @@ function update(settings: Record<string, unknown>, answer: string | string[] = "
   let before: string[] | undefined;
   const ask = d.ask;
   d.ask = async (q) => ((before ??= [...said]), ask(q));
-  const run = () => install(d, { first: false }).then(() => "installed", (e: Error) => e.message);
+  // approvers.json pinned, which alone lets the pool account be made (core/approvers.ts poolTrust).
+  const run = async () => (o.v3 && (await approverPinned(d.paths)), install(d, { first: false }).then(() => "installed", (e: Error) => e.message));
   return { sys, d, said, dir, run, asked, before: () => before };
 }
 const tarball = (sys: FakeSys) => sys.requests.some((r) => r.url.includes("/tarball/"));
@@ -82,7 +83,7 @@ const dsclWrites = (sys: FakeSys) => sys.calls.filter((c) => c.cmd === "/usr/bin
 
 describe("the update's yes screen and the approver key", () => {
   test("the first key: its fingerprint on its own line before the yes, and the pool account it makes", async () => {
-    const u = update({ approverKey: A });
+    const u = update({ approverKey: A }, "no", { v3: true });
     expect(await u.run()).toMatch(/You typed "no"/);
     const lines = u.before()!;
     expect(lines).toContain(`  Approver key: ${fingerprint(A)}, new. It turns workspaces on and signs every workspace step. Check it is the fingerprint taskbox approver showed on the controller.`);
@@ -217,6 +218,12 @@ describe("the update's yes screen and the approver key", () => {
     );
   });
 
+  test("a v2 key pinned alone, with nothing in approvers.json, makes no pool account", async () => {
+    const u = update({ approverKey: A }, "no");
+    await u.run();
+    expect(u.before()!.some((l) => l.startsWith(`  It also makes ${POOL_USER}`))).toBe(false);
+  });
+
   test("a release with no key: workspaces off, said before the yes, and the pin stays", async () => {
     const u = update({}, "no", { pin: A });
     await u.run();
@@ -243,7 +250,7 @@ describe("the update's yes screen and the approver key", () => {
   });
 
   test("an account by the pool's name that taskbox didn't make is named before the yes, and left alone", async () => {
-    const u = update({ approverKey: A }, "no", { dir: new Dir().user(POOL_USER, { uid: 600, attrs: { UserShell: "/bin/zsh" } }) });
+    const u = update({ approverKey: A }, "no", { dir: new Dir().user(POOL_USER, { uid: 600, attrs: { UserShell: "/bin/zsh" } }), v3: true });
     await u.run();
     expect(u.before()).toContain(`  ${POOL_USER} is an account taskbox didn't make, so taskbox leaves it alone, and workspaces stay off. taskbox check says so.`);
   });
@@ -336,6 +343,7 @@ describe("after the yes", () => {
     mkdirSync(dirname(d.paths.cronDeny), { recursive: true });
     writeFileSync(d.paths.cronDeny, "");
     writeFileSync(d.paths.atDeny, "");
+    await approverPinned(d.paths);
     const out = await install(d, { first: true }).then(() => "installed", (e: Error) => e.message);
     return { out, d: d as InstallDeps, sys };
   }
