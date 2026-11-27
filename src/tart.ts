@@ -56,6 +56,14 @@ export class Tart {
     return this.sys.spawn(this.bin, ["run", vm, "--no-graphics", "--no-audio", "--no-clipboard", "--net-softnet", `--net-softnet-block=${block.join(",")}`, `--net-softnet-allow=${allow.join(",")}`]);
   }
 
+  // A base VM's one boot for the tool cache's bake: the job VM's flags, and one folder shared
+  // read-only under its own tag, so no guest mounts it on its own. Tart reads --dir as
+  // [name:]path[:options], so a path with a colon or a comma is refused.
+  startBake(vm: string, block: string[], allow: string[], share: { path: string; tag: string }): Proc {
+    if (!/^\/[^:,]+$/.test(share.path) || !/^[a-z][a-z0-9-]{0,30}$/.test(share.tag)) throw new Error("the bake's share isn't a plain path and tag");
+    return this.sys.spawn(this.bin, ["run", vm, "--no-graphics", "--no-audio", "--no-clipboard", "--net-softnet", `--net-softnet-block=${block.join(",")}`, `--net-softnet-allow=${allow.join(",")}`, `--dir=${share.path}:ro,tag=${share.tag}`]);
+  }
+
   exec(vm: string, cmd: string[], stdin?: string | Uint8Array, timeoutMs = 300_000): Promise<RunResult> {
     return this.run(["exec", ...(stdin === undefined ? [] : ["-i"]), vm, ...cmd], stdin, timeoutMs);
   }
@@ -226,6 +234,12 @@ export class TartEngine implements VmEngine {
     const r = softnetRules(net);
     return this.t.start(vm, r.block, r.allow);
   }
+  startBake(vm: string, net: NetPolicy, share: { path: string; tag: string }): Proc {
+    const r = softnetRules(net);
+    return this.t.startBake(vm, r.block, r.allow, share);
+  }
+  // Tart 2.41.1 keeps a local VM in ~/.tart/vms/<name>, its disk as disk.img (VMDirectory.swift).
+  diskPath = (vm: string) => join(this.paths.tartHome, "vms", vm, "disk.img");
   exec = (vm: string, cmd: string[], stdin?: string | Uint8Array, timeoutMs?: number) => this.t.exec(vm, cmd, stdin, timeoutMs);
   execStream = (vm: string, cmd: string[], stdin: string, onLine: (l: string) => void) => this.t.execStream(vm, cmd, stdin, onLine);
   ip = (vm: string) => this.t.ip(vm);

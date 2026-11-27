@@ -338,4 +338,4 @@ export async function pfStartsRow(c: CheckContext): Promise<Omit<Check, "name">>
   return sharing ? { status: "FAIL", detail: l.line } : { status: "OK", detail: `Screen Sharing is off, so VMs start. ${l.line}` };
 }
 
-export const PF_ROWS: Row[] = [{ name: "Screen Sharing and VM starts", fn: pfStartsRow, order: 8030, in: ["check"] }];
+export const PF_ROWS: Row[] = [{ name: "Screen Sharing and VM starts", fn: pfStartsRow, order: 8040, in: ["check"] }];

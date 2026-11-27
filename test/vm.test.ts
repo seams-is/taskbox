@@ -50,6 +50,12 @@ class FakeEngine implements VmEngine {
     this.nets.push(net);
     return this.proc();
   }
+  startBake(): Proc {
+    throw new Error("no job VM is started with a share");
+  }
+  diskPath(vm: string): string {
+    return `/nowhere/${vm}/disk.img`;
+  }
   async exec(_vm: string, cmd: string[], stdin?: string | Uint8Array) {
     this.calls.push(`exec ${cmd[0]}`);
     if (typeof stdin === "string") this.stdins.push(stdin);
