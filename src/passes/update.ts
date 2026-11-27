@@ -55,7 +55,7 @@ export const updatePass: PlacedMaker = {
       // An admin's yes for a removal, a revoke read hourly, the removal raised for confirm.
       const wd = { sys: c.sys, state: s, ...(c.cfg.publicRepo ? { repo: c.cfg.publicRepo } : {}), rootUid: root, moment: async () => ({ wall: c.sys.now(), mono: await monoNow(c.sys), boot }), log };
       const yes = takeSignerYes(wd);
-      if (yes) events.write({ type: "update.signers", actor: "an admin", subject: "box", text: `The box's ${yes}.`.slice(0, 240) });
+      if (yes) events.write({ type: "update.signers", actor: "an admin", subject: "box", text: `${yes[0]!.toUpperCase()}${yes.slice(1)}.`.slice(0, 240) });
       if (c.sys.now() - revokeAt >= CHECK_EVERY_MS) {
         revokeAt = c.sys.now();
         const r = await readRevoke(wd).catch(() => undefined);
@@ -68,9 +68,9 @@ export const updatePass: PlacedMaker = {
       // A signer change past its wait, or confirmed at the box, moves the pin (release/signers.ts).
       const sf = updateFiles(s).signers;
       const sr = readOwnedJson(sf, { owner: root, max: 64 * 1024 }, (v) => parseSignerState(v) ?? "out of shape");
-      if (sr.kind === "ok" && sr.value.pending) {
-        const st = settle(sr.value, now);
-        if (st.said.length) {
+      if (sr.kind === "ok" && sr.value.waiting?.length) {
+        const st = settle(sr.value, { wall: now, mono: await monoNow(c.sys), boot });
+        if (st.changed) {
           writeOwnedText(sf, `${JSON.stringify(st.state)}\n`, { mode: 0o644, owner: root });
           for (const l of st.said) events.write({ type: "update.signers", actor: "taskbox", subject: "box", text: `The box ${l}.`.slice(0, 240) });
         }

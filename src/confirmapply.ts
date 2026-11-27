@@ -78,14 +78,13 @@ export async function applyConfirm(d: ConfirmDeps, b: { id: string; yes: boolean
   }
   if (item.kind === "signers") {
     const sha = (item.payload as { sha?: unknown } | null)?.sha;
-    if (b.yes) {
-      if (typeof sha !== "string") return { ok: false, said: "The waiting signer change names nothing to keep, so nothing changed.", code: "failed" };
-      const f = signerFiles(rootStateOf(d.p));
-      mkdirSync(f.work, { recursive: true, mode: 0o755 });
-      writeOwnedText(f.yes, `${JSON.stringify({ sha })}\n`, { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
-    }
+    // Both answers go to the update pass: a yes lets the removal apply, a no drops the change.
+    if (typeof sha !== "string") return { ok: false, said: "The waiting signer change names nothing, so nothing changed.", code: "failed" };
+    const f = signerFiles(rootStateOf(d.p));
+    mkdirSync(f.work, { recursive: true, mode: 0o755 });
+    writeOwnedText(f.yes, `${JSON.stringify({ sha, yes: b.yes })}\n`, { mode: 0o644, owner: d.rootUid, ...(d.chown ? { chown: d.chown } : {}) });
     said({ type: b.yes ? "confirm.confirmed" : "confirm.refused", subject: item.subject, ...(item.op ? { op: item.op } : {}), text: `An admin at the box ${b.yes ? "confirmed" : "refused"}: ${item.shows[0] ?? "a release signer change"}`.slice(0, 240) });
-    return { ok: true, said: b.yes ? "Confirmed: the guard settles the release signers on its next look." : "Refused: the release signers stay as they are." };
+    return { ok: true, said: b.yes ? "Confirmed: the guard settles the release signers on its next look." : "Refused: that change is dropped and never taken again, and the release signers stay as they are." };
   }
   if (APPROVER.includes(item.kind)) {
     const k = { sys: d.sys, state: rootStateOf(d.p), rootUid: d.rootUid, ...(d.chown ? { chown: d.chown } : {}), events: d.events };

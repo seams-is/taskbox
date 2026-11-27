@@ -32,7 +32,7 @@ import { linkTarget, relink, withUpdateLock } from "../layout.ts";
 import { installedCommit, readProof } from "../proof.ts";
 import { undo } from "../ops.ts";
 import { bare, NAMESPACE, PRINCIPAL, signerLines, SSH_KEYGEN, type Statement, signersProblem, verifyRelease, type VerifyDeps, verifySigned } from "../release.ts";
-import { meet, parseSignerState, type SignerState, TRANSITION, TRANSITION_SIG } from "../release/signers.ts";
+import { meet, parseSignerState, type SignerState, TRANSITION, TRANSITION_SIG, waitingOf } from "../release/signers.ts";
 import { readInForce, settingsFiles } from "../settings/inforce.ts";
 import { updateOf } from "../settings/update.ts";
 import { rollbackSettings } from "./narrow.ts";
@@ -164,12 +164,12 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
       const carried = readFileSync(join(dir, "signers/allowed_signers"), "utf8");
       if (signersProblem(carried)) return { why: "its signers file isn't one taskbox reads" };
       const same = (a: string, b: string) => signerLines(a).sort().join("\n") === signerLines(b).sort().join("\n");
-      if (!same(carried, st.pinned) && !(st.pending && same(carried, st.pending.newText))) {
+      if (!same(carried, st.pinned) && !waitingOf(st).some((p) => same(carried, p.newText))) {
         if (!existsSync(join(dir, TRANSITION)) || !existsSync(join(dir, TRANSITION_SIG))) return { why: "it pins other release keys and carries no signed transition" };
         const text = readFileSync(join(dir, TRANSITION), "utf8");
         const ok = await verifySigned(nobody(d.sys), { message: new TextEncoder().encode(text), signature: new Uint8Array(readFileSync(join(dir, TRANSITION_SIG))), pinned: st.pinned, workRoot: f.dir }).catch(() => undefined);
         if (!ok?.ok) return { why: "its signer transition isn't signed by a pinned release key" };
-        const m = meet(st, text, s.version, d.sys.now());
+        const m = meet(st, text, s.version, { wall: d.sys.now(), mono: await monoNow(d.sys), boot: await bootId(d.sys) });
         if ("why" in m) return { why: m.why };
         saveSigners(m.state);
         if (m.said) d.report({ event: { type: "update.signers", text: `WARN ${m.said}`.slice(0, 240) } });

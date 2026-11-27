@@ -48,7 +48,7 @@ describe("a release signer removal", () => {
 
   test("is raised for confirm, and an admin's yes there lets it apply", async () => {
     const s = state();
-    const m = meet({ v: 1, pinned: `${a.line}${b.line}` }, transition, "3.0.4", 1);
+    const m = meet({ v: 1, pinned: `${a.line}${b.line}` }, transition, "3.0.4", { wall: 1, mono: 1, boot: BOOT });
     if ("why" in m) throw new Error(m.why);
     writeOwnedText(signerFiles(s).state, JSON.stringify(m.state), { mode: 0o644, owner: me });
     const sys = new FakeSys();
@@ -56,14 +56,21 @@ describe("a release signer removal", () => {
     await raiseRemoval(d);
     const p = readPending(s.pending, me);
     expect(p.kind === "ok" && p.value.items.map((i) => [i.kind, i.shows[0]])).toEqual([["signers", `The release signers change removes ${fp(b)}.`]]);
-    writeOwnedText(signerFiles(s).yes, JSON.stringify({ sha: m.state.pending!.sha }), { mode: 0o644, owner: me });
+    const sha = m.state.waiting![0]!.sha;
+    writeOwnedText(signerFiles(s).yes, JSON.stringify({ sha, yes: true }), { mode: 0o644, owner: me });
     expect(takeSignerYes(d)).toBe("an admin confirmed the release signers' removal at the box");
+    // A no drops the change, and records it as refused.
+    writeOwnedText(signerFiles(s).yes, JSON.stringify({ sha, yes: false }), { mode: 0o644, owner: me });
+    expect(takeSignerYes(d)).toBe("an admin refused a release signer change at the box, and it is dropped");
+    const after = JSON.parse(await Bun.file(signerFiles(s).state).text()) as SignerState;
+    expect(after.waiting).toBeUndefined();
+    expect(after.refused).toEqual([sha]);
   });
 
   test("a revoke published on the release that carries an add, signed by the kept key, cancels it", async () => {
     const s = state();
     const add = `${JSON.stringify({ v: 1, type: "signers", old: [fp(a)], new: [a.line.trim(), b.line.trim()], fromVersion: "3.0.4" })}\n`;
-    const m = meet({ v: 1, pinned: a.line }, add, "3.0.4", 1);
+    const m = meet({ v: 1, pinned: a.line }, add, "3.0.4", { wall: 1, mono: 1, boot: BOOT });
     if ("why" in m) throw new Error(m.why);
     writeOwnedText(signerFiles(s).state, JSON.stringify(m.state), { mode: 0o644, owner: me });
     const body = new TextEncoder().encode(`${JSON.stringify({ v: 1, type: "revoke", transition: shaOf(add) })}\n`);
@@ -85,7 +92,7 @@ describe("a release signer removal", () => {
     const d = { sys, state: s, repo: "example-org/taskbox-public", rootUid: me, moment: async () => ({ wall: 1, mono: 1, boot: BOOT }), log: () => {} };
     expect(await readRevoke(d)).toBe("the signer change was revoked");
     const after = JSON.parse(await Bun.file(signerFiles(s).state).text()) as SignerState;
-    expect(after.pending).toBeUndefined();
+    expect(after.waiting).toBeUndefined();
     expect(after.revoked).toEqual([shaOf(add)]);
   }, 20_000);
 });

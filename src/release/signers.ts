@@ -79,7 +79,10 @@ export function changeOf(pinned: string, t: Transition, version: string): Change
   return { adds, removes, kept: now.filter((f) => next.includes(f)), newText: `${t.new.join("\n")}\n` };
 }
 
-// root's signers.json.
+// root's signers.json. Several changes may wait at once, each its own: a thief's removal and the
+// owner's recovery both wait at the box, the admin refuses one (it goes, and is never taken again)
+// and confirms the other. Once one moves the pin, every other one, made against the pin before, goes.
+export const WAITING_MAX = 4;
 export interface Pending {
   sha: string; // of the transition's text
   text: string; // the transition, kept so it can be shown
@@ -87,7 +90,13 @@ export interface Pending {
   adds: string[];
   removes: string[];
   kept: string[];
-  seenAt: number; // when the box first verified it: an add waits ADD_WAIT_MS from here
+  seenAt: number; // when the box first verified it, on the wall clock
+  // The add's wait counted on the monotonic clock too, carried across restarts (time the box is off
+  // doesn't count), so a clock step can't end it early: elapsed so far, and the boot and mono it was
+  // last counted at.
+  elapsedMs?: number;
+  boot?: string;
+  monoAt?: number;
   version?: string; // the release that carries it, where a revoke is published
   confirmed?: number; // when an admin at the box confirmed its removals
   addsDone?: true;
@@ -96,34 +105,53 @@ export interface Pending {
 export interface SignerState {
   v: 1;
   pinned: string; // the signers file's text this box verifies with
-  pending?: Pending;
+  waiting?: Pending[];
+  pending?: Pending; // an older file's one waiting change, read as waiting[0]
   revoked?: string[]; // transitions revoked, by sha, so none is taken again
+  refused?: string[]; // transitions an admin refused at the box, by sha, so none is taken again
+}
+// The moment a pass judges at: the wall clock, and the monotonic clock with its boot when readable.
+export interface Clock {
+  wall: number;
+  mono?: number;
+  boot?: string;
 }
 
+function pendingOk(p: Pending): boolean {
+  return !!p && typeof p.sha === "string" && typeof p.text === "string" && typeof p.newText === "string" && Number.isSafeInteger(p.seenAt) && Array.isArray(p.adds) && Array.isArray(p.removes) && Array.isArray(p.kept) && (p.elapsedMs === undefined || Number.isSafeInteger(p.elapsedMs)) && (p.monoAt === undefined || Number.isSafeInteger(p.monoAt)) && (p.boot === undefined || typeof p.boot === "string");
+}
 export function parseSignerState(v: unknown): SignerState | undefined {
   if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
   const s = v as SignerState;
   if (s.v !== 1 || typeof s.pinned !== "string" || signersProblem(s.pinned)) return undefined;
-  if (s.revoked !== undefined && !(Array.isArray(s.revoked) && s.revoked.every((x) => typeof x === "string"))) return undefined;
-  if (s.pending !== undefined) {
-    const p = s.pending;
-    if (!p || typeof p.sha !== "string" || typeof p.text !== "string" || typeof p.newText !== "string" || !Number.isSafeInteger(p.seenAt) || !Array.isArray(p.adds) || !Array.isArray(p.removes) || !Array.isArray(p.kept)) return undefined;
-  }
-  return s;
+  for (const l of [s.revoked, s.refused]) if (l !== undefined && !(Array.isArray(l) && l.every((x) => typeof x === "string"))) return undefined;
+  if (s.pending !== undefined && !pendingOk(s.pending)) return undefined;
+  if (s.waiting !== undefined && !(Array.isArray(s.waiting) && s.waiting.length <= WAITING_MAX && s.waiting.every(pendingOk))) return undefined;
+  const { pending, ...rest } = s;
+  const waiting = [...(s.waiting ?? []), ...(pending && !(s.waiting ?? []).some((w) => w.sha === pending.sha) ? [pending] : [])];
+  return { ...rest, ...(waiting.length ? { waiting } : {}) };
 }
+export const waitingOf = (s: SignerState): Pending[] => s.waiting ?? [];
+const withWaiting = (s: SignerState, waiting: Pending[]): SignerState => {
+  const { waiting: _, pending: __, ...rest } = s;
+  return waiting.length ? { ...rest, waiting } : rest;
+};
 
-// A verified transition met in a release. The same one again changes nothing; a revoked one, or a
-// second while one waits, is refused.
-export function meet(s: SignerState, text: string, version: string, now: number): { state: SignerState; said: string } | { why: string } {
+// A verified transition met in a release. The same one again changes nothing; a revoked or refused
+// one is refused. Others may wait beside it.
+export function meet(s: SignerState, text: string, version: string, at: Clock): { state: SignerState; said: string } | { why: string } {
   const t = parseTransition(text);
   if (!t) return { why: "its signer transition isn't one taskbox reads" };
   const sha = shaOf(text);
   if (s.revoked?.includes(sha)) return { why: "it carries a signer transition that was revoked" };
-  if (s.pending) return s.pending.sha === sha ? { state: s, said: "" } : { why: "another signer change is waiting at this box" };
+  if (s.refused?.includes(sha)) return { why: "it carries a signer transition an admin refused at the box" };
+  const w = waitingOf(s);
+  if (w.some((p) => p.sha === sha)) return { state: s, said: "" };
+  if (w.length >= WAITING_MAX) return { why: `${WAITING_MAX} signer changes wait at this box already: taskbox confirm there answers them` };
   const c = changeOf(s.pinned, t, version);
   if (typeof c === "string") return { why: `its signer transition can't apply: ${c}` };
-  const pending: Pending = { sha, text, newText: c.newText, adds: c.adds, removes: c.removes, kept: c.kept, seenAt: now, version, ...(c.adds.length ? {} : { addsDone: true as const }), ...(c.removes.length ? {} : { removesDone: true as const }) };
-  return { state: { ...s, pending }, said: changeLine(pending) };
+  const pending: Pending = { sha, text, newText: c.newText, adds: c.adds, removes: c.removes, kept: c.kept, seenAt: at.wall, elapsedMs: 0, ...(at.boot !== undefined && at.mono !== undefined ? { boot: at.boot, monoAt: at.mono } : {}), version, ...(c.adds.length ? {} : { addsDone: true as const }), ...(c.removes.length ? {} : { removesDone: true as const }) };
+  return { state: withWaiting(s, [...w, pending]), said: changeLine(pending) };
 }
 
 // The line check and the owner's screen show while a change waits.
@@ -135,54 +163,82 @@ export function changeLine(p: Pending): string {
 // A revoke, verified by its caller as signed by `by`, a pinned key. It counts only when `by` is a key
 // the transition keeps, so a thief's add can be revoked by the owner's key, never the other way.
 export function revoke(s: SignerState, r: Revoke, by: string): { state: SignerState; said: string } | { why: string } {
-  const p = s.pending;
-  if (!p || p.sha !== r.transition) return { why: "no signer change waits with that transition" };
+  const w = waitingOf(s);
+  const p = w.find((x) => x.sha === r.transition);
+  if (!p) return { why: "no signer change waits with that transition" };
   if (!p.kept.includes(by)) return { why: "the revoke isn't signed by a key the change keeps" };
   if (p.addsDone || p.confirmed !== undefined) return { why: "the change applied already" };
-  const { pending: _, ...rest } = s;
-  return { state: { ...rest, revoked: [...(s.revoked ?? []), p.sha].slice(-20) }, said: "the signer change was revoked" };
+  return { state: { ...withWaiting(s, w.filter((x) => x !== p)), revoked: [...(s.revoked ?? []), p.sha].slice(-20) }, said: "the signer change was revoked" };
 }
 
 // confirm at the box: the removals may apply.
 export function confirm(s: SignerState, sha: string, now: number): SignerState | string {
-  if (!s.pending || s.pending.sha !== sha) return "no signer change waits with that transition";
-  return { ...s, pending: { ...s.pending, confirmed: now } };
+  const w = waitingOf(s);
+  if (!w.some((p) => p.sha === sha)) return "no signer change waits with that transition";
+  return withWaiting(s, w.map((p) => (p.sha === sha ? { ...p, confirmed: now } : p)));
 }
 
-// Each pass: an add past its 7 days applies; confirmed removals apply, but never to leave no key.
-// The pin then moves one step at a time toward the transition's set.
-export function settle(s: SignerState, now: number): { state: SignerState; said: string[] } {
-  const p = s.pending;
-  if (!p) return { state: s, said: [] };
+// confirm --refuse at the box: the change goes, and is never taken again, so it blocks nothing.
+export function refuse(s: SignerState, sha: string): SignerState | string {
+  const w = waitingOf(s);
+  if (!w.some((p) => p.sha === sha)) return "no signer change waits with that transition";
+  return { ...withWaiting(s, w.filter((p) => p.sha !== sha)), refused: [...(s.refused ?? []), sha].slice(-50) };
+}
+
+// An add's wait, counted: elapsed on the monotonic clock since it was first seen, carried across
+// restarts. Without a monotonic clock now, nothing is counted.
+const COUNT_EVERY_MS = 60_000;
+function counted(p: Pending, at: Clock): Pending {
+  if (at.mono === undefined || at.boot === undefined) return p;
+  if (p.boot !== at.boot || p.monoAt === undefined) return { ...p, boot: at.boot, monoAt: at.mono, elapsedMs: p.elapsedMs ?? 0 };
+  const step = at.mono - p.monoAt;
+  if (step < COUNT_EVERY_MS) return p;
+  return { ...p, monoAt: at.mono, elapsedMs: (p.elapsedMs ?? 0) + Math.max(0, step) };
+}
+const waited = (p: Pending, at: Clock) => at.wall - p.seenAt >= ADD_WAIT_MS && (p.elapsedMs ?? 0) + (at.mono !== undefined && p.boot === at.boot && p.monoAt !== undefined ? Math.max(0, at.mono - p.monoAt) : 0) >= ADD_WAIT_MS;
+
+// Each pass: an add past its 7 days, on both clocks, applies; confirmed removals apply, but never to
+// leave no key. The pin moves one step at a time toward one transition's set. Once it moves, every
+// other change waiting, made against the pin before, goes. changed: the file should be written.
+export function settle(s: SignerState, at: Clock): { state: SignerState; said: string[]; changed: boolean } {
+  const before = waitingOf(s);
+  if (!before.length) return { state: s, said: [], changed: false };
+  const w = before.map((p) => counted(p, at));
+  let changed = w.some((p, i) => p !== before[i]);
   let lines = signerLines(s.pinned);
-  const target = signerLines(p.newText);
   const said: string[] = [];
-  let next: Pending = { ...p };
-  const addReady = !p.addsDone && now - p.seenAt >= ADD_WAIT_MS;
-  // Removals first, once confirmed, and only when a key is left or the add is ready to take its place.
-  if (!p.removesDone && p.confirmed !== undefined) {
-    const left = lines.filter((l) => !p.removes.includes(signerFingerprint(l)!));
-    if (left.length || addReady) {
-      lines = left;
-      next = { ...next, removesDone: true };
-      said.push(`removed the release key ${p.removes.join(", ")}`);
+  for (let i = 0; i < w.length; i++) {
+    const p = w[i]!;
+    const target = signerLines(p.newText);
+    let next: Pending = { ...p };
+    const addReady = !p.addsDone && waited(p, at);
+    // Removals first, once confirmed, and only when a key is left or the add is ready to take its place.
+    if (!p.removesDone && p.confirmed !== undefined) {
+      const left = lines.filter((l) => !p.removes.includes(signerFingerprint(l)!));
+      if (left.length || addReady) {
+        lines = left;
+        next = { ...next, removesDone: true };
+        said.push(`removed the release key ${p.removes.join(", ")}`);
+      }
     }
-  }
-  // An add past its wait, when it fits: never a third key while a removal waits for its confirm.
-  if (addReady) {
-    const added = [...lines, ...target.filter((l) => p.adds.includes(signerFingerprint(l)!) && !lines.some((x) => signerFingerprint(x) === signerFingerprint(l)))];
-    if (added.length <= 2) {
-      lines = added;
-      next = { ...next, addsDone: true };
-      said.push(`pinned the release key ${p.adds.join(", ")}`);
+    // An add past its wait, when it fits: never a third key while a removal waits for its confirm.
+    if (addReady) {
+      const added = [...lines, ...target.filter((l) => p.adds.includes(signerFingerprint(l)!) && !lines.some((x) => signerFingerprint(x) === signerFingerprint(l)))];
+      if (added.length <= 2) {
+        lines = added;
+        next = { ...next, addsDone: true };
+        said.push(`pinned the release key ${p.adds.join(", ")}`);
+      }
     }
+    if (!said.length) continue;
+    // This one moved the pin: it stays until both halves are done; every other one goes.
+    const others = w.filter((x) => x !== p);
+    if (others.length) said.push(`dropped ${others.length} other signer change${others.length === 1 ? "" : "s"} made against the pin before`);
+    const pinned = `${lines.join("\n")}\n`;
+    const keep = next.addsDone && next.removesDone ? [] : [next];
+    return { state: { ...withWaiting(s, keep), pinned }, said, changed: true };
   }
-  const pinned = `${lines.join("\n")}\n`;
-  if (next.addsDone && next.removesDone) {
-    const { pending: _, ...rest } = s;
-    return { state: { ...rest, pinned }, said };
-  }
-  return { state: { ...s, pinned, pending: next }, said };
+  return { state: changed ? withWaiting(s, w) : s, said, changed };
 }
 
 // What confirm at the box shows for a removal, in the box's own words.
