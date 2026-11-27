@@ -144,7 +144,7 @@
     "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
   },
   "loop.ts": {
-    "reads": 100,
+    "reads": 101,
     "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both. A forced stop's mark time, a label."
   },
   "cmd/daemons.ts": {
@@ -199,6 +199,10 @@
     "reads": 1,
     "why": "when a stop was asked: a label in the stop's file"
   },
+  "pfstarts.ts": {
+    "reads": 3,
+    "why": "the time on the guard's record of starts when it changes, a lock file's age, and the id of an event made before the admin's entry that names it: a step only makes a lock look stale or fresh sooner, the record's order is its sequence number, and an id's time is a label"
+  },
   "passes/control.ts": {
     "reads": 1,
     "why": "the time label on a control.json written again as paused"
@@ -224,8 +228,8 @@
     "why": "when a tool refresh was asked, and how long the command watches it: a step only stops watching sooner or later, and the refresh carries on"
   },
   "cmd/confirm.ts": {
-    "reads": 2,
-    "why": "the moment a confirm is judged at, and when an admin's yes was given: pending.ts lapses on the monotonic clock and the boot too"
+    "reads": 3,
+    "why": "the id of the declined event, made before the admin's entry that names it: a label; the moment a confirm is judged at, and when an admin's yes was given: pending.ts lapses on the monotonic clock and the boot too"
   },
   "passes/settings.ts": {
     "reads": 1,

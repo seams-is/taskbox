@@ -51,6 +51,8 @@ export class FakeSys implements Sys {
     this.events.push(`run ${cmd.split("/").pop()} ${args.slice(0, 2).join(" ")}`);
     for (const r of [...this.responders, ...this.fallbacks]) {
       const out = r(cmd, args, opts);
+      // As the real Sys reads it: past maxBytes the child is killed and its output cut.
+      if (out && opts?.maxBytes !== undefined && (out.stdout.length > opts.maxBytes || out.stderr.length > opts.maxBytes)) return { code: -9, stdout: out.stdout.slice(0, opts.maxBytes), stderr: out.stderr.slice(0, opts.maxBytes), over: true };
       if (out) return out;
     }
     // The box's two clocks that a wall clock step doesn't move, unless a test answers them itself.
@@ -61,6 +63,14 @@ export class FakeSys implements Sys {
     if (cmd === "/usr/bin/dscacheutil" && args[0] === "-q" && args[1] === "group") return { code: 0, stdout: "", stderr: "" };
     // 10 logical CPUs, as the box the numbers in the sizes' settings come from, unless a test says otherwise.
     if (cmd === "/usr/sbin/sysctl" && args[1] === "hw.logicalcpu") return { code: 0, stdout: "10\n", stderr: "" };
+    // The box's own measures of a job's VM (measure.ts), unless a test answers them: no swap in use,
+    // a VM folder of 20 GB, no process found holding its disk, and an idle GPU.
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "vm.swapusage") return { code: 0, stdout: "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)\n", stderr: "" };
+    if (cmd === "/usr/bin/du" && args[0] === "-sk") return { code: 0, stdout: `20971520\t${args[1]}\n`, stderr: "" };
+    if (cmd === "/usr/sbin/lsof") return { code: 1, stdout: "", stderr: "" };
+    // The guard's look at the job VMs running (pfstarts.ts): none, unless a test says otherwise.
+    if (cmd === "/bin/ps" && args[0] === "-axo" && args[1] === "pid=,uid=,command=") return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "/usr/bin/powermetrics") return { code: 0, stdout: "**** GPU usage ****\n\nGPU HW active frequency: 389 MHz\nGPU HW active residency:   0.00% (389 MHz:   0%)\nGPU idle residency: 100.00%\nGPU Power: 0 mW\n", stderr: "" };
     // Plenty of room unless a test says otherwise: 500 GB.
     if (cmd === "/bin/df") return { code: 0, stdout: `F 1 U A C M\n/dev/disk3s5 1 1 ${500e9 / 1024} 1% /\n`, stderr: "" };
     // The Softnet check's process list: launchd is always there, and no Softnet runs as root.
