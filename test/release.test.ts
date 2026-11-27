@@ -35,7 +35,7 @@ function release(o: { signer?: ReturnType<typeof keyPair>; pinned?: string; stat
   writeFileSync(signers, o.pinned ?? `# the owner's key\n${owner.line}`);
   const sigPath = join(dir, "statement.json.sig");
   writeFileSync(sigPath, sig);
-  return { statement, signature: new TextEncoder().encode(sig), tarball: TGZ, sigPath, signers, installed: null as string | null };
+  return { statement, signature: new TextEncoder().encode(sig), tarball: TGZ, sigPath, signers, workRoot: mkdtempSync(join(tmpdir(), "taskbox-work-")), installed: null as string | null };
 }
 
 describe("verifying a release with ssh-keygen", () => {

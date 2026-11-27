@@ -6,7 +6,6 @@
 import { skFlags as readFlags } from "./core/sshsig.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { inVerifyFolder } from "./core/verifyfolder.ts";
 import { EMBEDDED } from "./embedded.ts";
 import { RELEASE_TAG } from "./github.ts";
@@ -92,8 +91,9 @@ export interface VerifyDeps {
 // installed is the release in place, or null for a first install: a release must be newer, so an
 // old signed release can't be put back, nor the same one replayed. ssh-keygen reads the pin and the
 // signature from a folder of verifyRelease's own inside workRoot (core/verifyfolder.ts), written
-// from the bytes checked here, so no caller's folder is trusted.
-export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; signature: Uint8Array; tarball: Uint8Array; installed: string | null; signers?: string; workRoot?: string; tag?: string }): Promise<Verdict> {
+// from the bytes checked here, so no caller's folder is trusted. workRoot is the caller's own folder,
+// never one an environment names: no $TMPDIR, which a root caller may inherit from anyone.
+export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; signature: Uint8Array; tarball: Uint8Array; installed: string | null; signers?: string; workRoot: string; tag?: string }): Promise<Verdict> {
   if (o.installed !== null && !RELEASE_TAG.test(o.installed)) return { ok: false, why: "the installed release has no version taskbox reads" };
   // The pin: the signers file the caller names, read once, else this engine's own
   // (signers/allowed_signers, read in when it was built, src/embedded.ts).
@@ -112,7 +112,7 @@ export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; s
   let ran = false;
   let r: RunResult;
   try {
-    r = await inVerifyFolder(o.workRoot ?? tmpdir(), { signers: pinned, signature: o.signature }, (f) => {
+    r = await inVerifyFolder(o.workRoot, { signers: pinned, signature: o.signature }, (f) => {
       ran = true;
       return d.run(SSH_KEYGEN, ["-Y", "verify", "-f", f.signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", f.signature], { stdin: o.statement, timeoutMs: 20_000 });
     });
