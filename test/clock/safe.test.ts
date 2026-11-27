@@ -7,6 +7,7 @@ import { oneJob, vmStartGuard } from "../../src/loop.ts";
 import { decideWatch, watchClockFile, watchUsed } from "../../src/ops.ts";
 import { FakeSys } from "../fake.ts";
 import { loopDeps, tempRoot } from "../helpers.ts";
+import { WALL_READS_LINES, wallReads } from "./wall-reads.ts";
 
 const H = 3_600_000;
 // The wall clock steps by ms; the monotonic clock doesn't move.
@@ -119,8 +120,8 @@ describe("every wall clock read in src is a known one", () => {
   // Each file that reads the wall clock (Date.now, new Date(), Date(), any .now() but
   // performance.now(), performance.timeOrigin), with how many reads it has and why a step can't end,
   // kill or allow anything there. A new read fails here: put it on the monotonic clock
-  // (core/boot.ts monoNow), or say in wall-reads.json why a step can't hurt.
-  const ALLOWED: Record<string, { reads: number; why: string }> = JSON.parse(readFileSync(new URL("./wall-reads.json", import.meta.url), "utf8"));
+  // (core/boot.ts monoNow), or say in wall-reads.jsonl why a step can't hurt.
+  const ALLOWED = wallReads();
   const SRC = new URL("../../src/", import.meta.url).pathname;
   const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
   const READ = /\bDate\.now\b|\bnew Date\(\s*\)|(?<![\w.])Date\(\s*\)|(?<!performance)\.now\(\)|\bperformance\.timeOrigin\b/g;
@@ -133,6 +134,11 @@ describe("every wall clock read in src is a known one", () => {
     }
     expect(found).toEqual(Object.fromEntries(Object.entries(ALLOWED).map(([f, a]) => [f, a.reads])));
     expect(Object.values(ALLOWED).every((a) => a.why.length > 10)).toBe(true);
+  });
+  test("the list is one file per line, sorted", () => {
+    const files = WALL_READS_LINES.map((l) => (JSON.parse(l) as { file: string }).file);
+    expect(files).toEqual([...files].sort());
+    expect(new Set(files).size).toBe(files.length);
   });
   test("it sees every shape of read", () => {
     for (const l of ["Date.now() - t > LIMIT_MS", "if (Date.now() >= deadline)", "new Date().getTime() - t > MAX_MS", "const elapsed = d.sys.now() - startedAt;", "startedAt + LIMIT_MS < d.sys.now()", "deadline <= d.sys.now()", "this.sys.now() > w.expiresAt", "const f = Date.now;", "Date() + x", "performance.timeOrigin + 5"]) expect(reads(l)).toBe(1);

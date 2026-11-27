@@ -4,7 +4,7 @@
 // After the end: the swap again, and the GPU's samples inside the job. The VM is gone by then, so
 // the folder's last size is the last look before it went.
 // Nothing here can hold a start or fail a job: every read is one that may fail and is left out.
-import type { HookDeps, JobEnd, JobHook, JobRunning } from "../core/hooks.ts";
+import type { HookDeps, JobEnd, JobRunning, PlacedHook } from "../core/hooks.ts";
 import { folderMB, type Footprint, footprintMB, gpuShare, readGpu, rusageFootprint, swapUsedMB, vmFolder, vmPids } from "../measure.ts";
 import { type BoxUsage, MAX_SAMPLES, p90, SAMPLE_EVERY_MS } from "../usage.ts";
 
@@ -20,7 +20,7 @@ interface Watch {
 }
 
 
-export function measureHook(read: Footprint = rusageFootprint): JobHook {
+export function measureHook(read: Footprint = rusageFootprint): PlacedHook {
   const watching = new Map<string, Watch>();
 
   async function look(d: HookDeps, vm: string, w: Watch): Promise<void> {
@@ -32,6 +32,7 @@ export function measureHook(read: Footprint = rusageFootprint): JobHook {
 
   return {
     name: "the box's measures",
+    order: 200,
 
     async jobStarted(d: HookDeps, j: JobRunning) {
       const w: Watch = { at: j.at, stop: () => {}, stopped: false, pids: [], footprints: [] };

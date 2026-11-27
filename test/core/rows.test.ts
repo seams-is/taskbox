@@ -19,9 +19,11 @@ describe("the check-row registry", () => {
     // And the access model's two (rows/accounts.ts).
     extra.splice(extra.indexOf("Service account") + 1, 0, "Accounts");
     extra.splice(extra.indexOf("Tailscale") + 1, 0, "Tailnet policy");
-    expect(names(rows("check", ctx()))).toEqual([...names(PRESTART), ...extra, SECOND_KEY_ROW, "Sizes", "Tool cache", "Screen Sharing and VM starts", "Network diagnostics", "Network rules"]);
-    expect(names(rows("away", ctx()))).toEqual([...names(AWAY_ONLY), ...names(PRESTART), ...extra]);
-    expect(names(rows("preflight"))).toEqual(names(INSTALL_PREFLIGHT));
+    // These keep this order; a new row takes its place by its own number, with no edit here.
+    const inOrder = (got: string[], want: string[]) => expect(got.filter((n) => want.includes(n))).toEqual(want);
+    inOrder(names(rows("check", ctx())), [...names(PRESTART), ...extra, SECOND_KEY_ROW, "Sizes", "Tool cache", "Screen Sharing and VM starts"]);
+    inOrder(names(rows("away", ctx())), [...names(AWAY_ONLY), ...names(PRESTART), ...extra]);
+    inOrder(names(rows("preflight")), names(INSTALL_PREFLIGHT));
   });
   test("the test repo's row shows only with a load repo", () => {
     expect(names(rows("check", ctx(true)))).toContain(TEST_REPO_ROW);

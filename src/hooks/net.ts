@@ -3,7 +3,7 @@
 // status. Before the VM stops: the guest's own counters, once. After: the job's net record on its
 // line, its detail file, and one net.odd event when something looks wrong. A job never fails or
 // waits over diagnostics: with capture off or down its line says so, and nothing else runs.
-import type { HookDeps, JobEnd, JobHook, JobRunEnd, JobRunning, JobStart } from "../core/hooks.ts";
+import type { HookDeps, JobEnd, JobRunEnd, JobRunning, JobStart, PlacedHook } from "../core/hooks.ts";
 import { eventLog } from "../core/events.ts";
 import { loopState } from "../core/paths.ts";
 import { jobOfVm } from "../jobs.ts";
@@ -60,8 +60,10 @@ async function linesFor(d: HookDeps, j: Job, ip: string): Promise<VmLines | unde
   return j.lines;
 }
 
-export const netHook: JobHook = {
+export const netHook: PlacedHook = {
   name: "network diagnostics",
+  // After the job's identity (100) and the box's measures (200).
+  order: 300,
   async beforeStart(d: HookDeps, j: JobStart) {
     const c = captureState(d);
     if (!c.on) return undefined;
