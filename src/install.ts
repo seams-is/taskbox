@@ -25,7 +25,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DOWNLOAD_LIMIT_MS } from "./ghfail.ts";
+import { DOWNLOAD_LIMIT_MS, GitHubError } from "./ghfail.ts";
 import { readInstallId } from "./answers.ts";
 import { removeRequests } from "./requests.ts";
 import { allOk, type Check, type CheckContext, hashTree, macos, runChecks } from "./checks.ts";
@@ -89,6 +89,8 @@ export const CANT_REACH = "taskbox can't reach GitHub. Check the box's network, 
 const NET_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EAI_AGAIN", "ConnectionRefused", "ConnectionClosed", "FailedToOpenSocket", "UND_ERR_CONNECT_TIMEOUT"]);
 
 export function cantReach(e: unknown): boolean {
+  // GitHub's client classes a failed connection as its own error (ghfail.ts).
+  if (e instanceof GitHubError && (e.kind === "network" || e.kind === "timeout")) return true;
   for (let x = e as { code?: unknown; name?: unknown; cause?: unknown } | undefined, n = 0; x && n < 4; x = x.cause as typeof x, n++) {
     if (typeof x.code === "string" && NET_CODES.has(x.code)) return true;
     if (x.name === "TimeoutError") return true;
@@ -602,9 +604,14 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
       if (i) await d.sys.sleep(2000);
       boot = await d.sys.run("/bin/launchctl", ["bootstrap", "system", d.paths.guardPlist], { timeoutMs: LAUNCHCTL_MS });
     }
-    if (boot.code !== 0) d.say(`The guard didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Keep Screen Sharing off, and type taskbox update again.`);
+    // A daemon that didn't start is said at once, and the install ends without Installed.
+    const notStarted: string[] = [];
+    if (boot.code !== 0) {
+      d.say(`The guard didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Keep Screen Sharing off, and type taskbox update again.`);
+      notStarted.push("the guard");
+    }
     // guardwatch, which restarts a guard whose beat has stood still (guardwatch.ts), after the guard.
-    await loadDaemon(d, GUARDWATCH_LABEL, watchPaths(d.paths).plist, "guardwatch");
+    if (!(await loadDaemon(d, GUARDWATCH_LABEL, watchPaths(d.paths).plist, "guardwatch"))) notStarted.push("guardwatch");
 
     // tailscaled, loaded again so it runs the new binary. Its state stays in root's folder. A reload
     // LaunchDaemon an undo left (ops.ts, reloadPlist) goes first, so it can't load tailscaled again
@@ -615,7 +622,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     mkdirSync(d.paths.tailscaleState, { recursive: true, mode: 0o700 });
     const sockWhy = await keepSocket(d.sys, d.paths, newSocketMemory(), d.rootUid ?? 0).catch((e: Error) => e.message);
     if (sockWhy) d.say(`  tailscaled's socket folder: ${sockWhy}. The guard puts it right on its next pass, and taskbox check says so.`);
-    await loadDaemon(d, TAILSCALED_LABEL, d.paths.tailscaledPlist, "tailscaled");
+    if (!(await loadDaemon(d, TAILSCALED_LABEL, d.paths.tailscaledPlist, "tailscaled"))) notStarted.push("tailscaled");
     await tailscaleUp(d, cfg.runnerNamePrefix, tagOf(cfg));
 
     // 7. The service's home, then, unless the update placed them, the keys in root's folder.
@@ -629,6 +636,7 @@ async function installUnlocked(d: InstallDeps, opts: { first: boolean; tag?: str
     // The agent named before, last: the new release is in place and its services run.
     for (const l of await applyOldAgentStep(accountDeps(d), d.paths, step, { ...(d.paths.agent !== undefined ? { oldAgentHome: agentHomeFor(d, d.paths.agent) } : {}), event: accountEvent(d) })) d.say(`  ${l}`);
     if (cfg.accounts.agent !== undefined) d.say(`  Agents and the controller reach the box as ${cfg.accounts.agent}: the controller pairs with that name.`);
+    if (notStarted.length) throw new Stop(`The ${opts.first ? "install" : "update"} isn't finished: ${notStarted.join(" and ")} didn't start. Type taskbox update again.`, true);
     d.say(opts.first ? `Installed. Now log in as ${d.paths.service}. Then, at the box, type taskbox policy show, and add the entries it prints in Tailscale's admin console (docs/tailnet-policy.md).` : "Installed. The loop restarts on the new commit once the current job or the image download ends.");
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -1109,7 +1117,7 @@ export async function tailscaleUp(d: InstallDeps, hostname: string, tag: string 
 }
 
 // Writes a LaunchDaemon's plist from the install and loads it again, so it runs the new code.
-async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what: string): Promise<void> {
+async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what: string): Promise<boolean> {
   const text = plist(readFileSync(join(d.paths.app, "launchd", `${label}.plist`), "utf8"));
   mkdirSync(dirname(plistPath), { recursive: true });
   writeFileSync(plistPath, text, { mode: 0o644 });
@@ -1121,6 +1129,7 @@ async function loadDaemon(d: InstallDeps, label: string, plistPath: string, what
     boot = await d.sys.run("/bin/launchctl", ["bootstrap", "system", plistPath], { timeoutMs: LAUNCHCTL_MS });
   }
   if (boot.code !== 0) d.say(`${what} didn't start (${boot.stderr.trim().slice(0, 120) || `launchctl exit ${boot.code}`}). Type taskbox update again.`);
+  return boot.code === 0;
 }
 
 // /opt/taskbox-state and its project folder. A link or someone else's folder in either place stops

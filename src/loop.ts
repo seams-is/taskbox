@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { within } from "./clock.ts";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
 import { appendJob, type JobRecord, jobOfVm, newJobId, stopJob, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
 import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
@@ -474,7 +475,7 @@ export async function pullImage(
     const stop = stopIf();
     if (stop) {
       p.kill();
-      await Promise.race([done, sys.sleep(30_000)]);
+      await within(sys, done, 30_000);
       const why = typeof stop === "string" ? stop : "an update was installed";
       rec.finish(false, why, false);
       return { ok: false, updated: true, error: typeof stop === "string" ? `stopped: ${why}` : "stopped for an update" };
@@ -484,10 +485,10 @@ export async function pullImage(
       p.kill();
       break;
     }
-    await Promise.race([done, sys.sleep(10_000)]);
+    await within(sys, done, 10_000);
   }
   // After a kill, don't wait forever for output a child process might keep open.
-  const code = stopped ? await Promise.race([done, p.exited.then(async (c) => (await sys.sleep(30_000), c))]) : await done;
+  const code = stopped ? await Promise.race([done, p.exited.then(async (c) => (await within(sys, done, 30_000)) ?? c)]) : await done;
   if (code === 0 && !stopped) {
     rec.finish(true);
     return { ok: true };
@@ -600,7 +601,7 @@ export async function guestReady(d: LoopDeps, vm: string, phase: string, exited:
     const r = await Promise.race([t.exec(vm, cmd, undefined, 15_000), died]);
     if (r === "died") return false;
     if (r.code === 0) return true;
-    if ((await Promise.race([d.sys.sleep(5000), died])) === "died") return false;
+    if ((await within(d.sys, died, 5000)) === "died") return false;
   }
   return false;
 }
@@ -842,7 +843,10 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
     stopDone = d.box?.window(d.slot, "stop", d.sys.now());
     try {
       await t.stop(vm, 30);
-      proc?.kill();
+      if (proc) {
+        proc.kill();
+        await within(d.sys, proc.exited, 30_000);
+      }
       await t.delete(vm);
     } catch (e) {
       d.log.write(`cleaning up ${vm} failed: ${(e as Error).message}`);
@@ -1390,7 +1394,11 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     const stopDone = d.box?.window(d.slot, "stop", d.sys.now());
     try {
       await t.stop(vm, 30);
-      vmProc?.kill();
+      // A killed tart run holds the VM until it ends, and Tart won't delete a VM still held.
+      if (vmProc) {
+        vmProc.kill();
+        await within(d.sys, vmProc.exited, 30_000);
+      }
       deleted = await t.delete(vm);
       if (deleted.code === 0) mark("deleted");
     } catch (e) {

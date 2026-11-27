@@ -2,6 +2,7 @@
 // box, and one generation shared read-only into it. A root step copies the tools in, checks each
 // hash, unpacks the toolcache entries, and the guest shuts down. The stopped VM is the kind's base,
 // and job VMs clone it. The bake runs no job's code.
+import { within } from "../clock.ts";
 import type { Kind } from "../settings/kinds.ts";
 import type { Sys } from "../sys.ts";
 import type { NetPolicy, VmEngine } from "../vm.ts";
@@ -87,7 +88,7 @@ export async function bake(d: BakeDeps, s: Store, kind: Kind, image: string, gen
     // The guest shuts itself down, so its disk is whole. Its exec may end with the connection.
     await e.exec(name, SHUTDOWN[kind], undefined, 30_000).catch(() => undefined);
     const until = d.sys.now() + SHUTDOWN_MS;
-    while (!exited && d.sys.now() < until) await Promise.race([proc.exited, d.sys.sleep(2_000)]);
+    while (!exited && d.sys.now() < until) await within(d.sys, proc.exited, 2_000);
     if (!exited) throw new Error(`the ${kind} guest didn't shut down`);
     proc = undefined;
     // The disk's hash is the base's identity, shown in tool list and image list. It isn't checked

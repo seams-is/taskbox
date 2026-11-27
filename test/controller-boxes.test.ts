@@ -87,7 +87,7 @@ describe("status over every paired box", () => {
 
   test("--box all is for reads only", async () => {
     const { w, d } = two();
-    const s = await runLine(d, ["workspace", "end", "agent-a-1", "--box", "all"]);
+    const s = await runLine(d, ["workspace", "end", "nova-1", "--box", "all"]);
     expect(s).toMatchObject({ code: 2, lines: ["--box all is for commands that read. Name one box for taskbox workspace end."] });
     expect(w.calls).toEqual([]);
   }, CEILING);

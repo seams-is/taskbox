@@ -84,7 +84,7 @@ function run(r: Run): { code: number; out: string; count: string } {
 const hold = (o: { box?: string; since?: number; at?: number; until?: number; waitingSince?: number; waitingUntil?: number } = {}) => {
   const now = Date.now();
   const at = o.at ?? now - 10 * M;
-  return { box: o.box ?? "taskbox-1", until: isoSecond(o.until ?? at + 12 * H), since: isoSecond(o.since ?? now - 2 * H), why: "workspace agent-a-3 (Whole)", waitingSince: o.waitingSince ? isoSecond(o.waitingSince) : null, waitingUntil: o.waitingUntil ? isoSecond(o.waitingUntil) : null, at: isoSecond(at) };
+  return { box: o.box ?? "taskbox-1", until: isoSecond(o.until ?? at + 12 * H), since: isoSecond(o.since ?? now - 2 * H), why: "workspace nova-3 (Whole)", waitingSince: o.waitingSince ? isoSecond(o.waitingSince) : null, waitingUntil: o.waitingUntil ? isoSecond(o.waitingUntil) : null, at: isoSecond(at) };
 };
 
 // Each run starts bash and jq a few times: the rule tests run one at a time, with room.
@@ -117,7 +117,7 @@ describe.skipIf(!JQ)("the hourly box check's rules", () => {
   test.serial("a current hold: jobs waiting don't alarm", () => {
     const r = run({ queuedMinutes: 90, hold: hold() });
     expect(r.code).toBe(0);
-    expect(r.out).toContain("taskbox-1 is held (workspace agent-a-3 (Whole))");
+    expect(r.out).toContain("taskbox-1 is held (workspace nova-3 (Whole))");
   });
 
   test.serial("a hold nobody ended: jobs waiting alarm, and the email says it ran out", () => {
@@ -151,7 +151,7 @@ describe.skipIf(!JQ)("the hourly box check's rules", () => {
   test.serial("a hold standing past holdAlarmHours fails while it is current", () => {
     const r = run({ hold: hold({ since: Date.now() - 25 * H }) });
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/taskbox-1 has been held since \d\d:\d\d UTC on .* \(workspace agent-a-3 \(Whole\)\), over 24 hours/);
+    expect(r.out).toMatch(/taskbox-1 has been held since \d\d:\d\d UTC on .* \(workspace nova-3 \(Whole\)\), over 24 hours/);
   });
 
   test.serial("a request waiting past requestAlertMinutes fails; one under it, or one no longer renewed, doesn't", () => {

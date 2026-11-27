@@ -8,7 +8,7 @@ const T = Date.parse("2031-03-04T14:02:00Z");
 const M = 60_000;
 const H = 60 * M;
 const BOX = "taskbox-1";
-const held = { answered: true, hold: { since: T, why: "workspace agent-a-3 (Whole)" } };
+const held = { answered: true, hold: { since: T, why: "workspace nova-3 (Whole)" } };
 
 function poll(mem: LeaseMemory, view: Parameters<typeof leaseStep>[1], now: number, writer = true, hours?: number) {
   const s = leaseStep(BOX, view, mem, now, writer, hours);
@@ -26,7 +26,7 @@ describe("the lease", () => {
   });
 
   test("set when the box reports a hold: the box's name, since, until 12 hours on, in the form jq reads", () => {
-    expect(poll(known(), held, T + 30_500)).toEqual({ do: "write", lease: { box: BOX, until: "2031-03-05T02:02:30Z", since: "2031-03-04T14:02:00Z", why: "workspace agent-a-3 (Whole)", waitingSince: null, waitingUntil: null, at: "2031-03-04T14:02:30Z" } });
+    expect(poll(known(), held, T + 30_500)).toEqual({ do: "write", lease: { box: BOX, until: "2031-03-05T02:02:30Z", since: "2031-03-04T14:02:00Z", why: "workspace nova-3 (Whole)", waitingSince: null, waitingUntil: null, at: "2031-03-04T14:02:30Z" } });
   });
 
   test("renewed every 30 minutes while the box answers with that hold, and not between", () => {

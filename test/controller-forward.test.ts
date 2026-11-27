@@ -39,7 +39,7 @@ describe("every command the agent shell runs", () => {
   test("goes to the box as a line its shell takes, or is said to run at the box, and never throws", async () => {
     const { w, d } = v3();
     for (const s of registry().filter((x) => x.shell && !x.internal)) {
-      const argv = [...s.path, ...(s.args?.min ? Array(s.args.min).fill("agent-a-1") : [])];
+      const argv = [...s.path, ...(s.args?.min ? Array(s.args.min).fill("nova-1") : [])];
       const a = readLine(d, argv);
       if ("shown" in a) {
         expect({ argv, line: a.shown.lines[0] }).toEqual({ argv, line: expect.stringMatching(/runs at the box|answers only as text|^taskbox |^Type taskbox |Usage|needs|takes/) });

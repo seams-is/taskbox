@@ -176,11 +176,13 @@ describe("ci's answers for a controller", () => {
     }
   });
 
-  // To do: check reads versions.json outside the try that answers unreadable settings, so a box
-  // missing it prints a stack trace in place of one line of JSON.
-  test.todo("check --json with versions.json unreadable is one line of JSON", async () => {
+  test("check --json with versions.json unreadable is one line of JSON", async () => {
+    // The test box has no versions.json in its app folder.
     const r = await run(["check", "--json"], CALLERS.ci).catch((e: Error) => ({ code: -1, said: [e.message] }));
-    expect([r.code, r.said]).toEqual([1, [JSON.stringify(errorAnswer("unreadable"))]]);
+    expect([r.code, r.said.length]).toEqual([1, 1]);
+    expect(JSON.parse(r.said[0]!)).toMatchObject({ answers: 4, command: "check", ok: false, exit: 1, error: { message: "taskbox.json can't be read." } });
+    const v3 = await run(["check", "--json", "--answers", "3"], CALLERS.ci);
+    expect([v3.code, v3.said]).toEqual([1, [JSON.stringify(errorAnswer("unreadable"))]]);
   });
 });
 
@@ -198,9 +200,7 @@ describe("an update that stops before it changes anything", () => {
     return readAsRoot((path) => path === p.actionsKeyDir, () => run(["update"], CALLERS["root via sudo"], { root, sys }));
   }
 
-  // To do: GitHub's client turns a network failure into its own error (ghfail.ts), which cantReach
-  // doesn't read as one, so the owner is sent to agents instead of to the box's network.
-  test.todo("GitHub out of reach: the owner checks the network", async () => {
+  test("GitHub out of reach: the admin is sent to the box's network", async () => {
     const r = await update({
       gh: (sys) => {
         sys.fetch = async () => {

@@ -129,10 +129,9 @@ describe("one job", () => {
     expect(sys.vms.size).toBe(0);
   });
 
-  // To do: after the kill, the loop deletes at once (loop.ts, the job's finally). A tart run that
-  // takes a moment to end still holds the VM, so Tart refuses the delete and the VM stays until the
-  // leak check. The fake's kill ends a process at once, which hid it.
-  test.todo("a VM that ignores tart stop, and takes a second to end after the kill, is still deleted", async () => {
+  // A tart run that takes a moment to end after the kill still holds the VM, and Tart refuses to
+  // delete it meanwhile, so the loop waits for it to end first.
+  test("a VM that ignores tart stop, and takes a second to end after the kill, is still deleted", async () => {
     const sys = new FakeSys();
     happyGuest(sys);
     sys.tartIgnoresStop = true;
