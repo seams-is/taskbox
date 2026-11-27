@@ -37,6 +37,10 @@ At the box, type `taskbox policy show --login <your Tailscale login>` to print t
 2. After the install, remove the allow-all rule and add the entries from `taskbox policy show`, in place of any older taskbox entries. The console refuses a file whose tests fail.
 3. `taskbox check`'s "Tailnet policy" row compares the rules the box was sent with the settings.
 
+## Moving from v2.6.1
+
+The box keeps its tag, and v2.6.1's entries go on working through the move. Once `taskbox status` says the move is proved, run `taskbox policy show` again. Paste its entries, which add the workspace accounts, in place of the old taskbox entries.
+
 ## If the box is lost
 
 1. Remove the box on the Tailscale Machines page. Its key never expires.

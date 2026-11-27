@@ -1,0 +1,22 @@
+{
+  "$comment": "v2.6.1 pins (c7d2414 versions.json): each tool v2.6.1 copies into the hop install, by version and archive SHA-256; tailscale by its binaries, since its archive is rebuilt per release repo.",
+  "bun": {
+    "version": "1.4.4",
+    "sha256": "c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510"
+  },
+  "tart": {
+    "version": "2.41.1",
+    "sha256": "e680a734febccfce7d4e910c1f7f13fc3b00f19a181c945e2d746de3214c32c2"
+  },
+  "softnet": {
+    "version": "0.25.0",
+    "sha256": "5a2e8ef779f0a2169b88d273ee806c0d64321ec7714c0dc99bf217523ae9b008"
+  },
+  "tailscale": {
+    "version": "1.104.5",
+    "files": {
+      "tailscale": "964c2a0550680e79ee260130959087042e14ae17d3f671938a31d5ba186d2454",
+      "tailscaled": "237ed22e03dea17896a81b7f2883752c2e1dc8d1ad199334c063843a8507da56"
+    }
+  }
+}

@@ -206,10 +206,12 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   return lines;
 }
 
-export async function watch(o: { pullFile: string; pullLinuxFile?: string; loopFile: string; loopRunning: () => Promise<boolean | undefined>; stoppedAt?: () => number | undefined; others?: () => Promise<string[]>; unfinished?: () => boolean; logins?: () => Promise<string | undefined>; once: boolean; clock?: Clock }): Promise<void> {
+export async function watch(o: { pullFile: string; pullLinuxFile?: string; loopFile: string; loopRunning: () => Promise<boolean | undefined>; stoppedAt?: () => number | undefined; others?: () => Promise<string[]>; unfinished?: () => boolean; logins?: () => Promise<string | undefined>; extra?: () => string[]; once: boolean; clock?: Clock }): Promise<void> {
   const clock = o.clock ?? realClock;
   for (;;) {
     const lines = screen({ ...o, now: clock.now(), loopRunning: await o.loopRunning(), stoppedAt: o.stoppedAt?.(), others: await o.others?.(), unfinished: o.unfinished?.(), logins: await o.logins?.() });
+    // The move to v3 while it runs (migrate/status.ts).
+    lines.push(...(o.extra?.() ?? []).map((l) => `  ${l}`));
     if (o.once) {
       console.log(lines.join("\n"));
       return;

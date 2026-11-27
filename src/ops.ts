@@ -12,6 +12,7 @@ import { INSTALL_NAME, linkTarget, prune, relink, updateUnfinished, withUpdateLo
 import { allOk, type Check, type CheckContext, serviceUnlocksDisk, loginSessions, otherLogins, runChecks, screenSharingOn, treeProblem } from "./checks.ts";
 import { GUARDWATCH_LABEL, guardStaleSince, watchPaths } from "./guardwatch.ts";
 import { removeNetwatch, stopBridges } from "./net/netwatch.ts";
+import { moveLines } from "./migrate/status.ts";
 import { NETWATCH_LABEL } from "./net/paths.ts";
 import { sourceWords } from "./sourcefail.ts";
 import { AGENT_LABEL, GUARD_LABEL, LAUNCHCTL_MS, OLD_TAILSCALE_SOCKET, REMOTE_SHELL, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, readStateTail, type Versions } from "./config.ts";
@@ -203,6 +204,7 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string, extra: r
   } else if (loop.vmKind && loop.slot && loop.slot !== "idle") d.say(`  VM:        a ${KIND_WORD[loop.vmKind === "linux" ? "linux" : "macos"]} VM, ${noControl(loop.slot)}`);
   d.say(`  Last job:  ${loop.lastJob ? `${noControl(loop.lastJob)}${loop.lastJobResult ? `, ${noControl(loop.lastJobResult)}` : ""}` : "none yet"}`);
   if (logins) d.say(`  Logins:    ${logins}`);
+  for (const l of moveLines(rootStateOf(d.paths).dir, d.paths, d.sys.now(), d.rootUid ?? 0)) d.say(`  ${l}`);
   for (const l of extra) d.say(`  ${l}`);
   d.say("");
   d.say(commandsFor(d, who));

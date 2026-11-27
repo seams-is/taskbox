@@ -87,6 +87,8 @@ async function watchBox(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Prom
   const { updateUnfinished } = await import("../layout.ts");
   const { loopRunning, readStopped } = await import("../availability.ts");
   const { watch } = await import("../watch.ts");
+  const { moveLines } = await import("../migrate/status.ts");
+  const { rootStateOf } = await import("../core/paths.ts");
   const dir = typeof c.opts.state === "string" ? c.opts.state : undefined;
   // Another state folder is for testing a pull, as the service account. Anyone else reads the box's own copies.
   if (dir !== undefined && c.uid !== c.cu) {
@@ -104,6 +106,7 @@ async function watchBox(c: Parameters<NonNullable<CommandSpec["run"]>>[0]): Prom
     logins: dir ? undefined : async () => recentLine(readSeen(c.own), c.ops.sys.now()),
     unfinished: () => !dir && updateUnfinished(p),
     loopRunning: async () => (dir || c.uid !== c.cu ? undefined : loopRunning(c.ops.sys, c.uid, p.loopLabels)),
+    extra: () => (dir ? [] : moveLines(rootStateOf(p).dir, p, c.ops.sys.now(), c.deps.rootUid ?? 0)),
     clock: c.ops.sys,
   });
   return 0;

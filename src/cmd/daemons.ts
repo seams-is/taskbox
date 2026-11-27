@@ -253,7 +253,31 @@ export const commands: CommandSpec[] = [
       const cu = await c.deps.serviceUid(service);
       if (cu === undefined) return c.env.USER === service ? 1 : 0;
       if (c.uid !== cu) return 0;
-      return installMoved(c.root) ? (await import("../loop.ts")).RESTART : undefined;
+      if (installMoved(c.root)) return (await import("../loop.ts")).RESTART;
+      // The move to v3: loop-start.json, v2.6.1's marks gone, and no VM until migrate-v3 lifts the gate.
+      const { loopGate } = await import("../migrate/gate.ts");
+      const { homedir } = await import("node:os");
+      const { Log } = await import("../log.ts");
+      const { realClock } = await import("../clock.ts");
+      return loopGate({
+        root: c.root,
+        serviceHome: c.env.HOME ?? homedir(),
+        serviceUid: cu,
+        pid: process.pid,
+        install: own(),
+        now: () => realClock.now(),
+        sleep: (ms) => realClock.sleep(ms),
+        moved: () => installMoved(c.root),
+        settingsReadable: () => {
+          try {
+            boxNames(c.app);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        log: (l) => new Log(join(c.env.HOME ?? homedir(), ".taskbox", "gate.log")).write(l),
+      });
     },
     async run(c) {
       const { lstatSync, mkdirSync, readFileSync } = await import("node:fs");

@@ -337,8 +337,8 @@ function keptV2(p: Paths, cur: string | undefined): { version: string; dir: stri
 
 // The Linux proof's longest run (beat.ts "proving Linux"), past which the proof goes on without it.
 export const SELFTEST_MS = 95 * 60_000;
-const isTestJob = (j: JobRecord) => typeof j.workflow === "string" && /^taskbox test job\b/.test(j.workflow);
-function jobsNow(d: BoxEnvDeps): JobRecord[] {
+export const isTestJob = (j: JobRecord) => typeof j.workflow === "string" && /^taskbox test job\b/.test(j.workflow);
+export function jobsNow(d: BoxEnvDeps): JobRecord[] {
   try {
     const st = lstatSync(d.p.jobsFile);
     return readJobs(d.p, st.uid) ?? [];
@@ -357,7 +357,7 @@ function extendWatch(d: BoxEnvDeps, to: number): void {
 }
 
 // check's rows, from `taskbox check --json` of the install in place, run as the service account.
-async function checkRows(d: BoxEnvDeps): Promise<Record<string, string>> {
+export async function checkRows(d: BoxEnvDeps): Promise<Record<string, string>> {
   const r = await d.sys.run(SUDO, ["-n", "-u", d.p.service, "--", join(d.p.bin, "taskbox"), "check", "--json"], { timeoutMs: 300_000 });
   for (const line of r.stdout.split("\n")) {
     try {

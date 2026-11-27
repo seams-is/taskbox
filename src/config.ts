@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { POOL_USER, validateAccounts } from "./access.ts";
 import { LABEL_PREFIX, LABEL_PREFIX_SHAPE, PROJECT_NAME } from "./settings/core.ts";
 import { readInForce, settingsFilesForApp } from "./settings/inforce.ts";
+import { hopSettings } from "./migrate/v2settings.ts";
 
 export { type AwaySettings, awayOf, checkAway, CRON_INTERVALS, DEFAULT_AWAY, PUBLIC_ADDRESS_SOURCES, type PublicAddressSource, RESTART_PLANS, type RestartPlan } from "./settings/away.ts";
 export { DEFAULT_WORKSPACES, type WorkspaceSettings, workspacesOf } from "./settings/workspaces.ts";
@@ -111,7 +112,9 @@ export function boxNames(dir: string, rootUid = 0): BoxNames {
     try {
       c = readJson<unknown>(join(dir, "taskbox.json"));
     } catch {
-      throw new Error("taskbox.json can't be read");
+      // At the hop: v2.6.1's own file, converted (migrate/v2settings.ts).
+      c = existsSync(join(dir, "taskbox.json")) ? undefined : hopSettings(dir, rootUid);
+      if (!c) throw new Error("taskbox.json can't be read");
     }
   }
   const o = c && typeof c === "object" ? (c as { project?: unknown; previousLabelPrefix?: unknown; accounts?: unknown }) : {};

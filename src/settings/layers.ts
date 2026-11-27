@@ -9,6 +9,7 @@ import { readJson } from "../config.ts";
 import { within } from "./classes.ts";
 import { checkConfig, type Config } from "./core.ts";
 import { readInForce, settingsFilesForApp } from "./inforce.ts";
+import { hopSettings } from "../migrate/v2settings.ts";
 
 type Warn = (line: string) => void;
 const check = (s: Record<string, unknown>, warn: Warn) => checkConfig(structuredClone(s) as unknown as Config, warn);
@@ -45,6 +46,11 @@ export function loadConfig(dir: string, boxFile?: string, rootUid = 0, warn: War
       // A commit this release can't read (a rollback to one before it): the install's own file, if any.
       if (!existsSync(join(dir, "taskbox.json"))) throw new Error(`the settings in force (${f.value.sha.slice(0, 12)}) don't pass this release's checks`);
     }
+  }
+  // At the hop (migrate/v2settings.ts): v2.6.1's own file, converted, until the first commit is in force.
+  if (!existsSync(join(dir, "taskbox.json"))) {
+    const v2 = hopSettings(dir, rootUid);
+    if (v2) return loadConfigFrom(v2, boxFile, rootUid, warn);
   }
   return loadConfigFrom(readJson<Record<string, unknown>>(join(dir, "taskbox.json")), boxFile, rootUid, warn);
 }
