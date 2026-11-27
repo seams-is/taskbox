@@ -1,9 +1,10 @@
 // Break-glass at the box with the guard down (stopHere, startHere), and what status and watch say of
 // a stopped or draining box.
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { controlGate, readStartedHere, startedHereFile, startHere, STOP_WAIT_MS, stopHere, type StopDeps } from "../src/availability.ts";
+import { controlGate, downAtNote, readStartedHere, startedHereFile, startHere, STOP_WAIT_MS, stopHere, type StopDeps } from "../src/availability.ts";
+import { STALE_MS } from "../src/guardwatch.ts";
 import { paths } from "../src/config.ts";
 import { rootStateOf } from "../src/core/paths.ts";
 import { screen } from "../src/watch.ts";
@@ -90,26 +91,75 @@ describe("start at the box with the guard down", () => {
     return f;
   }
 
-  test("notes the gen control.json has, so the loop runs as if active and never halts again on it", async () => {
+  const BOOT = "11111111-2222-3333-4444-555555555555";
+  const mono = (b: ReturnType<typeof launchd>) => b.sys.now() + b.sys.monoOffset;
+  const counts = (b: ReturnType<typeof launchd>, beat?: { boot: string; mono: number }) => {
+    const n = readStartedHere(b.d.paths, me);
+    return n !== undefined && downAtNote(n, beat, BOOT) ? n.gen : undefined;
+  };
+
+  test("notes the gen and when, so the loop runs as if active while the guard stays down", async () => {
     const b = launchd({});
     const f = stopped(b);
     expect(controlGate(f, me).stopped).toBe(true);
-    expect(await startHere({ ...b.d, rootUid: me })).toBe(0);
-    expect(JSON.parse(readFileSync(startedHereFile(b.d.paths), "utf8"))).toEqual({ gen: 9 });
-    expect(readStartedHere(b.d.paths)).toBe(9);
-    expect(controlGate(f, me, readStartedHere(b.d.paths))).toEqual({ gen: 9, stopped: false });
+    expect(await startHere({ ...b.d, uid: me, rootUid: me })).toBe(0);
+    expect(JSON.parse(readFileSync(startedHereFile(b.d.paths), "utf8"))).toEqual({ v: 1, gen: 9, boot: BOOT, mono: mono(b) });
+    // No beat, or one more than STALE_MS old when the note was made: the note counts.
+    expect(controlGate(f, me, counts(b))).toEqual({ gen: 9, stopped: false });
+    expect(controlGate(f, me, counts(b, { boot: BOOT, mono: mono(b) - STALE_MS - 1 })).stopped).toBe(false);
     expect(b.labels.get("local.taskbox.loop")).toBe("running");
     expect(b.said.at(-1)).toBe("Started here, at the box. The guard writes the start in control.json once it is back.");
     // A later change in control.json (a new gen) is the guard's again.
     stopped(b, 10);
-    expect(controlGate(f, me, readStartedHere(b.d.paths)).stopped).toBe(true);
+    expect(controlGate(f, me, counts(b)).stopped).toBe(true);
+  });
+
+  test("a note stops counting once the guard beats again, and never counts from another boot", async () => {
+    const b = launchd({});
+    const f = stopped(b);
+    await startHere({ ...b.d, uid: me, rootUid: me });
+    expect(controlGate(f, me, counts(b, { boot: BOOT, mono: mono(b) + 1 })).stopped).toBe(true);
+    const n = readStartedHere(b.d.paths, me)!;
+    expect(downAtNote(n, undefined, "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")).toBe(false);
+    expect(downAtNote(n, undefined, undefined)).toBe(false);
+  });
+
+  test("a note made with the guard up is forged: it never counts", async () => {
+    const b = launchd({});
+    const f = stopped(b);
+    await startHere({ ...b.d, uid: me, rootUid: me });
+    expect(controlGate(f, me, counts(b, { boot: BOOT, mono: mono(b) - 5_000 })).stopped).toBe(true);
+  });
+
+  test("the note is read by the owned-file rules: no link, nobody else may write it, a size cap, its own shape", async () => {
+    const b = launchd({});
+    stopped(b);
+    const file = startedHereFile(b.d.paths);
+    const good = JSON.stringify({ v: 1, gen: 9, boot: BOOT, mono: 5 });
+    writeFileSync(file, good, { mode: 0o666 });
+    chmodSync(file, 0o666);
+    expect(readStartedHere(b.d.paths, me)).toBeUndefined();
+    rmSync(file);
+    writeFileSync(file, JSON.stringify({ v: 1, gen: 9, boot: BOOT, mono: 5, pad: "x".repeat(300) }), { mode: 0o644 });
+    expect(readStartedHere(b.d.paths, me)).toBeUndefined();
+    rmSync(file);
+    writeFileSync(`${file}.real`, good, { mode: 0o644 });
+    symlinkSync(`${file}.real`, file);
+    expect(readStartedHere(b.d.paths, me)).toBeUndefined();
+    rmSync(file);
+    writeFileSync(file, JSON.stringify({ gen: 9 }), { mode: 0o644 });
+    expect(readStartedHere(b.d.paths, me)).toBeUndefined();
+    rmSync(file);
+    writeFileSync(file, good, { mode: 0o644 });
+    expect(readStartedHere(b.d.paths, me)).toEqual({ v: 1, gen: 9, boot: BOOT, mono: 5 });
+    expect(readStartedHere(b.d.paths, me + 1)).toBeUndefined();
   });
 
   test("a loop running already says so, and still notes the gen", async () => {
     const b = launchd({ "local.taskbox.loop": "running" });
     stopped(b);
-    expect(await startHere({ ...b.d, rootUid: me })).toBe(0);
-    expect(readStartedHere(b.d.paths)).toBe(9);
+    expect(await startHere({ ...b.d, uid: me, rootUid: me })).toBe(0);
+    expect(readStartedHere(b.d.paths, me)?.gen).toBe(9);
     expect(b.said.at(-1)).toContain("The loop runs already");
   });
 });

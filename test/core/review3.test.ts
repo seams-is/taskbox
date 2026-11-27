@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { eventLog, flushEvents, installTermFlush, keepEvents, readEvents } from "../../src/core/events.ts";
-import { begin, keepOps, type OpType, readOp, writeOp } from "../../src/core/ops.ts";
+import { begin, keepOps, readOp, writeOp } from "../../src/core/ops.ts";
 import { Passes } from "../../src/core/passes.ts";
 import { updateOwnedJson, withLock } from "../../src/core/rootfile.ts";
 import { recordOutcome } from "../../src/core/spool.ts";
@@ -16,7 +17,7 @@ const DAY = 86_400_000;
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-review3-"));
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const APP = "/opt/taskbox/app/src/cli.ts";
-const update: OpType = { type: "update", phases: ["downloading", "verifying", "installing", "proving"], pointOfNoReturn: "installing", onBoot: () => "fail" };
+const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["downloading", "verifying", "installing", "proving"], pointOfNoReturn: "installing", onBoot: () => "fail" };
 function setup() {
   const sys = new FakeSys();
   const root = tmp();

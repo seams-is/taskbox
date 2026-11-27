@@ -17,10 +17,11 @@
 // With the guard down, at the box: stop --force takes the loop out of launchd (stopHere), and start
 // starts it with a note of the gen it was asked over (startHere), which the loop runs past and the
 // guard turns into a start once it is back.
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { duration, type ErrorCode } from "./command.ts";
-import { AGENT_LABEL, LAUNCHCTL_MS, type Paths, previousLabels, readStateJson } from "./config.ts";
+import { AGENT_LABEL, LAUNCHCTL_MS, type Paths, previousLabels } from "./config.ts";
+import { STALE_MS } from "./guardwatch.ts";
 import { bootId, isBootId, monoNow } from "./core/boot.ts";
 import type { HandlerCtx, Answer } from "./core/dispatch.ts";
 import type { EventLog } from "./core/events.ts";
@@ -140,18 +141,36 @@ export async function launchLoop(d: Pick<StopDeps, "sys" | "paths" | "uid">): Pr
   return clean(boot.stderr.trim()).slice(0, 120) || `launchctl exit ${boot.code}`;
 }
 
-// The service account's note of a start asked with the guard down: the control gen it was asked over.
+// The service account's note of a start asked with the guard down: the control gen it was asked
+// over, and when, on this boot's mono. It counts only while it was written with the guard down (no
+// beat, one from another boot, or one more than STALE_MS older than the note) and the guard hasn't
+// beaten since; once the guard beats, the guard alone decides, once, and the note is inert. Root
+// never writes in the service's home, so it isn't removed: a new gen leaves it naming nothing.
+export interface StartedHere {
+  v: 1;
+  gen: number;
+  boot: string;
+  mono: number;
+}
 export const startedHereFile = (p: Pick<Paths, "loopState">) => join(dirname(p.loopState), "started-here.json");
-export function readStartedHere(p: Pick<Paths, "loopState">): number | undefined {
-  const v = readStateJson<{ gen?: unknown }>(startedHereFile(p))?.gen;
-  return Number.isSafeInteger(v) ? (v as number) : undefined;
+const hereOf = (v: unknown): StartedHere | string => (isObj(v) && Object.keys(v).sort().join(",") === "boot,gen,mono,v" && v.v === 1 && Number.isSafeInteger(v.gen) && isBootId(v.boot) && Number.isSafeInteger(v.mono) ? (v as unknown as StartedHere) : "it isn't a start note taskbox writes");
+// The note, read by the owned-file rules: the service account's, no link, no one else may write it, 256 bytes.
+export function readStartedHere(p: Pick<Paths, "loopState">, owner: number): StartedHere | undefined {
+  const r = readOwnedJson(startedHereFile(p), { owner, max: 256 }, hereOf);
+  return r.kind === "ok" ? r.value : undefined;
+}
+// Whether the guard was down when the note was written, and hasn't beaten since, by its beat.
+export function downAtNote(note: StartedHere, beat: { boot: string; mono: number } | undefined, boot: string | undefined): boolean {
+  if (boot === undefined || note.boot !== boot) return false;
+  return !beat || beat.boot !== boot || note.mono - beat.mono > STALE_MS;
 }
 
 // Break-glass, at the box with the guard down: start notes the gen control.json has now, so the loop
 // runs past a stopped, draining or paused state the guard can't change yet, then starts the loop.
 export async function startHere(d: StopDeps & { rootUid?: number }): Promise<number> {
   const c = readControl(rootStateOf(d.paths).control, d.rootUid ?? 0);
-  if (c.kind === "ok" && c.value.availability !== "active") writeFileSync(startedHereFile(d.paths), JSON.stringify({ gen: c.value.gen }), { mode: 0o644 });
+  const [boot, mono] = [await bootId(d.sys), await monoNow(d.sys)];
+  if (c.kind === "ok" && c.value.availability !== "active" && boot && mono !== undefined) writeOwnedText(startedHereFile(d.paths), JSON.stringify({ v: 1, gen: c.value.gen, boot, mono }), { mode: 0o644, owner: d.uid });
   if (await loopRunning(d.sys, d.uid, d.paths.loopLabels)) {
     d.say("The loop runs already. It takes jobs as if active until the guard is back, which then writes the start.");
     return 0;
@@ -233,8 +252,9 @@ export type ControlRequest =
   | { kind: "pause"; actor: string; reason?: string }
   | ({ kind: "drain"; actor: string; reason?: string } & Forced)
   | ({ kind: "stop"; actor: string } & Forced)
-  | { kind: "resume"; actor: string }
-  | { kind: "start"; actor: string }
+  // onlyOp: op cancel's; it applies only while control.json names that op, checked under the lock.
+  | { kind: "resume"; actor: string; onlyOp?: string }
+  | { kind: "start"; actor: string; onlyOp?: string }
   // The loop: every slot empty, holding no VM, for the state of this gen.
   | { kind: "empty"; gen: number }
   // The guard's pass: a forced drain's deadline may have come.
@@ -378,8 +398,9 @@ export interface Gate {
   stopped: boolean;
   forcing?: "a forced drain" | "a forced stop";
 }
-// startedHere: the gen a break-glass start at the box was asked over (startHere): while control.json
-// still names that gen, the loop runs as if active, and the guard writes the start once it is back.
+// startedHere: the gen a break-glass start at the box was asked over (startHere), while that note
+// counts (downAtNote): while control.json still names that gen, the loop runs as if active, and the
+// guard writes the start once it is back.
 export function controlGate(path: string, rootUid = 0, startedHere?: number): Gate {
   const r = readControl(path, rootUid);
   if (r.kind === "missing") return { gen: 0, stopped: false };
@@ -452,6 +473,16 @@ export async function changeControl(d: ControlDeps, r: ControlRequest, now?: Con
     const got = readControl(d.state.control, d.rootUid);
     if (got.kind === "bad") throw new Error(`control.json can't be read: ${got.why}`);
     const s = got.kind === "ok" ? got.value : initialControl();
+    // op cancel of a drain or a stop control.json doesn't name: only its record ends, in the same step.
+    if ((r.kind === "resume" || r.kind === "start") && r.onlyOp !== undefined && s.op !== r.onlyOp) {
+      const was = readOp(ops, r.onlyOp);
+      if (was.kind === "ok" && was.value.state === "running") {
+        const done = endOp(was.value, "cancelled", at.wall, { why: `cancelled by ${actor}; control.json didn't name it` });
+        writeOp(ops, done);
+        tell(d, opEvent(was.value, done));
+      }
+      return { ok: true, said: `The ${was.kind === "ok" ? was.value.type : "op"} ${r.onlyOp} is cancelled. control.json didn't name it, so the box's availability is as it was.`, changed: false, state: s };
+    }
     const a = applyControl(s, r, at);
     if (!a.changed) return { ok: a.ok, ...(a.code ? { code: a.code } : {}), said: a.said, changed: false, ...(s.op ? { op: s.op } : {}), state: s, ...(a.kick ? { kick: true as const } : {}) };
     let state = a.state;
@@ -500,23 +531,15 @@ export async function changeControl(d: ControlDeps, r: ControlRequest, now?: Con
   return rest;
 }
 
-// A drain or a stop cancelled by op cancel: as resume or start does, when control.json names this op.
-// Any other running drain or stop is an orphan, and its record alone is ended.
+// A drain or a stop cancelled by op cancel: as resume or start does, when control.json names this
+// op, checked and applied under control.json's lock in one step; otherwise only its record ends.
 export async function cancelControlOp(c: HandlerCtx, op: Op, verb: "resume" | "start", actor: string): Promise<Answer> {
-  const ctl = readControl(c.state.control, c.rootUid);
-  if (!(ctl.kind === "ok" && ctl.value.op === op.id)) {
-    const ops = opsOf(c);
-    const done = endOp(op, "cancelled", c.now, { why: `cancelled by ${actor}; control.json didn't name it` });
-    writeOp(ops, done);
-    tell(c, opEvent(op, done));
-    return { ok: true, said: `The ${op.type} ${op.id} is cancelled. control.json didn't name it, so the box's availability is as it was.` };
-  }
   const { uidOf } = await import("./accounts.ts");
   const kick = async () => {
     const uid = await uidOf(c.sys, c.p.service).catch(() => undefined);
     return uid === undefined ? "the service account's uid can't be read" : launchLoop({ sys: c.sys, paths: c.p, uid });
   };
-  const x = await changeControl({ sys: c.sys, state: c.state, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}), events: c.events, log: c.log, kick }, requestOf(verb, {}, actor));
+  const x = await changeControl({ sys: c.sys, state: c.state, rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}), events: c.events, log: c.log, kick }, { kind: verb, actor, onlyOp: op.id });
   return x.ok ? { ok: true, said: x.said } : { ok: false, code: x.code ?? "failed", said: x.said };
 }
 

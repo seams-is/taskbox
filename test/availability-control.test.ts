@@ -335,7 +335,7 @@ describe("the guard's control pass", () => {
     async () => {
       const b = await box();
       mkdirSync(b.s.ops, { recursive: true });
-      const u = begin([], { type: "update", phases: ["draining", "installing"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "owner" }, T);
+      const u = begin([], { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["draining", "installing"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "owner" }, T);
       if (u.kind === "start") writeOp({ dir: b.s.ops, owner: me }, u.op);
       expect(await b.send("stop")).toMatchObject({ ok: false, code: "busy", said: expect.stringContaining("update") });
       expect(b.control()).toBe("missing");
@@ -721,17 +721,62 @@ describe("the review's other fixes", () => {
     expect(b.control()).toMatchObject({ availability: "active" });
   });
 
-  test("a start made at the box with the guard down is written in control.json once the guard is back", async () => {
+  // A guard that comes back over a stopped box, with a start note the service account made.
+  async function backOver(note: (mono: number) => number, prevBeat?: (mono: number) => { boot: string; mono: number }) {
     const b = await box();
     await b.send("stop");
     b.loop({ controlEmpty: (b.control() as Control).gen });
     await b.job();
     expect(b.control()).toMatchObject({ availability: "stopped" });
     const { startedHereFile } = await import("../src/availability.ts");
-    writeFileSync(startedHereFile(b.p), JSON.stringify({ gen: (b.control() as Control).gen }));
-    await b.job();
+    const now = b.sys.now() + b.sys.monoOffset;
+    writeFileSync(startedHereFile(b.p), JSON.stringify({ v: 1, gen: (b.control() as Control).gen, boot: BOOT, mono: note(now) }), { mode: 0o644 });
+    b.sys.clock += 60_000;
+    const back = controlJob({ c: b.c, chown: () => {}, kick: async () => void b.kicks.push(b.sys.now()), ...(prevBeat ? { prevBeat: prevBeat(now) } : {}) });
+    await back();
+    await back();
+    return b;
+  }
+
+  test("a start made at the box with the guard down is written in control.json once the guard is back, and starts the loop", async () => {
+    const b = await backOver((m) => m - 1, (m) => ({ boot: BOOT, mono: m - 10 * 60_000 }));
     expect(b.control()).toMatchObject({ availability: "active", actor: "service, at the box with the guard down" });
-    expect(b.kicks).toHaveLength(0);
+    expect(b.kicks).toHaveLength(1);
+  });
+
+  test("a forged start note, made while the guard ran, is ignored and said once; the box stays stopped", async () => {
+    const b = await backOver((m) => m - 1, (m) => ({ boot: BOOT, mono: m - 4_000 }));
+    expect(b.control()).toMatchObject({ availability: "stopped" });
+    expect(b.logs.filter((l) => l.includes("wasn't made while the guard was down"))).toHaveLength(1);
+  });
+
+  test("a stale start note, from before an earlier boot or after this guard began, is ignored", async () => {
+    const later = await backOver((m) => m + 120_000);
+    expect(later.control()).toMatchObject({ availability: "stopped" });
+    const b = await box();
+    await b.send("stop");
+    b.loop({ controlEmpty: (b.control() as Control).gen });
+    await b.job();
+    const { startedHereFile } = await import("../src/availability.ts");
+    writeFileSync(startedHereFile(b.p), JSON.stringify({ v: 1, gen: (b.control() as Control).gen, boot: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", mono: 1 }), { mode: 0o644 });
+    const back = controlJob({ c: b.c, chown: () => {}, kick: async () => undefined });
+    await back();
+    expect(b.control()).toMatchObject({ availability: "stopped" });
+  });
+
+  test("op cancel racing a stop that takes its drain over never cancels the stop", async () => {
+    for (let i = 0; i < 5; i++) {
+      const b = await box();
+      const d = await b.send("drain");
+      const { cancelOp } = await import("../src/opcancel.ts");
+      const ev = eventLog("guard", { dir: b.s.events, owner: me }, b.sys);
+      const ctx = { sys: b.sys, cfg: CFG, p: b.p, state: b.s, rootUid: me, events: ev, log: () => {}, now: T };
+      const deps = { sys: b.sys, state: b.s, rootUid: me, events: ev, log: () => {}, kick: async () => undefined };
+      const both = i % 2 ? [changeControl(deps, requestOf("stop", {}, "service")), cancelOp(ctx as never, d!.op!, "service", "service")] : [cancelOp(ctx as never, d!.op!, "service", "service"), changeControl(deps, requestOf("stop", {}, "service"))];
+      await Promise.all(both);
+      expect(b.control()).toMatchObject({ availability: "draining", stop: true });
+      expect(b.op(d!.op!)?.state).not.toBe("running");
+    }
   });
 
   test("a flood's dropped requests get no outcome; the asker says they went unanswered", async () => {

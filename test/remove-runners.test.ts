@@ -127,7 +127,7 @@ describe("remove as an op", () => {
     const { d, p, sys, said } = removeDeps();
     d.rootUid = process.getuid!();
     const f = { dir: rootStateOf(p).ops, owner: process.getuid!() };
-    const b = begin([], { type: "update", phases: ["go"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "owner" }, sys.now());
+    const b = begin([], { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["go"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "owner" }, sys.now());
     if (b.kind !== "start") throw new Error("no start");
     mkdirSync(f.dir, { recursive: true });
     writeOp(f, b.op);

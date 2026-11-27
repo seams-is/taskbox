@@ -36,7 +36,8 @@ import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from 
 import { sourceStep } from "./sourcefail.ts";
 import type { Snapshot } from "./source.ts";
 import { mirrorJson } from "./shared.ts";
-import { controlGate, type Gate, readStartedHere } from "./availability.ts";
+import { controlGate, downAtNote, type Gate, readStartedHere } from "./availability.ts";
+import { readBeat, watchPaths } from "./guardwatch.ts";
 import type { Sys } from "./sys.ts";
 import { engineFor, IMAGE_GONE, type NetPolicy, type VmEngine } from "./vm.ts";
 
@@ -202,6 +203,7 @@ export class Slots {
   // The slots that are empty and waiting on a drain (taskbox drain). All of them: drained.
   readonly drained = new Set<number>();
   emptyFor: number | undefined; // the control gen the loop last said every slot was empty for
+  boot: string | undefined; // this boot's id, read once at the loop's start
   holdShown: string | undefined; // the hold's reason, as the loop's state shows it
   // v2.4.0, for the scheduler: when a VM of each kind last took a job soon after it was ready, when
   // each kind's last VM ended, and how many VMs of each kind gave way, since the loop started.
@@ -719,8 +721,14 @@ const slotHeld = (d: LoopDeps): boolean => isHeld(d.slot, d.box?.count ?? slotCo
 
 // The box's availability, from root's control.json (availability.ts): read on every turn, inside the
 // start gate, and every few seconds while a job runs.
-// A break-glass start at the box (startHere) runs past the gen it was asked over.
-export const gateOf = (d: Pick<LoopDeps, "paths" | "checks">): Gate => controlGate(rootStateOf(d.paths).control, d.checks.rootUid ?? 0, readStartedHere(d.paths));
+// A break-glass start at the box (startHere) runs past the gen it was asked over, while its note counts:
+// written in this boot with the guard down, and no beat of the guard since.
+export const gateOf = (d: Pick<LoopDeps, "paths" | "checks" | "box">): Gate => {
+  const root = d.checks.rootUid ?? 0;
+  const note = readStartedHere(d.paths, process.getuid?.() ?? 0);
+  const counts = note && downAtNote(note, readBeat(watchPaths(d.paths).guardBeat, root), d.box?.boot);
+  return controlGate(rootStateOf(d.paths).control, root, counts ? note.gen : undefined);
+};
 // A wait that ends a waiting VM and lets a running job finish: the box's availability, or a slot held for a workspace.
 const quiet = (w: { key: string } | undefined) => w?.key === "paused" || w?.key === "workspace";
 
@@ -1202,7 +1210,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
           forced = true;
           const id = jobOfVm(vm);
           // A VM with no job id is stopped by its name, so a forced one never stops nothing.
-          const r = id ? await stopJob({ paths: d.paths, engine: t, now: () => d.sys.now() }, { id, vm }, by) : await t.stop(vm, 10).then((x) => ({ stopped: x.code === 0, why: clean(x.stderr).slice(0, 160) || `tart stop answered ${x.code}` }));
+          const r = id ? await stopJob({ paths: d.paths, engine: t, now: () => d.sys.now() }, { id, vm }, by) : await t.stop(vm, 10).then((x) => ({ stopped: x.code === 0, why: clean(x.stderr).slice(0, 160) || `tart stop answered ${x.code}` }), (e: Error) => ({ stopped: false, why: clean(e.message).slice(0, 160) }));
           d.log.write(r.stopped ? `${by} stopped the job's VM${id ? "" : ` ${vm}, which has no job id`}` : `${by} couldn't stop the job's VM: ${r.why}`);
         }
       }
@@ -1520,6 +1528,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   const startCommit = commitNow();
   const n = slotCount(d.cfg);
   const box = d.box ?? new Slots(n);
+  box.boot ??= await bootId(d.sys);
   const chain = d.chain ?? new RunnerChain(awayOf(d.cfg).githubFailures);
   // A fresh beat in place of the last run's, which may be stale: the guard restarts a loop whose beat
   // it reads stale twice, and the cleanup below can take that long. On its own, so a full disk never

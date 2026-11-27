@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHILD_BUN, follow, jobLabel, leaseHeld, leasePath, O_EXLOCK, runChild, STARTUP_MS, takeLease } from "../../src/core/child.ts";
 import { eventLog, keepEvents, readEvents, REFUSED_PER_MINUTE } from "../../src/core/events.ts";
-import { begin, end, keepOps, listOps, type OpType, readOp, writeOp } from "../../src/core/ops.ts";
+import { begin, end, keepOps, listOps, readOp, writeOp } from "../../src/core/ops.ts";
 import { FakeSys } from "../fake.ts";
 import { Verified } from "../../src/core/statement.ts";
 
@@ -13,8 +14,8 @@ const DAY = 86_400_000;
 const T = Date.parse("2026-11-25T12:00:00Z");
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-r5-"));
 const day = (t: number) => new Date(t).toISOString().slice(0, 10);
-const update: OpType = { type: "update", phases: ["a", "b"], onBoot: () => "fail" };
-const resumer: OpType = { type: "update", phases: ["a", "b"], onBoot: () => "resume" };
+const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["a", "b"], onBoot: () => "fail" };
+const resumer: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["a", "b"], onBoot: () => "resume" };
 const APP = "/opt/taskbox/app/src/cli.ts";
 
 function setup(code = 0) {

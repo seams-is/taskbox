@@ -14,7 +14,8 @@
 // apply through the same changeControl.
 import { lchownSync } from "node:fs";
 import { uidOf } from "../accounts.ts";
-import { ACTIONS, type Action, argsProblem, changeControl, type ControlDeps, controlNow, healControl, launchLoop, readControl, reconcileOps, requestOf, running, startedHereFile } from "../availability.ts";
+import { ACTIONS, type Action, argsProblem, changeControl, type ControlDeps, controlNow, downAtNote, healControl, launchLoop, readControl, readStartedHere, reconcileOps, requestOf, running } from "../availability.ts";
+import { readBeat, watchPaths } from "../guardwatch.ts";
 import { appendAdmin, eventLog } from "../core/events.ts";
 import { Verified } from "../core/statement.ts";
 import { readOp, withProgress, writeOp } from "../core/ops.ts";
@@ -43,6 +44,9 @@ export interface ControlPassDeps {
   c: PassCtx;
   chown?: (path: string, uid: number, gid: number) => void;
   kick?: ControlDeps["kick"]; // tests: the loop started without launchd
+  // The guard's beat as this guard found it, before its own first: what a start note made while it
+  // was down is judged by.
+  prevBeat?: { boot: string; mono: number };
 }
 
 export function controlJob(d: ControlPassDeps): () => Promise<void> {
@@ -58,11 +62,14 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
   let service: number | undefined;
   let passes = 0;
   let shown = ""; // the op and its progress line last written
+  let bornMono: number | undefined; // this guard's first pass, on mono
+  const notes = new Set<string>(); // start notes judged already, by gen and mono
   const deps = (): ControlDeps => ({ sys: c.sys, state: s, rootUid: root, ...own, events, log, kick: d.kick ?? (() => launchLoop({ sys: c.sys, paths: c.p, uid: service! })) });
   return async () => {
     const pass = passes++;
     healControl(deps(), c.sys.now());
     const at = await controlNow(c.sys);
+    bornMono ??= at.at?.mono;
     for (const l of reconcileOps(deps(), at.wall)) log(l);
     const report: SpoolReport = { did: [], problems: [] };
     let kicked = false; // one start a pass starts the loop; the rest answer from control.json
@@ -144,11 +151,17 @@ export function controlJob(d: ControlPassDeps): () => Promise<void> {
     await take({ dir: s.serviceSpool, owner: service, whose: "the service account", role: "service", outcomes, kinds: [...ACTIONS, OP_CANCEL] }, report);
     for (const l of report.did) log(`service spool: ${l}`);
     // A start the service account made with the guard down (availability.ts startHere): written in.
+    // Judged once: written in this boot before this guard started, with the guard's last beat then
+    // stale or missing. Any other note is ignored, and said once; it names a gen that moves on.
     const before = readControl(s.control, root);
-    const here = (readOwnedJson(startedHereFile(c.p), service) ?? {}) as { gen?: unknown };
-    if (before.kind === "ok" && before.value.availability !== "active" && here.gen === before.value.gen) {
-      const r = await changeControl(deps(), { kind: "start", actor: STARTED_HERE }, at, { kick: false });
-      log(`the service account started the loop while the guard was down, so control.json says active: ${r.said}`);
+    const note = readStartedHere(c.p, service);
+    const key = note ? `${note.gen}:${note.mono}` : "";
+    if (note && before.kind === "ok" && before.value.availability !== "active" && note.gen === before.value.gen && !notes.has(key)) {
+      notes.add(key);
+      if (bornMono !== undefined && note.mono < bornMono && downAtNote(note, d.prevBeat, at.at?.boot)) {
+        const r = await changeControl(deps(), { kind: "start", actor: STARTED_HERE }, at);
+        log(`the service account started the loop while the guard was down, so control.json says active: ${r.said}`);
+      } else log("a start note in the service's state wasn't made while the guard was down, so it was ignored");
     }
     // What the loop says: every slot empty for this gen, and the jobs still running, for the op.
     const ctl = readControl(s.control, root);
@@ -184,7 +197,9 @@ export const controlPass: PassMaker = {
   name: "control",
   make(c) {
     if (!c.writer) return undefined;
-    const job = controlJob({ c });
+    // The beat before this guard's own: the beat pass writes one before this pass first runs.
+    const prev = readBeat(watchPaths(c.p).guardBeat, c.rootUid ?? 0);
+    const job = controlJob({ c, ...(prev ? { prevBeat: prev } : {}) });
     return { name: "control", at: "after", start: () => job, next: () => job };
   },
 };

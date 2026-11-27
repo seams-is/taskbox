@@ -22,7 +22,7 @@ import { CFG, fakeLaunchd, quietBox, tempRoot, testBox } from "./helpers.ts";
 const me = process.getuid!();
 const T = Date.UTC(2026, 10, 27, 12, 0, 0);
 const SLOW = 30_000;
-const UPDATE = { type: "update", phases: ["downloading", "draining", "swap", "proving"], pointOfNoReturn: "swap", onBoot: () => "fail" as const };
+const UPDATE: OpDecl = { who: ["owner", "admin"], wayBack: "taskbox rollback undoes it once it ends.", type: "update", phases: ["downloading", "draining", "swap", "proving"], pointOfNoReturn: "swap", onBoot: () => "fail" };
 
 async function box() {
   const root = tempRoot();
