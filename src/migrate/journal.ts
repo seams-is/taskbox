@@ -5,7 +5,7 @@
 import { join } from "node:path";
 import { isObj, plain, readOwnedJson, time, writeOwnedText, type WriteRules } from "../core/rootfile.ts";
 
-// The steps, in order. Take-over steps (§5.7) and the migration's own (1 to 8) are one list:
+// The steps, in order. Take-over steps and the migration's own (1 to 8) are one list:
 // - loop: take-over 1, the loop is running under launchd;
 // - read, keys: migration steps 1 and 2, which only read and copy;
 // - v2-jobs: take-over 3, v2.6.1's running jobs end by themselves, with the rollback clock paused;

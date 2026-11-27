@@ -12,6 +12,7 @@ import { endingPass } from "./ending.ts";
 import { gpuPass } from "./gpu.ts";
 import { keepingPass } from "./keeping.ts";
 import { loadPass } from "./load.ts";
+import { migratePass } from "./migrate.ts";
 import { opsPass } from "./ops.ts";
 import { probePass } from "./probe.ts";
 import { requestsPass } from "./requests.ts";
@@ -30,6 +31,7 @@ const placed: readonly PlacedMaker[] = [
   gpuPass,
   keepingPass,
   loadPass,
+  migratePass,
   opsPass,
   probePass,
   requestsPass,

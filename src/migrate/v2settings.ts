@@ -24,7 +24,7 @@ export const v2SettingsPath = (app: string) => join(stateDirOf(app), "settings",
 export const keptAppOf = (app: string) => join(`${dirname(app)}.prev`, "app");
 
 // v2.6.1's file in v3's shape. Its accounts are v2's: ci the service, remoteUser the agent, and
-// screenSharingUsers the people. v3 reads the rest as it is (WP2a's layering; F2 of the review).
+// screenSharingUsers the people. v3 reads the rest as it is.
 export function convertV2(doc: Record<string, unknown>): Record<string, unknown> {
   const { remoteUser, screenSharingUsers, accounts, ...rest } = doc;
   if (isObj(accounts)) return { ...rest, accounts };

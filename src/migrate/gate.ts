@@ -1,4 +1,4 @@
-// The loop's first lines at the move to v3 (§5.7, the contract), run as the service account before
+// The loop's first lines at the move to v3, run as the service account before
 // anything is read:
 // - it writes loop-start.json, its pid, its install and the time, in the service account's state, so
 //   the guard tells v3's loop from v2.6.1's under the one label;

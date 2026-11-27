@@ -6,7 +6,7 @@
 // or a restart of the box part way resumes at the first step not done. Nothing here asks a person:
 // a step that needs one leaves a note, shown as needs-you, and the move goes on.
 //
-// The rollback clock (§5.7): v2.6.1 placed its watcher with a deadline 70 minutes after the swap. While
+// The rollback clock: v2.6.1 placed its watcher with a deadline 70 minutes after the swap. While
 // a v2 job runs, the clock is paused: the deadline is written as now plus 70 minutes, never past
 // placedAt plus 3 hours. From the moment no v2 job runs it stops moving, and the rest of the move and
 // the proof share what is left.
@@ -56,7 +56,7 @@ export interface MigrateEnv {
   journal(): Journal;
   saveJournal(j: Journal): void;
   watch(): Watch | undefined;
-  setDeadline(deadline: number): void; // writes the watch file's deadline, under the update lock
+  setDeadline(deadline: number): Promise<void>; // writes the watch file's deadline, under the update lock
   steps: Record<Exclude<Step, "v2-jobs" | "proof">, StepRun>;
   v2Loop(): Promise<V2Loop>;
   v2JobLimitMinutes(): number | undefined; // the kept install's jobTimeoutMinutes plus 10
@@ -101,10 +101,10 @@ function mark(e: MigrateEnv, change: (j: Journal) => Journal): Journal {
 }
 
 // Gives up: the watcher goes back now, by v2.6.1's own undo.
-function giveUp(e: MigrateEnv, why: string): Ended {
+async function giveUp(e: MigrateEnv, why: string): Promise<Ended> {
   mark(e, (j) => ({ ...j, failed: why.slice(0, 240) }));
   const w = e.watch();
-  if (w && !w.proved) e.setDeadline(Math.min(w.deadline, e.now()));
+  if (w && !w.proved) await e.setDeadline(Math.min(w.deadline, e.now()));
   event(e, "takeover.gave-up", `The move to v3 stopped: ${why}. v2.6.1's rollback watcher takes the box back within a minute.`.slice(0, 240));
   return { state: "failed", why: `${why}; v2.6.1's rollback watcher takes the box back`.slice(0, 240) };
 }
@@ -135,7 +135,7 @@ async function v2Jobs(e: MigrateEnv): Promise<void> {
     const w = e.watch();
     if (w && !w.proved) {
       const d = clockDeadline(w, e.now(), v2.running);
-      if (d !== w.deadline) e.setDeadline(d);
+      if (d !== w.deadline) await e.setDeadline(d);
       const line = clockLine({ ...w, deadline: d }, v2);
       if (line !== said) say(e, line);
       said = line;
