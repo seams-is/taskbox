@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import { isoSecond } from "../src/hold.ts";
 import { loadWorkflowYaml } from "../src/loadcmd.ts";
-import { boxCheckFile, boxCheckYaml, TEMPLATES, templateFiles, testJobFile, testJobYaml, valuesOf } from "../src/watchdog.ts";
+import { boxCheckFile, boxCheckYaml, templateFiles, testJobFile, testJobYaml, valuesOf } from "../src/watchdog.ts";
 import { CFG } from "./helpers.ts";
 
 const values = valuesOf(CFG as Config);
@@ -249,7 +249,7 @@ describe("every template", () => {
     return out;
   }
   const filled = [yaml, testJobYaml(values), loadWorkflowYaml(CFG as Config)];
-  const raw = ["taskbox-watchdog.yml", "taskbox-canary.yml", "taskbox-load.yml"].map((f) => readFileSync(join(TEMPLATES, f), "utf8"));
+  const raw = ["taskbox-watchdog.yml", "taskbox-canary.yml", "taskbox-load.yml"].map((f) => readFileSync(join(import.meta.dir, "..", "templates", f), "utf8"));
 
   test.serial("no value reaches a run: step through ${{ }}, and no template names a secret", () => {
     for (const y of [...filled, ...raw]) {

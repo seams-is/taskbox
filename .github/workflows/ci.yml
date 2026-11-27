@@ -1,5 +1,5 @@
-# taskbox's own CI: the test suite on macOS, the same suite under stress, and the typecheck on Linux,
-# on GitHub-hosted runners.
+# taskbox's own CI: the test suite on macOS, the same suite under stress, the engine compiled to one
+# binary and run, and the typecheck on Linux, on GitHub-hosted runners.
 # A box never runs this repo's jobs. No secrets, read-only token, every action pinned by commit SHA.
 # Bun is fetched from its release by version and checked against its SHA-256. The macOS pin is the
 # one versions.json pins for the box (test/install.test.ts checks they match).
@@ -76,6 +76,65 @@ jobs:
             bun test --concurrent
             echo "::endgroup::"
           done
+
+  # The engine compiled to one binary, as v4.0.0's app carries it, then run with the source tree moved
+  # away: it starts, finds its commands and its own data files, and says what src/cli.ts says from
+  # source. test/compiled.test.ts keeps src from reading its own tree at run time.
+  compiled:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      BUN_ZIP: bun-darwin-aarch64
+      BUN_SHA256: c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - name: Fetch and check bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_ZIP}.zip"
+          echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
+      - run: bun --version
+      - run: bun install --frozen-lockfile
+      - name: Build the engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/engine"
+          bun build --compile src/cli.ts --outfile "$RUNNER_TEMP/engine/taskbox"
+          ls -l "$RUNNER_TEMP/engine/taskbox"
+      - name: The engine carries the reviewed signers file, byte for byte
+        shell: bash
+        run: bun -e 'const [b, s] = await Promise.all([Bun.file(process.argv[1]).bytes(), Bun.file("signers/allowed_signers").bytes()]); if (Buffer.from(b).indexOf(Buffer.from(s)) < 0) { console.error("The engine does not carry signers/allowed_signers."); process.exit(1); }' "$RUNNER_TEMP/engine/taskbox"
+      - name: Smoke through the engine, with the source tree moved away
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The settings the template verbs read, from the example. The runner is thrown away after.
+          sudo mkdir -p /opt/taskbox/app
+          sudo cp taskbox.example.json /opt/taskbox/app/taskbox.json
+          lines=("--help" "help" "--version" "status --version" "policy show --help" "template show --help" "template show box-check" "template show test-job" "no-such-command")
+          say() { local out=$1; shift; (cd / && "$@") > "$out" 2>&1 && echo "exit 0" >> "$out" || echo "exit $?" >> "$out"; }
+          mkdir "$RUNNER_TEMP/want" "$RUNNER_TEMP/got"
+          for i in "${!lines[@]}"; do
+            # shellcheck disable=SC2086
+            say "$RUNNER_TEMP/want/$i" bun --no-install --no-env-file --cwd=/ "--config=$PWD/bunfig.run.toml" "$PWD/src/cli.ts" ${lines[$i]}
+          done
+          mv src src.away && mv templates templates.away && mv signers signers.away && mv launchd launchd.away && mv versions.json versions.json.away
+          for i in "${!lines[@]}"; do
+            # shellcheck disable=SC2086
+            say "$RUNNER_TEMP/got/$i" "$RUNNER_TEMP/engine/taskbox" ${lines[$i]}
+            echo "::group::taskbox ${lines[$i]}"
+            cat "$RUNNER_TEMP/got/$i"
+            echo "::endgroup::"
+            diff -u "$RUNNER_TEMP/want/$i" "$RUNNER_TEMP/got/$i"
+          done
+          # The box check came from the template the engine carries, filled in.
+          grep -q "^exit 0$" "$RUNNER_TEMP/got/6" && grep -q "TASKBOX_HOLD" "$RUNNER_TEMP/got/6" && ! grep -q "__[A-Z]*__" "$RUNNER_TEMP/got/6"
 
   typecheck:
     runs-on: ubuntu-24.04

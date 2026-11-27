@@ -5,8 +5,9 @@
 // ssh-keygen -Y verify checks the signature; then the tarball must hash to what the statement says.
 import { skFlags as readFlags } from "./core/sshsig.ts";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { SIGNERS_TEXT } from "./embedded.ts";
 import { RELEASE_TAG } from "./github.ts";
 import type { RunResult } from "./sys.ts";
 
@@ -14,7 +15,6 @@ import type { RunResult } from "./sys.ts";
 // other use of the key can't pass as a release's.
 export const NAMESPACE = "taskbox-release";
 export const PRINCIPAL = "taskbox-release";
-export const SIGNERS = join(import.meta.dir, "..", "signers", "allowed_signers");
 export const SSH_KEYGEN = "/usr/bin/ssh-keygen";
 
 export interface Statement {
@@ -92,19 +92,37 @@ export interface VerifyDeps {
 // old signed release can't be put back, nor the same one replayed.
 export async function verifyRelease(d: VerifyDeps, o: { statement: Uint8Array; signature: Uint8Array; tarball: Uint8Array; sigPath: string; installed: string | null; signers?: string; tag?: string }): Promise<Verdict> {
   if (o.installed !== null && !RELEASE_TAG.test(o.installed)) return { ok: false, why: "the installed release has no version taskbox reads" };
-  const signers = o.signers ?? SIGNERS;
+  // The pin: the signers file the caller names, else this engine's own (signers/allowed_signers,
+  // read in when it was built, src/embedded.ts).
   let pinned: string;
-  try {
-    pinned = readFileSync(signers, "utf8");
-  } catch {
-    return { ok: false, why: "the signers file can't be read" };
+  if (o.signers === undefined) pinned = SIGNERS_TEXT;
+  else {
+    try {
+      pinned = readFileSync(o.signers, "utf8");
+    } catch {
+      return { ok: false, why: "the signers file can't be read" };
+    }
   }
   const why = signersProblem(pinned);
   if (why) return { ok: false, why };
   // ssh-keygen reads the signature from a file and the statement from stdin. The caller writes the
-  // signature to sigPath, in a folder of its own.
+  // signature to sigPath, in a folder of its own. The engine's own pin is written there too, for
+  // ssh-keygen to read, as a new file, and removed after.
   if (!Buffer.from(o.signature).equals(readFileSync(o.sigPath))) return { ok: false, why: "the signature file isn't the one downloaded" };
-  const r = await d.run(SSH_KEYGEN, ["-Y", "verify", "-f", signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", o.sigPath], { stdin: o.statement, timeoutMs: 20_000 });
+  const signers = o.signers ?? join(dirname(o.sigPath), "allowed_signers");
+  if (o.signers === undefined) {
+    try {
+      writeFileSync(signers, pinned, { flag: "wx", mode: 0o644 });
+    } catch {
+      return { ok: false, why: "the signers file can't be written beside the signature" };
+    }
+  }
+  let r: RunResult;
+  try {
+    r = await d.run(SSH_KEYGEN, ["-Y", "verify", "-f", signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", o.sigPath], { stdin: o.statement, timeoutMs: 20_000 });
+  } finally {
+    if (o.signers === undefined) rmSync(signers, { force: true });
+  }
   if (r.code !== 0) return { ok: false, why: "the release isn't signed by the pinned key" };
   const flags = skFlags(o.signature);
   if (flags === undefined || (flags & 0x01) === 0) return { ok: false, why: "the signature doesn't show the owner was present" };

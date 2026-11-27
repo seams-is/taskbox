@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { keyPair, sshsig } from "./sshsig.ts";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compareTags, describeStatement, skFlags, NAMESPACE, parseStatement, type Statement, statementText, signersProblem, verifyRelease, type VerifyDeps } from "../src/release.ts";
@@ -104,6 +104,43 @@ describe("verifying a release with ssh-keygen", () => {
     expect(await verifyRelease(never, release({ pinned: `taskbox-release namespaces="taskbox-release" ssh-ed25519 ${"A".repeat(68)}\n` }))).toEqual({ ok: false, why: "the signers file has a line taskbox doesn't take" });
     const r = release();
     expect(await verifyRelease(never, { ...r, signature: new TextEncoder().encode("other") })).toEqual({ ok: false, why: "the signature file isn't the one downloaded" });
+  });
+});
+
+describe("the engine's own pin", () => {
+  // No signers named: the pin is the one read in when the engine was built (src/embedded.ts), which
+  // is the repo's signers/allowed_signers byte for byte. ssh-keygen reads it from a new file beside
+  // the signature, removed after.
+  test("is the repo's signers file, written beside the signature for ssh-keygen, and removed after", async () => {
+    const repo = readFileSync(join(import.meta.dir, "..", "signers", "allowed_signers"), "utf8");
+    if (signersProblem(repo)) return; // no key pinned yet: nothing reaches ssh-keygen
+    const r = release();
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-verify-own-"));
+    const sigPath = join(dir, "statement.json.sig");
+    writeFileSync(sigPath, r.signature);
+    let seen: { file: string; text: string } | undefined;
+    const keygen: VerifyDeps = {
+      run: async (cmd, args) => {
+        expect(cmd).toBe("/usr/bin/ssh-keygen");
+        const file = args[args.indexOf("-f") + 1]!;
+        seen = { file, text: readFileSync(file, "utf8") };
+        return { code: 1, stdout: "", stderr: "" };
+      },
+    };
+    const { signers: _named, ...unnamed } = r;
+    expect(await verifyRelease(keygen, { ...unnamed, sigPath })).toEqual({ ok: false, why: "the release isn't signed by the pinned key" });
+    expect(seen).toEqual({ file: join(dir, "allowed_signers"), text: repo });
+    expect(existsSync(join(dir, "allowed_signers"))).toBe(false);
+  });
+
+  test("is never written over a file already beside the signature", async () => {
+    const repo = readFileSync(join(import.meta.dir, "..", "signers", "allowed_signers"), "utf8");
+    if (signersProblem(repo)) return;
+    const never: VerifyDeps = { run: async () => { throw new Error("ssh-keygen ran"); } };
+    // release() leaves a signers file of its own beside the signature.
+    const { signers, ...unnamed } = release();
+    expect(await verifyRelease(never, unnamed)).toEqual({ ok: false, why: "the signers file can't be written beside the signature" });
+    expect(readFileSync(signers, "utf8")).toStartWith("# the owner's key");
   });
 });
 
