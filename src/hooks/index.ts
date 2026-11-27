@@ -2,6 +2,7 @@
 // here that exports its JobHook, and one line below.
 import type { JobHook } from "../core/hooks.ts";
 import { identityHook } from "./identity.ts";
+import { measureHook } from "./measure.ts";
 import { netHook } from "./net.ts";
 
-export const jobHooks = (): JobHook[] => [identityHook, netHook];
+export const jobHooks = (): JobHook[] => [identityHook, measureHook(), netHook];

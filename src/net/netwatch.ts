@@ -213,6 +213,8 @@ export class Netwatch {
   // New lines in a bridge's ring since the last look: a hello after the first is a restart, and its
   // gap goes in the log as net.capture-gap. Only the file's new bytes are read, at most 1 MB.
   private follow(b: string, w: Watched, now: number): void {
+    // Only a file _taskboxnet owns: never one it linked to someone else's.
+    if (this.uid === undefined) return;
     const f = ringFiles(this.np.dir, b);
     const r = readOwned(f.now, this.uid, w.offset, 1024 * 1024);
     if (r.size < w.offset) w.offset = 0;

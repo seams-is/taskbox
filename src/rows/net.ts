@@ -39,6 +39,6 @@ export async function netRulesCheck(c: CheckContext): Promise<Omit<Check, "name"
 }
 
 export const NET_ROWS: Row[] = [
-  { name: "Network diagnostics", fn: netCheck, order: 8040, in: ["check"] },
-  { name: "Network rules", fn: netRulesCheck, order: 8050, in: ["check"] },
+  { name: "Network diagnostics", fn: netCheck, order: 8050, in: ["check"] },
+  { name: "Network rules", fn: netRulesCheck, order: 8060, in: ["check"] },
 ];

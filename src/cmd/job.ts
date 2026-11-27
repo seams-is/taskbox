@@ -384,10 +384,12 @@ async function timings(c: BoxCtx, json: boolean): Promise<{ v3?: Record<string, 
   const st = readStateJson<{ gaveWay?: Record<string, unknown>; gaveWayLog?: unknown; kindChoice?: unknown }>(p.loopState) ?? {};
   const log = (Array.isArray(st.gaveWayLog) ? st.gaveWayLog : []).filter((x): x is { at: number } => !!x && typeof x === "object" && Number.isFinite((x as { at?: unknown }).at) && (x as { role?: unknown }).role !== "load");
   const accept = acceptance(cfg, jobs, log, c.ops.sys.now(), st.kindChoice === "source");
-  if (json) return { v3: timingsAnswer(kinds, suggestions(cfg, kinds), accept, labelUsage(jobs, TIMINGS_JOBS)) as unknown as Record<string, unknown>, exit: 0 };
+  const { readRate } = await import("../sourcerate.ts");
+  const rate = c.cu === undefined ? [] : readRate(p, c.cu);
+  if (json) return { v3: timingsAnswer(kinds, suggestions(cfg, kinds, { jobs, rate }), accept, labelUsage(jobs, TIMINGS_JOBS)) as unknown as Record<string, unknown>, exit: 0 };
   const gave = (st.gaveWay ?? {}) as Record<string, unknown>;
   const gaveWay = Object.fromEntries(Object.entries(gave).filter(([k, v]) => (k === "macos" || k === "linux") && Number.isInteger(v)));
-  for (const l of timingsScreen(cfg, jobs, gaveWay, accept)) c.say(l);
+  for (const l of timingsScreen(cfg, jobs, gaveWay, accept, rate)) c.say(l);
   for (const l of footer(await stateNow(c.ops), "Read the timings.")) c.say(l);
   return { exit: 0 };
 }

@@ -5,7 +5,7 @@ import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
 import { appendJob, type JobRecord, jobOfVm, newJobId, stopJob, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
-import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
+import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, screenSharingSeen, sharingOff } from "./checks.ts";
 import { rows } from "./rows/index.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import { eventLog } from "./core/events.ts";
@@ -26,6 +26,7 @@ import { RunnerChain } from "./ghfail.ts";
 import { beatFor, RESTARTS_WINDOW_MS, staleBeat } from "./beat.ts";
 import { holdsLine } from "./sizes.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
+import { closedNow, recordStart, v2Seen } from "./pfstarts.ts";
 import { readLoop } from "./watch.ts";
 import { heldOf, holdReason, isHeld, type WorkspacesNow } from "./held.ts";
 import { readKick } from "./loopwatch.ts";
@@ -762,7 +763,9 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
   }
   const hold = drainOrHold(d);
   if (hold) return hold;
-  if (readState(d).guardClosed === true && !d.cfg.vmnetPfProven && (await screenSharingOn(d.sys))) {
+  // v2's guardClosed goes once the guard has taken it into account (pfstarts.ts).
+  if (readState(d).guardClosed === true && v2Seen(d.paths, d.checks.rootUid ?? 0)) writeState(d, { guardClosed: undefined });
+  if (!d.cfg.vmnetPfProven && closedNow(d.paths, d.checks.rootUid ?? 0, process.getuid?.() ?? 0, d.cfg, readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0)) && (await screenSharingOn(d.sys))) {
     return { key: "guard", text: "the guard's rules went missing when a VM started, so no VM starts while Screen Sharing is on" };
   }
   const mem = await (d.memory ?? (() => readMemory(d.sys)))();
@@ -1060,6 +1063,8 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // Who else is logged in, for taskbox job list. A list that can't be read is left out, never empty.
     const logins = await loginSessions(d.sys).catch(() => undefined);
     beside = logins?.known ? logins.users.filter((u) => u !== d.cfg.accounts.service) : undefined;
+    // Screen Sharing as the VM starts, for the guard's count (pfstarts.ts). null when it can't be read.
+    const sharingAtStart = await screenSharingSeen(d.sys).catch(() => null);
     vmStartedAt = d.sys.now();
     const vmStartedMono = await monoNow(d.sys);
     startDone = d.box?.window(d.slot, "start", vmStartedAt);
@@ -1080,6 +1085,13 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     startDone?.(d.sys.now());
     guardSeen = guardAtStart.rulesWentMissing ? "rules went missing at start" : guardAtStart.read ? "ok" : "not read";
     writeState(d, { vmStartGuard: { ...guardAtStart, at: vmStartedAt, slot: d.slot } });
+    // Each start, for the guard to judge against its pf reads (pfstarts.ts), with Screen Sharing as it
+    // started and the loop's own sighting of a loss, which closes the box too.
+    try {
+      recordStart(d.paths, { at: vmStartedAt, vm, sharing: sharingAtStart, ...(guardAtStart.rulesWentMissing ? { lost: true as const } : {}) });
+    } catch (e) {
+      d.log.write(`could not record the VM's start for the guard: ${(e as Error).message}`);
+    }
     if (guardAtStart.rulesWentMissing) {
       d.log.write(
         guardAtStart.shared
@@ -1088,8 +1100,8 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
       );
       // Until a box-check job shows VM starts leave the rules alone, fail closed: no VM while
       // Screen Sharing is on, this one included.
+      // The guard closes the box when it judges this start; this VM goes now if Screen Sharing is on.
       if (!d.cfg.vmnetPfProven) {
-        writeState(d, { guardClosed: true });
         if (await screenSharingOn(d.sys)) {
           d.log.write("VM deleted: the guard's rules went missing at its start while Screen Sharing is on");
           outcome = "guard-closed";

@@ -32,7 +32,7 @@ function capturing(o: { record?: boolean; off?: boolean } = {}) {
   const ring = new Ring(np.dir, "bridge100", 1 << 20);
   const counts = { box: 0 };
   sys.responders.push((cmd, args) => {
-    if (cmd === "/usr/sbin/netstat") return { code: 0, stdout: `\t${100 + 10 * counts.box++} connection requests\n\t1 embryonic connection dropped\n`, stderr: "" };
+    if (cmd === "/usr/sbin/netstat" && args.join(" ") === "-s -p tcp") return { code: 0, stdout: `\t${100 + 10 * counts.box++} connection requests\n\t1 embryonic connection dropped\n`, stderr: "" };
     if (cmd === "/usr/bin/id" && args.join(" ") === "-u _taskboxnet") return { code: 0, stdout: `${process.getuid!()}\n`, stderr: "" };
     if (cmd.endsWith("/tart") && args[0] === "exec" && args[2] === "/usr/sbin/netstat") return { code: 0, stdout: "\t9 connection requests\n\t4 embryonic connections dropped\n", stderr: "" };
     return undefined;
@@ -94,7 +94,7 @@ describe("network diagnostics around a job", () => {
     const { sys, d } = capturing({ record: false });
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("done");
     expect(JSON.parse(readFileSync(d.paths.jobsFile, "utf8")).net).toEqual({ v: 1, notCaptured: "network capture isn't running" });
-    expect(sys.calls.some((c) => c.cmd === "/usr/sbin/netstat")).toBe(false);
+    expect(sys.calls.some((c) => c.cmd === "/usr/sbin/netstat" && c.args.join(" ") === "-s -p tcp")).toBe(false);
   });
 
   test("network.diagnostics off: no net field at all", async () => {

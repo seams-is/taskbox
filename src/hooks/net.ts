@@ -51,9 +51,12 @@ async function netUid(d: HookDeps): Promise<number | undefined> {
 }
 
 // Every line with the VM's address the rings hold; the record takes those in the VM's own window.
-async function linesFor(d: HookDeps, j: Job, ip: string): Promise<VmLines> {
+// Only files _taskboxnet owns are read, so an account it isn't can't be read through a link it made.
+async function linesFor(d: HookDeps, j: Job, ip: string): Promise<VmLines | undefined> {
   if (j.lines && j.lines.ip === ip) return j.lines;
-  j.lines = new VmLines(netPaths(d.paths).dir, await netUid(d), ip, 0);
+  const uid = await netUid(d);
+  if (uid === undefined) return undefined;
+  j.lines = new VmLines(netPaths(d.paths).dir, uid, ip, 0);
   return j.lines;
 }
 
@@ -74,6 +77,7 @@ export const netHook: JobHook = {
     const from = j.at - 10 * 60_000;
     const tick = async () => {
       const lines = await linesFor(d, me, ip);
+      if (!lines) return;
       lines.poll();
       const n = summary(d, me, ip, from, d.sys.now());
       j.note?.(`${n.destinations} places, DNS ${n.dns.nxdomain + n.dns.servfail + n.dns.timeouts} failed`);
@@ -87,7 +91,7 @@ export const netHook: JobHook = {
     me.stopNote?.();
     me.stopNote = undefined;
     const ip = (await j.guest.ip()).trim();
-    if (IP.test(ip)) (await linesFor(d, me, ip)).poll();
+    if (IP.test(ip)) (await linesFor(d, me, ip))?.poll();
     const r = await j.guest.exec(GUEST_COUNTERS[j.kind], 10_000).catch(() => undefined);
     me.guest = r?.code === 0 ? (countersOf(j.kind, r.stdout.slice(0, 64 * 1024)) ?? null) : null;
     me.record = readNetwatch(netPaths(d.paths).record);

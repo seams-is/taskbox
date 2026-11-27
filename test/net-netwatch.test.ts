@@ -29,7 +29,7 @@ const IFCONFIG = (bridges: string[]) =>
     ...bridges.flatMap((b, i) => [`${b}: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500`, `\tinet 10.20.${30 + i}.41 netmask 0xfffffff8 broadcast 10.20.${30 + i}.47`]),
   ].join("\n");
 
-function box(o: { bridges?: string[]; off?: boolean; problem?: string } = {}) {
+function box(o: { bridges?: string[]; off?: boolean; problem?: string; noUid?: boolean } = {}) {
   const sys = new FakeSys();
   const root = tempRoot();
   const p = paths(root, testBox());
@@ -54,7 +54,7 @@ function box(o: { bridges?: string[]; off?: boolean; problem?: string } = {}) {
     rootUid: process.getuid!(),
     settings: () => ({ ...CFG, ...(o.off ? { network: { diagnostics: "off" as const } } : {}) }),
     netProblem: async () => o.problem,
-    netUid: async () => undefined,
+    netUid: async () => (o.noUid ? undefined : process.getuid!()),
     launchctl: async (args) => (launchctl.push(args), { code: 0, stderr: "" }),
   });
   return { sys, p, np, w, state, launchctl };
@@ -115,6 +115,14 @@ describe("netwatch", () => {
     expect((await b.w.tick()).gapsToday).toBe(1);
     const ev = readEvents([{ dir: rootStateOf(b.p).events, owner: process.getuid!(), writer: "guard" }], {}).events;
     expect(ev.map((e) => [e.type, e.text])).toEqual([["net.capture-gap", "Network capture on bridge100 stopped and started again: 15 s with no capture."]]);
+  });
+
+  test("with _taskboxnet's uid unknown, no ring is read, so no file it linked is", async () => {
+    const b = box({ noUid: true });
+    await b.w.tick();
+    const ring = new Ring(b.np.dir, "bridge100", 1 << 20);
+    ring.write([JSON.stringify({ t: b.sys.now(), k: "hello" }), JSON.stringify({ t: b.sys.now() + 1, k: "hello", n2: 5 })]);
+    expect((await b.w.tick()).gapsToday).toBe(0);
   });
 
   test("off: with network.diagnostics off, or no account of taskbox's own, nothing captures and the record says why", async () => {

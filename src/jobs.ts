@@ -4,7 +4,7 @@
 // A job controls its own name and the runner's lines, so every text field is cleaned when written
 // and again when shown. Times, numbers and results come from the loop.
 import { netLine } from "./net/attribute.ts";
-import { type JobUsage, usageLine, validUsage } from "./usage.ts";
+import { type JobUsage, usageLines, validUsage } from "./usage.ts";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -244,7 +244,7 @@ export function jobLines(r: JobRecord, repoWidth = 16): string[] {
   const waited = r.waits?.length ? ` Waited ${r.waits.map((w) => `${w.minutes} min for ${WAIT_WORDS[w.why] ?? "a reason not known"}`).join(", then ")}.` : "";
   const slot = r.slot ? ` Slot ${r.slot}.` : "";
   if (size || pressure || waited || slot) out.push(`${" ".repeat(14)}${size ? `${size}${beside}.` : ""}${slot}${pressure}${waited}`.replace(/^(\s+) /, "$1"));
-  if (r.usage) out.push(`${" ".repeat(14)}${usageLine(r.usage)}`);
+  if (r.usage) for (const l of usageLines(r.usage)) out.push(`${" ".repeat(14)}${l}`);
   const net = netLine(r.net);
   if (net) out.push(`${" ".repeat(14)}${net}`);
   const p = r.phases;
@@ -399,7 +399,9 @@ export interface LiveJob {
   githubRun?: number;
   workflow?: string;
   event?: string;
+  commit?: string; // the run's head commit, for job timings' pushes
 }
+const SHA = /^[0-9a-f]{40}$/;
 export function validLive(v: unknown): v is LiveJob {
   if (!v || typeof v !== "object" || Array.isArray(v)) return false;
   const j = v as Record<string, unknown>;
@@ -422,7 +424,8 @@ export function validLive(v: unknown): v is LiveJob {
     (j.githubJob === undefined || ghId(j.githubJob)) &&
     (j.githubRun === undefined || ghId(j.githubRun)) &&
     (j.workflow === undefined || typeof j.workflow === "string") &&
-    (j.event === undefined || V3_FIELDS.event!(j.event))
+    (j.event === undefined || V3_FIELDS.event!(j.event)) &&
+    (j.commit === undefined || (typeof j.commit === "string" && SHA.test(j.commit)))
   );
 }
 export function writeLive(p: Pick<Paths, "jobsFile">, j: LiveJob): void {

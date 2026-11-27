@@ -33,6 +33,7 @@ export interface HookDeps {
   paths: Paths;
   log: Pick<Log, "write">;
   tokens?: TokenSource;
+  checks?: { rootUid?: number }; // root's uid, 0 but in tests, for reading root's files
 }
 
 export interface JobStart {
@@ -132,10 +133,17 @@ export async function afterEnd(hooks: readonly JobHook[], d: HookDeps, j: JobEnd
   return out;
 }
 
-// The line written: the hooks' fields under the loop's own, so a hook adds and never replaces.
-export function withHookFields<T extends object>(record: T, extra: Record<string, unknown>): T {
+// The line written: the hooks' fields under the loop's own, so a hook adds and never replaces. Where
+// both wrote an object (a job's usage), the hook's keys go under the loop's, one level down.
+const plainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+function under(mine: Record<string, unknown>, theirs: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(extra)) if (!badKey(k)) out[k] = v;
-  for (const [k, v] of Object.entries(record)) if (v !== undefined || !Object.hasOwn(out, k)) out[k] = v;
+  for (const [k, v] of Object.entries(theirs)) if (!badKey(k)) out[k] = v;
+  for (const [k, v] of Object.entries(mine)) if (v !== undefined || !Object.hasOwn(out, k)) out[k] = v;
+  return out;
+}
+export function withHookFields<T extends object>(record: T, extra: Record<string, unknown>): T {
+  const out = under(record as Record<string, unknown>, extra);
+  for (const [k, v] of Object.entries(record)) if (plainObject(v) && plainObject(extra[k]) && !badKey(k)) out[k] = under(v, extra[k] as Record<string, unknown>);
   return out as T;
 }
