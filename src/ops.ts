@@ -28,8 +28,9 @@ import { fingerprint } from "./approver.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "./pin.ts";
 import { adminState } from "./elevate.ts";
 import { activePull, clean as noControl, pullLine, readPull } from "./progress.ts";
-import { type Config, forKind, KIND_WORD, kindsOf, loadRepoOf, MACOS_MAX, sourceOf, vmsAtMostOf } from "./config.ts";
+import { type Config, forKind, KIND_WORD, kindsOf, loadConfig, loadRepoOf, MACOS_MAX, sourceOf, vmsAtMostOf } from "./config.ts";
 import { LAST_CLASS } from "./classes.ts";
+import { pfLine } from "./pfstarts.ts";
 import { readRate } from "./sourcerate.ts";
 import { timingsLine } from "./timings.ts";
 import { readJobs } from "./jobs.ts";
@@ -173,6 +174,10 @@ export async function status(d: OpsDeps, who?: Reader, logins?: string): Promise
   if (linux) d.say(`  Linux:     ${pullLine(linux, d.sys.now(), running, readStopped(d.paths)?.at)}`);
   const choosing = choiceLine(loop, existsSync(d.paths.runnerTarballLinux) ? 2 : 1);
   if (choosing) d.say(`  Choosing:  ${choosing}`);
+  // VM starts with Screen Sharing on (pfstarts.ts): closed or open, the count, and how to reopen.
+  try {
+    d.say(`  VM starts: ${pfLine(d.paths, d.rootUid ?? 0, loadConfig(d.paths.app, d.paths.boxSettings))}`);
+  } catch {}
   // v2.6.0: the load test's session, while one is on.
   const lf = readLoad(d.paths, !asService(d));
   const ls = currentSession(lf, d.sys.now());

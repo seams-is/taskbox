@@ -144,7 +144,7 @@
     "why": "a restart record's time label, and vmStarting, which only puts off a one-time move of Softnet for a loop older than v2.5.1 while a VM starts. Whether a beat has gone quiet is judged on mono alone"
   },
   "loop.ts": {
-    "reads": 101,
+    "reads": 102,
     "why": "the loop's labels, beats, timers and state times for screens, pull and peer waits, give-way and sampling timers. Job ceilings and vmMaxHours are on mono alone, the drain on the boot uuid, and a VM start's loss on mono and the wall clock both"
   },
   "cmd/daemons.ts": {
@@ -182,5 +182,9 @@
   "jobs.ts": {
     "reads": 1,
     "why": "when a stop was asked: a label in the stop's file"
+  },
+  "pfstarts.ts": {
+    "reads": 1,
+    "why": "when an admin reopened the box to VM starts: a label in the guard's record"
   }
 }

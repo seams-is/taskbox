@@ -28,7 +28,7 @@ export function scrubText(s: string, serviceHome: string): string {
 
 // Only the fields the screens read are copied, so whatever else a loop state holds stays in the service's folder.
 const COPIED: Record<Exclude<SharedKey, "log">, string[] | undefined> = {
-  loopState: ["slot", "slotAt", "job", "lastJob", "lastJobResult", "lastCheck", "failed", "image", "cleanup", "cleanupAt", "waitingFor", "failing", "vmStartGuard", "hostToVM", "guardClosed", "vmSize", "beside", "vmKind", "kindPaused", "kindChoice", "linuxProof", "slots", "slotCount", "why", "gaveWay", "gaveWayLog", "github", "beatGraceMs", "imageBroken", "selfRestartCount", "selfRestartSince", "workflows", "clockUnread", "pfStarts"],
+  loopState: ["slot", "slotAt", "job", "lastJob", "lastJobResult", "lastCheck", "failed", "image", "cleanup", "cleanupAt", "waitingFor", "failing", "vmStartGuard", "hostToVM", "guardClosed", "vmSize", "beside", "vmKind", "kindPaused", "kindChoice", "linuxProof", "slots", "slotCount", "why", "gaveWay", "gaveWayLog", "github", "beatGraceMs", "imageBroken", "selfRestartCount", "selfRestartSince", "workflows", "clockUnread"],
   pull: undefined, // the download's record is the screens' own; every field is read
   pullLinux: undefined,
   stopped: ["at"],
