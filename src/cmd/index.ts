@@ -20,11 +20,15 @@ import * as load from "./load.ts";
 import * as logins from "./logins.ts";
 import * as logs from "./logs.ts";
 import * as nonce from "./nonce.ts";
+import * as op from "./op.ts";
+import * as pause from "./pause.ts";
 import * as policy from "./policy.ts";
 import * as prune from "./prune.ts";
 import * as remove from "./remove.ts";
+import * as resume from "./resume.ts";
 import * as rollback from "./rollback.ts";
 import * as size from "./size.ts";
+import * as start from "./start.ts";
 import * as status from "./status.ts";
 import * as stop from "./stop.ts";
 import * as template from "./template.ts";
@@ -46,11 +50,15 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "logins.ts", module: logins },
   { file: "logs.ts", module: logs },
   { file: "nonce.ts", module: nonce },
+  { file: "op.ts", module: op },
+  { file: "pause.ts", module: pause },
   { file: "policy.ts", module: policy },
   { file: "prune.ts", module: prune },
   { file: "remove.ts", module: remove },
+  { file: "resume.ts", module: resume },
   { file: "rollback.ts", module: rollback },
   { file: "size.ts", module: size },
+  { file: "start.ts", module: start },
   { file: "status.ts", module: status },
   { file: "stop.ts", module: stop },
   { file: "template.ts", module: template },

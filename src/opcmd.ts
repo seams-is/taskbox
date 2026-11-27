@@ -97,7 +97,9 @@ export interface Interrupt {
   off(): void;
 }
 // Ctrl-C while an op is watched: noted, so the watch ends with 130 and the op goes on.
-export function onInterrupt(proc: Pick<NodeJS.Process, "on" | "off"> = process): Interrupt {
+type Signals = { on(s: "SIGINT", f: () => void): unknown; off(s: "SIGINT", f: () => void): unknown };
+const realSignals: Signals = { on: (s, f) => process.on(s, f), off: (s, f) => process.off(s, f) };
+export function onInterrupt(proc: Signals = realSignals): Interrupt {
   let hit = false;
   const f = () => (hit = true);
   proc.on("SIGINT", f);
