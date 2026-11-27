@@ -2,7 +2,7 @@
 // `powermetrics --samplers gpu_power`, one sample of one second, which only root may run. Box-wide:
 // it can't tell one VM's share from another's or from the box's own. A Mac whose powermetrics gives
 // no GPU line keeps the reason in the file and no sample. By the one writer only.
-import type { PassMaker } from "../core/passes.ts";
+import type { PlacedMaker } from "../core/passes.ts";
 import { GUARD_TICK_MS } from "../guard.ts";
 import { type GpuFile, parseGpuBusy, readGpu, writeGpu } from "../measure.ts";
 
@@ -10,8 +10,9 @@ export const GPU_EVERY_MS = 60_000;
 export const POWERMETRICS = "/usr/bin/powermetrics";
 export const POWERMETRICS_ARGS = ["--samplers", "gpu_power", "-n", "1", "-i", "1000"];
 
-export const gpuPass: PassMaker = {
+export const gpuPass: PlacedMaker = {
   name: "gpu",
+  order: 1100,
   make(c) {
     if (!c.writer) return undefined;
     const root = c.rootUid ?? 0;
