@@ -105,6 +105,11 @@ export class QueueReader {
   private runJobs = new Map<string, { updatedAt?: string; jobs: unknown[] }>();
   // How many GETs went to GitHub, for the load test's report (v2.6.0).
   reads = 0;
+  // The last look's cost to the token's rate limit, and the limit GitHub named, for job timings
+  // (sourcerate.ts). A 304 costs nothing.
+  lastLook?: { counted: number; limit?: number };
+  private counted = 0;
+  private limit?: number;
   // The running look's deadline, which ends its calls themselves.
   private deadline?: AbortSignal;
   // v3: tokens from the GitHub key keeper (broker.ts), by repo, so the loop holds no key.
@@ -188,6 +193,9 @@ export class QueueReader {
     const seen = this.etags.get(path) ?? this.seen.get(path);
     this.reads++;
     const res = await this.call("GET", path, token, undefined, seen?.etag);
+    if (res.status !== 304) this.counted++;
+    const limit = Number(res.headers.get("x-ratelimit-limit"));
+    if (Number.isSafeInteger(limit) && limit > 0) this.limit = limit;
     if (res.status === 304 && seen) {
       this.etags.set(path, seen);
       return seen.body as T;
@@ -228,10 +236,12 @@ export class QueueReader {
   // the events the classes name are read first, so other runs can't push them out of view. A run's jobs are read again only when the run changed since the last look.
   async items(): Promise<WaitingItem[]> {
     this.deadline = this.sys.timeout(this.deadlineMs);
+    this.counted = 0;
     try {
       return await this.look();
     } finally {
       this.deadline = undefined;
+      this.lastLook = { counted: this.counted, ...(this.limit ? { limit: this.limit } : {}) };
     }
   }
 

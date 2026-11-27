@@ -129,7 +129,8 @@ describe("a Linux job", () => {
     expect(sys.allArgs()).not.toContain("launchctl");
     // Docker's daemon answered before the runner went in.
     expect(ex).toContainEqual(["exec", ...GUESTS.linux.ready!]);
-    expect(ports.sort((a, b) => a - b)).toEqual([22, 2375, 2376]);
+    // 5900 is the box's own Screen Sharing on 127.0.0.1, read as the VM starts (pfstarts.ts); the rest are the guest's.
+    expect(ports.filter((x) => x !== 5900).sort((a, b) => a - b)).toEqual([22, 2375, 2376]);
     // The runner into admin's Linux home, started from bash's login shell.
     expect(execs(sys).some((c) => c.args.join(" ").includes("mkdir -p /home/admin/taskbox-runner"))).toBe(true);
     const runner = sys.spawned.find((p) => p.args[0] === "exec")!;

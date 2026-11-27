@@ -587,6 +587,8 @@ describe("a VM waiting for a job, with the real check", () => {
     let on = false;
     sys.responders.unshift((cmd) => (cmd === "/usr/sbin/netstat" && on ? { code: 0, stdout: listen("*.5900"), stderr: "" } : undefined));
     const d = loopDeps(sys, tempRoot());
+    // The guard's record of starts is read as root's: the tester stands in for root.
+    d.checks = { ...d.checks, rootUid: process.getuid!() };
     void sys.sleep(60_000).then(() => (on = true));
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("prestart-failed");
     expect(readFileSync(d.paths.log, "utf8")).toContain("VM deleted while it waited for a job: the sharing check failed");
