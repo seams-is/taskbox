@@ -3,6 +3,7 @@
 // commit was merged by. What this release reads is set here: the settings schema, the answers versions
 // (N and N-1) and the oldest release that may update to it.
 import { ANSWERS_V4 } from "../envelope.ts";
+import { REVOKES } from "./revokes.ts";
 import { channelOf, parseStatement, parseVersion, type Statement, statementText, tagOf, tarballName } from "../release.ts";
 
 export const SETTINGS_SCHEMA: [number, number] = [4, 4];
@@ -11,6 +12,8 @@ export const MIN_FROM = "2.6.1";
 
 export function draftStatement(o: { version: string; commit: string; tree: string; sha256: string; assets: Record<string, string>; pr: number; mergedAt: string; notes: string }): string {
   if (!parseVersion(o.version)) throw new Error(`${o.version} isn't a release version`);
+  // Every release names its revoke list, so a box can tell a list that is gone from none.
+  if (o.assets[REVOKES] === undefined) throw new Error(`the release carries no ${REVOKES}`);
   const s: Statement = {
     v: 1,
     name: "taskbox",

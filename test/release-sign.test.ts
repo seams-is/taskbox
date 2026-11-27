@@ -8,6 +8,7 @@ import type { RunResult, Runner } from "../src/controller/run.ts";
 import { gitTreeSha } from "../src/hop.ts";
 import { NAMESPACE, parseStatement, type Statement, statementText } from "../src/release.ts";
 import { revokeTransition, sign } from "../src/release/sign.ts";
+import { REVOKES, revokeListText } from "../src/release/revokes.ts";
 import { sha, statementFor } from "./release-fixture.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
 
@@ -30,11 +31,18 @@ function tree(pin: string, extra: Record<string, string> = {}) {
   return { tgz: new Uint8Array(readFileSync(join(dir, "t.tgz"))), tree: gitTreeSha(top) };
 }
 
-function world(o: { draft?: boolean; commit?: string; treeOverride?: string; answer?: string; signer?: ReturnType<typeof keyPair>; extra?: Record<string, string> } = {}) {
+type Gh = { pr?: Record<string, unknown>; compare?: string; runs?: Record<string, unknown>[]; latest?: { list: string } | "none"; moved?: string; list?: string | null };
+function world(o: { draft?: boolean; commit?: string; treeOverride?: string; answer?: string; signer?: ReturnType<typeof keyPair>; extra?: Record<string, string>; gh?: Gh; tty?: boolean } = {}) {
   const key = keyPair();
   const t = tree(key.line, o.extra);
-  const st: Statement = statementFor("3.0.1", { sha256: sha(t.tgz), tree: t.tree, commit: COMMIT, assets: {} });
-  const files: Record<string, Uint8Array> = { "statement.json": new TextEncoder().encode(statementText(st)), "taskbox-v3.0.1.tar.gz": t.tgz };
+  const g = o.gh ?? {};
+  const list = g.list === undefined ? revokeListText(["1".repeat(64)]) : g.list;
+  const st: Statement = statementFor("3.0.1", { sha256: sha(t.tgz), tree: t.tree, commit: COMMIT, assets: list === null ? {} : { [REVOKES]: sha(list) } });
+  const files: Record<string, Uint8Array> = { "statement.json": new TextEncoder().encode(statementText(st)), "taskbox-v3.0.1.tar.gz": t.tgz, ...(list === null ? {} : { [REVOKES]: new TextEncoder().encode(list) }) };
+  // The latest published release, v3.0.0, with its own list.
+  const prevList = g.latest === "none" ? undefined : (g.latest?.list ?? revokeListText(["1".repeat(64)]));
+  const prev = prevList === undefined ? undefined : { "statement.json": new TextEncoder().encode(statementText(statementFor("3.0.0", { assets: { [REVOKES]: sha(prevList) } }))), [REVOKES]: new TextEncoder().encode(prevList) };
+  let tagReads = 0;
   const calls: string[] = [];
   const said: string[] = [];
   const run: Runner = async (argv, opts) => {
@@ -53,15 +61,20 @@ function world(o: { draft?: boolean; commit?: string; treeOverride?: string; ans
     if (a[0] === "release" && a[1] === "view") return ok(JSON.stringify({ tagName: "v3.0.1", isDraft: o.draft ?? true, isPrerelease: false, assets: [] }));
     if (a[0] === "release" && a[1] === "download") {
       const name = a[a.indexOf("--pattern") + 1]!;
-      writeFileSync(join(a[a.indexOf("--dir") + 1]!, name), files[name]!);
+      const from = a[2] === "v3.0.0" ? prev! : files;
+      writeFileSync(join(a[a.indexOf("--dir") + 1]!, name), (from as Record<string, Uint8Array>)[name]!);
       return ok();
     }
-    if (a[0] === "api" && a[1]!.includes("/git/ref/tags/")) return ok(JSON.stringify({ object: { type: "commit", sha: o.commit ?? COMMIT } }));
+    if (a[0] === "api" && a[1]!.includes("/git/ref/tags/")) return ok(JSON.stringify({ object: { type: "commit", sha: tagReads++ > 0 && g.moved ? g.moved : (o.commit ?? COMMIT) } }));
+    if (a[0] === "api" && a[1]!.endsWith("/pulls/61")) return ok(JSON.stringify({ merged: true, base: { ref: "main" }, merge_commit_sha: COMMIT, title: "Release 3.0.1", user: { login: "pat" }, ...g.pr }));
+    if (a[0] === "api" && a[1]!.includes("/compare/main...")) return ok(JSON.stringify({ status: g.compare ?? "behind" }));
+    if (a[0] === "api" && a[1]!.includes("/actions/workflows/release.yml/runs")) return ok(JSON.stringify({ workflow_runs: g.runs ?? [{ head_branch: "v3.0.1", head_sha: COMMIT, path: ".github/workflows/release.yml", event: "push", conclusion: "success" }] }));
+    if (a[0] === "api" && a[1]!.endsWith("/releases/latest")) return prev ? ok(JSON.stringify({ tag_name: "v3.0.0", assets: [{ name: REVOKES }] })) : { code: 1, stdout: "", stderr: "HTTP 404", timedOut: false, tooBig: false };
     if (a[0] === "api" && a[1]!.includes("/git/commits/")) return ok(JSON.stringify({ tree: { sha: o.treeOverride ?? t.tree } }));
     if (a[0] === "release" && (a[1] === "upload" || a[1] === "edit")) return ok();
     return { code: 1, stdout: "", stderr: `unexpected ${argv.join(" ")}`, timedOut: false, tooBig: false };
   };
-  const d = { run, gh: "/opt/homebrew/bin/gh", key: "/k/id_ecdsa_sk_rk", repo: REPO, work: mkdtempSync(join(tmpdir(), "taskbox-sign-work-")), ask: async () => o.answer ?? "yes", out: (l: string) => void said.push(l), tty: true };
+  const d = { run, gh: "/opt/homebrew/bin/gh", key: "/k/id_ecdsa_sk_rk", repo: REPO, work: mkdtempSync(join(tmpdir(), "taskbox-sign-work-")), ask: async () => o.answer ?? "yes", out: (l: string) => void said.push(l), tty: o.tty ?? true };
   return { d, calls, said, st };
 }
 
@@ -98,6 +111,44 @@ describe("taskbox sign", () => {
     expect(w.said.at(-1)).toContain("the signature doesn't verify against the keys v3.0.1 pins");
     expect(w.calls.some((c) => c.includes("release upload"))).toBe(false);
   }, 30_000);
+
+  test("GitHub must say the commit is the merge of the statement's PR, on main, made a draft by the release run from the tag", async () => {
+    const other = "e".repeat(40);
+    for (const [gh, line] of [
+      [{ pr: { merged: false } }, "Not published: PR #61 isn't merged."],
+      [{ pr: { base: { ref: "feature" } } }, "Not published: PR #61 didn't merge into main."],
+      [{ pr: { merge_commit_sha: other } }, "Not published: the tag's commit ddddddd isn't the merge of PR #61."],
+      [{ compare: "diverged" }, "Not published: the commit ddddddd isn't on main."],
+      [{ runs: [{ head_branch: "feature", head_sha: COMMIT, path: ".github/workflows/release.yml", event: "workflow_dispatch", conclusion: "success" }] }, "Not published: no release run from a push of v3.0.1 at ddddddd made this draft."],
+      [{ list: null }, "Not published: the draft's statement names no revoke list."],
+      [{ latest: { list: revokeListText(["1".repeat(64), "2".repeat(64)]) } }, "Not published: the draft's revoke list drops 1 revoke the latest release holds."],
+    ] as const) {
+      const w = world({ gh });
+      expect(await sign(w.d, "3.0.1")).toBe(1);
+      expect(w.said.at(-1)).toBe(line);
+      expect(w.calls.some((c) => c.startsWith("env"))).toBe(false);
+    }
+  }, 60_000);
+
+  test("shows the PR's title and author from GitHub, and a first release with no latest list signs", async () => {
+    const w = world({ gh: { latest: "none" } });
+    expect(await sign(w.d, "3.0.1")).toBe(0);
+    expect(w.said).toContain("  Title:   Release 3.0.1 (from GitHub)");
+    expect(w.said).toContain("  Author:  pat (from GitHub)");
+  }, 30_000);
+
+  test("a tag moved while the owner read is refused before anything is uploaded", async () => {
+    const w = world({ gh: { moved: "e".repeat(40) } });
+    expect(await sign(w.d, "3.0.1")).toBe(1);
+    expect(w.said.at(-1)).toBe("Not published: the tag v3.0.1 moved while you read.");
+    expect(w.calls.some((c) => c.includes("release upload"))).toBe(false);
+  }, 30_000);
+
+  test("--revoke runs only at a terminal", async () => {
+    const w = world({ tty: false });
+    expect(await revokeTransition(w.d, "3.0.1")).toBe(1);
+    expect(w.said.at(-1)).toBe("taskbox sign --revoke asks you to type yes, so it runs only in your own terminal.");
+  });
 
   test("--revoke signs a revoke of the transition a release carries, and uploads it there", async () => {
     const t = `${JSON.stringify({ v: 1, type: "signers", old: ["SHA256:x"], new: [], fromVersion: "3.0.1" })}\n`;

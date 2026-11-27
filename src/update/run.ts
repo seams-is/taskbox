@@ -45,6 +45,7 @@ export interface Downloaded {
   tarball: string;
   tarballSha256: string;
   assets: Record<string, { path: string; sha256: string }>;
+  revokes?: Uint8Array; // the release's revoke list (release/revokes.ts), when it could be read
 }
 
 export interface Running {

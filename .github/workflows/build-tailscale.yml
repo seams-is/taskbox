@@ -47,8 +47,9 @@ jobs:
             go_archive: linux-amd64
     name: build (${{ matrix.name }})
     # Guards against a mistake only. A branch can edit this line, so the
-    # owner checks the run's branch and commit on the run page (docs/build-tailscale.md).
-    if: github.ref == 'refs/heads/main'
+    # owner checks the run's branch and commit on the run page (docs/build-tailscale.md). The release
+    # workflow calls it from a v* tag, which it checks is on main.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions: {}
