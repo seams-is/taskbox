@@ -62,7 +62,7 @@ function box(loopState?: Record<string, unknown>) {
 }
 
 describe("the guard's record lasts", () => {
-  test("in root's lasting state, not /var/run, with a mark beside it", async () => {
+  test("in root's lasting state outside /var/run, with a mark beside it", async () => {
     const b = box();
     b.guard({ at: AT });
     await b.tick(AT);
