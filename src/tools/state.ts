@@ -86,8 +86,8 @@ export function toolsLine(t: ToolsState): string {
 
 // The "Tool cache" row: OK while every pin is in use; WARN while one is missing or a bake failed, with why.
 // Jobs run either way: a pin that isn't baked in is downloaded as before.
-// FAIL once a bake has failed 3 times in a row, or a cleanup left disk behind 3 passes in a row:
-// then someone looks.
+// FAIL once a bake has failed 3 times in a row, or as soon as a cleanup left disk behind: then
+// someone looks.
 export function toolsRow(t: ToolsState | undefined): { status: "OK" | "WARN" | "FAIL" | "SKIP"; detail: string } {
   if (!t) return { status: "SKIP", detail: "the loop hasn't read the tool cache yet" };
   const line = toolsLine(t);
@@ -95,7 +95,8 @@ export function toolsRow(t: ToolsState | undefined): { status: "OK" | "WARN" | "
   const bad = t.pins.filter((p) => p.state !== "held").map((p) => `${p.name} ${p.why ?? "isn't fetched yet"}`);
   const bakes = (Object.entries(t.bakeWhy ?? {}) as [Kind, string][]).map(([k, w]) => `the ${KIND_WORD[k]} bake: ${w}`);
   const why = [...bad, ...bakes, ...(t.cleanupWhy ? [`cleanup ${t.cleanupWhy}`] : []), ...(t.why ? [t.why] : [])];
-  const alarm = Object.values(t.bakeFails ?? {}).some((n) => (n ?? 0) >= 3) || (t.cleanupFails ?? 0) >= 3;
+  // A cleanup that left a base or a file behind alarms at once: the disk it holds isn't freed.
+  const alarm = Object.values(t.bakeFails ?? {}).some((n) => (n ?? 0) >= 3) || (t.cleanupFails ?? 0) >= 1;
   if (alarm) return { status: "FAIL", detail: `${line}. ${why.join("; ")}. Jobs download what isn't baked in. Fix: read taskbox logs for the tool cache, then taskbox tool refresh as the service account` };
   if (!why.length && inUse(t).total === t.pins.filter((p) => p.state === "held").length) return { status: "OK", detail: line };
   return { status: "WARN", detail: `${line}. ${why.join("; ") || "a bake is waiting for a free slot"}. Jobs download what isn't baked in. Nothing to do: the loop tries again` };

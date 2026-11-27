@@ -621,24 +621,37 @@ describe("the review's fixes", () => {
     expect(readdirSync(s.blobs)).toEqual([v2.sha256]);
     expect(run.cleanupOwed).toBe(false);
   });
-  test("a cleanup that can't remove a base says so each pass, and the row fails from the third", async () => {
+  test("a cleanup that can't remove a base alarms at once, stays owed, and is tried again until it goes", async () => {
     const { dir, s } = storeWith([node], [NODE]);
     const e = new Engine(dir);
     const stuck: BaseRecord = { v: 1, name: baseNameFor("linux", "e".repeat(64), LINUX_IMAGE), kind: "linux", image: LINUX_IMAGE, gen: "e".repeat(64), entries: ["gone@" + "f".repeat(64) + "#"], diskSha256: "c".repeat(64), bakedAt: 0 };
     writeBase(s, stuck);
     e.vms.set(stuck.name, { image: false });
+    let busy = true;
     const del = e.delete.bind(e);
-    e.delete = async (vm) => (vm === stuck.name ? { code: 1, stdout: "", stderr: "busy" } : del(vm));
+    e.delete = async (vm) => (vm === stuck.name && busy ? { code: 1, stdout: "", stderr: "busy" } : del(vm));
     const { t, sys, states, events } = loopFor(e, s, toolsOf({ tools: { entries: [node] } }));
     const run = newRun();
-    for (let i = 0; i < 3; i++) {
-      run.cleanupOwed = true;
-      await toolsPass(t, run);
-      sys.clock += 31 * 60_000;
-    }
+    // The loop's start: the first pass cleans up as part of its check, and the base won't go.
+    await toolsPass(t, run);
     expect(states.at(-1)!.cleanupWhy).toBe(`couldn't remove ${stuck.name}`);
     expect(toolsRow(states.at(-1)).status).toBe("FAIL");
-    expect(events.filter((x) => x.includes("couldn't remove")).length).toBe(3);
+    expect(run.cleanupOwed).toBe(true);
+    // Tried again after the retry wait, with no daily check in between.
+    sys.clock += 29 * 60_000;
+    expect(toolsDue(t, run)).toBe(false);
+    sys.clock += 2 * 60_000;
+    expect(toolsDue(t, run)).toBe(true);
+    await toolsPass(t, run);
+    expect(events.filter((x) => x.includes("couldn't remove")).length).toBe(2);
+    // Once it can go, it goes, and the alarm ends.
+    busy = false;
+    sys.clock += 31 * 60_000;
+    await toolsPass(t, run);
+    expect(e.vms.has(stuck.name)).toBe(false);
+    expect(run.cleanupOwed).toBe(false);
+    expect(states.at(-1)!.cleanupWhy).toBeUndefined();
+    expect(toolsRow(states.at(-1)).status).not.toBe("FAIL");
   });
   test("a pin taken away is forgotten with its failure, so nothing waits on it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-pass-"));

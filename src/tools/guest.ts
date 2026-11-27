@@ -72,7 +72,7 @@ export function sealScript(kind: Kind): string {
           `: > ${IPV6_SAVED}`,
           // getinfo says "IPv6: Automatic" or "IPv6: Off"; link-local only prints no such line, only its
           // address lines (Tart proof, macOS 27.2).
-          `${SERVICES} | while IFS= read -r s; do i=$(/usr/sbin/networksetup -getinfo "$s"); v=$(printf '%s\\n' "$i" | /usr/bin/sed -n 's/^IPv6: //p' | /usr/bin/head -n 1); if [ -z "$v" ] && printf '%s\\n' "$i" | /usr/bin/grep -q '^IPv6 IP address'; then v="Link-local only"; fi; case "$v" in Automatic|Off|"Link-local only"|"") ;; *) echo "$s has IPv6 set by hand ($v), which the bake can't put back" >&2; exit 5;; esac; printf '%s\\t%s\\n' "$v" "$s" >> ${IPV6_SAVED}; done`,
+          `${SERVICES} | while IFS= read -r s; do i=$(/usr/sbin/networksetup -getinfo "$s"); v=$(printf '%s\\n' "$i" | /usr/bin/sed -n 's/^IPv6: //p' | /usr/bin/head -n 1); if [ -z "$v" ] && printf '%s\\n' "$i" | /usr/bin/grep -q '^IPv6 IP address'; then v="Link-local only"; fi; case "$v" in Automatic|Off|"Link-local only") ;; "") v=default ;; *) echo "$s has IPv6 set by hand ($v), which the bake can't put back" >&2; exit 5;; esac; printf '%s|%s\\n' "$v" "$s" >> ${IPV6_SAVED}; done`,
           `${SERVICES} | while IFS= read -r s; do /usr/sbin/networksetup -setv6off "$s"; done`,
         ];
   return `${[...lines, "echo sealed"].join("\n")}\n`;
@@ -159,7 +159,9 @@ export function bakeScript(kind: Kind, genId: string, m: Manifest, toolCache: st
       // clone, keeps it from running again.
     );
   // macOS: each service's IPv6 back to what the seal saved, so job VMs have the image's own setting.
-  else lines.push(`TAB=$(printf '\\t'); while IFS="$TAB" read -r v s; do case "$v" in Automatic) /usr/sbin/networksetup -setv6automatic "$s";; "Link-local only") /usr/sbin/networksetup -setv6LinkLocal "$s";; esac; done < ${IPV6_SAVED}`, `/bin/rm -f ${IPV6_SAVED}`);
+  // A setting that read empty ("default") goes back to macOS's own default, Automatic. "|" splits
+  // the record: a tab is IFS white space, so an empty first field would be lost.
+  else lines.push(`while IFS='|' read -r v s; do case "$v" in Automatic|default) /usr/sbin/networksetup -setv6automatic "$s";; "Link-local only") /usr/sbin/networksetup -setv6LinkLocal "$s";; esac; done < ${IPV6_SAVED}`, `/bin/rm -f ${IPV6_SAVED}`);
   lines.push("/bin/sync", "echo baked");
   return `${lines.join("\n")}\n`;
 }

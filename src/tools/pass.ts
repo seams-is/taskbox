@@ -21,8 +21,6 @@ export const RETRY_MS = 30 * 60_000;
 // A bake that fails again waits twice as long each time, up to this, and alarms from the third.
 export const BAKE_BACKOFF_MAX_MS = 6 * 3600_000;
 export const BAKE_ALARM_AFTER = 3;
-// A cleanup that fails this many passes in a row alarms.
-export const CLEANUP_ALARM_AFTER = 3;
 // How long one pass may spend fetching, so a slow server never holds a slot for long.
 export const FETCH_PHASE_MS = 20 * 60_000;
 
@@ -84,8 +82,10 @@ export function toolsDue(t: Pick<ToolsLoop, "sys" | "view" | "store" | "kinds" |
   if (run.busy || !t.view.enabled) return false;
   const now = t.sys.now();
   if (!run.started || now - run.verifiedAt >= VERIFY_EVERY_MS || existsSync(t.store.refresh)) return true;
-  if (run.cleanupOwed && t.gateFree()) return true;
+  // A cleanup that waited for the gate goes as soon as it is free; one that failed waits for run.next.
+  if (run.cleanupOwed && !run.cleanupWhy && t.gateFree()) return true;
   if (now < run.next) return false;
+  if (run.cleanupOwed && t.gateFree()) return true;
   if (t.view.entries.some((e) => !existsSync(blobPath(t.store, e.sha256)))) return true;
   const bases = readBases(t.store);
   return t.kinds().some((k) => !!run.gens[k] && !currentBase(bases, k, t.imageOf(k), run.gens[k]) && !backedOff(run, k, run.gens[k]!, now));
@@ -242,12 +242,13 @@ export async function toolsPass(t: ToolsLoop, run: ToolsRun): Promise<boolean> {
             }
             const gens = new Set(Object.values(run.gens).map((g) => g!.id));
             const r = await cleanup({ engine: t.engine, log: t.log }, t.store, { bases: keepBases, gens, blobs: new Set(t.view.entries.map((e) => e.sha256)) });
-            run.cleanupOwed = false;
+            // Still owed until it leaves nothing behind: the pass tries again after RETRY_MS.
             if (r.failed.length) {
               run.cleanupFails++;
               run.cleanupWhy = `couldn't remove ${r.failed.join(", ")}`;
               t.event("tool.failed", `The tool cache couldn't remove ${r.failed.join(", ")}, which still take disk.`, { failed: r.failed });
             } else {
+              run.cleanupOwed = false;
               run.cleanupFails = 0;
               delete run.cleanupWhy;
             }

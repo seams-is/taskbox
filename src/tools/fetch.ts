@@ -109,7 +109,7 @@ export async function hostProblem(host: string, resolve: Resolve): Promise<strin
 export async function fetchBlob(d: FetchDeps, s: Store, e: ToolEntry, maxBytes: number, onProgress: (bytes: number) => void = () => {}, ceilingMs = FETCH_CEILING_MS): Promise<Fetched> {
   const ctl = new AbortController();
   let cut = "";
-  const stopCeiling = d.after(ceilingMs, () => ((cut = `it took longer than ${Math.max(1, Math.round(ceilingMs / 60_000))} minutes`), ctl.abort()));
+  const stopCeiling = d.after(ceilingMs, () => ((cut = `it took longer than ${ceilingMs >= 60_000 ? `${Math.round(ceilingMs / 60_000)} minutes` : `${Math.round(ceilingMs / 1000)} s`}`), ctl.abort()));
   let stopStall = () => {};
   const stall = () => {
     stopStall();
@@ -200,25 +200,33 @@ async function fetchWithin(d: FetchDeps, s: Store, e: ToolEntry, maxBytes: numbe
 
 // The box's GET: node's https with its lookup answered by the checked address, so the connection
 // goes where the check said. node's client doesn't decompress: the bytes hashed are the bytes sent.
-export const realGet: Get = async (url, o) => {
-  if (process.env.TASKBOX_TEST === "1") throw new Error("the real network was used inside a test");
-  const https = await import("node:https");
-  return new Promise<Got>((resolve, reject) => {
-    const lookup = (_h: string, opts: { all?: boolean } | undefined, cb: (...a: unknown[]) => void) => (opts?.all ? cb(null, [{ address: o.address, family: o.family }]) : cb(null, o.address, o.family));
-    const req = https.get(url, { headers: o.headers, signal: o.signal, lookup: lookup as never }, (r) =>
-      resolve({
-        status: r.statusCode ?? 0,
-        header: (n) => {
-          const v = r.headers[n.toLowerCase()];
-          return Array.isArray(v) ? v[0] : v;
-        },
-        body: r as unknown as AsyncIterable<Uint8Array>,
-        cancel: () => r.destroy(),
-      }),
-    );
-    req.on("error", reject);
-  });
-};
+// An abort ends the body too, so a stalled server can't hold the read. tls.ca: a test's own
+// certificate authority, trusted only by that test's GET; with none, the system's.
+export function getWith(tls: { ca?: string } = {}): Get {
+  return async (url, o) => {
+    if (process.env.TASKBOX_TEST === "1" && tls.ca === undefined) throw new Error("the real network was used inside a test");
+    const https = await import("node:https");
+    return new Promise<Got>((resolve, reject) => {
+      const lookup = (_h: string, opts: { all?: boolean } | undefined, cb: (...a: unknown[]) => void) => (opts?.all ? cb(null, [{ address: o.address, family: o.family }]) : cb(null, o.address, o.family));
+      const req = https.get(url, { headers: o.headers, signal: o.signal, lookup: lookup as never, ...(tls.ca !== undefined ? { ca: tls.ca } : {}) }, (r) => {
+        const end = () => r.destroy(new Error("aborted"));
+        o.signal.addEventListener("abort", end, { once: true });
+        r.on("close", () => o.signal.removeEventListener("abort", end));
+        resolve({
+          status: r.statusCode ?? 0,
+          header: (n) => {
+            const v = r.headers[n.toLowerCase()];
+            return Array.isArray(v) ? v[0] : v;
+          },
+          body: r as unknown as AsyncIterable<Uint8Array>,
+          cancel: () => r.destroy(),
+        });
+      });
+      req.on("error", reject);
+    });
+  };
+}
+export const realGet: Get = getWith();
 
 // The system's resolver, for the box. A test that reaches it is a test that would touch the network.
 export const realResolve: Resolve = async (host) => {
