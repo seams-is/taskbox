@@ -1,11 +1,12 @@
 // The clock out of every decision that deletes or kills.
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { describe, expect, test } from "bun:test";
 import { chmodSync, closeSync, constants, mkdtempSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHILD_BUN, follow, jobLabel, O_EXLOCK, runChild } from "../../src/core/child.ts";
 import { appendEvent, eventLog, keepEvents, newEvent, readEvents } from "../../src/core/events.ts";
-import { begin, end, keepOps, listOps, type OpType, readOp, writeOp } from "../../src/core/ops.ts";
+import { begin, end, keepOps, listOps, readOp, writeOp } from "../../src/core/ops.ts";
 import { FakeSys } from "../fake.ts";
 import { Verified } from "../../src/core/statement.ts";
 
@@ -14,7 +15,7 @@ const DAY = 86_400_000;
 const T = Date.parse("2026-11-25T12:00:00Z");
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-r6-"));
 const APP = "/opt/taskbox/app/src/cli.ts";
-const update: OpType = { type: "update", phases: ["a", "b"], onBoot: () => "fail" };
+const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["a", "b"], onBoot: () => "fail" };
 
 function setup(mono = 1_000_000) {
   const sys = new FakeSys();
@@ -103,7 +104,7 @@ describe("deadlines on the monotonic clock, and never past the point of no retur
     closeSync(lease);
   });
   test("an op that can't be cancelled, or is past its point of no return, is never ended by its deadline: it is flagged", async () => {
-    const swap: OpType = { type: "update", phases: ["a", "b"], pointOfNoReturn: "b", onBoot: () => "fail" };
+    const swap: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["a", "b"], pointOfNoReturn: "b", onBoot: () => "fail" };
     for (const [t, phase] of [[{ ...update, cancellable: false }, "a"], [swap, "b"]] as const) {
       const s = setup();
       const b = begin([], t, { subject: "box", params: {}, actor: "owner", deadline: T + 1000 }, T);

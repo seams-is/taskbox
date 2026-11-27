@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { paths } from "../src/config.ts";
-import { readEvents } from "../src/core/events.ts";
+import { eventLog, readEvents } from "../src/core/events.ts";
 import { rootStateOf } from "../src/core/paths.ts";
 import { oneJob, whyWait } from "../src/loop.ts";
 import { atBoxScreen } from "../src/ops.ts";
@@ -204,11 +204,14 @@ describe("confirm", () => {
     const b = box();
     writeAll3(b.p, rec({ seq: 4, mode: "closed", judged: AT, lostAt: AT, clean: 0 }));
     recordStart(b.p, start(AT + 5_000, 1), me);
-    const e = ev();
-    expect(await reopen({ sys: b.sys, paths: b.p, rootUid: me, serviceUid: me, by: "admin1", events: e.w })).toBe(true);
+    const log = eventLog("guard", { dir: rootStateOf(b.p).events, owner: me }, b.sys);
+    expect(await reopen({ sys: b.sys, paths: b.p, rootUid: me, serviceUid: me, by: "admin1", events: log })).toBe(true);
     expect(pfState(b.p, me)).toMatchObject({ kind: "ok", rec: { seq: 5, mode: "trial", clean: 0, judged: AT + 5_000 } });
-    expect(e.out.map((x) => [x.type, x.actor, x.text])).toEqual([["guard.pf-reopened", "admin1", "admin1 confirmed at the box's screen, so the box went from closed to trial: 100 clean starts with Screen Sharing on lift the restriction."]]);
-    expect(await reopen({ sys: b.sys, paths: b.p, rootUid: me, by: "admin1", events: e.w })).toBe(false);
+    const e = b.events();
+    expect(e.map((x) => [x.type, x.actor, x.text])).toEqual([["guard.pf-reopened", "an admin", "An admin confirmed at the box's screen, so the box went from closed to trial: 100 clean starts with Screen Sharing on lift the restriction."]]);
+    // Which admin, in root's private record beside the event, as the admin spool's ops keep it.
+    expect(readFileSync(rootStateOf(b.p).admins, "utf8").trim()).toBe(JSON.stringify({ id: e[0]!.id, name: "admin1" }));
+    expect(await reopen({ sys: b.sys, paths: b.p, rootUid: me, by: "admin1", events: log })).toBe(false);
   });
   test("an event that can't be written changes nothing", async () => {
     const b = box();
@@ -319,5 +322,32 @@ describe("at the loop and in check", () => {
     };
     expect((await pfStartsRow(ctx(true) as never)).status).toBe("FAIL");
     expect((await pfStartsRow(ctx(false) as never)).detail).toMatch(/^Screen Sharing is off, so VMs start\. closed:/);
+  });
+});
+
+describe("root's install record keeps the box's first v3 install", () => {
+  test("v3SinceFor: carried from the install before; a v3 install with no v3Since was the first; a v2 one or none makes this the first", async () => {
+    const { v3SinceFor } = await import("../src/install.ts");
+    const { firstV3Install } = await import("../src/pfstarts.ts");
+    const p = paths(tempRoot(), testBox());
+    mkdirSync(dirname(p.installed), { recursive: true });
+    const at = "2027-02-01T00:00:00.000Z";
+    const was = (v: Record<string, unknown>) => writeFileSync(p.installed, JSON.stringify(v), { mode: 0o644 });
+    expect(v3SinceFor(p, at)).toBe(at);
+    was({ installedAt: "2026-10-01T00:00:00.000Z", format: 2 });
+    expect(v3SinceFor(p, at)).toBe(at);
+    was({ installedAt: "2026-12-01T00:00:00.000Z", format: 2, release: { repo: "x" } });
+    expect(v3SinceFor(p, at)).toBe("2026-12-01T00:00:00.000Z");
+    was({ installedAt: "2027-01-01T00:00:00.000Z", v3Since: "2026-12-01T00:00:00.000Z", release: { repo: "x" } });
+    expect(v3SinceFor(p, at)).toBe("2026-12-01T00:00:00.000Z");
+    writeFileSync(p.installed, "{ damaged");
+    expect(v3SinceFor(p, at)).toBe(at);
+    // And what the guard reads of it: the first v3 install, or a later one.
+    was({ installedAt: at, v3Since: at });
+    expect(firstV3Install(p, me)).toBe(true);
+    was({ installedAt: at });
+    expect(firstV3Install(p, me)).toBe(true);
+    was({ installedAt: at, v3Since: "2026-12-01T00:00:00.000Z" });
+    expect(firstV3Install(p, me)).toBe(false);
   });
 });

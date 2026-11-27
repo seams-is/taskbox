@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eventLog, flushEvents, keepEvents, readEvents } from "../../src/core/events.ts";
-import { begin, keepOps, type OpType, writeOp } from "../../src/core/ops.ts";
+import { begin, keepOps, writeOp } from "../../src/core/ops.ts";
 import { Passes } from "../../src/core/passes.ts";
 import { keepOutcomes, recordOutcome } from "../../src/core/spool.ts";
 
@@ -12,7 +13,7 @@ const T = Date.parse("2026-11-25T12:00:00Z");
 const DAY = 86_400_000;
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-review4-"));
 const day = (k: number) => new Date(T + k * DAY).toISOString().slice(0, 10);
-const update: OpType = { type: "update", phases: ["a"], onBoot: () => "fail" };
+const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["a"], onBoot: () => "fail" };
 
 describe("refused requests, by one cap", () => {
   const ev = () => ({ dir: join(tmp(), "ev"), owner: uid });

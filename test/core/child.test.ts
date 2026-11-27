@@ -1,17 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { oneShotLabel, oneShotPlist, oneShotScript, parseReport, reloadThroughLaunchd, reportLine } from "../../src/core/child.ts";
 import { eventLog, readEvents } from "../../src/core/events.ts";
-import { begin, type Op, type OpType, readOp } from "../../src/core/ops.ts";
+import { begin, type Op, readOp } from "../../src/core/ops.ts";
 import { RELOAD_JOB } from "../../src/ops.ts";
 import { FakeSys } from "../fake.ts";
 import { CHILD_BUN } from "../../src/core/child.ts";
 const APP = "/opt/taskbox/app/src/cli.ts";
 
 const uid = process.getuid!();
-const update: OpType = { type: "update", phases: ["downloading", "verifying", "installing", "proving"], pointOfNoReturn: "installing", onBoot: () => "fail" };
+const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["downloading", "verifying", "installing", "proving"], pointOfNoReturn: "installing", onBoot: () => "fail" };
 
 function setup() {
   const sys = new FakeSys();

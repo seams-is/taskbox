@@ -24,11 +24,11 @@ describe("a copy", () => {
   });
   test("is written whole, readable by every user, and removed for null", () => {
     const p = box();
-    mirrorJson(p, "stopped", { at: 1 });
-    const f = join(p.shared, "stopped.json");
+    mirrorJson(p, "pull", { at: 1 });
+    const f = join(p.shared, "pull.json");
     expect(statSync(f).mode & 0o777).toBe(0o644);
     expect(JSON.parse(readFileSync(f, "utf8"))).toEqual({ at: 1 });
-    mirrorJson(p, "stopped", null);
+    mirrorJson(p, "pull", null);
     expect(readdirSync(p.shared)).toEqual([]);
   });
   test("is no error before the install makes the folder", () => {
@@ -58,7 +58,7 @@ describe("the readers' trust", () => {
   test("other users' paths point at the copies, and nothing else moves", () => {
     const p = paths(tempRoot(), testBox());
     const s = sharedPaths(p);
-    expect([s.loopState, s.pull, s.stopped, s.log]).toEqual(["loop-state.json", "pull.json", "stopped.json", "loop.log"].map((f) => join(p.shared, f)));
+    expect([s.loopState, s.pull, s.log]).toEqual(["loop-state.json", "pull.json", "loop.log"].map((f) => join(p.shared, f)));
     expect(s.key).toBe(p.key);
   });
 });
@@ -102,12 +102,12 @@ describe("the copies every user reads", () => {
     const p = box();
     const old = process.umask(0o077);
     try {
-      mirrorJson(p, "stopped", { at: 1 });
+      mirrorJson(p, "pull", { at: 1 });
       mirrorLogLine(p, "x");
     } finally {
       process.umask(old);
     }
-    expect(statSync(join(p.shared, "stopped.json")).mode & 0o777).toBe(0o644);
+    expect(statSync(join(p.shared, "pull.json")).mode & 0o777).toBe(0o644);
     expect(statSync(join(p.shared, "loop.log")).mode & 0o777).toBe(0o644);
   });
 });

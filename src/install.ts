@@ -1299,7 +1299,7 @@ function loadConfigLoose(dir: string): Config {
 
 // The box's first v3 install, as root's install record keeps it: the one before's, or this one's when
 // none before had one (pfstarts.ts: only the first v3 install may start the guard's record afresh).
-function v3SinceFor(p: Pick<Paths, "installed">, at: string): string {
+export function v3SinceFor(p: Pick<Paths, "installed">, at: string): string {
   try {
     const was = JSON.parse(readFileSync(p.installed, "utf8")) as { v3Since?: unknown; installedAt?: unknown; release?: unknown };
     if (typeof was.v3Since === "string") return was.v3Since;

@@ -26,7 +26,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { type Check, type CheckContext, screenSharingOn } from "./checks.ts";
 import type { Config, Paths } from "./config.ts";
-import { eventLog, readEvents } from "./core/events.ts";
+import { appendAdmin, eventLog, readEvents } from "./core/events.ts";
 import type { PassMaker } from "./core/passes.ts";
 import { rootStateOf } from "./core/paths.ts";
 import { readOwnedText, withLock, writeOwnedText } from "./core/rootfile.ts";
@@ -307,9 +307,11 @@ export const withSeen = (seen: readonly { vm: string; at: number }[], vms: reado
 };
 
 export interface PfEvents {
-  write(e: { type: string; actor: string; text: string; data?: Record<string, unknown> }): void;
+  write(e: { type: string; actor: string; text: string; data?: Record<string, unknown> }): { id: string } | void;
 }
-type Ev = Parameters<PfEvents["write"]>[0];
+// An event, and for one an admin asked for, the admin's name: it goes in root's private record of
+// admins beside the event, which says only "an admin" (events.ts appendAdmin).
+type Ev = Parameters<PfEvents["write"]>[0] & { admin?: string };
 type Change = { rec: PfRecord; mark: PfMark; events: Ev[] } | undefined;
 
 // One change to the record under the lock. The events go first: one that can't be written leaves the
@@ -318,7 +320,10 @@ export async function changeRecord(d: { sys: Pick<Sys, "now" | "sleep">; paths: 
   return withFileLock(recordFile(d.paths), d.sys, () => {
     const c = change(pfState(d.paths, d.rootUid), d.sys.now());
     if (!c) return false;
-    for (const e of c.events) d.events.write(e);
+    for (const { admin, ...e } of c.events) {
+      const w = d.events.write(e);
+      if (admin !== undefined) appendAdmin(rootStateOf(d.paths).admins, { id: w ? w.id : "", name: admin });
+    }
     writeAll(d.paths, c.rec, c.mark, d.rootUid);
     return true;
   });
@@ -423,7 +428,7 @@ export async function reopen(d: { sys: Pick<Sys, "now" | "sleep">; paths: RootPa
     const seq = nextSeq(st);
     const rec: PfRecord = { v: 1, seq, mode: "trial", clean: 0, judged: Math.max(was?.judged ?? 0, newest), losses: was?.losses ?? [], seen: was?.seen ?? [], v2Seen: was?.v2Seen ?? true, confirmedAt: now, ...(was?.lostAt !== undefined ? { lostAt: was.lostAt } : {}) };
     const mark: PfMark = { v: 1, seq, firstAt: st.mark?.firstAt ?? now, ...(st.mark?.v2ClearedAt !== undefined ? { v2ClearedAt: st.mark.v2ClearedAt } : {}) };
-    return { rec, mark, events: [{ type: "guard.pf-reopened", actor: d.by, text: `${d.by} confirmed at the box's screen, so the box went from closed to trial: ${PF_STARTS_NEEDED} clean starts with Screen Sharing on lift the restriction.`, data: { by: d.by } }] };
+    return { rec, mark, events: [{ type: "guard.pf-reopened", actor: "an admin", text: `An admin confirmed at the box's screen, so the box went from closed to trial: ${PF_STARTS_NEEDED} clean starts with Screen Sharing on lift the restriction.`, admin: d.by }] };
   });
 }
 

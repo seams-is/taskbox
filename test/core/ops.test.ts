@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import type { OpDecl } from "../../src/optypes/decl.ts";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { begin, cancel, end, keepOps, KEEP_MS, listOps, onBoot, type Op, opEvent, type OpType, readOp, toPhase, writeOp } from "../../src/core/ops.ts";
+import { begin, cancel, end, keepOps, KEEP_MS, listOps, onBoot, type Op, opEvent, readOp, toPhase, writeOp } from "../../src/core/ops.ts";
 
 const uid = process.getuid!();
 const T = 1_800_000_000_000;
@@ -12,11 +13,11 @@ const rand = (k: number) => {
   b[k - 1] = ++n & 0xff;
   return b;
 };
-const drain: OpType = { type: "drain", phases: ["draining", "drained"], onBoot: () => "resume" };
-const update: OpType = { type: "update", phases: ["downloading", "verifying", "draining", "installing", "swap", "proving"], pointOfNoReturn: "swap", onBoot: (op) => (op.phases.indexOf(op.phase) >= op.phases.indexOf("swap") ? "resume" : "cancel") };
-const rollback: OpType = { type: "rollback", phases: ["draining", "swapping"], onBoot: () => "fail" };
+const drain: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "drain", phases: ["draining", "drained"], onBoot: () => "resume" };
+const update: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["downloading", "verifying", "draining", "installing", "swap", "proving"], pointOfNoReturn: "swap", onBoot: (op) => (op.phases.indexOf(op.phase) >= op.phases.indexOf("swap") ? "resume" : "cancel") };
+const rollback: OpDecl = { who: ["owner"], wayBack: "It can only finish.", type: "rollback", phases: ["draining", "swapping"], onBoot: () => "fail" };
 const who = { actor: "owner (signed, key SHA256:abc)" };
-function started(t: OpType, params: Record<string, never> | Record<string, unknown> = {}, subject = "box"): Op {
+function started(t: OpDecl, params: Record<string, never> | Record<string, unknown> = {}, subject = "box"): Op {
   const b = begin([], t, { subject, params: params as never, ...who }, T, rand);
   if (b.kind !== "start") throw new Error();
   return b.op;

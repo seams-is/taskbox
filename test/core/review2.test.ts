@@ -105,7 +105,7 @@ describe("the event limit", () => {
     const sys = new FakeSys();
     const e = ev();
     const ops = { dir: tmp(), owner: uid };
-    const b = begin([], { type: "update", phases: ["downloading", "verifying"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "owner" }, sys.now());
+    const b = begin([], { who: ["owner"], wayBack: "It can only finish.", type: "update", phases: ["downloading", "verifying"], onBoot: () => "fail" }, { subject: "box", params: {}, actor: "owner" }, sys.now());
     if (b.kind !== "start") throw new Error();
     let cur = { ...b.op, child: { pid: 1, guardPid: 1, applied: 0, events: [] } };
     writeOp(ops, cur);

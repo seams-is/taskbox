@@ -14,7 +14,7 @@ export const commands: CommandSpec[] = [
     options: [{ name: "--refuse", value: "ID", check: (v) => /^[a-z][a-z0-9-]{0,40}$/.test(v) }],
     did: "Ran confirm.",
     async run(c) {
-      const { eventLog } = await import("../core/events.ts");
+      const { appendAdmin, eventLog } = await import("../core/events.ts");
       const { rootStateOf } = await import("../core/paths.ts");
       const { atBoxScreen } = await import("../ops.ts");
       const { CONFIRM_ID, closureShows, reopen } = await import("../pfstarts.ts");
@@ -25,7 +25,7 @@ export const commands: CommandSpec[] = [
         return 1;
       }
       const root = c.ops.rootUid ?? 0;
-      const by = c.env.SUDO_USER || "an admin";
+      const by = c.env.SUDO_USER || "admin";
       const events = eventLog("guard", { dir: rootStateOf(c.p).events, owner: root }, c.ops.sys);
       const shows = closureShows(c.p, root);
       const refuse = typeof c.opts.refuse === "string" ? c.opts.refuse : undefined;
@@ -38,7 +38,9 @@ export const commands: CommandSpec[] = [
           c.say(`Nothing named ${refuse} waits. ${CONFIRM_ID} does. Nothing changed.`);
           return 1;
         }
-        events.write({ type: "confirm.refused", actor: by, subject: CONFIRM_ID, text: `${by} refused to lift the closure to VM starts while Screen Sharing is on.` });
+        // The event says "an admin"; which one goes in root's private record beside it.
+        const e = events.write({ type: "confirm.refused", actor: "an admin", subject: CONFIRM_ID, text: "An admin refused to lift the closure to VM starts while Screen Sharing is on." });
+        appendAdmin(rootStateOf(c.p).admins, { id: e.id, name: by });
         c.say("Left closed. VMs start while Screen Sharing is off, and the closure lifts by itself at 100 clean starts.");
         return 0;
       }

@@ -2,16 +2,13 @@
 // record and the request (refresh.json) in the service's own folders; the loop's next free slot reads
 // the request, runs the pass with every phase on the op, and removes the request. Pins never change.
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync } from "node:fs";
-import { begin, end, listOps, type Op, type OpFolder, type OpType, readOp, toPhase, withProgress, writeOp } from "../core/ops.ts";
+import { begin, end, listOps, type Op, type OpFolder, readOp, toPhase, withProgress, writeOp } from "../core/ops.ts";
+import { opType } from "../optypes/index.ts";
 import { writeOwnedText } from "../core/rootfile.ts";
 import type { Store } from "./store.ts";
 
-export const TOOL_REFRESH: OpType = {
-  type: "tool-refresh",
-  phases: ["waiting", "verifying", "fetching", "building", "baking", "cleaning"],
-  // A restart drops the request with the op: the loop's start runs the pass anyway.
-  onBoot: () => "fail",
-};
+// Its type is declared in src/optypes/tools.ts.
+const TOOL_REFRESH = () => opType("tool-refresh");
 
 export interface RefreshAsk {
   v: 1;
@@ -47,7 +44,7 @@ export const dropRefresh = (s: Store) => rmSync(s.refresh, { force: true });
 export function askRefresh(f: OpFolder, s: Store, now: number, actor = "service"): { op: Op; attached: boolean } | { busy: string } {
   // The loop's ops folder, the first time a loop op is asked for: every account may follow an op.
   mkdirSync(f.dir, { recursive: true, mode: 0o755 });
-  const b = begin(listOps(f).ops, TOOL_REFRESH, { subject: "box", params: {}, actor }, now);
+  const b = begin(listOps(f).ops, TOOL_REFRESH(), { subject: "box", params: {}, actor }, now);
   if (b.kind === "busy") return { busy: b.why };
   if (b.kind === "start") writeOp(f, b.op);
   writeOwnedText(s.refresh, JSON.stringify({ v: 1, op: b.op.id, at: now }), { mode: 0o600, owner: f.owner });

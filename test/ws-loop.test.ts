@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { heldOf, holdReason, STALE_TEXT, type WorkspacesNow } from "../src/held.ts";
 import { AWAY_ONLY } from "../src/away.ts";
 import type { Config } from "../src/config.ts";
+import { rootStateOf } from "../src/core/paths.ts";
 import { Slots, whyWait, writeLoopState } from "../src/loop.ts";
 import { writeProof } from "../src/proof.ts";
 import { AGENTS_FIX, computeState, headline, HOLD_NEXT } from "../src/state.ts";
@@ -160,7 +161,12 @@ describe("the loop's wait", () => {
     d.box.oldHoldEnded = true;
     d.slot = 1;
     d.workspaces = () => w;
-    if (drain) writeFileSync(d.paths.drain, JSON.stringify({ at: T }));
+    if (drain) {
+      d.checks = { ...d.checks, rootUid: process.getuid!() };
+      const f = rootStateOf(d.paths).control;
+      mkdirSync(dirname(f), { recursive: true });
+      writeFileSync(f, JSON.stringify({ v: 1, availability: "drained", gen: 2, since: T, actor: "service" }), { mode: 0o644 });
+    }
     return d;
   }
 
@@ -172,8 +178,8 @@ describe("the loop's wait", () => {
     expect(await whyWait(deps(workspacesNow({ kind: "missing" }, T)))).toBeUndefined();
   });
 
-  test("a drain and a Whole together: the wait is the drain's, so only the drain ends the loop", async () => {
-    expect((await whyWait(deps(workspacesNow(fresh(active()), T), true)))?.key).toBe("drain");
+  test("a drain and a Whole together: the wait is the box's availability first", async () => {
+    expect((await whyWait(deps(workspacesNow(fresh(active()), T), true)))?.key).toBe("paused");
   });
 });
 
