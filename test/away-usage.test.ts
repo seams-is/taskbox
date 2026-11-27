@@ -60,7 +60,7 @@ describe("a sample", () => {
   });
 
   test("Linux: MemTotal less MemAvailable; /proc/stat a second apart", () => {
-    expect(parseLinuxUsage(LINUX_OUT)).toEqual({ memUsedMB: 4883, memTotalMB: 7813, cpuBusy: 2, cpus: 4 });
+    expect(parseLinuxUsage(LINUX_OUT)).toEqual({ memUsedMB: 4883, memTotalMB: 7813, cpuBusy: 2, cpus: 4, steal: 0 });
   });
 
   test("anything odd reads as no sample", () => {
