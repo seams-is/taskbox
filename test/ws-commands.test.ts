@@ -99,7 +99,7 @@ describe("the workspace commands at the box", () => {
       await b.cli(["workspace", "deny", "orion-2", "--reason", "after 6pm"]);
       const d = await b.cli(["workspace", "wait", "orion-2"]);
       expect(d.code).toBe(4);
-      expect(d.said).toContain("orion-2: denied by the owner: after 6pm");
+      expect(d.said).toContain("orion-2: denied: after 6pm");
       await b.cli(["workspace", "request", "--as", "vega", "--why", "x"]);
       await b.cli(["workspace", "end", "vega-3"]);
       expect((await b.cli(["workspace", "wait", "vega-3"])).code).toBe(1);
@@ -133,7 +133,7 @@ describe("the workspace commands at the box", () => {
       expect(find(b.state(), "nova-1")!.state).toBe("ending");
       for (const verb of ["approve", "pause", "resume"]) {
         const r = await b.cli(["workspace", verb, "nova-1"]);
-        expect([verb, r.code, r.said[0]]).toEqual([verb, 1, `taskbox workspace ${verb} from here needs the owner's signature: run it from the controller.`]);
+        expect([verb, r.code, r.said[0]]).toEqual([verb, 1, `taskbox workspace ${verb} from here needs an approver key's signature: run it from the controller.`]);
       }
       const c = await b.cli(["workspace", "connect", "nova-1"]);
       expect(c.code).toBe(1);

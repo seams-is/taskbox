@@ -208,16 +208,21 @@ export class FakeSys implements Sys {
   }
 
   // Fake time: each sleep waits in a queue by deadline (ties in call order). One timer wakes per
-  // setImmediate turn, and the clock moves to its deadline. A sleep that lost a race stays queued,
-  // so a test that reads elapsed fake time must not await real I/O between the two reads.
+  // setImmediate turn, and the clock moves to its deadline. A sleep that lost a race stays queued
+  // unless it was aborted, so code races a sleep through within (clock.ts), which aborts it.
   // The timers after, every and timeout make (clock.ts) wait in the same queue, but only a sleep
   // moves the clock: a timer fires once the clock reaches it on the way to a sleep's deadline, or,
   // when a test has moved the clock past it, once anything is queued. So a timer nobody cancels, such as a
   // fetch's time limit, never moves the clock by itself, and an interval never runs the clock on.
   timers: { at: number; wake: () => void; sleep: boolean }[] = [];
   private pumping = false;
-  sleep(ms: number): Promise<void> {
-    return new Promise((wake) => this.queue({ at: this.clock + ms, wake, sleep: true }));
+  sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((wake) => {
+      if (signal?.aborted) return wake();
+      const t = { at: this.clock + ms, wake, sleep: true };
+      this.queue(t);
+      signal?.addEventListener("abort", () => (this.unqueue(t), wake()), { once: true });
+    });
   }
   after(ms: number, f: () => void): () => void {
     const t = { at: this.clock + ms, wake: f, sleep: false };

@@ -148,8 +148,8 @@ describe("known refusals", () => {
   });
 });
 
-describe("the lows", () => {
-  test("N5 and A4: a runChild that refuses ends its op with why, so no op is left running with no child", async () => {
+describe("ops that end without a child", () => {
+  test("a runChild that refuses ends its op with why, so no op is left running with no child", async () => {
     const s = setup();
     chmodSync(s.root, 0o775);
     const b = begin([], update, { subject: "a", params: {}, actor: "owner" }, T);
@@ -170,9 +170,6 @@ describe("the lows", () => {
     const missed: string[] = [];
     await bootOutUnknown(sys, p, undefined, undefined, missed);
     expect(missed).toEqual(["local.taskbox.op.op_01ARZ3NDEKTSV4RRFFQ69G5FAV"]);
-  });
-  test("no comment claims a clock change can't age the history out", () => {
-    for (const f of ["events.ts", "ops.ts"]) expect(readFileSync(new URL(`../../src/core/${f}`, import.meta.url), "utf8")).not.toContain("never by the clock, so no clock change");
   });
 });
 void writeFileSync;

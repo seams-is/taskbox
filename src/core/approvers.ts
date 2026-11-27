@@ -68,7 +68,7 @@ function canPin(s: Approvers, key: string): string | undefined {
 
 // The first key, at the box's screen or the install's step there. Only when none is pinned.
 export function trustFirst(s: Approvers, key: string, now: number, how: "screen" | "install"): Change {
-  if (s.keys.length) return no("A key is pinned already. A second key is added from a paired laptop and confirmed at the box.");
+  if (s.keys.length) return no("A key is pinned already. A second key is added from a paired controller and confirmed at the box.");
   const why = canPin(s, key);
   if (why) return no(why);
   const gen = s.gen + 1;
@@ -110,7 +110,7 @@ export function removeKey(s: Approvers, fp: string, signerFp: string): Change {
   return { ok: true, state: { ...s, gen: s.gen + 1, keys: s.keys.filter((k) => k.fingerprint !== fp) }, said: `Removed approver key ${fp}.` };
 }
 
-// A lost laptop: every key goes, and none of them is ever pinned again.
+// A lost controller: every key goes, and none of them is ever pinned again.
 export function resetKeys(s: Approvers): Change {
   if (!s.keys.length) return { ok: true, state: s, said: "No approver key was pinned." };
   const fps = s.keys.map((k) => k.fingerprint);

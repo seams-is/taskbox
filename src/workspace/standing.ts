@@ -38,7 +38,7 @@ const dayWord = (at: number) => new Date(at).toUTCString().slice(5, 11).replace(
 // the admin's yes at the box.
 export function askRule(o: { agent: string; key: string | undefined; size: string; window: string; expiresMs: number; by: string; now: number }): { ok: true; rule: RuleAsk; shows: string[] } | { ok: false; why: string } {
   if (!AGENT.test(o.agent)) return { ok: false, why: "--agent is an agent's name, such as nova." };
-  if (o.size === "whole") return { ok: false, why: "No rule approves a Whole: each Whole needs the owner's own touch." };
+  if (o.size === "whole") return { ok: false, why: "No rule approves a Whole: each Whole needs its own approval." };
   if (o.size !== "light" && o.size !== "heavy") return { ok: false, why: "--size is light or heavy." };
   const w = parseWindow(o.window);
   if (!w) return { ok: false, why: "--window is HH:MM-HH:MM in the box's time, such as 22:00-07:00." };

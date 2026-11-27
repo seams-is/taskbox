@@ -21,7 +21,7 @@ function release(o: { signer?: ReturnType<typeof keyPair>; pinned?: string; stat
   const statement = new TextEncoder().encode(o.statement ?? statementText(ST));
   const sig = sshsig(o.signer ?? owner, statement, { namespace: o.namespace ?? NAMESPACE, flags: o.flags });
   const signers = join(dir, "allowed_signers");
-  writeFileSync(signers, o.pinned ?? `# the owner's key\n${owner.line}`);
+  writeFileSync(signers, o.pinned ?? `# a release key\n${owner.line}`);
   const sigPath = join(dir, "statement.json.sig");
   writeFileSync(sigPath, sig);
   return { statement, signature: new TextEncoder().encode(sig), tarball: TGZ, sigPath, signers, workRoot: mkdtempSync(join(tmpdir(), "taskbox-work-")), installed: { version: "3.0.0" } as { version: string; sha256?: string } | null, owner };
@@ -53,8 +53,8 @@ describe("verifying a release with ssh-keygen", () => {
   }, 20_000);
 
   test("a wrong tarball or asset hash fails after the signature passes, and so does an asset the statement doesn't name", async () => {
-    expect(await verifyRelease(real, { ...release(), tarball: new TextEncoder().encode("other") })).toEqual({ ok: false, code: "hash", why: "the tarball isn't the one the owner signed" });
-    expect(await verifyRelease(real, { ...release(), assets: { "tailscale-1.104.5.tar.gz": sha("x") } })).toEqual({ ok: false, code: "hash", why: "tailscale-1.104.5.tar.gz isn't the one the owner signed" });
+    expect(await verifyRelease(real, { ...release(), tarball: new TextEncoder().encode("other") })).toEqual({ ok: false, code: "hash", why: "the tarball isn't the one that was signed" });
+    expect(await verifyRelease(real, { ...release(), assets: { "tailscale-1.104.5.tar.gz": sha("x") } })).toEqual({ ok: false, code: "hash", why: "tailscale-1.104.5.tar.gz isn't the one that was signed" });
     expect((await verifyRelease(real, { ...release(), assets: { "other.pkg": sha("x") } })).ok).toBe(false);
     // A tarball hashed as it came, by its caller.
     expect((await verifyRelease(real, { ...release(), tarball: undefined, tarballSha256: sha(TGZ) })).ok).toBe(true);

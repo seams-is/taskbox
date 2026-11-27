@@ -106,7 +106,7 @@ describe("the agent's unsigned steps", () => {
     await b.send("workspace-request", { agent: "nova", size: "light", why: "x" });
     expect(await b.send("workspace-deny", { name: "nova-1", reason: "after 6pm" })).toMatchObject({ ok: true });
     expect(find(b.state(), "nova-1")).toMatchObject({ state: "denied", reason: "after 6pm" });
-    expect(b.events().find((e) => e.type === "workspace.denied")!.actor).toBe("owner (unsigned)");
+    expect(b.events().find((e) => e.type === "workspace.denied")!.actor).toBe("controller (unsigned)");
   });
   test("an agent's end withdraws a request; another agent's name can't end it", async () => {
     const b = await box();
@@ -133,7 +133,7 @@ describe("the owner's signed steps", () => {
     expect(r.outcome).toMatchObject({ ok: true });
     expect(find(b.state(), "nova-1")).toMatchObject({ state: "approved", size: "light", asked: "heavy", user: "taskbox-ws1" });
     const ev = b.events().find((e) => e.type === "workspace.approved")!;
-    expect(ev.actor).toMatch(/^owner \(signed, key SHA256:/);
+    expect(ev.actor).toMatch(/^approver \(signed, key SHA256:/);
     expect(find(b.state(), "nova-1")!.by).toBe(ev.actor);
   });
   test("approve with no size approves at the size asked", async () => {

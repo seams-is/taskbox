@@ -1,4 +1,4 @@
-// The docs a new owner reads stay true to the code and name nobody's org.
+// The docs stay true to the code and name nobody's org.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +18,19 @@ describe("the docs", () => {
       expect({ f, org: /\b[\w-]+\/[\w.-]+#\d+/.test(text) }).toEqual({ f, org: false });
       expect({ f, team: /devops/i.test(text) }).toEqual({ f, team: false });
     }
+  });
+
+  // taskbox runs as a controller and its boxes on any Mac, and its old private repo is gone. The
+  // words are split here so this file passes its own test.
+  test("no file name or text in the tree says lap-top or names the old archive repo", () => {
+    const banned = new RegExp(["lap" + "top", "taskbox-" + "archive"].join("|"), "i");
+    const tree = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+      if (dir === repo && f.startsWith(".") && f !== ".github") return [];
+      if (f === "node_modules") return [];
+      return statSync(join(dir, f)).isDirectory() ? tree(join(dir, f)) : [join(dir, f)];
+    });
+    const seen = tree(repo).filter((f) => banned.test(f.slice(repo.length)) || banned.test(readFileSync(f, "latin1")));
+    expect(seen).toEqual([]);
   });
 
   test("every docs and templates file README names is there", () => {

@@ -49,7 +49,7 @@ describe("approverKeyProblem", () => {
     ["a number", 3],
     ["an RSA key", rsa],
     ["a plain ed25519 key", ed],
-    ["a comment after it", `${A} owner@laptop`],
+    ["a comment after it", `${A} pat@controller`],
     ["two spaces", `${type}  ${b64}`],
     ["a newline after it", `${A}\n`],
     ["a second line", `${A}\n${B}`],
@@ -254,7 +254,7 @@ describe("approverPlan", () => {
 
 describe("approverLine", () => {
   test("names each change with its fingerprints, and nothing for none or the same key", () => {
-    expect(approverLine({ change: "first", key: A, fingerprint: fingerprint(A), gen: 1, cleared: [] })).toBe(`Approver key: ${fingerprint(A)}, new. It turns workspaces on and signs every workspace step. Check it is the fingerprint taskbox approver showed on your laptop.`);
+    expect(approverLine({ change: "first", key: A, fingerprint: fingerprint(A), gen: 1, cleared: [] })).toBe(`Approver key: ${fingerprint(A)}, new. It turns workspaces on and signs every workspace step. Check it is the fingerprint taskbox approver showed on the controller.`);
     expect(approverLine({ change: "rotate", key: B, fingerprint: fingerprint(B), from: fingerprint(A), gen: 2, cleared: [] })).toContain(`from ${fingerprint(A)} to ${fingerprint(B)}, signed by the old key`);
     expect(approverLine({ change: "off", from: fingerprint(A) })).toContain("workspaces are off");
     expect(approverLine({ change: "none" })).toBeUndefined();

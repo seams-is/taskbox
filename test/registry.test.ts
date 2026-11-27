@@ -136,7 +136,7 @@ const TABLE: { good: string[]; bad: string[] }[] = [
   { good: ["job show j_0123abcd", "job show job-j_0123abcd -w", "job logs j_0123abcd -f", "job show 3141592653 --json", "job logs 42 --tail 20 --json", "job cancel j_0123abcd", "job cancel 42 -y --json", "job show j_0123abcd --net"], bad: ["job show", "job show j_0123ABCD", "job show ../x", "job show j_0123abcd -w --json", "job logs j_0123abcd -f --json", "job cancel j_0123abcd --json", "job cancel 0", "job cancel j_0123abcd --force", "job list --net"] },
   { good: ["load status", "load report --session 3 --json", "load start --pattern burst --only --for 2h", "load stop"], bad: ["load report --session x", "load status --since 1h", "load begin"] },
   { good: ["template show box-check", "template show test-job", "template show load", "template list", "template list --json"], bad: ["template show", "template show watchdog", "template show load load", "template list box-check"] },
-  { good: ["policy show", "policy show --owner you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --owner nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
+  { good: ["policy show", "policy show --login you@example.com --admin boss --admin deputy --whole"], bad: ["policy", "policy show --login nobody", "policy show --admin 'a b'", "policy show --whole --whole"] },
   { good: ["settings show", "settings show --pending --origin --json", "settings apply 0123456789abcdef0123456789abcdef01234567", "settings repo example-org/box-settings --json", "update --check", "withdraw pc_01JD8Q4ZZZZZZZZZZZZZZZZZZZ", "confirm", "confirm --refuse pc_01JD8Q4ZZZZZZZZZZZZZZZZZZZ --json"], bad: ["settings show x", "settings apply 0123abc", "settings apply", "settings repo nothing", "withdraw x", "confirm --refuse ../x", "confirm -y"] },
   { good: ["op list", "op list --state running --type drain --since 1h --json", "op show op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ -w --timeout 5m", "op cancel op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ -y"], bad: ["op list --state ended", "op show", "op show x", "op cancel", "op cancel op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ --force"] },
   { good: ["stop", "start", "drain", "prune", "pause", "resume", "pause --reason upgrades", "drain --timeout 30m --force --detach", "stop --force -y --timeout 1h"], bad: ["stop --now", "start x", "drain --now", "prune --dry-run", "pause x", "resume --force", "pause --reason", "start --force"] },
@@ -520,7 +520,7 @@ describe("--json: one envelope per command", () => {
   });
 
   // Check's exit 1 is its verdict, not a failure of the command: the envelope carries every row.
-  test("check's lines are its rows, made from the result; a FAIL is exit 1 with every row, and the laptop shows them all", async () => {
+  test("check's lines are its rows, made from the result; a FAIL is exit 1 with every row, and the controller shows them all", async () => {
     const r = await run(["check", "--json"], CALLERS.ci, { healthy: true });
     const e = JSON.parse(r.said[0]!);
     expect(readEnvelopes(r.said[0]!, { command: "check" }).ok).toBe(true);
@@ -568,7 +568,7 @@ describe("hello and the answers version", () => {
     const newer = await hello("6,5");
     expect([newer.code, newer.v.error.fix]).toEqual([1, "update the box"]);
     const older = await hello("2,1");
-    expect([older.code, older.v.error.fix]).toEqual([1, "update the laptop"]);
+    expect([older.code, older.v.error.fix]).toEqual([1, "update the controller"]);
   });
 
   test("--answers given twice is refused", async () => {
@@ -602,25 +602,25 @@ describe("policy show --json, for the controller's --box all", () => {
   test("answers with the box's tag and rules, with the owner it was given, which the controller reads back whole", async () => {
     const { policyOfAnswer, policyFor } = await import("../src/policy.ts");
     const { validateAccounts } = await import("../src/access.ts");
-    const r = await run(["policy", "show", "--json", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere, prep: recorded });
+    const r = await run(["policy", "show", "--json", "--login", "me@example.com"], CALLERS.ci, { setup: agentThere, prep: recorded });
     expect(r.code).toBe(0);
     const e = JSON.parse(r.said[0]!);
-    expect([e.result.tag, e.result.owners]).toEqual(["tag:taskbox", ["owner@example.com"]]);
-    expect(JSON.stringify(e.result)).not.toMatch(/"(OWNER|ADMIN)/);
+    expect([e.result.tag, e.result.owners]).toEqual(["tag:taskbox", ["me@example.com"]]);
+    expect(JSON.stringify(e.result)).not.toMatch(/"(YOUR_LOGIN|ADMIN)/);
     // The controller reads it with the install ID it paired with, and its own owner.
-    const back = policyOfAnswer(e.result, "a".repeat(32), "owner@example.com");
+    const back = policyOfAnswer(e.result, "a".repeat(32), "me@example.com");
     if (typeof back === "string") throw new Error(back);
-    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { owner: "owner@example.com", admins: ["owner"] }).ssh);
+    expect(back.policy.ssh).toEqual(policyFor(validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [] }), { owner: "me@example.com", admins: ["owner"] }).ssh);
   });
-  test("--json without --owner is refused before anything is read: it would answer a placeholder", async () => {
+  test("--json without --login is refused before anything is read: it would answer a placeholder", async () => {
     const r = await run(["policy", "show", "--json"], CALLERS.ci);
     expect(r.code).toBe(2);
   });
   test("an agent the settings name that taskbox didn't make refuses the policy; one not made yet is left out", async () => {
-    const refused = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: agentThere });
+    const refused = await run(["policy", "show", "--login", "me@example.com"], CALLERS.ci, { setup: agentThere });
     expect(refused.code).toBe(1);
     expect(refused.said[0]).toMatch(/^taskbox-agent, the agent the settings name, isn't the account taskbox made, so no policy lets it in/);
-    const later = await run(["policy", "show", "--owner", "owner@example.com"], CALLERS.ci, { setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)) });
+    const later = await run(["policy", "show", "--login", "me@example.com"], CALLERS.ci, { setup: (sys) => sys.responders.push((cmd, args) => (cmd === "/usr/bin/dscl" && args[2] === "/Groups/admin" ? { code: 0, stdout: "GroupMembership: root owner\n", stderr: "" } : undefined)) });
     expect(later.code).toBe(0);
     expect(later.said.join("\n")).not.toContain('"accept"');
     expect(later.said.join("\n")).toContain("taskbox-agent isn't made yet, so the policy leaves it out");

@@ -14,7 +14,7 @@ const run = (name: "requestRun" | "listRun" | "statusRun" | "waitRun" | "progres
 
 // The owner's steps run only signed: at the box there is nobody to sign for.
 const signedOnly = (verb: string) => async (c: BoxCtx): Promise<Outcome> => {
-  const line = `taskbox workspace ${verb} needs the owner's signature: run it from the controller.`;
+  const line = `taskbox workspace ${verb} needs an approver key's signature: run it from the controller.`;
   c.say(line);
   return { exit: EXIT.failed, error: { code: "denied", message: line, fix: null, who: null } };
 };
@@ -96,7 +96,7 @@ export const commands: CommandSpec[] = [
   },
   {
     path: ["workspace", "end"],
-    summary: "Ends a workspace: the agent its own, or the owner any, signed. Its files stay.",
+    summary: "Ends a workspace: the agent its own, or any, signed from the controller. Its files stay.",
     who: ["agent", "owner"],
     flags: ["json", "force", "signed"],
     args: { name: "ID", min: 1, max: 1, check: ID },
@@ -107,7 +107,7 @@ export const commands: CommandSpec[] = [
   },
   {
     path: ["workspace", "approve"],
-    summary: "Approves a request, at the size asked or a smaller one. Signed by the owner.",
+    summary: "Approves a request, at the size asked or a smaller one. Signed from the controller.",
     who: ["owner"],
     flags: ["json", "signed"],
     args: { name: "ID", min: 1, max: 1, check: ID },
@@ -141,7 +141,7 @@ export const commands: CommandSpec[] = [
   },
   {
     path: ["workspace", "resume"],
-    summary: "Puts a paused workspace back in the queue at its size. Signed by the owner.",
+    summary: "Puts a paused workspace back in the queue at its size. Signed from the controller.",
     who: ["owner"],
     flags: ["json", "signed"],
     args: { name: "ID", min: 1, max: 1, check: ID },
@@ -201,7 +201,7 @@ export const commands: CommandSpec[] = [
   },
   {
     path: ["workspace", "clear"],
-    summary: "Deletes the files of an agent's pool account, after a typed yes: at the box, or signed by the owner.",
+    summary: "Deletes the files of an agent's pool account, after a typed yes: at the box, or signed from the controller.",
     who: ["admin", "owner"],
     flags: ["signed", "yes", "json"],
     args: { name: "AGENT", min: 1, max: 1, check: (v) => AGENT.test(v) },
@@ -212,7 +212,7 @@ export const commands: CommandSpec[] = [
     did: "Ran workspace clear.",
     async run(c) {
       if (c.uid !== 0) {
-        c.say("taskbox workspace clear is an admin's at the box, or the owner's, signed from the controller.");
+        c.say("taskbox workspace clear is an admin's at the box, or signed from the controller.");
         return 1;
       }
       const { lchownSync } = await import("node:fs");

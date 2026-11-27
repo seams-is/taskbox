@@ -270,10 +270,10 @@ export async function verifyRelease(d: VerifyDeps, o: VerifyInput): Promise<Verd
   }
   // 6. The tarball and each asset.
   const tsha = o.tarball ? createHash("sha256").update(o.tarball).digest("hex") : o.tarballSha256;
-  if (tsha !== s.sha256) return no("hash", "the tarball isn't the one the owner signed");
+  if (tsha !== s.sha256) return no("hash", "the tarball isn't the one that was signed");
   for (const [name, sha] of Object.entries(o.assets ?? {})) {
     if (s.assets[name] === undefined) return no("hash", `the release carries ${name.replace(/[^\x20-\x7e]/g, "?").slice(0, 60)}, which its statement doesn't name`);
-    if (s.assets[name] !== sha) return no("hash", `${name} isn't the one the owner signed`);
+    if (s.assets[name] !== sha) return no("hash", `${name} isn't the one that was signed`);
   }
   // 7. The settings' schema.
   if (o.schema !== undefined && (o.schema < s.settingsSchema[0] || o.schema > s.settingsSchema[1])) return no("schema", `${s.version} reads settings schema ${s.settingsSchema[0]} to ${s.settingsSchema[1]}, and this box's settings are schema ${o.schema}`);

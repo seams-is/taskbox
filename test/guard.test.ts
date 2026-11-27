@@ -478,7 +478,7 @@ describe("the remote user row", () => {
     chmodSync(join(home, ".config"), 0o777);
     expect((await agentRow(d)).detail).toContain(".config isn't root's alone");
     chmodSync(join(home, ".config"), 0o755);
-    expect(await agentRow(d)).toEqual({ status: "OK", detail: "taskbox-agent, a hidden standard user with no password, taskbox's shell and a read-only home. Laptops pair with the name taskbox-agent" });
+    expect(await agentRow(d)).toEqual({ status: "OK", detail: "taskbox-agent, a hidden standard user with no password, taskbox's shell and a read-only home. Controllers pair with the name taskbox-agent" });
     // A folder only its owner may open, as macOS makes Music and Library: what's inside is out of reach.
     mkdirSync(join(home, "Music", "x"), { recursive: true });
     chmodSync(join(home, "Music"), 0o700);
@@ -536,7 +536,7 @@ describe("the agent row's way in", () => {
     expect((await agentRow(c)).status).toBe("SKIP");
     mkdirSync(dirname(c.paths.accountsRecord), { recursive: true });
     writeFileSync(c.paths.accountsRecord, JSON.stringify({ made: {} }));
-    expect(await agentRow(c)).toEqual({ status: "FAIL", detail: "taskbox-agent isn't on this Mac, so agents and laptops can't reach the box. As your admin user, type taskbox update, and it makes taskbox-agent." });
+    expect(await agentRow(c)).toEqual({ status: "FAIL", detail: "taskbox-agent isn't on this Mac, so agents and controllers can't reach the box. As your admin user, type taskbox update, and it makes taskbox-agent." });
   });
 });
 
@@ -858,7 +858,7 @@ describe("the Tailscale row", () => {
       if (again) {
         expect(sys.spawned[0]!.args).toContain("--advertise-tags=tag:taskbox-studio");
         expect(said[0]).toBe("The box is on the tailnet with another tag than tag:taskbox-studio, so it signs in again with tag:taskbox-studio.");
-        expect(said).toContain('  "tag:taskbox-studio": ["OWNER"]');
+        expect(said).toContain('  "tag:taskbox-studio": ["YOUR_LOGIN"]');
       }
     }
   });
@@ -918,7 +918,7 @@ describe("the Tailscale row", () => {
       expect(said.some((l) => l.includes("/admin/machines"))).toBe(!!line);
       expect(said.some((l) => l.startsWith("Sign the box in"))).toBe(false);
       expect(said.at(-1)).toBe("The box is on the tailnet, with Tailscale SSH.");
-      expect(said.findIndex((l) => l.includes('"tag:taskbox": ["OWNER"]'))).toBeGreaterThanOrEqual(0);
+      expect(said.findIndex((l) => l.includes('"tag:taskbox": ["YOUR_LOGIN"]'))).toBeGreaterThanOrEqual(0);
     }
   });
   test("a failed sign-in mentions a link only when one was shown", async () => {
@@ -945,7 +945,7 @@ describe("the Tailscale row", () => {
       expect(said.some((l) => l.startsWith("Sign the box in"))).toBe(!!url);
       expect(said.some((l) => l.includes("abc123"))).toBe(!!url);
       expect(said.at(-1)).toBe("The box is on the tailnet, with Tailscale SSH.");
-      expect(said.findIndex((l) => l.includes('"tag:taskbox": ["OWNER"]'))).toBeGreaterThanOrEqual(0);
+      expect(said.findIndex((l) => l.includes('"tag:taskbox": ["YOUR_LOGIN"]'))).toBeGreaterThanOrEqual(0);
     }
   });
   // v2.1.1: an update sets what the Tailscale row checks, so a box that fails it is fixed by

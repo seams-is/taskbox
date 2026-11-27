@@ -72,7 +72,7 @@ function box(o: { log?: string; last?: string } = {}) {
   servicesObey(sys);
   sys.clock = NOW;
   const whois: Record<string, { LoginName?: string; Name: string; Tags?: string[] }> = {
-    "100.101.102.103": { LoginName: "pat@example.com", Name: "laptop.example.ts.net." },
+    "100.101.102.103": { LoginName: "pat@example.com", Name: "workstation.example.ts.net." },
     "100.101.102.104": { LoginName: "agent@example.com", Name: "agent-mac.example.ts.net." },
     "fd7a:115c:a1e0::5": { Name: "runner.example.ts.net.", Tags: ["tag:agents"] },
   };
@@ -209,7 +209,7 @@ describe("the guard's passes", () => {
     const b = box({ log: LOG, last: LAST });
     expect(await b.keeper.pass(NOW)).toMatchObject({ logins: 5, unverified: 3 });
     const rec = readAdminRecord(b.p.loginsRecord, me)!;
-    expect(rec.logins.find((l) => l.at === t(14, 3))).toMatchObject({ account: "pat", address: "100.101.102.103", seconds: 83, tailnetUser: "pat@example.com", device: "laptop", check: "likely", checkBasis: "wait", waitedS: 42 });
+    expect(rec.logins.find((l) => l.at === t(14, 3))).toMatchObject({ account: "pat", address: "100.101.102.103", seconds: 83, tailnetUser: "pat@example.com", device: "workstation", check: "likely", checkBasis: "wait", waitedS: 42 });
     expect(rec.logins.find((l) => l.address === "fd7a:115c:a1e0::5")).toMatchObject({ tailnetUser: "tagged tag:agents", device: "runner" });
     // A second session on one connection has no login record: unverified, never a login.
     expect(rec.unverified.map((u) => [u.id, u.session])).toEqual([
@@ -224,7 +224,7 @@ describe("the guard's passes", () => {
     await b.keeper.pass(NOW);
     b.whois["100.101.102.103"] = { LoginName: "someone@example.com", Name: "other.example.ts.net." };
     await b.keeper.pass(NOW + 60_000);
-    expect(readAdminRecord(b.p.loginsRecord, me)!.logins[0]).toMatchObject({ tailnetUser: "pat@example.com", device: "laptop", stillOn: true });
+    expect(readAdminRecord(b.p.loginsRecord, me)!.logins[0]).toMatchObject({ tailnetUser: "pat@example.com", device: "workstation", stillOn: true });
   });
 
   test("a session still on is written again with its length once it ends", async () => {
@@ -242,7 +242,7 @@ describe("the guard's passes", () => {
     expect(statSync(b.p.loginsRecord).mode & 0o777).toBe(0o640);
     expect(statSync(b.p.loginsSeen).mode & 0o777).toBe(0o644);
     const seen = readFileSync(b.p.loginsSeen, "utf8");
-    for (const secret of ["pat", "remote", "root", "example.com", "laptop", "100.101.102", "fd7a:", "sess-", "ssh-conn-", "tty"]) expect({ secret, in: seen.includes(secret) }).toEqual({ secret, in: false });
+    for (const secret of ["pat", "remote", "root", "example.com", "workstation", "100.101.102", "fd7a:", "sess-", "ssh-conn-", "tty"]) expect({ secret, in: seen.includes(secret) }).toEqual({ secret, in: false });
     const s = readSeenRecord(b.p.loginsSeen, me)!;
     expect([s.kinds.person.logins.length, s.kinds.person.likely, s.kinds.person.unverified.length, s.kinds.agent.logins.length, s.attempts.length]).toEqual([3, 1, 1, 2, 2]);
   });
@@ -335,7 +335,7 @@ describe("who sees what", () => {
 
   test("an admin sees each login: account, tailnet user, device, address, length, and the check as unverified", async () => {
     const text = adminScreen((await views()).admin, "remote", false).join("\n");
-    expect(text).toContain("pat        pat@example.com on laptop (100.101.102.103), 83 s, waited 42 s before the session (likely a check; tailscaled's log, unverified)");
+    expect(text).toContain("pat        pat@example.com on workstation (100.101.102.103), 83 s, waited 42 s before the session (likely a check; tailscaled's log, unverified)");
     expect(text).toContain("Unverified, from tailscaled's log only. A client on the tailnet can write lines there, so none of this is a login:");
     expect(text).toContain("no session: check not answered, from 100.101.102.103, check asked (tailscaled's log, unverified)");
     expect(text).toContain("remote, the agent account: 2 logins");
@@ -344,14 +344,14 @@ describe("who sees what", () => {
 
   test("an admin's JSON has checkBasis, log or wait", async () => {
     const a = adminAnswer((await views()).admin);
-    expect(a.logins.find((l) => l.at === t(14, 3))).toMatchObject({ tailnetUser: "pat@example.com", device: "laptop", check: "likely", checkBasis: "wait", waitedSeconds: 42 });
+    expect(a.logins.find((l) => l.at === t(14, 3))).toMatchObject({ tailnetUser: "pat@example.com", device: "workstation", check: "likely", checkBasis: "wait", waitedSeconds: 42 });
     expect(a.unverified.find((u) => u.why === "check not answered")).toMatchObject({ check: "asked", checkBasis: "log" });
   });
 
   test("anyone else, remote among them, sees counts per kind and no account, tailnet user, device or address", async () => {
     const { seen } = await views();
     const text = [...seenScreen(seen, NOW), JSON.stringify(seenAnswer(seen, NOW))].join("\n");
-    for (const secret of ["pat", "root", "example.com", "laptop", "100.101.102", "fd7a:"]) expect({ secret, shown: text.includes(secret) }).toEqual({ secret, shown: false });
+    for (const secret of ["pat", "root", "example.com", "workstation", "100.101.102", "fd7a:"]) expect({ secret, shown: text.includes(secret) }).toEqual({ secret, shown: false });
     expect(text).toContain("a person's account: 3 logins, the latest 20 Nov 14:03, likely a check 1 times (tailscaled's log, unverified). Unverified, in tailscaled's log only: 1 session with no login record");
     expect(text).toContain("Account names, tailnet users and devices are shown to admins only.");
     expect(seenAnswer(seen, NOW).kinds.person).toEqual({ logins: 3, latest: t(14, 3), checkAsked: 0, checkLikely: 1, unverifiedSessions: 1 });

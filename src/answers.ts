@@ -47,7 +47,7 @@ export function helloAnswer(installed: Installed | undefined, installId: string 
 }
 
 // The loop's outcomes for a job (loop.ts), and the other word lists: one list, in the schema module
-// the box and the laptop share (schema.ts).
+// the box and the controller share (schema.ts).
 export { KINDS, OUTCOMES, RESULTS, STATUSES, WORDS };
 
 // The state's word and plain facts. The screen's sentences are left out: they can name the box's

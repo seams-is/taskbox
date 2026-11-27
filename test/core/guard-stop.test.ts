@@ -30,7 +30,7 @@ function setup() {
   return { sys, d, op: b.op, lines, root, events: () => readEvents([{ ...evDir, writer: "guard" }]).events };
 }
 
-describe("N6 and L3: a pass whose job rejects", () => {
+describe("a pass whose job rejects", () => {
   test("is logged once, counted, and in problems until its job works again", async () => {
     const logs: string[] = [];
     let fail = true;
@@ -49,7 +49,7 @@ describe("N6 and L3: a pass whose job rejects", () => {
     await ps.settle();
     expect(ps.problems()).toEqual([]);
   });
-  test("L6-new: its event is once per pass, whatever its message says each time", async () => {
+  test("its event is once per pass, whatever its message says each time", async () => {
     const { passTeller } = await import("../../src/guard.ts");
     const e = { dir: join(tmp(), "ev"), owner: uid };
     let n = 0;
@@ -110,7 +110,7 @@ describe("SIGTERM: the guard's stop", () => {
   });
 });
 
-describe("L1-new: refusals are limited too", () => {
+describe("refusals are limited too", () => {
   test("a flood of refused requests is cut to a count; accepted actions never are", () => {
     const e = { dir: join(tmp(), "ev"), owner: uid };
     const log = eventLog("guard", e, { now: () => T });
@@ -124,7 +124,7 @@ describe("L1-new: refusals are limited too", () => {
   });
 });
 
-describe("L6-new: the smaller edges", () => {
+describe("the smaller edges", () => {
   test("the outcomes folder must be root's alone", () => {
     const d = tmp();
     mkdirSync(join(d, "outcomes"), { mode: 0o777 });

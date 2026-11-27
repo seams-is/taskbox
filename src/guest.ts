@@ -53,7 +53,7 @@ const MACOS: Guest = {
 // (Softnet 0.25.0, lib/subnet_finder/mod.rs, read), and its gateway is the VM's DNS. Docker's default
 // bridge is 172.17.0.0/16, and its other networks come from 172.17 to 172.31 and 192.168. When the
 // VM's /29 falls inside one, that network's containers take the DNS address for one of their own,
-// and their lookups time out, as in a buildkit build on a box on 17 November 2026.
+// and their lookups time out, as a buildkit build once did.
 // Container traffic leaves through the VM's own
 // address, so Softnet's rules see only that. The image's own settings, such as its MTU, are kept.
 // 198.18.0.0/15 is set aside for network tests (RFC 2544), outside every Softnet range and every

@@ -65,7 +65,7 @@ describe("the gate's decision", () => {
     expect(why({ read: { kind: "ok", state: inPhase("paused") } })).toBe("nova-1 is paused.");
   });
   test("with no approver key pinned at the box, it says how to pin one", () => {
-    expect(why({ keyPinned: false })).toBe("workspaces need the owner's approver key on this box. The owner types taskbox key trust approver at the box.");
+    expect(why({ keyPinned: false })).toBe("workspaces need an approver key on this box. An admin types taskbox key trust approver at the box.");
   });
   test("a stale state: no guard heartbeat within 3 minutes, either way", () => {
     const s = inPhase("ready");

@@ -35,7 +35,7 @@ describe("settleBox", () => {
     }
   });
 
-  test("a laptop: no autorestart write, and the row still SKIPs", async () => {
+  test("a portable Mac: no autorestart write, and the row still SKIPs", async () => {
     const sys = new FakeSys();
     sys.responders.push((cmd, args) => (cmd === "/usr/bin/pmset" && args[0] === "-g" ? { code: 0, stdout: " sleep 0\n displaysleep 10\n", stderr: "" } : undefined));
     healthyBox(sys);

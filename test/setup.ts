@@ -1,11 +1,12 @@
-// Tests never touch the machine or the owner's tools: the real Sys refuses to
+// Tests never touch the machine or its users' tools: the real Sys refuses to
 // run, HOME is a temp folder and PATH holds system folders only.
-import { afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { afterAll, afterEach, beforeEach } from "bun:test";
+import { mkdirSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setServiceName } from "../src/names.ts";
 import type { FakeSys } from "./fake.ts";
+import { forceRemove, removeNew, sweepRuns } from "./tmpclean.ts";
 
 process.env.TASKBOX_TEST = "1";
 // Each run's temp folders go in one folder of its own, under node_modules/.cache in the repo. Left
@@ -17,14 +18,9 @@ process.env.TASKBOX_TEST = "1";
 // folders are left.
 const base = join(import.meta.dir, "..", "node_modules", ".cache", "taskbox-test");
 mkdirSync(base, { recursive: true });
-for (const name of readdirSync(base)) {
-  const pid = Number(/^taskbox-test-run-(\d+)-/.exec(name)?.[1]);
-  if (!pid || pid === process.pid || alive(pid)) continue;
-  try {
-    rmSync(join(base, name), { recursive: true, force: true });
-  } catch {}
-}
-process.env.TMPDIR = mkdtempSync(join(base, `taskbox-test-run-${process.pid}-`));
+sweepRuns(base, alive);
+const run = mkdtempSync(join(base, `taskbox-test-run-${process.pid}-`));
+process.env.TMPDIR = run;
 
 function alive(pid: number): boolean {
   try {
@@ -39,6 +35,21 @@ process.env.PATH = "/usr/bin:/bin";
 if (!process.env.HOME.includes("taskbox-home-") || process.env.PATH !== "/usr/bin:/bin") {
   throw new Error("test environment not restricted");
 }
+
+// Each test's temp folders go when it ends, failed or not, read-only ones too. Under --concurrent
+// they go once no test is running, so no test loses a folder it is using. Folders made while a
+// file is read stay for its tests, and go with the run's own folder when the run ends.
+mkdirSync(join(run, "lasting"));
+let before = new Set(readdirSync(run));
+let running = 0;
+beforeEach(() => {
+  if (running++ === 0) before = new Set(readdirSync(run));
+});
+afterEach(() => {
+  if (--running === 0) removeNew(run, before);
+});
+// A preload's afterAll runs once, after the last file.
+afterAll(() => forceRemove(run));
 
 // A test that does more than about 50 ms of work alone is test.serial: it runs real processes,
 // drives the loop through hours of fake time (one fake timer per event-loop turn, test/fake.ts), or

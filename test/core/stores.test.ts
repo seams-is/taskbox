@@ -156,7 +156,7 @@ describe("approvers", () => {
 });
 
 describe("the pending store for confirm", () => {
-  const ask = { kind: "approver-add" as const, subject: "SHA256:x", shows: ["Add approver key SHA256:x, asked by laptop nova."], actor: "owner (signed, key SHA256:y)", payload: { key: "k" } };
+  const ask = { kind: "approver-add" as const, subject: "SHA256:x", shows: ["Add approver key SHA256:x, asked by nova on the controller."], actor: "approver (signed, key SHA256:y)", payload: { key: "k" } };
   test("a change waits 24 hours, then lapses", () => {
     const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error(r.why);

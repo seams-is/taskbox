@@ -306,7 +306,7 @@ export async function applySigned(d: SettingsDeps, sha: string, actor: string): 
   const through = wt.changes.filter((c) => !held.includes(c.path));
   if (through.length) {
     writeInForce(d.files, inForceOf(v.value, next, held, now), w(d));
-    d.events.write({ type: "settings.applied", actor, subject: "settings", op: wt.op, text: `Settings commit ${short(sha)}: the owner applied ${through.map((c) => c.path).join(", ")}.`.slice(0, 240), data: { sha, paths: through.map((c) => c.path) } });
+    d.events.write({ type: "settings.applied", actor, subject: "settings", op: wt.op, text: `Settings commit ${short(sha)}: an approver applied ${through.map((c) => c.path).join(", ")}.`.slice(0, 240), data: { sha, paths: through.map((c) => c.path) } });
   }
   if (!held.length) {
     endOp(d, wt.op, "succeeded", { result: { sha } });

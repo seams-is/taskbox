@@ -4,7 +4,8 @@
 
 export interface Clock {
   now(): number;
-  sleep(ms: number): Promise<void>;
+  // Waits ms. An abort ends the wait at once and takes it off the clock.
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
   // Calls f once, ms from now, unless the cancel it returns runs first. unref: this timer alone
   // doesn't keep the process running.
   after(ms: number, f: () => void, o?: { unref?: boolean }): () => void;
@@ -16,7 +17,12 @@ export interface Clock {
 
 export const realClock: Clock = {
   now: () => Date.now(),
-  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  sleep: (ms, signal) =>
+    new Promise((r) => {
+      if (signal?.aborted) return r();
+      const t = setTimeout(r, ms);
+      signal?.addEventListener("abort", () => (clearTimeout(t), r()), { once: true });
+    }),
   after(ms, f, o = {}) {
     const t = setTimeout(f, ms);
     if (o.unref) t.unref();
@@ -33,6 +39,17 @@ export const realClock: Clock = {
 // This process's own monotonic clock in ms, which no wall clock step moves: for limits within one
 // process, such as an update's drain and proof in its op's child (update/box.ts).
 export const monotonicMs = (): number => performance.now();
+
+// p, or undefined once ms have passed. The wait ends with the race, so a p that wins early leaves no
+// sleep behind to move a clock on.
+export async function within<T>(c: Pick<Clock, "sleep">, p: Promise<T>, ms: number): Promise<T | undefined> {
+  const stop = new AbortController();
+  try {
+    return await Promise.race([p, c.sleep(ms, stop.signal).then(() => undefined)]);
+  } finally {
+    stop.abort();
+  }
+}
 
 // Waits ms without returning to the event loop: for a few milliseconds in code that must stay
 // synchronous, such as a child taking its lease (core/child.ts).

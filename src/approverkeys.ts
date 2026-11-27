@@ -87,7 +87,7 @@ export async function trustApprover(d: AtBox): Promise<number> {
   d.say(`The key a controller offered this box: ${fp}`);
   // In groups of four, as the controller's box add shows it, so the two are compared group by group.
   d.say(`  ${grouped(fp)}`);
-  d.say("Pin it only if it is the fingerprint your controller shows. It then signs every owner's request to this box.");
+  d.say("Pin it only if it is the fingerprint your controller shows. It then signs every signed request to this box.");
   if (!d.yes && (await d.ask("Type yes to pin it: ")).trim().toLowerCase() !== "yes") return (d.say("Not pinned. Nothing changed."), 1);
   const r = await updateApprovers(d.state.approvers, w(d), (s) => trustFirst(s, offer.key, d.sys.now(), "screen"));
   if (!r.ok) return (d.say(`Not pinned: ${r.why}`), 1);
@@ -103,7 +103,7 @@ export async function resetApprover(d: AtBox): Promise<number> {
   const fps = a.kind === "ok" ? a.value.keys.map((k) => k.fingerprint) : [];
   if (a.kind !== "bad" && !fps.length) return (d.say("No approver key is pinned on this box. Nothing changed."), 0);
   d.say(a.kind === "bad" ? `The box's approvers.json can't be read (${a.why}); a reset writes it anew with no key.` : `This box pins ${fps.join(", ")}.`);
-  d.say("Clearing them stops every owner's signed request and workspace until a new key is trusted here, and this box never takes these keys again. Clear them when the controller that holds one is lost.");
+  d.say("Clearing them stops every signed request and workspace until a new key is trusted here, and this box never takes these keys again. Clear them when the controller that holds one is lost.");
   if (!d.yes && (await d.ask("Type yes to clear them: ")).trim().toLowerCase() !== "yes") return (d.say("Not cleared. Nothing changed."), 1);
   let r: Change;
   if (a.kind === "bad") {
@@ -162,7 +162,7 @@ async function raiseApprover(c: RaiseCtx, how: "rotate" | "add", newB64: string,
   const b = begin(listOps(ops).ops, opType(ROTATE.approver), { subject: "box", params: { from, to: fp, how }, actor }, c.now);
   if (b.kind === "busy") return { ok: false, code: "busy", said: b.why, op: b.op.id };
   const shows = how === "rotate"
-    ? ["Rotate the owner's approver key.", `From: ${from}`, `To:   ${fp}`, "Asked by the controller that holds the old key, signed with it.", "Check the new fingerprint is the one your controller shows."]
+    ? ["Rotate the approver key.", `From: ${from}`, `To:   ${fp}`, "Asked by the controller that holds the old key, signed with it.", "Check the new fingerprint is the one your controller shows."]
     : ["Add a second controller's approver key.", `New:         ${fp}`, `Approved by: ${from}`, "Its controller offered it to this box; a paired controller signed it in.", "Check the new fingerprint is the one the new controller shows."];
   const r = await updatePending<Raised>(c.state.pending, w(c), (s) => {
     const x = raise(s, { kind: how === "rotate" ? "approver-rotate" : "approver-add", subject: how === "rotate" ? from : fp, shows, actor, op: b.op.id, payload: { from, key } }, m);

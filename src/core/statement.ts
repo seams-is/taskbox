@@ -1,6 +1,6 @@
 // Signed requests: one mechanism for every owner-signed request.
 //
-// The statement is one line of JSON, fields in one order, args with their keys sorted, so the laptop
+// The statement is one line of JSON, fields in one order, args with their keys sorted, so the controller
 // and the box make the same bytes:
 //   {"v":1,"ns":"taskbox-control","box":<installId>,"action":"drain","args":{...},"subject":"box","nonce":"...","at":"2026-11-23T14:02:00Z"}
 // It travels as <statement>.<signature>, each base64url, as the agent shell's --signed word, so the
@@ -85,7 +85,7 @@ export function statementText(s: Statement): string {
   return JSON.stringify({ v: 1, ns: CONTROL_NS, box: s.box, action: s.action, args, subject: s.subject, nonce: s.nonce, at: s.at });
 }
 
-// The statement the laptop builds for a command, at its own clock, for the nonce the box gave.
+// The statement the controller builds for a command, at its own clock, for the nonce the box gave.
 export function statementFor(o: { box: string; action: string; args: Args; subject: string; nonce: string; now: number }): Statement {
   const s: Statement = { v: 1, ns: CONTROL_NS, box: o.box, action: o.action, args: canonical(o.args) as Args, subject: o.subject, nonce: o.nonce, at: `${new Date(o.now).toISOString().slice(0, 19)}Z` };
   if (parseStatement(statementText(s)) === undefined) throw new Error("that statement isn't one the box reads");
@@ -143,7 +143,7 @@ export class Verified {
   }
   static signer(fingerprint: string): Verified {
     if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint)) throw new Error("not a key's fingerprint");
-    return new Verified(`key ${fingerprint}`, `owner (signed, key ${fingerprint})`);
+    return new Verified(`key ${fingerprint}`, `approver (signed, key ${fingerprint})`);
   }
   static principal(name: string): Verified {
     if (!/^[a-z][a-z0-9 _-]{0,40}$/.test(name)) throw new Error("not a principal's name");
@@ -198,7 +198,7 @@ export async function checkSigned(d: VerifyDeps, o: { word: string; keys: readon
       break;
     }
   }
-  if (signer === undefined) return refuse("signature", "The statement isn't signed by an approver key this box pins, with the owner present.");
+  if (signer === undefined) return refuse("signature", "The statement isn't signed by an approver key this box pins, with its holder present.");
   const current = o.nonce(s.subject);
   if (current === undefined || current !== s.nonce) return { ...refuse("stale-state", "The statement's nonce isn't the box's current one: another signed request applied first."), signer: Verified.signer(signer) };
   return { ok: true, statement: s, signer };

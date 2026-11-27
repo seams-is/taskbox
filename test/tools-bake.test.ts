@@ -475,7 +475,7 @@ describe("a job VM on the box", () => {
   });
 });
 
-describe("the review's fixes", () => {
+describe("the bake's seal, its paths, and its waits", () => {
   test("SSH goes off first, before the tool cache is probed or anything is copied in; a guest that won't turn it off fails the bake", async () => {
     const { dir, s } = storeWith([node], [NODE]);
     const gen = (await buildGeneration(s, "linux", [node])).gen!;

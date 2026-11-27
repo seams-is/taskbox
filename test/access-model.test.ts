@@ -400,7 +400,7 @@ describe("the Tailnet policy row and accounts taskbox didn't make", () => {
   });
 });
 
-describe("the reviews' edges", () => {
+describe("accounts made, and IDs taken", () => {
   test("a person made with the password '-' is deleted, never left for Screen Sharing", async () => {
     const s = setup();
     s.sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/dscl" && args[1] === "-authonly" ? { code: 0, stdout: "", stderr: "" } : undefined));

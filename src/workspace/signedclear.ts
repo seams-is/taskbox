@@ -20,7 +20,7 @@ export function askClear(s: WsState, agent: string): { ok: true; state: WsState;
   const list = s.clearing ?? [];
   if (list.includes(agent)) return { ok: true, state: s, said: `${agent}'s files are being cleared already.`, steps: [] };
   if (list.length >= CLEARING_MAX) return { ok: false, why: "Too many clears wait already. Try again in a minute." };
-  return { ok: true, state: { ...s, clearing: [...list, agent] }, said: `${agent}'s files in ${users.join(", ")} are cleared on the guard's next pass.`, steps: [{ name: agent, type: "clear-asked", text: `${agent}'s files in ${users.join(", ")} to be cleared, by the owner` }] };
+  return { ok: true, state: { ...s, clearing: [...list, agent] }, said: `${agent}'s files in ${users.join(", ")} are cleared on the guard's next pass.`, steps: [{ name: agent, type: "clear-asked", text: `${agent}'s files in ${users.join(", ")} to be cleared, by an approver` }] };
 }
 
 // The pass's step: each asked agent's idle accounts cleared and freed.

@@ -161,7 +161,7 @@ const denyKind: UnsignedHandler = {
   check: (b) => (keysAre(b, ["name", "reason"]) && typeof b.name === "string" && NAME.test(b.name) && (b.reason === "" || words(b.reason)) ? undefined : "a deny names its workspace and a reason, or none"),
   async apply(c, r) {
     const b = r.body as { name: string; reason: string };
-    return step(c, "owner (unsigned)", (s) => denyStep(s, b, c.now));
+    return step(c, "controller (unsigned)", (s) => denyStep(s, b, c.now));
   },
 };
 
@@ -310,7 +310,7 @@ const ruleDelete: SignedHandler = {
     const id = (r.statement.args.words as string[])[0]!;
     return step(c, r.by.actor, (s) => {
       const x = deleteRule(s, id);
-      return x.ok ? { ok: true, state: x.state, name: id, said: `Rule ${id} deleted. Requests it would have approved wait for the owner again.`, steps: x.steps } : { ok: false, why: x.why, code: "not-found" };
+      return x.ok ? { ok: true, state: x.state, name: id, said: `Rule ${id} deleted. Requests it would have approved wait for an approver again.`, steps: x.steps } : { ok: false, why: x.why, code: "not-found" };
     });
   },
 };

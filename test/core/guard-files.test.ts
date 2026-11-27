@@ -10,7 +10,7 @@ const T = 1_800_000_000_000;
 const tmp = () => mkdtempSync(join(tmpdir(), "taskbox-review2-"));
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-describe("the reviewer's probes", () => {
+describe("JSON that root parses", () => {
   test("safeParse refuses prototype keys anywhere, escaped too, and with duplicates", () => {
     for (const t of ['{"__proto__":1}', '{"a":{"b":{"__proto__":{}}}}', '[[{"constructor":{}}]]', '{"\\u005f_proto__":{"force":true}}', '{"prototype":1}', '{"a":1,"__proto__":{"x":1},"a":2}']) expect(() => safeParse(t)).toThrow();
   });
