@@ -11,6 +11,7 @@ import type { RootState } from "../core/paths.ts";
 import { safeParse, type WriteRules } from "../core/rootfile.ts";
 import { brokerPathsOf } from "../keys.ts";
 import type { Sys } from "../sys.ts";
+import { hopSettings } from "../migrate/v2settings.ts";
 import { settingsFiles } from "./inforce.ts";
 import type { SettingsDeps } from "./op.ts";
 import { readFileSync } from "node:fs";
@@ -52,6 +53,8 @@ export function settingsDepsOf(c: SettingsCtx, o: { ask?: Asker; box?: string } 
     },
     // v2.6.1's own file, from the install it ran as: the one read of it, for the hop's first commit.
     v2() {
+      const hop = hopSettings(c.p.app, c.rootUid);
+      if (hop) return hop;
       try {
         const v = safeParse(readFileSync(join(c.p.app, "taskbox.json"), "utf8"));
         return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
