@@ -1,4 +1,5 @@
 // A fake machine and a fake GitHub. Every command and URL is recorded.
+import { createPublicKey, createVerify } from "node:crypto";
 import type { Proc, ProbeResult, RunOptions, RunResult, SpawnOptions, Sys } from "../src/sys.ts";
 import { fakes } from "./setup.ts";
 
@@ -25,6 +26,11 @@ export class FakeSys implements Sys {
   fallbacks: Responder[] = [];
   routes: Route[] = [];
   clock = 1_800_000_000_000;
+  // The box's monotonic clock (core/boot.ts monoNow) runs with clock, offset by this much: a test
+  // steps the wall clock alone by moving clock and taking the same off monoOffset.
+  monoOffset = -1_700_000_000_000;
+  // This boot's kern.bootsessionuuid; a test restarts the box by changing it.
+  bootUuid = "11111111-2222-3333-4444-555555555555";
   onSpawn: (p: FakeProc) => void = () => {};
   probe: ProbeResult = "refused";
   addresses = ["127.0.0.1", "192.168.1.20"];
@@ -45,8 +51,26 @@ export class FakeSys implements Sys {
     this.events.push(`run ${cmd.split("/").pop()} ${args.slice(0, 2).join(" ")}`);
     for (const r of [...this.responders, ...this.fallbacks]) {
       const out = r(cmd, args, opts);
+      // As the real Sys reads it: past maxBytes the child is killed and its output cut.
+      if (out && opts?.maxBytes !== undefined && (out.stdout.length > opts.maxBytes || out.stderr.length > opts.maxBytes)) return { code: -9, stdout: out.stdout.slice(0, opts.maxBytes), stderr: out.stderr.slice(0, opts.maxBytes), over: true };
       if (out) return out;
     }
+    // The box's two clocks that a wall clock step doesn't move, unless a test answers them itself.
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.monotonicclock_usecs") return { code: 0, stdout: `${(this.clock + this.monoOffset) * 1000} 1\n`, stderr: "" };
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "kern.bootsessionuuid") return { code: 0, stdout: `${this.bootUuid}\n`, stderr: "" };
+    // The system's own lookup of a hidden ID agrees with dscl's list, unless a test answers it.
+    if (cmd === "/usr/bin/id" && args[0] === "-nu" && /^\d+$/.test(args[1] ?? "")) return { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user\n` };
+    if (cmd === "/usr/bin/dscacheutil" && args[0] === "-q" && args[1] === "group") return { code: 0, stdout: "", stderr: "" };
+    // 10 logical CPUs, as the box the numbers in the sizes' settings come from, unless a test says otherwise.
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "hw.logicalcpu") return { code: 0, stdout: "10\n", stderr: "" };
+    // The box's own measures of a job's VM (measure.ts), unless a test answers them: no swap in use,
+    // a VM folder of 20 GB, no process found holding its disk, and an idle GPU.
+    if (cmd === "/usr/sbin/sysctl" && args[1] === "vm.swapusage") return { code: 0, stdout: "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)\n", stderr: "" };
+    if (cmd === "/usr/bin/du" && args[0] === "-sk") return { code: 0, stdout: `20971520\t${args[1]}\n`, stderr: "" };
+    if (cmd === "/usr/sbin/lsof") return { code: 1, stdout: "", stderr: "" };
+    // The guard's look at the job VMs running (pfstarts.ts): none, unless a test says otherwise.
+    if (cmd === "/bin/ps" && args[0] === "-axo" && args[1] === "pid=,uid=,command=") return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "/usr/bin/powermetrics") return { code: 0, stdout: "**** GPU usage ****\n\nGPU HW active frequency: 389 MHz\nGPU HW active residency:   0.00% (389 MHz:   0%)\nGPU idle residency: 100.00%\nGPU Power: 0 mW\n", stderr: "" };
     // Plenty of room unless a test says otherwise: 500 GB.
     if (cmd === "/bin/df") return { code: 0, stdout: `F 1 U A C M\n/dev/disk3s5 1 1 ${500e9 / 1024} 1% /\n`, stderr: "" };
     // The Softnet check's process list: launchd is always there, and no Softnet runs as root.
@@ -184,22 +208,64 @@ export class FakeSys implements Sys {
   }
 
   // Fake time: each sleep waits in a queue by deadline (ties in call order). One timer wakes per
-  // setImmediate turn, and the clock moves to its deadline. A sleep that lost a race stays queued,
-  // so a test that reads elapsed fake time must not await real I/O between the two reads.
-  timers: { at: number; wake: () => void }[] = [];
-  sleep(ms: number): Promise<void> {
+  // setImmediate turn, and the clock moves to its deadline. A sleep that lost a race stays queued
+  // unless it was aborted, so code races a sleep through within (clock.ts), which aborts it.
+  // The timers after, every and timeout make (clock.ts) wait in the same queue, but only a sleep
+  // moves the clock: a timer fires once the clock reaches it on the way to a sleep's deadline, or,
+  // when a test has moved the clock past it, once anything is queued. So a timer nobody cancels, such as a
+  // fetch's time limit, never moves the clock by itself, and an interval never runs the clock on.
+  timers: { at: number; wake: () => void; sleep: boolean }[] = [];
+  private pumping = false;
+  sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((wake) => {
-      const at = this.clock + ms;
-      let i = this.timers.length;
-      while (i > 0 && this.timers[i - 1]!.at > at) i--;
-      this.timers.splice(i, 0, { at, wake });
-      if (this.timers.length === 1) this.pump();
+      if (signal?.aborted) return wake();
+      const t = { at: this.clock + ms, wake, sleep: true };
+      this.queue(t);
+      signal?.addEventListener("abort", () => (this.unqueue(t), wake()), { once: true });
     });
   }
+  after(ms: number, f: () => void): () => void {
+    const t = { at: this.clock + ms, wake: f, sleep: false };
+    this.queue(t);
+    return () => this.unqueue(t);
+  }
+  every(ms: number, f: () => void): () => void {
+    const step = Math.max(1, ms);
+    let t = { at: this.clock + step, wake: () => {}, sleep: false };
+    const fire = () => {
+      t = { at: t.at + step, wake: fire, sleep: false };
+      this.queue(t);
+      f();
+    };
+    t.wake = fire;
+    this.queue(t);
+    return () => this.unqueue(t);
+  }
+  timeout(ms: number): AbortSignal {
+    const c = new AbortController();
+    this.after(ms, () => c.abort(new DOMException("The operation timed out.", "TimeoutError")));
+    return c.signal;
+  }
+  private queue(t: { at: number; wake: () => void; sleep: boolean }): void {
+    let i = this.timers.length;
+    while (i > 0 && this.timers[i - 1]!.at > t.at) i--;
+    this.timers.splice(i, 0, t);
+    this.pump();
+  }
+  private unqueue(t: { at: number; wake: () => void; sleep: boolean }): void {
+    const i = this.timers.indexOf(t);
+    if (i >= 0) this.timers.splice(i, 1);
+  }
   private pump(): void {
+    if (this.pumping) return;
+    this.pumping = true;
     setImmediate(() => {
-      const t = this.timers.shift();
+      this.pumping = false;
+      const t = this.timers[0];
       if (!t) return;
+      // Only timers wait: nothing sleeps, so the clock stays where it is.
+      if (!t.sleep && t.at > this.clock && !this.timers.some((x) => x.sleep)) return;
+      this.timers.shift();
       this.clock = Math.max(this.clock, t.at);
       t.wake();
       if (this.timers.length) this.pump();
@@ -226,16 +292,37 @@ export const SECRETS = {
   jit: "eyJKSVQiOiJ0aGlzIGlzIGEgZmFrZSBydW5uZXIgY29uZmlnIn0=",
 };
 
+// The App ID a request's JWT names (its iss), and whether it is signed by this key.
+export function jwtOf(sys: FakeSys): { iss?: number; signedBy(pem: string): boolean } {
+  const t = sys.requests.at(-1)?.auth.replace(/^Bearer /, "") ?? "";
+  const [h, p, sig] = t.split(".");
+  let iss: number | undefined;
+  try {
+    iss = Number(JSON.parse(Buffer.from(p ?? "", "base64url").toString()).iss) || undefined;
+  } catch {}
+  return {
+    iss,
+    signedBy: (pem) => {
+      try {
+        return createVerify("RSA-SHA256").update(`${h}.${p}`).verify(createPublicKey(pem), Buffer.from(sig ?? "", "base64url"));
+      } catch {
+        return false;
+      }
+    },
+  };
+}
 // The head of the branch main in the fake GitHub. A compare to it is the on-main check.
 export const MAIN_SHA = "eeee1234def5678abc1234def5678abc1234def5";
 
-export function githubRoutes(sys: FakeSys, opts: { compareStatus?: string; followStatus?: string; head?: Record<string, unknown>; groupRepo?: string; releases?: { tag_name: string; name: string; draft: boolean; prerelease: boolean }[] } = {}): void {
+export function githubRoutes(sys: FakeSys, opts: { settings?: Record<string, unknown>; compareStatus?: string; followStatus?: string; head?: Record<string, unknown>; groupRepo?: string; releases?: { tag_name: string; name: string; draft: boolean; prerelease: boolean }[] } = {}): void {
   sys.routes.push((method, url) => {
     const u = new URL(url);
     if (u.hostname !== "api.github.com") return undefined;
     const p = u.pathname;
     if (method === "GET" && p === "/orgs/example-org/installation") return json({ id: 42 });
     if (method === "POST" && p === "/app/installations/42/access_tokens") return json({ token: SECRETS.token });
+    // The runner App, 1234, takes any key signed for it; a JWT for another App's ID gets 401.
+    if (method === "GET" && p === "/app") return jwtOf(sys).iss === 1234 ? json({ id: 1234, slug: "example-taskbox" }) : json({ message: "A JSON web token could not be decoded" }, 401);
     // One published release, v2.0.0, unless a test says otherwise.
     if (method === "GET" && p === "/repos/example-org/taskbox/releases") return json(opts.releases ?? [{ tag_name: "v2.0.0", name: "taskbox 2", draft: false, prerelease: false }]);
     if (method === "GET" && p.startsWith("/repos/example-org/taskbox/releases/tags/")) {
@@ -256,6 +343,11 @@ export function githubRoutes(sys: FakeSys, opts: { compareStatus?: string; follo
           },
         },
       );
+    }
+    // The release's taskbox.json, read before the yes: the test settings' accounts unless a test says otherwise.
+    if (method === "GET" && p === "/repos/example-org/taskbox/contents/taskbox.json") {
+      const body = JSON.stringify(opts.settings ?? { accounts: { service: "taskbox", agent: "taskbox-agent", people: [] } });
+      return json({ type: "file", encoding: "base64", size: body.length, content: Buffer.from(body).toString("base64") });
     }
     if (method === "GET" && p.startsWith("/repos/example-org/taskbox/compare/")) {
       const st = (p.endsWith(`...${MAIN_SHA}`) ? undefined : opts.followStatus) ?? opts.compareStatus ?? "ahead";

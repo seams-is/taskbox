@@ -1,19 +1,24 @@
 // v2.2.0: more than one VM at once. Slots, merge jobs first, the gate, and every screen.
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { statusAnswer } from "../src/answers.ts";
 import { diskNeed } from "../src/checks.ts";
 import { type Config, labelsFor, loadConfig, MACOS_MAX } from "../src/config.ts";
 import { jobLines, jobLines as lines, type JobRecord, validJob } from "../src/jobs.ts";
 import type { Occupant } from "../src/kinds.ts";
 import { busiest, DRAIN_REFUSALS, GATE_CEILING_MS, RESTART, runLoop, Slots, slotCount, vmStartGuard, writeLoopState } from "../src/loop.ts";
-import { BOX_KEEPS_GB, type Memory, memoryShort, memoryShortWhileUp } from "../src/memory.ts";
+import { type Memory, memoryShort, memoryShortWhileUp } from "../src/memory.ts";
 import { slotsLine } from "../src/ops.ts";
 import { sharedPaths } from "../src/shared.ts";
 import { computeState } from "../src/state.ts";
-import { stop } from "../src/stopstart.ts";
+import { rootStateOf } from "../src/core/paths.ts";
 import { readLoopState, screen } from "../src/watch.ts";
+import { held, heldSlotsEmpty, type WorkspaceView } from "../src/held.ts";
+import { stateHold } from "../src/workspace/hold.ts";
+import { end, held as stateHeld, type WsState } from "../src/workspace/model.ts";
+import { stateText } from "../src/workspace/store.ts";
+import { approved, asked, emptyState, started } from "./ws-helpers.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, loopDeps, settingsDir, settingsText, tempRoot } from "./helpers.ts";
 
@@ -39,22 +44,10 @@ describe("the setting", () => {
     expect(c.slots).toBe(1);
     expect(c.vmsAtOnce).toBe(2);
     expect(slotCount(c)).toBe(2);
-    expect(labelsFor(c, "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge"]);
-    expect(labelsFor(c, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge"]);
+    expect(labelsFor(c, "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "example-box-macos"]);
+    expect(labelsFor(c, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge", "example-box-linux"]);
     // Each VM keeps its own size.
     expect([c.vmCpus, c.vmMemoryMB, c.linux!.vmCpus, c.linux!.vmMemoryMB]).toEqual([4, 8192, 4, 8192]);
-  });
-
-  // taskbox-1's own settings, tuned from its timings of 19 Nov 2026 (#42): a third VM, Linux at 4 GB.
-  test.skipIf(!existsSync(join(repo, "taskbox.json")))("the box's own settings: 3 VMs, and on 32 GB two macOS VMs leave room for one Linux VM and nothing more", () => {
-    const c = loadConfig(repo);
-    expect([c.vmsAtOnce, slotCount(c)]).toEqual([3, 3]);
-    expect([c.vmCpus, c.vmMemoryMB, c.linux!.vmCpus, c.linux!.vmMemoryMB]).toEqual([4, 8192, 4, 4096]);
-    const box: Memory = { pressure: 1, availableGB: 9, totalGB: 34.36 };
-    const mac = c.vmMemoryMB!, lin = c.linux!.vmMemoryMB!;
-    expect(memoryShort(box, lin, 2 * mac)).toBeUndefined();
-    expect(memoryShort(box, lin, 2 * mac + lin)).toBeDefined();
-    expect(memoryShort(box, mac, 2 * mac)).toBeDefined();
   });
 
   test("vmsAtOnce is 1 to 4, slots stays 1, and every label is its own", () => {
@@ -86,14 +79,14 @@ describe("room for one more VM", () => {
 
   test("memory: free memory for the VM, and with others running, every VM's size and the box's share within its whole memory", () => {
     const box = { pressure: 1 as const, availableGB: 20, totalGB: 34.36 };
-    expect(memoryShort(box, 8192)).toBeUndefined();
+    expect(memoryShort(box, 8192, 0, 12)).toBeUndefined();
     // A second VM of 8 GB: 16.4 GB of VMs and 12 GB for the box fit in 34.4 GB.
-    expect(memoryShort(box, 8192, 8192)).toBeUndefined();
+    expect(memoryShort(box, 8192, 8192, 12)).toBeUndefined();
     // A third doesn't.
-    expect(memoryShort(box, 8192, 16384)).toContain(`the box keeps ${BOX_KEEPS_GB} GB`);
+    expect(memoryShort(box, 8192, 16384, 12)).toContain("the box keeps 12 GB");
     // Without the box's whole memory, a second VM never starts.
-    expect(memoryShort({ pressure: 1, availableGB: 20 }, 8192, 8192)).toBe("the box can't read its memory");
-    expect(memoryShort({ pressure: 1, availableGB: 20 }, 8192)).toBeUndefined();
+    expect(memoryShort({ pressure: 1, availableGB: 20 }, 8192, 8192, 12)).toBe("the box can't read its memory");
+    expect(memoryShort({ pressure: 1, availableGB: 20 }, 8192, 0, 12)).toBeUndefined();
   });
 
   test("a VM already up keeps waiting while 4 GB stays free at normal pressure", () => {
@@ -134,7 +127,7 @@ describe("the gate and the guard", () => {
     expect(vmStartGuard(g, M, [{ slot: 2, what: "start", from: M + 1_000 }]).shared).toBe(true);
     expect(vmStartGuard(g, M, [{ slot: 2, what: "stop", from: M - 60_000, to: M - 50_000 }]).shared).toBeUndefined();
     // Rules in place: nothing to blame.
-    expect(vmStartGuard({ ...g, missingAt: M - 1 }, M, [{ slot: 2, what: "start", from: M }])).toEqual({ read: true, rulesWentMissing: false });
+    expect(vmStartGuard({ ...g, missingAt: M - 1 }, M, [{ slot: 2, what: "start", from: M }], 1)).toEqual({ read: true, rulesWentMissing: false });
   });
 });
 
@@ -197,19 +190,6 @@ describe("the screens", () => {
     expect(odd.slots).toEqual({ total: 1, busy: 0 });
   });
 
-  test("taskbox stop names every running job before it stops them", async () => {
-    const sys = new FakeSys();
-    const d = loopDeps(sys, tempRoot());
-    const file = twoJobs();
-    sys.responders.push((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 0, stdout: "state = running", stderr: "" } : undefined));
-    const asked: string[] = [];
-    const said: string[] = [];
-    const code = await stop({ sys, paths: { ...d.paths, loopState: file }, uid: 501, say: (l) => said.push(l), ask: async (q) => (asked.push(q), "no") });
-    expect(code).toBe(1);
-    expect(asked[0]).toBe("2 jobs are running: check and lint. Stopping now fails them all on GitHub. Type yes to stop anyway: ");
-    expect(said).toEqual(["Not stopped. The jobs carry on."]);
-  });
-
   test("a job's line says which slot ran it; a line from before has none", () => {
     const r: JobRecord = { v: 1, startedAt: M, endedAt: M + 60_000, repo: "example-org/ci", result: "passed", vmDeleted: true, guard: "ok", slot: 2, cpus: 4, memoryMB: 8192 };
     expect(validJob(r)).toBe(true);
@@ -222,12 +202,26 @@ describe("the screens", () => {
 
 // The whole loop with 2 slots: VMs of both kinds at once, labels, an update that waits for the
 // running job and ends the waiting VM.
+// Serial, under bun test --concurrent too. Each test runs hours of fake time, one fake timer per
+// event-loop turn (test/fake.ts), so it is thousands of turns of work. Run at once, every test in
+// the file takes a share of each turn, and a test's time limit counts the whole file's work: on a
+// loaded runner that passed 5 s and timed out the light tests beside them (the gate's test is 1,350
+// turns of a 2 s poll). One at a time, each test's limit counts its own work. test.serial, since
+// Bun 1.4.4 runs a describe.serial's tests at once under --concurrent.
 describe("the loop with 2 slots", () => {
+  // taskbox stop, as the guard writes it once the loop is empty: control.json says stopped, so waiting
+  // VMs end, running jobs finish, and the loop exits 0 once every slot is empty.
+  function stopBox(d: ReturnType<typeof loopDeps>): void {
+    const f = rootStateOf(d.paths).control;
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, JSON.stringify({ v: 1, availability: "stopped", gen: 3, since: 1, actor: "service" }), { mode: 0o644 });
+  }
+
   function twoSlotDeps() {
     const sys = new FakeSys();
     const d = loopDeps(sys, tempRoot());
     d.cfg = MCFG;
-    d.checks = { ...d.checks, cfg: MCFG };
+    d.checks = { ...d.checks, cfg: MCFG, rootUid: process.getuid!() };
     d.memory = async () => ({ pressure: 1, availableGB: 20, totalGB: 34.36 });
     writeFileSync(d.paths.runnerTarballLinux, "linux runner tarball bytes");
     mkdirSync(d.paths.shared, { recursive: true });
@@ -236,7 +230,7 @@ describe("the loop with 2 slots", () => {
     return { sys, d };
   }
 
-  test("a macOS job and a Linux VM at once; an update ends the waiting VM, waits for the job, then restarts", async () => {
+  test.serial("a macOS job and a Linux VM at once; an update ends the waiting VM, waits for the job, then restarts", async () => {
     const { sys, d } = twoSlotDeps();
     const image = new Map<string, string>();
     sys.responders.unshift((cmd, args) => {
@@ -279,8 +273,8 @@ describe("the loop with 2 slots", () => {
     expect(bothAt).toBeDefined();
     expect(seen).toEqual(["running a job", "waiting for a job"]);
     const jits = sys.requests.filter((r) => r.url.endsWith("generate-jitconfig")).map((r) => r.body as { name: string; labels: string[] });
-    // Each kind's VM registered its label and its merge label; each name carries its slot.
-    expect(jits.map((j) => j.labels).sort()).toEqual([["taskbox-linux", "taskbox-linux-merge"], ["taskbox-macos", "taskbox-macos-merge"]]);
+    // Each kind's VM registered its label, its merge label and the box's own; each name carries its slot.
+    expect(jits.map((j) => j.labels).sort()).toEqual([["taskbox-linux", "taskbox-linux-merge", "taskbox-1-linux"], ["taskbox-macos", "taskbox-macos-merge", "taskbox-1-macos"]]);
     expect(new Set(jits.map((j) => j.name.split("-")[2]))).toEqual(new Set(["1", "2"]));
     const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     const mac = jobs.find((j) => j.vmKind === "macos");
@@ -293,7 +287,7 @@ describe("the loop with 2 slots", () => {
     expect(beats).toEqual([false, true]);
   });
 
-  test("a drain ends the waiting VM, lets the running job finish, starts nothing new, then stops the loop with exit 0", async () => {
+  test.serial("a stop ends the waiting VM, lets the running job finish, starts nothing new, then the loop exits 0", async () => {
     const { sys, d } = twoSlotDeps();
     const image = new Map<string, string>();
     const clonesAt: number[] = [];
@@ -316,8 +310,8 @@ describe("the loop with 2 slots", () => {
       if (drainAt === undefined && live.length === 2) {
         const st = JSON.parse(readFileSync(d.paths.loopState, "utf8"));
         if (Object.values(st.slots).map((s) => (s as { slot: string }).slot).sort().join() !== "running a job,waiting for a job") return;
-        // taskbox stop --drain, while one slot runs a job and the other's VM waits for one.
-        writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
+        // taskbox drain, while one slot runs a job and the other's VM waits for one.
+        stopBox(d);
         drainAt = sys.now();
       }
       if (drainAt !== undefined && sys.now() - drainAt > 10 * 60_000) for (const [vm, p] of runners) if (image.get(vm) === CFG.image && !p.killed) p.exit(0);
@@ -333,59 +327,261 @@ describe("the loop with 2 slots", () => {
     expect(mac.endedAt - drainAt!).toBeGreaterThan(10 * 60_000);
     // Nothing new started after the drain, and the loop stopped as taskbox stop does.
     expect(clonesAt.filter((t) => t > drainAt!)).toEqual([]);
-    expect(existsSync(d.paths.drain)).toBe(false);
-    expect(JSON.parse(readFileSync(d.paths.stopped, "utf8")).at).toBeGreaterThan(drainAt!);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("drained: every job finished, so the loop stops");
-    // Status no longer says draining once it's done.
-    expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).drainingSince).toBeUndefined();
+    expect(readFileSync(d.paths.log, "utf8")).toContain("stopped: every job finished, so the loop stops until taskbox start");
+    expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).controlEmpty).toBe(3);
+  });
+
+  // Slots held for workspaces. Both slots busy at first: one runs a
+  // macOS job, the other's Linux VM waits for one. hold is called once that is so.
+  function heldRun(d: ReturnType<typeof twoSlotDeps>["d"], sys: FakeSys, hold: () => void, after: (heldAt: number) => void) {
+    const image = new Map<string, string>();
+    const clones: { at: number; slot: number }[] = [];
+    sys.responders.unshift((cmd, args) => {
+      if (cmd.endsWith("/tart") && args[0] === "clone") image.set(args[2]!, args[1]!);
+      return undefined;
+    });
+    const runners = new Map<string, { exit(n: number): void; killed: boolean; opts: { onLine?: (l: string) => void }; at: number; took?: boolean }>();
+    sys.onSpawn = (p) => {
+      if (p.args[0] !== "exec" || !p.args.some((a) => a.includes("run.sh"))) return;
+      const vm = p.args.find((a) => a.startsWith("job-"))!;
+      runners.set(vm, Object.assign(p, { at: sys.now() }));
+    };
+    // Each runner's registration names its slot: the VMs each slot started, and when.
+    let jitsSeen = 0;
+    const r = { heldAt: undefined as number | undefined, clones, runners, image };
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      const jits = sys.requests.filter((q) => q.url.endsWith("generate-jitconfig"));
+      for (const j of jits.slice(jitsSeen)) clones.push({ at: sys.now(), slot: Number((j.body as { name: string }).name.split("-")[2]) });
+      jitsSeen = jits.length;
+      for (const [vm, p] of runners) if (image.get(vm) === CFG.image && !p.took && !p.killed && sys.now() - p.at > 120_000 && ![...runners.values()].some((x) => x.took)) (p.took = true), p.opts.onLine?.("Running job: check");
+      const live = [...runners.entries()].filter(([, p]) => !p.killed);
+      if (r.heldAt === undefined && live.length === 2) {
+        const st = JSON.parse(readFileSync(d.paths.loopState, "utf8"));
+        if (Object.values(st.slots).map((s) => (s as { slot: string }).slot).sort().join() !== "running a job,waiting for a job") return;
+        hold();
+        r.heldAt = sys.now();
+      }
+      if (r.heldAt !== undefined && sys.now() - r.heldAt > 10 * 60_000) for (const [vm, p] of runners) if (image.get(vm) === CFG.image && !p.killed && p.took) p.exit(0);
+      if (r.heldAt !== undefined) after(r.heldAt);
+    };
+    return r;
+  }
+  const loopNow = (d: ReturnType<typeof twoSlotDeps>["d"]) => JSON.parse(readFileSync(d.paths.loopState, "utf8"));
+  const update = (d: ReturnType<typeof twoSlotDeps>["d"]) => writeFileSync(d.paths.installed, JSON.stringify({ commit: "beef000", files: {} }));
+
+  test.serial("a Whole holds every slot: the waiting VM ends, the running job finishes, nothing starts, and the held slots read empty only then", async () => {
+    const { sys, d } = twoSlotDeps();
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    let emptyAt: number | undefined;
+    let emptyEarly = false;
+    // Each runner delete, and whether the Linux VM's runner process was still up at it.
+    const deletes: { linuxUp: boolean }[] = [];
+    const del = d.gh.deleteRunner.bind(d.gh);
+    d.gh.deleteRunner = async (tk, id) => {
+      const lin = [...r.runners.entries()].find(([vm]) => r.image.get(vm) === LINUX_IMAGE)?.[1];
+      deletes.push({ linuxUp: !!lin && !lin.killed });
+      return del(tk, id);
+    };
+    const r = heldRun(
+      d,
+      sys,
+      () => (ws = [{ size: "whole", state: "starting", name: "nova-1", approvedAt: null, ok: "approved", hold: null }]),
+      () => {
+        const loop = loopNow(d);
+        const empty = heldSlotsEmpty(loop, held(ws, 2));
+        const jobRuns = Object.values(loop.slots).some((s) => (s as { slot: string }).slot === "running a job");
+        if (empty && jobRuns) emptyEarly = true;
+        if (empty && emptyAt === undefined) emptyAt = sys.now();
+        // Held and empty for a while: the Whole is done, and once each slot says it starts VMs again,
+        // an update ends the test.
+        if (emptyAt !== undefined && sys.now() - emptyAt > 5 * 60_000) ws = [{ size: "whole", state: "ended", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
+        if (readFileSync(d.paths.log, "utf8").includes("slot 2: starting VMs again")) update(d);
+      },
+    );
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(r.heldAt).toBeDefined();
+    const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const mac = jobs.find((j) => j.vmKind === "macos" && j.result === "finished");
+    const lin = jobs.find((j) => j.vmKind === "linux");
+    // The macOS job finished, past the hold; the Linux VM waiting for a job ended at it.
+    expect([mac.result, mac.job, lin.result]).toEqual(["finished", "check", "no job"]);
+    expect(lin.endedAt).toBeLessThan(mac.endedAt);
+    expect(mac.endedAt - r.heldAt!).toBeGreaterThan(10 * 60_000);
+    // Nothing started in either slot while it was held.
+    const doneAt = emptyAt! + 5 * 60_000;
+    expect(jobs.filter((j) => j.startedAt > r.heldAt! && j.startedAt < doneAt)).toEqual([]);
+    expect(r.clones.filter((c) => c.at > r.heldAt! && c.at < doneAt)).toEqual([]);
+    // Each slot said it starts VMs again once the hold ended.
+    for (const n of [1, 2]) expect(readFileSync(d.paths.log, "utf8")).toContain(`slot ${n}: starting VMs again`);
+    // Both slots read held and empty, and never while the job still ran.
+    expect(emptyAt).toBeDefined();
+    expect(emptyEarly).toBe(false);
+    expect(readFileSync(d.paths.log, "utf8")).toContain("no new VM: CI paused for nova-1 (Whole), approved");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("VM deleted while it waited for a job: CI paused for nova-1 (Whole), approved");
+    // The waiting VM's runner went from GitHub before the VM was killed, so no job could land on it.
+    expect(deletes.some((x) => x.linuxUp)).toBe(true);
+  });
+
+  // The real held path, from root's state file on disk, as the box wires it (cli.ts).
+  test.serial("an approved Whole in workspaces.json holds every slot: each ends empty, and heldEmpty is true for all of them", async () => {
+    const { sys, d } = twoSlotDeps();
+    mkdirSync(dirname(d.paths.workspaces), { recursive: true });
+    let state: WsState | undefined;
+    // The guard: the state with a fresh heartbeat on each pass, root's (here, the test's user), 644.
+    const guard = () => state && writeFileSync(d.paths.workspaces, stateText({ ...state, beat: sys.now() }), { mode: 0o644 });
+    d.workspaces = stateHold(d.paths.workspaces, process.getuid!(), () => sys.now());
+    let emptyAt: number | undefined;
+    let emptyEarly = false;
+    let shown: { kind?: string; line?: string } = {};
+    const r = heldRun(
+      d,
+      sys,
+      () => {
+        state = started(approved(asked(emptyState(), "nova", "whole", sys.now()), "nova-1", "whole", sys.now()), sys.now());
+        guard();
+      },
+      () => {
+        guard();
+        const loop = loopNow(d);
+        const h = stateHeld(state!).whole ? 2 : 0;
+        const empty = h > 0 && heldSlotsEmpty(loop, h);
+        if (empty && Object.values(loop.slots).some((s) => ["running a job", "waiting for a job", "starting a VM"].includes((s as { slot: string }).slot))) emptyEarly = true;
+        if (empty && emptyAt === undefined) {
+          emptyAt = sys.now();
+          shown = { kind: loop.heldKind, line: loop.heldFor };
+        }
+        // Held and empty for a while: the owner ends the Whole, and the slots start again.
+        if (emptyAt !== undefined && sys.now() - emptyAt > 5 * 60_000 && state!.workspaces[0]!.state !== "withdrawn") {
+          const e = end(state!, { name: "nova-1", by: "owner" }, sys.now());
+          if (e.ok) state = e.state;
+        }
+        const log = readFileSync(d.paths.log, "utf8");
+        if (log.includes("slot 1: starting VMs again") && log.includes("slot 2: starting VMs again")) update(d);
+      },
+    );
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(r.heldAt).toBeDefined();
+    // Every slot ended empty, and said so, never while a VM was still in one.
+    expect(emptyAt).toBeDefined();
+    expect(emptyEarly).toBe(false);
+    const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const ended = jobs.filter((j) => j.startedAt < r.heldAt!);
+    expect(ended.map((j) => j.endedAt <= emptyAt!)).toEqual(ended.map(() => true));
+    expect(r.clones.filter((c) => c.at > r.heldAt! && c.at < emptyAt! + 5 * 60_000)).toEqual([]);
+    // The loop's state said why, in the owner's words.
+    const at = new Date(state!.workspaces[0]!.approvedAt!).toISOString().slice(11, 16);
+    expect(shown).toEqual({ kind: "workspace", line: `CI paused for nova-1 (Whole), approved ${at}` });
+    expect(readFileSync(d.paths.log, "utf8")).toContain(`no new VM: CI paused for nova-1 (Whole), approved ${at}`);
+    // Once it was done, the marks and the line went.
+    const after = loopNow(d);
+    expect([after.heldKind, after.heldFor, after.slots["1"].heldEmpty, after.slots["2"].heldEmpty]).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  test.serial("a held slot's waiting VM keeps waiting while GitHub refuses to delete its runner, as in a drain", async () => {
+    const { sys, d } = twoSlotDeps();
+    let refusals = 2;
+    const deletes: { at: number; ok: boolean }[] = [];
+    d.gh.deleteRunner = async () => {
+      const ok = refusals-- <= 0;
+      deletes.push({ at: sys.now(), ok });
+      if (!ok) throw new Error("422 the runner is busy");
+    };
+    sys.onSpawn = () => {}; // no job comes
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    let heldAt: number | undefined;
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      if (heldAt === undefined) {
+        const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
+        if (Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) {
+          ws = [{ size: "whole", state: "starting", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
+          heldAt = sys.now();
+        }
+      } else if (heldSlotsEmpty(loopNow(d), 2)) update(d);
+    };
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(heldAt).toBeDefined();
+    const log = readFileSync(d.paths.log, "utf8");
+    expect(log).toContain("the VM kept waiting through the hold for a workspace: GitHub didn't delete its runner (422 the runner is busy)");
+    // The one waiting VM: two asks refused, then one that freed it, then the cleanup's after it ended.
+    expect(deletes.map((x) => x.ok)).toEqual([false, false, true, true]);
+    expect(log.split("\n").filter((l) => l.includes("kept waiting through the hold")).length).toBe(2);
+    // It was kept through both refusals, and ended at the ask that freed it.
+    const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(jobs.map((j) => j.result)).toEqual(["no job"]);
+    expect(jobs[0].endedAt).toBeGreaterThan(deletes[1]!.at);
+    expect(jobs[0].endedAt).toBe(deletes[2]!.at);
+  });
+
+  test.serial("a hold that begins while the one VM waits for a job shows in the loop's state at that check", async () => {
+    const { sys, d } = twoSlotDeps();
+    d.cfg = { ...MCFG, vmsAtOnce: 1 };
+    d.checks = { ...d.checks, cfg: d.cfg };
+    // GitHub refuses to delete the runner, so the VM keeps waiting and the slot never reaches its top.
+    const seen: (string | undefined)[] = [];
+    d.gh.deleteRunner = async () => {
+      seen.push(loopNow(d).heldFor);
+      throw new Error("422 the runner is busy");
+    };
+    sys.onSpawn = () => {}; // no job comes
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
+      if (!ws.length && Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) ws = [{ size: "whole", state: "starting", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
+      if (seen.length) update(d);
+    };
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(seen[0]).toBe("CI paused for nova-1 (Whole), approved");
+  });
+
+  test.serial("a Whole never makes a held VM give way, even with a job the source sees waiting", async () => {
+    const { sys, d } = twoSlotDeps();
+    sys.onSpawn = () => {}; // no job comes to the box's VMs
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    // Two Linux jobs appear in the queue with the hold: one fits the waiting Linux VM, the other none.
+    const item = (key: string) => ({ key, labels: ["taskbox-linux"], queuedAt: sys.now(), origin: { trusted: false } });
+    let items: ReturnType<typeof item>[] = [];
+    d.source = { id: "test", read: async () => ({ known: true as const, at: sys.now(), items }) };
+    // The sharing check comes right after a waiting VM's whyWait, every 30 s. The hold begins just
+    // after one, so the queue's next read, every 15 s, comes before the next whyWait: a give-way,
+    // were the scheduler to ask for one, would come first.
+    let sharedAt = 0;
+    d.sharing = async () => ((sharedAt = sys.now()), { status: "OK" });
+    let heldAt: number | undefined;
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      if (heldAt === undefined) {
+        const st = existsSync(d.paths.loopState) ? loopNow(d) : {};
+        if (sys.now() - sharedAt <= 5_000 && Object.values(st.slots ?? {}).filter((x) => (x as { slot: string }).slot === "waiting for a job").length === 2) {
+          ws = [{ size: "whole", state: "ready", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
+          items = [item("a"), item("b")];
+          heldAt = sys.now();
+        }
+      } else if (heldSlotsEmpty(loopNow(d), 2)) update(d);
+    };
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(heldAt).toBeDefined();
+    const jobs = readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    // Both waiting VMs ended for the hold, and neither counts as a give-way.
+    expect(jobs.map((j) => j.result)).toEqual(["no job", "no job"]);
+    const loop = loopNow(d);
+    expect([loop.gaveWay, loop.gaveWayLog]).toEqual([undefined, undefined]);
   });
 
   // kern.boottime, as the box answers it: this boot began an hour before the test's clock.
   const bootAt = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd === "/usr/sbin/sysctl" && args[1] === "kern.boottime" ? { code: 0, stdout: `{ sec = ${Math.floor((sys.now() - 3600_000) / 1000)}, usec = 0 } Thu Nov 19 10:00:00 2026\n`, stderr: "" } : undefined));
 
-  test("a drain survives the loop's own restart, and the loop stops again once drained", async () => {
-    const { sys, d } = twoSlotDeps();
-    bootAt(sys);
-    // Written in this boot, before an update restarted the loop.
-    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() - 60_000 }));
-    const clones: number[] = [];
-    sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "clone" ? (clones.push(sys.now()), undefined) : undefined));
-    expect(await runLoop(d)).toBe(0);
-    expect(clones).toEqual([]);
-    expect(existsSync(d.paths.drain)).toBe(false);
-    expect(existsSync(d.paths.stopped)).toBe(true);
-  });
-
-  test("a drain from before the box's last boot ends at the loop's start, as a login means run", async () => {
-    const { sys, d } = twoSlotDeps();
-    bootAt(sys);
-    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() - 2 * 3600_000 }));
-    sys.onSpawn = () => {};
-    const t0 = sys.now();
-    const sleep = sys.sleep.bind(sys);
-    sys.sleep = async (ms) => {
-      await sleep(ms);
-      if (sys.now() - t0 > 30 * 60_000) writeFileSync(d.paths.installed, JSON.stringify({ commit: "beef000", files: {} }));
-    };
-    expect(await runLoop(d)).toBe(RESTART);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("a drain from before the restart ended");
-  }, 20_000);
-
-  test("a taskbox start as the drain ends starts the loop again, never leaves it down unasked", async () => {
-    const { sys, d } = twoSlotDeps();
-    bootAt(sys);
-    writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
-    // taskbox start removes the stopped record the moment the drain writes it.
-    const sleep = sys.sleep.bind(sys);
-    sys.sleep = async (ms) => {
-      await sleep(ms);
-      if (existsSync(d.paths.stopped)) rmSync(d.paths.stopped);
-    };
-    expect(await runLoop(d)).toBe(RESTART);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("taskbox start came as the drain ended");
-  });
-
-  test("a runner GitHub never frees goes after a few asks, so a drain always ends", async () => {
+  test.serial("a runner GitHub never frees goes after a few asks, so a drain always ends", async () => {
     const { sys, d } = twoSlotDeps();
     let deletes = 0;
     d.gh.deleteRunner = async () => {
@@ -399,7 +595,7 @@ describe("the loop with 2 slots", () => {
       await sleep(ms);
       const st = existsSync(d.paths.loopState) ? JSON.parse(readFileSync(d.paths.loopState, "utf8")) : {};
       if (!drained && Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) {
-        writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
+        stopBox(d);
         drained = true;
       }
     };
@@ -410,7 +606,7 @@ describe("the loop with 2 slots", () => {
     expect(deletes).toBeLessThanOrEqual(2 * DRAIN_REFUSALS);
   });
 
-  test("a drain stops a download under way, says why, and the loop stops with no VM started", async () => {
+  test.serial("a drain stops a download under way, says why, and the loop stops with no VM started", async () => {
     const { sys, d } = twoSlotDeps();
     // Only the macOS image is on disk, so a slot downloads Linux's.
     sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? { code: 0, stderr: "", stdout: JSON.stringify([{ Name: CFG.image, Source: "OCI" }]) } : undefined));
@@ -425,7 +621,7 @@ describe("the loop with 2 slots", () => {
     sys.sleep = async (ms) => {
       await sleep(ms);
       if (pulling && drainAt === undefined) {
-        writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
+        stopBox(d);
         drainAt = sys.now();
       }
     };
@@ -433,10 +629,38 @@ describe("the loop with 2 slots", () => {
     expect(await runLoop(d)).toBe(0);
     expect(drainAt).toBeDefined();
     expect(clones.filter((t) => t > drainAt!)).toEqual([]);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("because a drain began (taskbox stop --drain)");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("because the box isn't active (taskbox pause, drain or stop)");
   });
 
-  test("a VM waiting for a job keeps waiting while GitHub refuses to delete its runner, then goes", async () => {
+  test.serial("a Whole stops a download under way, says why, and starts no VM while it holds", async () => {
+    const { sys, d } = twoSlotDeps();
+    // Only the macOS image is on disk, so a slot downloads Linux's.
+    sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? { code: 0, stderr: "", stdout: JSON.stringify([{ Name: CFG.image, Source: "OCI" }]) } : undefined));
+    const clones: number[] = [];
+    sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "clone" ? (clones.push(sys.now()), undefined) : undefined));
+    let pulling = false;
+    sys.onSpawn = (p) => {
+      if (p.args[0] === "pull") pulling = true;
+    };
+    let ws: WorkspaceView[] = [];
+    d.workspaces = () => ({ views: ws });
+    let heldAt: number | undefined;
+    const sleep = sys.sleep.bind(sys);
+    sys.sleep = async (ms) => {
+      await sleep(ms);
+      if (pulling && heldAt === undefined) {
+        ws = [{ size: "whole", state: "starting", name: "nova-1", approvedAt: null, ok: "approved", hold: null }];
+        heldAt = sys.now();
+      }
+      if (heldAt !== undefined && readFileSync(d.paths.log, "utf8").includes("stopped pulling") && heldSlotsEmpty(loopNow(d), 2)) update(d);
+    };
+    expect(await runLoop(d)).toBe(RESTART);
+    expect(heldAt).toBeDefined();
+    expect(clones.filter((t) => t > heldAt!)).toEqual([]);
+    expect(readFileSync(d.paths.log, "utf8")).toContain("because a workspace holds the box; it starts again after");
+  });
+
+  test.serial("a VM waiting for a job keeps waiting while GitHub refuses to delete its runner, then goes", async () => {
     const { sys, d } = twoSlotDeps();
     let refusals = 2;
     let deletes = 0;
@@ -453,7 +677,7 @@ describe("the loop with 2 slots", () => {
       if (drainAt === undefined) {
         const st = existsSync(d.paths.loopState) ? JSON.parse(readFileSync(d.paths.loopState, "utf8")) : {};
         if (Object.values(st.slots ?? {}).some((x) => (x as { slot: string }).slot === "waiting for a job")) {
-          writeFileSync(d.paths.drain, JSON.stringify({ at: sys.now() }));
+          stopBox(d);
           drainAt = sys.now();
         }
       }
@@ -461,10 +685,10 @@ describe("the loop with 2 slots", () => {
     bootAt(sys);
     expect(await runLoop(d)).toBe(0);
     expect(runnersDeleted()).toBeGreaterThanOrEqual(3);
-    expect(readFileSync(d.paths.log, "utf8")).toContain("the VM kept waiting through the drain: GitHub didn't delete its runner (422 the runner is busy)");
+    expect(readFileSync(d.paths.log, "utf8")).toContain("the VM kept waiting through the pause: GitHub didn't delete its runner (422 the runner is busy)");
   });
 
-  test("a Linux proof that tried no other job VM is proved again once one is up, at most every 30 min", async () => {
+  test.serial("a Linux proof that tried no other job VM is proved again once one is up, at most every 30 min", async () => {
     const { sys, d } = twoSlotDeps();
     const peersSeen: number[] = [];
     // The first pass tries none; every one after tries the macOS VM beside it.
@@ -487,7 +711,7 @@ describe("the loop with 2 slots", () => {
     expect(readProof(d.paths.projectState)?.peers).toBe(1);
   }, 20_000);
 
-  test("a proof that never finds another VM's address stops asking after 3 passes", async () => {
+  test.serial("a proof that never finds another VM's address stops asking after 3 passes", async () => {
     const { sys, d } = twoSlotDeps();
     const runs: number[] = [];
     d.proveLinux = async () => (runs.push(sys.now()), { ok: true, detail: "test", peers: 0 });
@@ -505,12 +729,12 @@ describe("the loop with 2 slots", () => {
     expect(readFileSync(d.paths.log, "utf8")).toContain("the Linux proof tried no other job VM 3 times");
   }, 20_000);
 
-  test("Softnet as root in one slot stops the loop: the other slot's waiting VM ends, and the loop exits 0", async () => {
+  test.serial("Softnet as root in one slot stops the loop: the other slot's waiting VM ends, and the loop exits 0", async () => {
     const { sys, d } = twoSlotDeps();
     let runs = 0;
     sys.responders.unshift((cmd, args) => {
       // The engine's runtime check: the second VM's Softnet stays root, long past its start.
-      if (cmd === "/bin/ps" && args[0] === "-axo" && args[1] === "pid=,etime=,user=,ruser=,svuid=,comm=") return ++runs >= 2 ? { code: 0, stdout: "1 9-00:00:00 root root 0 /sbin/launchd\n77 03:00 root ci 0 /opt/taskbox/bin/softnet\n", stderr: "" } : { code: 0, stdout: "1 9-00:00:00 root root 0 /sbin/launchd\n", stderr: "" };
+      if (cmd === "/bin/ps" && args[0] === "-axo" && args[1] === "pid=,etime=,user=,ruser=,svuid=,comm=") return ++runs >= 2 ? { code: 0, stdout: "1 9-00:00:00 root root 0 /sbin/launchd\n77 03:00 root taskbox 0 /opt/taskbox/bin/softnet\n", stderr: "" } : { code: 0, stdout: "1 9-00:00:00 root root 0 /sbin/launchd\n", stderr: "" };
       return undefined;
     });
     expect(await runLoop(d)).toBe(0);

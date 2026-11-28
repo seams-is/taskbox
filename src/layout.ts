@@ -1,15 +1,19 @@
 // Where installs live. /opt/taskbox is a root-owned link to one install folder, /opt/taskbox-<commit>-<6
-// characters>, and /opt/taskbox.prev links to the install before it, kept for taskbox undo. Moving
+// characters>, and /opt/taskbox.prev links to the install before it, kept for taskbox rollback. Moving
 // either link is one rename, which macOS makes atomic, so an update or undo never leaves the box
 // without /opt/taskbox. /usr/local/bin/taskbox links to /opt/taskbox/bin/taskbox, so every user
 // types plain taskbox.
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { type Installed, type Paths, readJson } from "./config.ts";
+import { keptInstalls } from "./update/records.ts";
 
-// An install folder's name. Its last six characters come from mkdtemp, so the same commit installed
-// twice gets two folders and an install never builds over the one running.
-export const INSTALL_NAME = /^taskbox-[0-9a-f]{7,40}-[A-Za-z0-9]{6}$/;
+// An install folder's name: v2's /opt/taskbox-<commit>-<6>, or v3's /opt/taskbox-<version>-<6>. Its
+// last six characters come from mkdtemp, so the same release installed twice gets two folders and an
+// install never builds over the one running.
+export const INSTALL_NAME = /^taskbox-(?:[0-9a-f]{7,40}|(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})(?:-rc\.[1-9]\d{0,3})?)-[A-Za-z0-9]{6}$/;
+// How many v3 installs are kept: the one in use and the newest others, for taskbox rollback.
+export const KEEP_INSTALLS = 3;
 
 // The install folder a link points at, or undefined when it isn't a link to an install folder
 // beside it.
@@ -84,10 +88,14 @@ export function swapIn(p: Paths, dir: string): string | undefined {
   return moved;
 }
 
-// Removes every install folder but the current one and the kept one, and anything an install or undo
-// stopped part way left behind.
-export function prune(p: Paths): string[] {
+// Removes every install folder but the current one, the kept one and the newest v3 installs, up to
+// KEEP_INSTALLS in all, and anything an install or undo stopped part way left behind.
+export function prune(p: Paths, keepN = KEEP_INSTALLS, rootUid = 0): string[] {
   const keep = new Set([linkTarget(p.opt), linkTarget(p.prev)].filter((d): d is string => !!d));
+  for (const k of keptInstalls(dirname(p.opt), rootUid)) {
+    if (keep.size >= keepN) break;
+    keep.add(k.dir);
+  }
   const parent = dirname(p.opt);
   const gone: string[] = [];
   for (const name of readdirSync(parent)) {
@@ -198,7 +206,7 @@ export async function withUpdateLock<T>(p: Pick<Paths, "guardState">, now: () =>
       } catch {
         try {
           // A takeover left by a process that died in the middle of one.
-          if (Date.now() - statSync(takeover).mtimeMs > 60_000) rmSync(takeover, { force: true });
+          if (now() - statSync(takeover).mtimeMs > 60_000) rmSync(takeover, { force: true });
         } catch {}
         return busy(seen.holder);
       }

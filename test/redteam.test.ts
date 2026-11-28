@@ -1,16 +1,16 @@
-// The red-team script's forward tests (X8), run against stub ssh, nc and curl: nothing leaves the
+// The red-team script's forward tests, run against stub ssh, nc and curl: nothing leaves the
 // Mac. A forward test says inconclusive, never its pass value, unless ssh connected.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const script = readFileSync(join(import.meta.dir, "redteam/from-laptop.sh"), "utf8");
+const script = readFileSync(join(import.meta.dir, "redteam/from-controller.sh"), "utf8");
 
 function run(mode: "bind" | "fail", busy: number[] = []) {
   const dir = mkdtempSync(join(tmpdir(), "taskbox-rt-"));
   const stub = (name: string, body: string) => (writeFileSync(join(dir, name), `#!/bin/bash\n${body}\n`), chmodSync(join(dir, name), 0o755));
-  // ssh -N with -L or -D: "bind" logs in and holds the laptop port; "fail" never connects.
+  // ssh -N with -L or -D: "bind" logs in and holds the local port; "fail" never connects.
   stub("ssh", `D=${dir}
 if [[ " $* " == *" -N "* ]] && [[ " $* " == *" -L "* || " $* " == *" -D "* ]]; then
   [ "${mode}" = fail ] && exit 255
@@ -22,7 +22,7 @@ echo stub`);
   stub("curl", `printf 000`);
   for (const n of ["sftp", "scp", "rsync", "tailscale"]) stub(n, "exit 1");
   for (const p of busy) writeFileSync(join(dir, `port-${p}`), "");
-  const sh = join(dir, "from-laptop.sh");
+  const sh = join(dir, "from-controller.sh");
   writeFileSync(sh, script.replace(/^TS=.*$/m, `TS=${join(dir, "tailscale")}`));
   const r = Bun.spawnSync(["bash", sh, "taskbox-1", "admin"], { env: { PATH: `${dir}:/usr/bin:/bin`, HOME: dir, TMPDIR: dir } });
   const out = r.stdout.toString();
@@ -39,9 +39,9 @@ describe("the red-team forward tests", () => {
     }
   }, 60_000);
 
-  test("a laptop port already in use is inconclusive, and ssh isn't run", () => {
+  test("a local port already in use is inconclusive, and ssh isn't run", () => {
     const { block, dir } = run("bind", [15900]);
-    expect(block("SSH3-i")).toContain("inconclusive: laptop port 15900 is already in use");
+    expect(block("SSH3-i")).toContain("inconclusive: local port 15900 is already in use");
     expect(existsSync(join(dir, "ssh-15900"))).toBe(false);
   }, 60_000);
 

@@ -6,9 +6,19 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node
 import { readSeen } from "./logins.ts";
 import { dirname, join, relative } from "node:path";
 import { AWAY_ROWS } from "./awaychecks.ts";
-import { awayOf, type Config, DEFAULT_AWAY, DEFAULT_REMOTE_USER, type PublicAddressSource, DEFAULT_SCREEN_SHARING_USERS, REMOTE_SHELL, TAILNET_TAG, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson } from "./config.ts";
+import { awayOf, type Config, DEFAULT_AWAY, GATE_SHELL, type PublicAddressSource, REMOTE_SHELL, tagOf, TAILSCALED_LABEL, type Installed, type Paths, previousLabels, readJson, readStateJson, sourceKeyPath, sourceOf, vmsAtMostOf } from "./config.ts";
 import { readInstallId, text } from "./answers.ts";
 import { adminState } from "./elevate.ts";
+import { canUnlock, poolProblem, readRecord, recordName, UNLOCK_UNKNOWN, uidOf, userKey } from "./accounts.ts";
+import { poolNames } from "./access.ts";
+import { fingerprint, trustedKey } from "./approver.ts";
+import { readPin, readPoolRecord } from "./pin.ts";
+import { proveActionsKey } from "./keys.ts";
+import { BOX_FIX } from "./boxsettings.ts";
+import { Log } from "./log.ts";
+import { GitHub, type GroupRunner } from "./github.ts";
+import { boxLabels } from "./watchdog.ts";
+import { readActionsKey } from "./queue.ts";
 import { readGuard, SCREEN_SHARING_PORT, tunOf } from "./guard.ts";
 import { commandLinkProblem, linkTarget } from "./layout.ts";
 import { UPDATE_FIX } from "./state.ts";
@@ -16,8 +26,14 @@ import { readPull } from "./progress.ts";
 import { DEFAULT_ENGINE, kitFor } from "./vm.ts";
 import { MAX_HOLD_MS, rollbackWatchState } from "./hop.ts";
 import type { Sys } from "./sys.ts";
+import { fresh } from "./workspace/model.ts";
+import { readStateFile } from "./workspace/pass.ts";
+import { spoolProblem } from "./core/spool.ts";
+import { rootStateOf } from "./core/paths.ts";
+import { socketDirProblem } from "./tssocket.ts";
+import { failMode } from "./workspace/store.ts";
 
-// WARN is taskbox away's only (v2.5.0): worth a look, and no reason to stay. check never gives it.
+// WARN is taskbox check --away's only (v2.5.0): worth a look, and no reason to stay. check never gives it.
 export type Status = "OK" | "FAIL" | "SKIP" | "WARN";
 
 export interface Check {
@@ -35,11 +51,11 @@ export interface CheckContext {
   cfg: Config;
   paths: Paths;
   uid: number; // the user running the check
-  ciUid: number | undefined;
+  serviceUid: number | undefined;
   rootUid?: number; // who must own /usr/local: root; tests use their own user
   // How many other VMs run now (v2.2.0). The loop says before each start; check reads the loop's state.
   vmsRunning?: number;
-  // An image download under way beside this start, in GB still to come (v2.2.0 review, finding 5).
+  // An image download under way beside this start, in GB still to come.
   downloadGB?: number;
 }
 
@@ -74,9 +90,9 @@ export async function sharingOff(c: CheckContext): Promise<Omit<Check, "name">> 
   const ns = await c.sys.run("/usr/sbin/netstat", ["-an", "-p", "tcp"]);
   if (ns.code !== 0 || !/^Proto\s/m.test(ns.stdout)) {
     // Over Tailscale SSH, netstat sees no sockets at all and prints nothing (read at the box, as a person's own
-    // account and as remote; why isn't checked). It prints its header only once it finds a socket. So anyone
-    // but ci and root gets a SKIP, and ci's own check, at the box, decides.
-    if (c.uid !== 0 && c.uid !== c.ciUid && ns.code === 0 && ns.stdout.trim() === "") return { status: "SKIP", detail: "run as ci to check" };
+    // account and as the agent; why isn't checked). It prints its header only once it finds a socket. So anyone
+    // but the service and root gets a SKIP, and the service's own check, at the box, decides.
+    if (c.uid !== 0 && c.uid !== c.serviceUid && ns.code === 0 && ns.stdout.trim() === "") return { status: "SKIP", detail: `run as ${c.paths.service} to check` };
     return fail(`could not read the socket table with netstat (${text(ns.stderr) || `exit ${ns.code}, ${ns.stdout.trim() ? "no table" : "no output"}`})`);
   }
   const guard = readGuard(c.paths, c.sys.now(), c.rootUid ?? 0);
@@ -101,27 +117,56 @@ export async function sharingOff(c: CheckContext): Promise<Omit<Check, "name">> 
       }
     }
   }
-  // AirPlay Receiver is on in a stock Mac; the install turns it off for the owner and ci.
+  // AirPlay Receiver is on in a stock Mac; the install turns it off for the owner and the service.
   const airplay = open.some((o) => /:(5000|7000) /.test(o)) ? `. AirPlay Receiver is on for a logged-in user. ${AIRPLAY_FIX}` : "";
   if (open.length) return fail(`a sharing service is on: ${open.join(", ")}${airplay}`);
   if (!screen) return ok("nothing listens on a sharing port");
-  if (!(c.cfg.screenSharingUsers ?? DEFAULT_SCREEN_SHARING_USERS).length) {
-    return fail(`Screen Sharing is on, but taskbox.json names nobody for it. Turn it off in System Settings, General, Sharing. To keep it, an agent adds a standard user to screenSharingUsers in a PR.`);
+  if (!c.cfg.accounts.people.length) {
+    return fail(`Screen Sharing is on, but taskbox.json names nobody for it. Turn it off in System Settings, General, Sharing. To keep it, an agent adds a standard user to accounts.people in a PR.`);
   }
   if (!guarded) return fail(`Screen Sharing is on, and pf isn't keeping it to Tailscale (${guard ? guard.detail : "the guard isn't running"}). ${SCREEN_SHARING_FIX}`);
-  const who = await screenSharingAccess(c);
-  if (who) return fail(`Screen Sharing is on for ${who}. In System Settings, General, Sharing, Screen Sharing, click the info button and allow ${allowedText(c.cfg)} only.`);
+  const list = await readScreenSharingList(c);
+  if (!listFine(list, c.cfg.accounts.people)) return fail(screenSharingFix(list, c.cfg.accounts.people));
   const other = await screenSharingExtras(c);
   if (other) return fail(`Screen Sharing lets in ${other}. In System Settings, General, Sharing, Screen Sharing, click the info button and turn that off.`);
-  for (const u of c.cfg.screenSharingUsers ?? []) {
+  for (const u of c.cfg.accounts.people) {
     const a = await adminState(c.sys, u);
     if (a === "admin") return fail(`${u} is an admin, and Screen Sharing is for standard users only. Make ${u} a Standard user in System Settings, Users & Groups.`);
     if (a === "unknown") return fail(`taskbox can't tell whether ${u} is an admin, so Screen Sharing counts as open. ${SCREEN_SHARING_FIX}`);
   }
-  return ok(`only Screen Sharing, for ${allowedText(c.cfg)}, over Tailscale`);
+  // The admins' group, which macOS puts on the list, stays by the owner's choice: their route for
+  // remote admin work, still only over Tailscale and its policy.
+  return ok(`only Screen Sharing, for ${allowedText(c.cfg)}${list.group === "admins" ? " and the admins (the Administrators group)" : ""}, over Tailscale`);
 }
 
-const allowedText = (cfg: CheckContext["cfg"]) => (cfg.screenSharingUsers ?? []).join(" and ") || "no user";
+const allowedText = (cfg: CheckContext["cfg"]) => cfg.accounts.people.join(" and ") || "no user";
+
+// What to do when Screen Sharing's list isn't exactly accounts.people (v2.7.0). The install puts each
+// person on it. Anyone else is the owner's to take off, since taskbox never removes what it didn't add.
+export type ListView = { members: string[]; every?: boolean; group?: "admins" | "other" };
+
+// The list is as it should be: exactly accounts.people, with or without the admins' group, which the
+// owner chose to keep (macOS puts it there by default). Any other group, or anyone else, isn't.
+export function listFine(v: ListView, people: readonly string[]): boolean {
+  if (v.every || v.group === "other") return false;
+  const a = [...v.members].sort();
+  const b = [...people].sort();
+  return a.length === b.length && a.every((m, i) => m === b[i]);
+}
+
+export function screenSharingFix(v: ListView, people: readonly string[]): string {
+  const groupName = v.group === "admins" ? "the admins, through the Administrators group on its list" : v.group ? "a group of users" : "";
+  // Members first, so a name never runs into the group's phrase.
+  const who = v.every ? "every user" : [...v.members, ...(groupName ? [groupName] : [])].join(" and ") || "nobody listed";
+  const extra = v.members.filter((n) => !people.includes(n));
+  const missing = v.every ? [] : people.filter((p) => !v.members.includes(p));
+  const steps: string[] = [];
+  if (missing.length || v.every) steps.push("As your admin user, type taskbox update: it puts accounts.people on the list");
+  // The admins' group is expected, so it is never on the list of things to take off.
+  const off = [...(v.group === "other" ? ["the group"] : []), ...extra];
+  if (off.length) steps.push(`In System Settings, General, Sharing, Screen Sharing, click the info button and remove ${off.join(" and ")}. taskbox leaves ${off.length === 1 ? "it, since it didn't add it" : "them, since it didn't add them"}`);
+  return `Screen Sharing is on for ${who}. ${steps.join(". ")}.`;
+}
 
 // Ways into Screen Sharing beyond a macOS account: a VNC password, or asking whoever is at the
 // screen. Either lets any tailnet device in with no account. macOS keeps them in
@@ -145,14 +190,20 @@ export async function screenSharingExtras(c: CheckContext): Promise<string | und
 // Who may use Screen Sharing, or undefined when it is exactly the configured users. macOS keeps the
 // "Only these users" list in the com.apple.access_screensharing group. With no group, every user may.
 // A nested group, such as Administrators, counts as more than the list. Readable without root.
-export async function screenSharingAccess(c: CheckContext): Promise<string | undefined> {
+export async function readScreenSharingList(c: CheckContext): Promise<ListView> {
   const r = await c.sys.run("/usr/bin/dscl", [".", "-read", "/Groups/com.apple.access_screensharing", "GroupMembership", "NestedGroups"]);
-  if (r.code !== 0) return "every user";
-  if (/^NestedGroups:/m.test(r.stdout)) return "a group of users";
+  if (r.code !== 0) return { members: [], every: true };
   const members = (/^GroupMembership:(.*)$/m.exec(r.stdout)?.[1] ?? "").trim().split(/\s+/).filter(Boolean).sort();
-  const want = [...(c.cfg.screenSharingUsers ?? [])].sort();
-  if (members.length === want.length && members.every((m, i) => m === want[i])) return undefined;
-  return members.length ? members.join(" and ") : "nobody listed";
+  // macOS nests the admins' group in the list by default (ran: macOS 27). Any other group is "other".
+  const nested = /^NestedGroups:(.*)$/m.exec(r.stdout)?.[1]?.trim();
+  const group = nested ? (nested.split(/\s+/).every((g) => g === "ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050") ? "admins" : "other") : undefined;
+  return { members, ...(group ? { group } : {}) };
+}
+
+// What's wrong with the list, or undefined when it is as it should be.
+export async function screenSharingAccess(c: CheckContext): Promise<ListView | undefined> {
+  const v = await readScreenSharingList(c);
+  return listFine(v, c.cfg.accounts.people) ? undefined : v;
 }
 
 // These rows are reached after the install tried the setting itself, so the fix is the manual step,
@@ -171,11 +222,11 @@ async function firewall(c: CheckContext): Promise<Omit<Check, "name">> {
 }
 
 export const FILEVAULT_FIX = "FileVault is off. At the box, as your admin user: System Settings, Privacy & Security, FileVault, Turn On, and keep the recovery key off the box. Then run this again.";
-// v2.5.0: off passes only when the owner's restart plan is filevault-off (docs/away-ready-design.md).
+// v2.5.0: off passes only when the owner's restart plan is filevault-off.
 async function fileVault(c: CheckContext): Promise<Omit<Check, "name">> {
   const r = await c.sys.run("/usr/bin/fdesetup", ["isactive"]);
   if (r.stdout.trim() === "true") return ok("on");
-  return awayOf(c.cfg).restartPlan === "filevault-off" ? ok("off, by the owner's restart plan") : fail(FILEVAULT_FIX);
+  return awayOf(c.cfg).restartPlan === "filevault-off" ? ok("off, by the restart plan in taskbox.json") : fail(FILEVAULT_FIX);
 }
 
 function sha256File(path: string): string {
@@ -205,7 +256,7 @@ export function listFiles(dir: string, base = dir): string[] {
     if (st.isDirectory()) out.push(...listFiles(p, base));
     else out.push(relative(base, p));
   }
-  return out.filter((f) => f !== "installed.json").sort();
+  return out.filter((f) => f !== "installed.json" && f !== "install.json").sort();
 }
 
 export function listDirs(dir: string, base = dir): string[] {
@@ -248,9 +299,9 @@ async function filesMatch(c: CheckContext): Promise<Omit<Check, "name">> {
   const now = hashTree(dir);
   const want = Object.keys(inst.files).sort();
   const have = Object.keys(now);
-  // A folder closed to another account is left to the loop's own check, which runs as ci before every
-  // VM. Closed to ci, it fails.
-  const closed = c.uid === c.ciUid ? [] : have.filter((f) => f.endsWith("/"));
+  // A folder closed to another account is left to the loop's own check, which runs as the service
+  // before every VM. Closed to the service, it fails.
+  const closed = c.uid === c.serviceUid ? [] : have.filter((f) => f.endsWith("/"));
   const bad = [...new Set([...want, ...have])].filter((f) => !closed.some((dir) => f.startsWith(dir)) && inst.files[f] !== now[f]);
   if (bad.length) return fail(`changed since install: ${bad.slice(0, 5).join(", ")}`);
   // Root-owned and writable by root only, all the way down.
@@ -262,11 +313,11 @@ async function filesMatch(c: CheckContext): Promise<Omit<Check, "name">> {
 }
 
 async function appKey(c: CheckContext): Promise<Omit<Check, "name">> {
-  if (c.uid !== 0 && c.uid !== c.ciUid) return { status: "SKIP", detail: "run as ci to check" };
+  if (c.uid !== 0 && c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${c.paths.service} to check` };
   const st = statSync(c.paths.key);
-  if (st.uid !== c.ciUid) return fail("the App key is not owned by ci");
+  if (st.uid !== c.serviceUid) return fail(`the App key is not owned by ${c.paths.service}`);
   if ((st.mode & 0o777) !== 0o600) return fail("the App key is not mode 600");
-  return ok("mode 600, owned by ci");
+  return ok(`mode 600, owned by ${c.paths.service}`);
 }
 
 // Free space on the data volume, in decimal GB as Finder and Tart show it. It counts every user's
@@ -275,7 +326,8 @@ async function appKey(c: CheckContext): Promise<Omit<Check, "name">> {
 // partialBytes: what's on disk of the download now. A pull that stops starts again, so none counts.
 // The image is matched by its full reference, digest included, so a new pin is never counted as held.
 // With more than one VM (v2.2.0), each VM running may still write its whole floor, so the floor is
-// counted for this VM and for each one running: 60 GB for the first VM, 120 GB before a second starts.
+// counted for this VM and for each one running: minFreeDiskGB for each. On a small disk this, not
+// memory, caps how many small VMs run, and a start it refuses waits.
 export function diskNeed(c: CheckContext, partialBytes?: number, notHeld = false): { needGB: number; imageGB: number } {
   const pull = readPull(c.paths.pull);
   // A record from before refs were kept names the image only.
@@ -314,7 +366,7 @@ export async function publicAddresses(sys: Sys, names: readonly PublicAddressSou
   const got = await Promise.all(
     names.map(async (n) => {
       try {
-        const res = await sys.fetch(ADDRESS_SOURCES[n].url, { signal: AbortSignal.timeout(10_000) });
+        const res = await sys.fetch(ADDRESS_SOURCES[n].url, { signal: sys.timeout(10_000) });
         if (!res.ok) return null;
         const ip = ADDRESS_SOURCES[n].parse(await res.text());
         return ip ? { n, ip } : null;
@@ -327,11 +379,6 @@ export async function publicAddresses(sys: Sys, names: readonly PublicAddressSou
   return { addresses: [...new Set(ok.map((g) => g.ip))], answered: ok.map((g) => g.n) };
 }
 
-// The first address, for callers that want one. Any failure is null.
-export async function publicIPv4(sys: Sys, names?: readonly PublicAddressSource[]): Promise<string | null> {
-  return (await publicAddresses(sys, names)).addresses[0] ?? null;
-}
-
 export const PUBLIC_FIX = "The box can't read its public address, so it starts no VM. It tries again in a minute, and carries on by itself once the network is back.";
 
 // What each source answered. The address itself goes to ci and root only: remote reads this screen.
@@ -340,7 +387,7 @@ async function publicAddress(c: CheckContext): Promise<Omit<Check, "name">> {
   const each = await Promise.all(names.map(async (n) => ({ n, ip: (await publicAddresses(c.sys, [n])).addresses[0] })));
   const got = each.filter((e) => e.ip);
   if (!got.length) return fail(`${PUBLIC_FIX} (${names.join(" and ")} didn't answer)`);
-  const full = c.uid === 0 || (c.ciUid !== undefined && c.uid === c.ciUid);
+  const full = c.uid === 0 || (c.serviceUid !== undefined && c.uid === c.serviceUid);
   const said = each.map((e) => (e.ip ? `${e.n} said ${full ? e.ip : "an address"}` : `${e.n} didn't answer`)).join("; ");
   const n = new Set(got.map((e) => e.ip)).size;
   return ok(`${said}. ${n > 1 ? `Both addresses are` : "It is"} blocked for every VM`);
@@ -354,20 +401,20 @@ export async function freeGB(sys: Sys): Promise<number | undefined> {
 
 // The loop's slots that hold a VM now, from its state file (v2.2.0). Unreadable counts as none: the
 // loop says for itself before each start, and this is only check's view.
-const VM_SLOTS = new Set(["starting a VM", "waiting for a job", "running a job", "proving Linux", "cleaning up"]);
+const VM_SLOTS = new Set(["starting a VM", "waiting for a job", "running a job", "proving Linux", "cleaning up", "baking tools"]);
 export function busySlots(loopState: string): number {
   const slots = readStateJson<{ slots?: unknown }>(loopState)?.slots;
   if (!slots || typeof slots !== "object" || Array.isArray(slots)) return 0;
   return Object.values(slots).filter((s) => !!s && typeof s === "object" && VM_SLOTS.has((s as { slot?: unknown }).slot as string)).length;
 }
 
-export const ROOM_FIX = "Make room on the box: every user's files count, other users' apps and caches too. taskbox clean removes old images and VMs while no download is part done.";
+export const ROOM_FIX = "Make room on the box: every user's files count, other users' apps and caches too. taskbox prune removes old images and VMs while no download is part done.";
 
 async function freeDisk(c: CheckContext): Promise<Omit<Check, "name">> {
   const gb = await freeGB(c.sys);
   if (gb === undefined) return fail("could not read free disk");
   // check's own view: the VMs running beside the next start, so never more than the slots less one.
-  const slots = Number.isInteger(c.cfg.vmsAtOnce) && c.cfg.vmsAtOnce! >= 1 ? c.cfg.vmsAtOnce! : 1;
+  const slots = vmsAtMostOf(c.cfg);
   const running = c.vmsRunning ?? Math.min(busySlots(c.paths.loopState), slots - 1);
   const { needGB, imageGB } = diskNeed({ ...c, vmsRunning: running });
   const room = running ? `${c.cfg.minFreeDiskGB} GB to work in for the next VM and for each of the ${running} running` : `${c.cfg.minFreeDiskGB} GB to work in`;
@@ -420,13 +467,23 @@ export async function loginSessions(sys: Sys): Promise<{ users: string[]; known:
   return { users: Object.keys(seenBy).sort(), known, seenBy };
 }
 
-// except: ci, and the person typing the command, who knows they're logged in.
+// except: the service, and the person typing the command, who knows they're logged in.
 export async function otherLogins(sys: Sys, ...except: string[]): Promise<string[]> {
   return (await loginSessions(sys)).users.filter((u) => !except.includes(u));
 }
 
 // Whether Screen Sharing listens now, from the socket table or a try on loopback. Fails closed: a
 // table that can't be read counts as on.
+// The strict read, for counting VM starts with Screen Sharing on (pfstarts.ts): true only when it is
+// seen listening, false only when netstat shows no listener and the port refuses, else null.
+export async function screenSharingSeen(sys: Sys): Promise<boolean | null> {
+  const ns = await sys.run("/usr/sbin/netstat", ["-an", "-p", "tcp"]).catch(() => undefined);
+  if (!ns || ns.code !== 0 || !/^Proto\s/m.test(ns.stdout)) return null;
+  if (tcpListeners(ns.stdout).some((l) => l.port === SCREEN_SHARING_PORT)) return true;
+  const probe = await sys.tcpProbe("127.0.0.1", SCREEN_SHARING_PORT, 1500).catch(() => "error" as const);
+  return probe === "refused" ? false : probe === "open" ? true : null;
+}
+
 export async function screenSharingOn(sys: Sys): Promise<boolean> {
   const ns = await sys.run("/usr/sbin/netstat", ["-an", "-p", "tcp"]).catch(() => undefined);
   if (!ns || ns.code !== 0 || !/^Proto\s/m.test(ns.stdout)) return true;
@@ -434,17 +491,17 @@ export async function screenSharingOn(sys: Sys): Promise<boolean> {
   return (await sys.tcpProbe("127.0.0.1", SCREEN_SHARING_PORT, 1500)) !== "refused";
 }
 
-// The box's other people: each local user but ci, and whether it's an admin. Shown, never failed:
-// a second user's apps run beside the VMs, and as an admin they could change the box. Only ci and
-// root see the names. Anyone else, remote among them, sees counts.
+// The box's other people: each local user but the service, and whether it's an admin. Shown, never
+// failed: a second user's apps run beside the VMs, and as an admin they could change the box. Only
+// the service and root see the names. Anyone else, the agent among them, sees counts.
 export async function otherUsers(c: CheckContext): Promise<Omit<Check, "name">> {
   const list = await c.sys.run("/usr/bin/dscl", [".", "-list", "/Users", "UniqueID"]);
   if (list.code !== 0) return fail("could not list the box's users");
-  const users = list.stdout.split("\n").map((l) => l.trim().split(/\s+/)).filter(([n, id]) => n && Number(id) >= 501 && n !== "ci").map(([n]) => n!.replace(/[^a-z0-9._-]/gi, "").slice(0, 32));
+  const users = list.stdout.split("\n").map((l) => l.trim().split(/\s+/)).filter(([n, id]) => n && Number(id) >= 501 && n !== c.paths.service).map(([n]) => n!.replace(/[^a-z0-9._-]/gi, "").slice(0, 32));
   const adm = await c.sys.run("/usr/bin/dscl", [".", "-read", "/Groups/admin", "GroupMembership"]);
   const admins = new Set(adm.stdout.replace(/^GroupMembership:/, "").trim().split(/\s+/));
-  const on = await otherLogins(c.sys, "ci");
-  if (c.uid !== 0 && c.uid !== c.ciUid) {
+  const on = await otherLogins(c.sys, c.paths.service);
+  if (c.uid !== 0 && c.uid !== c.serviceUid) {
     const n = (k: number, what: string) => `${k} ${what}${k === 1 ? "" : "s"}`;
     const a = users.filter((u) => admins.has(u)).length;
     return ok(users.length ? `${n(users.length, "user")}: ${n(a, "admin")}, ${users.length - a} standard, ${on.filter((u) => users.includes(u)).length} logged in` : "none");
@@ -452,22 +509,25 @@ export async function otherUsers(c: CheckContext): Promise<Omit<Check, "name">> 
   return ok(users.map((u) => `${u} (${admins.has(u) ? "admin" : "standard"} user${on.includes(u) ? ", logged in" : ""})`).join("; ") || "none");
 }
 
-// Whether ci can unlock the disk after a restart. If it can, the owner types one password at the
-// FileVault screen (ci's), and macOS logs ci straight in. If not, it takes the admin's password,
-// then a log out and ci's. Reads ci's ID and the disk's unlock users; no root needed.
-export const UNLOCK_FIX = `At the box, as your admin user, type taskbox unlock. After the next restart the FileVault screen shows ci: type ci's password there, once.`;
+// Whether the service account can unlock the disk after a restart. If it can, the owner types one
+// password at the FileVault screen (the service's), and macOS logs it straight in. If not, it takes
+// the admin's password, then a log out and the service's. Reads its ID and the disk's unlock users;
+// no root needed.
+export const unlockFix = (s: string) => `At the box, as your admin user, type taskbox unlock. After the next restart the FileVault screen shows ${s}: type ${s}'s password there, once.`;
 
-export async function ciUnlocksDisk(c: CheckContext): Promise<Omit<Check, "name">> {
+export async function serviceUnlocksDisk(c: CheckContext): Promise<Omit<Check, "name">> {
   const fv = await c.sys.run("/usr/bin/fdesetup", ["isactive"]);
   if (fv.stdout.trim() !== "true") return { status: "SKIP", detail: "FileVault is off, so a restart asks for no password; the FileVault line above is the one to fix" };
-  const id = await c.sys.run("/usr/bin/dscl", [".", "-read", "/Users/ci", "GeneratedUID"]);
+  const s = c.paths.service;
+  const UNLOCK_FIX = unlockFix(s);
+  const id = await c.sys.run("/usr/bin/dscl", [".", "-read", `/Users/${s}`, "GeneratedUID"]);
   const uuid = /GeneratedUID:\s*([0-9A-F-]{36})/i.exec(id.stdout)?.[1]?.toUpperCase();
-  if (!uuid) return fail(`could not read ci's ID. ${UNLOCK_FIX}`);
+  if (!uuid) return fail(`could not read ${s}'s ID. ${UNLOCK_FIX}`);
   const users = await c.sys.run("/usr/sbin/diskutil", ["apfs", "listCryptoUsers", "/"]);
-  if (users.code !== 0) return fail(`could not read who can unlock the disk. ${UNLOCK_FIX}`);
+  if (users.code !== 0) return fail(`${UNLOCK_UNKNOWN}. ${UNLOCK_FIX}`);
   return users.stdout.toUpperCase().includes(uuid)
-    ? ok("after a restart, type ci's password once at the FileVault screen")
-    : fail(`ci can't unlock the disk, so a restart needs your password, then ci's. ${UNLOCK_FIX}`);
+    ? ok(`after a restart, type ${s}'s password once at the FileVault screen`)
+    : fail(`${s} can't unlock the disk, so a restart needs your password, then ${s}'s. ${UNLOCK_FIX}`);
 }
 
 // check's extra rows beyond the pre-start ones, and what a restart will ask of the owner.
@@ -484,23 +544,200 @@ export async function guardRow(c: CheckContext): Promise<Omit<Check, "name">> {
   return ok(`${g.detail}. The rules went missing at ${new Date(g.missingAt!).toISOString().slice(11, 16)} UTC${start?.rulesWentMissing ? ", while a VM started," : ""} and were put back`);
 }
 
-// The user agents log in as over Tailscale SSH. It must be a standard user with taskbox's shell and a
-// read-only home, so a session can read the box and hold it, and change nothing else. Admin work is
-// never done through it. Until the owner makes it, the row says so.
-export async function remoteUserRow(c: CheckContext): Promise<Omit<Check, "name">> {
-  const u = c.cfg.remoteUser ?? DEFAULT_REMOTE_USER;
+// box.json, the box's own layer (settings/layers.ts): which keys it sets, why taskbox set it aside,
+// and each key it held that it may not. Only taskbox connect github and disconnect github write it.
+export async function boxSettingsRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  const passed = c.cfg.boxIgnored?.length ? `passed over, since box.json may hold only its own keys: ${c.cfg.boxIgnored.join(", ")}` : undefined;
+  if (c.cfg.boxProblem) return fail(`${c.paths.boxSettings} is set aside, and the release's settings are used: ${c.cfg.boxProblem}. ${BOX_FIX}${passed ? ` P${passed.slice(1)}.` : ""}`);
+  if (passed) return { status: "WARN", detail: passed };
+  const keys = c.cfg.boxKeys ?? [];
+  return ok(keys.length ? `${c.paths.boxSettings} sets ${keys.join(", ")}` : "none: every setting is the release's");
+}
+
+// The job source App itself, asked of GitHub: a key in place
+// for an App that is gone, uninstalled, or has more than it should fails here, with the fix. SKIP
+// with no source, or where the key can't be read (anyone but root and the service).
+// Lines joined as sentences, each starting with a capital.
+export function asSentences(lines: readonly string[]): string {
+  return lines.map((l) => l.charAt(0).toUpperCase() + l.slice(1)).join(". ");
+}
+
+// One line per runner in the group that isn't the box's own: a name without the box's runner prefix,
+// or a label that isn't in the box's settings (a runner claiming a hosted
+// label such as ubuntu-latest is named). JIT runners carry exactly the labels they were made with, so the box's own carry only its labels.
+export function runnerProblems(runners: readonly GroupRunner[], prefix: string, labels: readonly string[]): string[] {
+  const allowed = new Set(labels.map((l) => l.toLowerCase()));
+  const shown = (s: string) => s.replace(/[^\x20-\x7e]/g, "").slice(0, 60);
+  const out: string[] = [];
+  for (const r of runners) {
+    if (!r.name.startsWith(`${prefix}-`)) {
+      out.push(`the runner ${shown(r.name)} in the box's runner group wasn't made by this box`);
+      continue;
+    }
+    const other = r.labels.filter((l) => !allowed.has(l.toLowerCase()));
+    if (other.length) out.push(`the runner ${shown(r.name)} has the label ${other.map(shown).join(", ")}, which this box's settings don't name`);
+  }
+  return out;
+}
+
+// The box's runner group: only this box's runners, with its
+// labels. Run as the service or root, which hold the runner App's key. Three reads, no writes.
+export async function runnerGroupRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  // v3: with the GitHub key keeper on the box, the row asks it (rows/connect.ts).
+  const v3 = await import("./rows/connect.ts");
+  if (v3.keeperHere(c)) return v3.runnerGroupRow(c);
+  if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${c.paths.service} to check` };
+  let pem: string;
+  try {
+    pem = readFileSync(c.paths.key, "utf8");
+  } catch {
+    return { status: "SKIP", detail: "the box's App key isn't readable here" };
+  }
+  const log = new Log();
+  log.secret(pem);
+  const gh = new GitHub(c.sys, c.cfg, pem, log);
+  let problems: string[];
+  try {
+    const token = await gh.token("runners");
+    problems = runnerProblems(await gh.groupRunners(token, await gh.runnerGroupId(token)), c.cfg.runnerNamePrefix, boxLabels(c.cfg));
+  } catch (e) {
+    return fail(`GitHub couldn't be asked about the runner group (${String((e as Error).message).replace(/[^\x20-\x7e]/g, "").slice(0, 80)})`);
+  }
+  if (problems.length) return fail(asSentences(problems));
+  return ok("only this box's runners, with its labels");
+}
+
+export async function sourceAppRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  const v3 = await import("./rows/connect.ts");
+  if (v3.keeperHere(c)) return v3.sourceAppRow(c);
+  const src = sourceOf(c.cfg);
+  if (src.type !== "github-actions") return { status: "SKIP", detail: "no job source App" };
+  if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${c.paths.service} to check` };
+  const pem = readActionsKey(c.paths.actionsKeyDir, sourceKeyPath(c.paths, src.appId), c.serviceUid, c.rootUid ?? 0);
+  if (!pem) return { status: "SKIP", detail: "its key isn't on the box: the Job source App key row says so" };
+  const proof = await proveActionsKey({ sys: c.sys, log: new Log() }, c.cfg, pem, src.appId).catch((e: unknown) => ({ why: `GitHub couldn't be asked (${String((e as Error).message).slice(0, 60)})`, grew: false }));
+  if (!proof) return ok(`${src.app ?? `App ${src.appId}`} reads ${src.repos[0]}, with Actions read and nothing else`);
+  return fail(proof.grew ? `${proof.why}. Its key isn't used. Fix the App's rights on GitHub, or as your admin user type taskbox connect github to replace it` : `${proof.why}, so the box follows the jobs its VMs take. As your admin user, type taskbox connect github`);
+}
+
+// The account that runs the loop. With no such account, no session runs the loop, so no job runs.
+export async function serviceRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  const u = c.paths.service;
   const id = await c.sys.run("/usr/bin/id", ["-u", u]);
-  if (id.code !== 0) return { status: "SKIP", detail: `${u} isn't made yet. Tailscale SSH logs in as ${u} to read the box` };
+  if (id.code !== 0) return fail(`${u}, the service account taskbox.json names, isn't on this Mac, so no job runs. As your admin user, type taskbox update.`);
+  const a = await adminState(c.sys, u);
+  if (a === "admin") return fail(`${u} is an admin, and the service account must be a standard user. Make ${u} a Standard user in System Settings, Users & Groups.`);
+  if (a === "unknown") return fail(`taskbox can't tell whether ${u} is an admin. Nothing to do: agents fix it.`);
+  return ok(`${u}, a standard user, runs the loop`);
+}
+
+// The people in accounts.people (v2.7.0): each must be an account on this Mac, spelled as macOS spells
+// it, and a standard user. taskbox never makes or changes them, so each fix is the owner's or a PR's.
+export async function peopleRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  const people = c.cfg.accounts.people;
+  if (!people.length) return ok("taskbox.json names nobody, so Screen Sharing and Tailscale SSH are for nobody");
+  for (const p of people) {
+    if ((await uidOf(c.sys, p)) === undefined) return fail(`${p} is named in accounts.people but isn't an account on this Mac. Make it in System Settings, Users & Groups, as a Standard user, or an agent takes it out of taskbox.json in a PR.`);
+    const real = await recordName(c.sys, p);
+    if (real !== undefined && real !== p) return fail(`accounts.people names ${p}, but the account is spelled ${real}. An agent changes it to ${real} in taskbox.json in a PR.`);
+    const a = await adminState(c.sys, p);
+    if (a === "admin") return fail(`${p} is an admin, and a person's account must be a standard user. Make ${p} a Standard user in System Settings, Users & Groups.`);
+    if (a === "unknown") return fail(`taskbox can't tell whether ${p} is an admin. Nothing to do: agents fix it.`);
+  }
+  return ok(`${people.join(" and ")}, each a standard user`);
+}
+
+// The account agents log in as over Tailscale SSH. It must be a standard user with taskbox's shell
+// and a read-only home, so a session can read the box, and change nothing else. Admin work is never
+// done through it. Its name is the one a controller pairs with.
+export async function agentRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  const u = c.paths.agent;
+  if (u === undefined || c.paths.agentHome === undefined) return { status: "SKIP", detail: "taskbox.json names no agent account, so agents and controllers can't reach the box" };
+  const id = await c.sys.run("/usr/bin/id", ["-u", u]);
+  // Before the first install it is pending. After it, the install made it, so a missing one is a fault.
+  if (id.code !== 0) {
+    if (existsSync(c.paths.accountsRecord)) return fail(`${u} isn't on this Mac, so agents and controllers can't reach the box. As your admin user, type taskbox update, and it makes ${u}.`);
+    return { status: "SKIP", detail: `${u} isn't made yet; the install makes it. Tailscale SSH logs in as ${u} to read the box` };
+  }
   const a = await adminState(c.sys, u);
   if (a === "admin") return fail(`${u} is an admin. Make ${u} a Standard user in System Settings, Users & Groups.`);
   if (a === "unknown") return fail(`taskbox can't tell whether ${u} is an admin. Nothing to do: agents fix it.`);
-  const shell = /UserShell:\s*(\S+)/.exec((await c.sys.run("/usr/bin/dscl", [".", "-read", `/Users/${u}`, "UserShell"])).stdout)?.[1];
+  const read = (key: string) => userKey(c.sys, u, key);
+  // No way in but Tailscale SSH: off the login window, no password, and off the disk's unlock list.
+  // ShadowHashData reads as there only to root, so another user's check reads AuthenticationAuthority alone.
+  if (!/^(1|YES)$/i.test((await read("IsHidden")) ?? "")) return fail(`${u} shows on the login window. As your admin user, type taskbox update.`);
+  if (typeof (await read("AuthenticationAuthority")) === "string" || (c.uid === 0 && (await read("ShadowHashData")) !== undefined)) return fail(`${u} has a password. As your admin user, type taskbox update.`);
+  const unlock = await canUnlock(c.sys, u);
+  if (unlock === "unknown") return fail(`${UNLOCK_UNKNOWN}, so taskbox can't tell whether ${u} can unlock the disk. Nothing to do: agents fix it.`);
+  if (unlock === "yes") return fail(`${u} can unlock the disk, so its password works at the FileVault screen. As your admin user, type taskbox update.`);
+  const shell = await read("UserShell");
   if (shell !== REMOTE_SHELL) return fail(`${u}'s login shell isn't taskbox's, so a Tailscale SSH login gets a full shell. As your admin user, type taskbox update.`);
-  const home = /NFSHomeDirectory:\s*(\S+)/.exec((await c.sys.run("/usr/bin/dscl", [".", "-read", `/Users/${u}`, "NFSHomeDirectory"])).stdout)?.[1];
-  if (home !== c.paths.remoteHome) return fail(`${u}'s home isn't taskbox's empty folder ${c.paths.remoteHome}. As your admin user, type taskbox update.`);
+  const home = await read("NFSHomeDirectory");
+  if (home !== c.paths.agentHome) return fail(`${u}'s home isn't taskbox's empty folder ${c.paths.agentHome}. As your admin user, type taskbox update.`);
   const why = homeProblem(home, c.rootUid ?? 0);
   if (why) return fail(`${why}, so whoever logs in as ${u} could change what runs there. As your admin user, type taskbox update.`);
-  return ok(`${u}, a standard user with taskbox's shell and a read-only home`);
+  return ok(`${u}, a hidden standard user with no password, taskbox's shell and a read-only home. Controllers pair with the name ${u}`);
+}
+
+// Workspaces: the approver key the settings name must be the one the box
+// pinned at its own screen. Only then does the box trust it.
+export async function approverRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  const key = c.cfg.approverKey; // not trust: shown, and compared through trustedKey below
+  if (key === undefined) return { status: "SKIP", detail: "taskbox.json names no approver key, so workspaces are off" };
+  const pin = readPin(c.paths.approverPin, c.rootUid ?? 0);
+  if (trustedKey(key, pin) !== undefined) return ok(`${fingerprint(key)}, pinned at the box`);
+  const at = "At the box, as your admin user, type taskbox update, and check the fingerprint it shows";
+  if (pin.state === "none") return fail(`taskbox.json names the approver key ${fingerprint(key)}, and the box hasn't pinned it yet, so workspaces stay off. ${at}.`);
+  if (pin.state === "cleared") return fail(`the approver key was cleared at the box, so workspaces stay off. ${at}.`);
+  if (pin.state === "bad") return fail(`the box's pinned approver key isn't root's plain file, so workspaces stay off. At the box, as your admin user, type taskbox key reset approver, then taskbox update.`);
+  return fail(`taskbox.json names the approver key ${fingerprint(key)}, but the box trusts ${fingerprint(pin.key)}, so workspaces stay off. ${at}.`);
+}
+
+// The pool account, as the install leaves it (accounts.ts, placePool).
+export async function poolRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  if (c.cfg.approverKey === undefined /* not trust: whether to look at all */) return { status: "SKIP", detail: "taskbox.json names no approver key, so there is no workspace account" };
+  const names = poolNames(c.cfg.accounts);
+  const rec = readPoolRecord(c.paths.poolRecord, c.rootUid ?? 0);
+  for (const name of names) {
+    const why = await poolProblem(c.sys, rec, c.paths, name, name, GATE_SHELL, c.uid === 0, c.rootUid ?? 0);
+    if (why) return fail(why);
+  }
+  return ok(`${names.join(", ")}: ${names.length === 1 ? "a hidden standard user" : "hidden standard users"} with no password, each in its own group alone, its home at mode 700, the gate as its shell, and denied cron and at`);
+}
+
+// The workspaces fence, as the guard last found it (workspace/pass.ts): root's state, fresh, saying
+// the pf anchor is loaded and reads back as loaded; and the spool, the agent account's at mode 700.
+export async function fenceRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  if (c.cfg.approverKey === undefined /* not trust: whether to look at all */) return { status: "SKIP", detail: "taskbox.json names no approver key, so workspaces are off" };
+  const root = c.rootUid ?? 0;
+  const r = readStateFile(c.paths.workspaces, root);
+  if (r.kind === "missing") return fail("the guard hasn't written the workspaces state yet, so no workspace opens. If it stays so, as your admin user, type taskbox update.");
+  if (r.kind !== "ok") return fail(failMode(r).check ?? "the workspaces state can't be read");
+  if (!fresh(r.state, c.sys.now())) return fail("the guard hasn't made a pass for 3 minutes, so the workspaces state is stale and no workspace opens. Restart the Mac if it stays so.");
+  // A state the guard couldn't read and moved aside: workspaces started again, so the owner looks.
+  const moved = movedStates(c.paths.workspaces);
+  if (moved.length) return fail(`the guard couldn't read the workspaces state and moved it to ${moved.join(", ")}, so every workspace was closed. As your admin user, read it, then delete it`);
+  if (!r.state.fence) return fail("the guard hasn't checked the workspaces fence yet");
+  if (!r.state.fence.ok) return fail(`${r.state.fence.why}, so no workspace opens`);
+  const agent = c.cfg.accounts.agent;
+  const uid = agent !== undefined ? readRecord(c.paths.accountsRecord).made[agent]?.uid : undefined;
+  const spool = uid === undefined ? "the agent account isn't taskbox's" : spoolProblem(rootStateOf(c.paths).agentSpool, uid, root);
+  if (spool) return fail(`${spool}, so agents can't ask for a workspace. As your admin user, type taskbox update.`);
+  return ok(`${r.state.fence.why}. The spool is the agent account's at mode 700, and the state is root's and fresh`);
+}
+
+// The states the guard moved aside (workspace/pass.ts moveBadState), newest last, at most 3 named.
+export function movedStates(state: string): string[] {
+  try {
+    const base = `${state.split("/").pop()}.bad-`;
+    return readdirSync(dirname(state))
+      .filter((f) => f.startsWith(base) && /^\d{1,16}$/.test(f.slice(base.length)))
+      .sort()
+      .slice(-3)
+      .map((f) => join(dirname(state), f));
+  } catch {
+    return [];
+  }
 }
 
 // Why a home isn't root's and read-only to everyone else, or undefined. At most 5,000 entries.
@@ -535,6 +772,16 @@ export function homeProblem(home: string, rootUid: number): string | undefined {
 // tailscaled is signed in, with Tailscale SSH on and MagicDNS's answers off (install.ts), and runs
 // with taskbox's own LaunchDaemon, whose switches refuse every forward and SFTP.
 export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">> {
+  // While a key rotate tailscale holds tailscaled's socket, only root reaches it (tssocket.ts).
+  const { lockPath, readLock } = await import("./tssocket.ts");
+  const { rootStateOf } = await import("./core/paths.ts");
+  const lock = readLock(lockPath(rootStateOf(c.paths).dir), c.rootUid ?? 0, c.sys.now());
+  if (lock) return { status: "WARN", detail: `a key rotate tailscale (${lock.op}) holds tailscaled's socket, so only root reaches it until it ends. taskbox op show ${lock.op} follows it.` };
+  // Its socket's folder lets in root and the service account only (tssocket.ts); anyone may look.
+  const sock = await socketDirProblem(c.sys, c.paths, c.rootUid ?? 0);
+  if (sock) return fail(`${sock}, so other accounts on the box may reach tailscaled. If it stays so after a minute, as your admin user, type taskbox update.`);
+  // Only root and the service account can ask tailscaled itself.
+  if (c.uid !== 0 && (c.serviceUid === undefined || c.uid !== c.serviceUid)) return { status: "SKIP", detail: "only the service account can see Tailscale's status" };
   const ts = (args: string[]) => c.sys.run(c.paths.tailscale, [`--socket=${c.paths.tailscaleSocket}`, ...args], { timeoutMs: OUTSIDE_CALL_MS }).catch(() => ({ code: -1, stdout: "", stderr: "" }));
   const st = await ts(["status", "--json"]);
   let state = "";
@@ -545,7 +792,8 @@ export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">
     tags = j.Self?.Tags;
   } catch {}
   if (state !== "Running") return fail(`tailscaled isn't signed in (${state || "no answer"}). As your admin user, type taskbox update, and open the link it prints.`);
-  if (!Array.isArray(tags) || !tags.includes(TAILNET_TAG)) return fail(`the box isn't tagged ${TAILNET_TAG} on the tailnet, so the tailnet's rules for your own devices reach it. Nothing to do: agents fix it.`);
+  const tag = tagOf(c.cfg);
+  if (!Array.isArray(tags) || !tags.includes(tag)) return fail(`the box isn't tagged ${tag} on the tailnet, so the tailnet's rules for your own devices reach it. Nothing to do: agents fix it.`);
   const prefs = await ts(["debug", "prefs"]);
   let p: { RunSSH?: boolean; CorpDNS?: boolean; RouteAll?: boolean; ExitNodeID?: string; ExitNodeIP?: string; AdvertiseRoutes?: unknown[] | null; AdvertiseServices?: unknown[] | null; RunWebClient?: boolean; AppConnector?: { Advertise?: boolean } } = {};
   try {
@@ -573,6 +821,9 @@ export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">
   if (serve.code !== 0 || !served || typeof served !== "object") extra.push("what it serves couldn't be read");
   else if (["TCP", "Web", "Services", "AllowFunnel", "Foreground"].some((k) => served![k] && Object.keys(served![k] as object).length)) extra.push("Tailscale Serve or Funnel is on");
   if (extra.length) return fail(`on the tailnet, ${extra.join(", ")}. Nothing to do: agents fix it.`);
+  // The tailnet the install signed in to, pinned: a key rotation that lands on another logs out of it.
+  const { readTailnetPin, tailnetPinPath } = await import("./tsrotate.ts");
+  if (!readTailnetPin(tailnetPinPath(rootStateOf(c.paths).dir), c.rootUid ?? 0)) return fail("the box's tailnet isn't pinned, so a sign-in to another tailnet couldn't be told apart. As your admin user, type taskbox update.");
   const loose = "so Tailscale SSH may allow file copying or forwards";
   // Between the first update to the new labels and the second, tailscaled runs under its old name,
   // from the old-named plist, which must match the install's own copy under that name.
@@ -602,7 +853,7 @@ export async function tailscaleRow(c: CheckContext): Promise<Omit<Check, "name">
   // A move in the last day is said, since it means the log was open to every user for a while.
   const moved = readSeen(c.paths)?.logMovedAt;
   const movedNote = moved && c.sys.now() - moved < 86_400_000 ? `. The guard moved aside a log every user could read at ${new Date(moved).toTimeString().slice(0, 5)}, and restarted tailscaled` : "";
-  return ok(`signed in as ${TAILNET_TAG}, with Tailscale SSH${underOld ? ", under its old name" : ""}${movedNote}`);
+  return ok(`signed in as ${tag}, with Tailscale SSH${underOld ? ", under its old name" : ""}${movedNote}`);
 }
 
 // Between the first update to the new labels, which the install before runs and which keeps every
@@ -647,22 +898,24 @@ function sameText(a: string, b: string): boolean {
 
 // The install ID a controller pairs with: there, root's and read-only.
 async function installIdRow(c: CheckContext): Promise<Omit<Check, "name">> {
-  return readInstallId(c.paths.installId, c.rootUid ?? 0) ? ok("there, root's and read-only") : fail("there is no install ID, so a laptop can't pair with the box. As your admin user, type taskbox update.");
+  return readInstallId(c.paths.installId, c.rootUid ?? 0) ? ok("there, root's and read-only") : fail("there is no install ID, so a controller can't pair with the box. As your admin user, type taskbox update.");
 }
 
-// ci is left logged in at the console, holding the App key, the job source key and Tart, so its
-// screen must lock. sysadminctl reads the caller's own setting with no password, so only ci's own
-// check can read it. The display sleeps after 10 min (the install sets it), and the lock starts then.
-const SCREEN_LOCK_STEP = `At the box, as ci: System Settings, Lock Screen, "Require password after screen saver begins or display is turned off": Immediately.`;
-export const SCREEN_LOCK_FIX = `ci's screen doesn't lock. ${SCREEN_LOCK_STEP}`;
+// The service is left logged in at the console, holding the App key, the job source key and Tart,
+// so its screen must lock. sysadminctl reads the caller's own setting with no password, so only the
+// service's own check can read it. The display sleeps after 10 min (the install sets it), and the
+// lock starts then.
+const screenLockStep = (s: string) => `At the box, as ${s}: System Settings, Lock Screen, "Require password after screen saver begins or display is turned off": Immediately.`;
+export const screenLockFix = (s: string) => `${s}'s screen doesn't lock. ${screenLockStep(s)}`;
 export async function screenLockRow(c: CheckContext): Promise<Omit<Check, "name">> {
-  if (c.ciUid === undefined || c.uid !== c.ciUid) return { status: "SKIP", detail: "run as ci to check" };
+  const n = c.paths.service;
+  if (c.serviceUid === undefined || c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${n} to check` };
   const r = await c.sys.run("/usr/sbin/sysadminctl", ["-screenLock", "status"], { timeoutMs: 10_000 });
   const said = r.stdout + r.stderr;
-  if (/delay is immediate/i.test(said)) return ok("ci's screen locks as soon as the display sleeps");
+  if (/delay is immediate/i.test(said)) return ok(`${n}'s screen locks as soon as the display sleeps`);
   const s = Number(/delay is (\d+) seconds?/i.exec(said)?.[1]);
-  if (s <= 300) return ok(`ci's screen locks ${s} s after the display sleeps`);
-  return fail(s > 300 ? `ci's screen locks only ${s} s after the display sleeps. ${SCREEN_LOCK_STEP}` : SCREEN_LOCK_FIX);
+  if (s <= 300) return ok(`${n}'s screen locks ${s} s after the display sleeps`);
+  return fail(s > 300 ? `${n}'s screen locks only ${s} s after the display sleeps. ${screenLockStep(n)}` : screenLockFix(n));
 }
 
 // v2.5.0: the away-ready rows (awaychecks.ts) follow, each its own function.
@@ -670,15 +923,15 @@ export async function screenLockRow(c: CheckContext): Promise<Omit<Check, "name"
 async function rollbackRow(c: CheckContext): Promise<Omit<Check, "name">> {
   const state = rollbackWatchState(c.paths);
   if (state.kind === "gone") return ok("none waiting");
-  if (state.kind === "unreadable") return fail("the rollback watcher's file can't be read, so it keeps watching and moves nothing. If the box should go back, type taskbox undo as your admin user. Otherwise agents fix the file");
+  if (state.kind === "unreadable") return fail("the rollback watcher's file can't be read, so it keeps watching and moves nothing. If the box should go back, type taskbox rollback as your admin user. Otherwise agents fix the file");
   const { w } = state;
   const tag = w.tag.replace(/[^\x20-\x7e]/g, "").slice(0, 24);
   if (w.blocked) return fail(`${tag} can't be checked by the rollback watcher: ${w.blocked.replace(/[^\x20-\x7e]/g, "").slice(0, 120)}. If no update or undo is running, restart the box`);
-  if (w.failures) return fail(`${tag} wasn't proved, and going back to the install before failed ${w.failures} time${w.failures === 1 ? "" : "s"}: ${(w.lastError ?? "").replace(/[^\x20-\x7e]/g, "").slice(0, 200)}. It tries again by itself. To go back now, type taskbox undo as your admin user`);
+  if (w.failures) return fail(`${tag} wasn't proved, and going back to the install before failed ${w.failures} time${w.failures === 1 ? "" : "s"}: ${(w.lastError ?? "").replace(/[^\x20-\x7e]/g, "").slice(0, 200)}. It tries again by itself. To go back now, type taskbox rollback as your admin user`);
   return ok(`watching ${tag}: back to the install before unless it is proved by ${new Date(Math.min(w.deadline, w.placedAt + MAX_HOLD_MS)).toISOString().slice(11, 16)} UTC`);
 }
 
-export const CHECK_EXTRA: [string, CheckFn][] = [["Rollback watcher", rollbackRow], ["Service names", serviceNamesRow], ["Tailscale", tailscaleRow], ["Restart password", ciUnlocksDisk], ["Screen lock", screenLockRow], ["Other users", otherUsers], ["Public address", publicAddress], ["Screen Sharing guard", guardRow], ["Remote user", remoteUserRow], ["Install ID", installIdRow], ...AWAY_ROWS];
+export const CHECK_EXTRA: [string, CheckFn][] = [["Rollback watcher", rollbackRow], ["Service names", serviceNamesRow], ["Box settings", boxSettingsRow], ["Job source App", sourceAppRow], ["Runner group", runnerGroupRow], ["Service account", serviceRow], ["People", peopleRow], ["Tailscale", tailscaleRow], ["Restart password", serviceUnlocksDisk], ["Screen lock", screenLockRow], ["Other users", otherUsers], ["Public address", publicAddress], ["Screen Sharing guard", guardRow], ["Agent account", agentRow], ["Approver key", approverRow], ["Workspace account", poolRow], ["Workspaces fence", fenceRow], ["Install ID", installIdRow], ...AWAY_ROWS];
 
 // /usr/local/bin/taskbox: what every user types. Its folders must be root's alone, so nobody else can
 // point the command somewhere else.

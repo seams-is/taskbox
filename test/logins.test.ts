@@ -35,7 +35,10 @@ import { type OpsDeps, RELOAD_JOB, reloadPlist, reloadPlistPath, reloadScript, r
 import { commandFor } from "../src/shell.ts";
 import { screen } from "../src/watch.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, quietLogins, servicesObey, tempRoot } from "./helpers.ts";
+import { CFG as BASE, quietBox, quietLogins, servicesObey, tempRoot, testBox } from "./helpers.ts";
+
+// The fixtures' box: its service account is ci and its agent account remote (v2.7.0's accounts).
+const CFG = { ...BASE, accounts: { service: "ci", agent: "remote", people: ["pat"] } };
 
 const repo = join(import.meta.dir, "..");
 const LOG = readFileSync(join(import.meta.dir, "fixtures/tailscaled-ssh.log"), "utf8");
@@ -59,16 +62,17 @@ function lastJson(rows: { user: string; tty: string; from: string; at: number; s
 
 // A box for the guard's passes: a log, login records, and who Tailscale says has each address.
 function box(o: { log?: string; last?: string } = {}) {
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   mkdirSync(dirname(p.tailscaledLog), { recursive: true });
   mkdirSync(dirname(p.loginsSeen), { recursive: true });
   if (o.log !== undefined) writeFileSync(p.tailscaledLog, o.log, { mode: 0o640 });
   const sys = new FakeSys();
-    quietLogins(sys);
-    servicesObey(sys);
+  // launchctl answers as taskbox's services do: the guard restarts tailscaled after it moves a log.
+  quietLogins(sys);
+  servicesObey(sys);
   sys.clock = NOW;
   const whois: Record<string, { LoginName?: string; Name: string; Tags?: string[] }> = {
-    "100.101.102.103": { LoginName: "pat@example.com", Name: "laptop.example.ts.net." },
+    "100.101.102.103": { LoginName: "pat@example.com", Name: "workstation.example.ts.net." },
     "100.101.102.104": { LoginName: "agent@example.com", Name: "agent-mac.example.ts.net." },
     "fd7a:115c:a1e0::5": { Name: "runner.example.ts.net.", Tags: ["tag:agents"] },
   };
@@ -115,7 +119,7 @@ describe("tailscaled's log, as v1.104.5 prints it: unverified detail only", () =
   });
 });
 
-// The review's forgeries (scratchpad forge.ts), with made-up names. A client chooses the user it asks
+// Forgeries, with made-up names. A client chooses the user it asks
 // for, and tailscaled prints it raw, so each of these is a line any device on port 22 can write.
 describe("forged lines in tailscaled's log", () => {
   const real = [
@@ -205,7 +209,7 @@ describe("the guard's passes", () => {
     const b = box({ log: LOG, last: LAST });
     expect(await b.keeper.pass(NOW)).toMatchObject({ logins: 5, unverified: 3 });
     const rec = readAdminRecord(b.p.loginsRecord, me)!;
-    expect(rec.logins.find((l) => l.at === t(14, 3))).toMatchObject({ account: "pat", address: "100.101.102.103", seconds: 83, tailnetUser: "pat@example.com", device: "laptop", check: "likely", checkBasis: "wait", waitedS: 42 });
+    expect(rec.logins.find((l) => l.at === t(14, 3))).toMatchObject({ account: "pat", address: "100.101.102.103", seconds: 83, tailnetUser: "pat@example.com", device: "workstation", check: "likely", checkBasis: "wait", waitedS: 42 });
     expect(rec.logins.find((l) => l.address === "fd7a:115c:a1e0::5")).toMatchObject({ tailnetUser: "tagged tag:agents", device: "runner" });
     // A second session on one connection has no login record: unverified, never a login.
     expect(rec.unverified.map((u) => [u.id, u.session])).toEqual([
@@ -220,7 +224,7 @@ describe("the guard's passes", () => {
     await b.keeper.pass(NOW);
     b.whois["100.101.102.103"] = { LoginName: "someone@example.com", Name: "other.example.ts.net." };
     await b.keeper.pass(NOW + 60_000);
-    expect(readAdminRecord(b.p.loginsRecord, me)!.logins[0]).toMatchObject({ tailnetUser: "pat@example.com", device: "laptop", stillOn: true });
+    expect(readAdminRecord(b.p.loginsRecord, me)!.logins[0]).toMatchObject({ tailnetUser: "pat@example.com", device: "workstation", stillOn: true });
   });
 
   test("a session still on is written again with its length once it ends", async () => {
@@ -238,7 +242,7 @@ describe("the guard's passes", () => {
     expect(statSync(b.p.loginsRecord).mode & 0o777).toBe(0o640);
     expect(statSync(b.p.loginsSeen).mode & 0o777).toBe(0o644);
     const seen = readFileSync(b.p.loginsSeen, "utf8");
-    for (const secret of ["pat", "remote", "root", "example.com", "laptop", "100.101.102", "fd7a:", "sess-", "ssh-conn-", "tty"]) expect({ secret, in: seen.includes(secret) }).toEqual({ secret, in: false });
+    for (const secret of ["pat", "remote", "root", "example.com", "workstation", "100.101.102", "fd7a:", "sess-", "ssh-conn-", "tty"]) expect({ secret, in: seen.includes(secret) }).toEqual({ secret, in: false });
     const s = readSeenRecord(b.p.loginsSeen, me)!;
     expect([s.kinds.person.logins.length, s.kinds.person.likely, s.kinds.person.unverified.length, s.kinds.agent.logins.length, s.attempts.length]).toEqual([3, 1, 1, 2, 2]);
   });
@@ -331,7 +335,7 @@ describe("who sees what", () => {
 
   test("an admin sees each login: account, tailnet user, device, address, length, and the check as unverified", async () => {
     const text = adminScreen((await views()).admin, "remote", false).join("\n");
-    expect(text).toContain("pat        pat@example.com on laptop (100.101.102.103), 83 s, waited 42 s before the session (likely a check; tailscaled's log, unverified)");
+    expect(text).toContain("pat        pat@example.com on workstation (100.101.102.103), 83 s, waited 42 s before the session (likely a check; tailscaled's log, unverified)");
     expect(text).toContain("Unverified, from tailscaled's log only. A client on the tailnet can write lines there, so none of this is a login:");
     expect(text).toContain("no session: check not answered, from 100.101.102.103, check asked (tailscaled's log, unverified)");
     expect(text).toContain("remote, the agent account: 2 logins");
@@ -340,14 +344,14 @@ describe("who sees what", () => {
 
   test("an admin's JSON has checkBasis, log or wait", async () => {
     const a = adminAnswer((await views()).admin);
-    expect(a.logins.find((l) => l.at === t(14, 3))).toMatchObject({ tailnetUser: "pat@example.com", device: "laptop", check: "likely", checkBasis: "wait", waitedSeconds: 42 });
+    expect(a.logins.find((l) => l.at === t(14, 3))).toMatchObject({ tailnetUser: "pat@example.com", device: "workstation", check: "likely", checkBasis: "wait", waitedSeconds: 42 });
     expect(a.unverified.find((u) => u.why === "check not answered")).toMatchObject({ check: "asked", checkBasis: "log" });
   });
 
   test("anyone else, remote among them, sees counts per kind and no account, tailnet user, device or address", async () => {
     const { seen } = await views();
     const text = [...seenScreen(seen, NOW), JSON.stringify(seenAnswer(seen, NOW))].join("\n");
-    for (const secret of ["pat", "root", "example.com", "laptop", "100.101.102", "fd7a:"]) expect({ secret, shown: text.includes(secret) }).toEqual({ secret, shown: false });
+    for (const secret of ["pat", "root", "example.com", "workstation", "100.101.102", "fd7a:"]) expect({ secret, shown: text.includes(secret) }).toEqual({ secret, shown: false });
     expect(text).toContain("a person's account: 3 logins, the latest 20 Nov 14:03, likely a check 1 times (tailscaled's log, unverified). Unverified, in tailscaled's log only: 1 session with no login record");
     expect(text).toContain("Account names, tailnet users and devices are shown to admins only.");
     expect(seenAnswer(seen, NOW).kinds.person).toEqual({ logins: 3, latest: t(14, 3), checkAsked: 0, checkLikely: 1, unverifiedSessions: 1 });
@@ -364,7 +368,7 @@ describe("the guard keeps tailscaled loaded", () => {
     const sys = new FakeSys();
     quietLogins(sys);
     servicesObey(sys);
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(dirname(p.tailscaledPlist), { recursive: true });
     writeFileSync(p.tailscaledPlist, "<plist/>");
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: loaded() ? 0 : 113, stdout: "", stderr: "" } : cmd === "/bin/launchctl" && args[0] === "bootstrap" ? { code: bootstrapCode, stdout: "", stderr: "" } : undefined));
@@ -438,7 +442,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
   });
 
   test("both plists send tailscaled's output to the log taskbox reads, never to /dev/null", () => {
-    const want = paths("/", "app").tailscaledLog;
+    const want = paths("/", testBox()).tailscaledLog;
     expect(want).toBe("/private/var/log/taskbox-tailscaled.log");
     for (const f of readdirSync(join(repo, "launchd")).filter((n) => n.endsWith(".tailscaled.plist"))) {
       const text = readFileSync(join(repo, "launchd", f), "utf8");
@@ -449,7 +453,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
   });
 
   test("the log is made 640 and group admin, and a link in its place is moved aside", () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(dirname(p.tailscaledLog), { recursive: true });
     const elsewhere = join(dirname(p.tailscaledLog), "elsewhere");
     writeFileSync(elsewhere, "x", { mode: 0o644 });
@@ -467,7 +471,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     const fn = src.slice(src.indexOf("export async function install("));
     const at = fn.indexOf("placeTailscaledLog(");
     expect(at).toBeGreaterThan(0);
-    expect(at).toBeLessThan(fn.indexOf("await retirePrevious("));
+    expect(at).toBeLessThan(fn.indexOf("writeFileSync(d.paths.agentPlist"));
     expect(at).toBeLessThan(fn.indexOf("await loadDaemon(d, TAILSCALED_LABEL"));
     expect(fn.slice(at - 20, at)).toMatch(/try \{\s*$/);
   });
@@ -477,7 +481,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     quietLogins(sys);
     servicesObey(sys);
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 0, stdout: "state = running\n", stderr: "" } : undefined));
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     const now = join(dirname(p.opt), "taskbox-now");
     const was = join(dirname(p.opt), "taskbox-was");
     for (const dir of [now, was]) mkdirSync(join(dir, "app/launchd"), { recursive: true });
@@ -487,7 +491,8 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     mkdirSync(dirname(p.tailscaleSocket), { recursive: true });
     writeFileSync(p.tailscaledPlist, daemon.replaceAll("/private/var/log/taskbox-tailscaled.log", "/dev/null"));
     if (logDir) mkdirSync(dirname(p.tailscaledLog), { recursive: true });
-    const d: OpsDeps = { sys, paths: p, uid: 0, say: () => {}, ask: async () => "yes" };
+    // The one-shot is written only in folders that are root's alone: here, the tester's.
+    const d: OpsDeps = { sys, paths: p, uid: 0, say: () => {}, ask: async () => "yes", rootUid: process.getuid!() };
     return { sys, p, now, was, daemon, d };
   }
 
@@ -497,7 +502,8 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     expect(await restartServices(d, now, was, (path) => owned.push(path))).toContain("tailscaled loads again from this install's plist within a minute");
     expect(readFileSync(p.tailscaledPlist, "utf8")).toBe(daemon);
     const job = reloadPlistPath(p);
-    expect(owned).toEqual([p.tailscaledLog, job]);
+    // The token and the one-shot are each given to root on their new names, before the rename.
+    expect(owned.map((o) => o.replace(/\.new\.\d+\.[0-9a-f]{16}$/, ""))).toEqual([p.tailscaledLog, reloadToken(p), job]);
     expect(existsSync(reloadToken(p))).toBe(true);
     expect(statSync(job).mode & 0o777).toBe(0o644);
     expect(readFileSync(job, "utf8")).toBe(reloadPlist(reloadScript(TAILSCALED_LABEL, p.tailscaledPlist, reloadToken(p), job)));
@@ -539,7 +545,7 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     const sys = new FakeSys();
     quietLogins(sys);
     servicesObey(sys);
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(dirname(p.tailscaledPlist), { recursive: true });
     writeFileSync(reloadPlistPath(p), "<plist/>");
     expect(await dropReloadJob(sys, p)).toBe(true);
@@ -559,12 +565,12 @@ describe("tailscaled's LaunchDaemon and its log", () => {
     quietLogins(sys);
     servicesObey(sys);
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 113, stdout: "", stderr: "" } : undefined));
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     for (const f of [p.tailscaledLog, p.loginsSeen, p.tailscaleSocket, p.tailscaledPlist]) mkdirSync(dirname(f), { recursive: true });
     const files = [p.tailscaledLog, `${p.tailscaledLog}.0`, `${p.tailscaledLog}.0.new`, `${p.tailscaledLog}.old`, p.loginsRecord, `${p.loginsRecord}.new`, p.loginsSeen, `${p.loginsSeen}.new`, reloadToken(p), reloadPlistPath(p)];
     for (const f of files) writeFileSync(f, "x");
     const answers = ["yes", "no"];
-    await remove({ sys, paths: p, uid: 0, say: () => {}, ask: async () => answers.shift() ?? "no" }, { ciUid: 502 });
+    await remove({ sys, paths: p, uid: 0, say: () => {}, ask: async () => answers.shift() ?? "no" }, { serviceUid: 502 });
     for (const f of files) expect({ f, there: existsSync(f) }).toEqual({ f, there: false });
   });
 });
@@ -587,10 +593,10 @@ describe("the lines elsewhere", () => {
     quietLogins(sys);
     servicesObey(sys);
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 113, stdout: "", stderr: "" } : undefined));
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     const said: string[] = [];
     const line = "Tailscale SSH to a person's account, 1 login in the last hour, the latest 14:03. taskbox logins lists them.";
-    await status({ sys, paths: p, uid: 502, ciUid: 502, say: (l) => said.push(l), ask: async () => "no" }, undefined, line);
+    await status({ sys, paths: p, uid: 502, serviceUid: 502, say: (l) => said.push(l), ask: async () => "no" }, undefined, line);
     expect(said).toContain(`  Logins:    ${line}`);
     expect(screen({ pullFile: p.pull, loopFile: p.loopState, now: NOW, logins: line })).toContain(`Logins:    ${line}`);
     expect(screen({ pullFile: p.pull, loopFile: p.loopState, now: NOW }).some((l) => l.startsWith("Logins:"))).toBe(false);
@@ -607,7 +613,7 @@ describe("the lines elsewhere", () => {
   test("away's row reads the counts only a root-owned record holds", async () => {
     const b = box({ log: LOG, last: LAST });
     await b.keeper.pass(NOW);
-    const c = { sys: b.sys, cfg: CFG, paths: b.p, uid: me, ciUid: 502 } as CheckContext;
+    const c = { sys: b.sys, cfg: CFG, paths: b.p, uid: me, serviceUid: 502 } as CheckContext;
     // A test's own file isn't root's, so it reads as no record.
     expect((await loginsRow(c)).status).toBe("SKIP");
   });

@@ -1,21 +1,22 @@
-// Review findings S3, S11 and T8: root skips the test repo row, the simulator kept out of src/, and the
+// Root skips the test repo row, the simulator kept out of src/, and the
 // simulator's calibration path run end to end on a day the box's own answer shape carries.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { jobsAnswer } from "../src/answers.ts";
-import { CI_USER, type Config, paths } from "../src/config.ts";
+import { type Config, paths } from "../src/config.ts";
 import { testRepoRow } from "../src/loadcmd.ts";
+import { serviceName } from "../src/names.ts";
 import { spread } from "../src/timings.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, PEM, tempRoot } from "./helpers.ts";
+import { CFG, PEM, tempRoot, testBox } from "./helpers.ts";
 import { asJobLines, MERGE, replayFromJobs, rng, type SimJob, simulate } from "./sim.ts";
 
 const M = 60_000;
 const TEST = { name: "example-org/load", role: "load" as const, runnerGroup: "taskbox-load" };
 const LOADCFG: Config = { ...CFG, vmsAtOnce: 2, sources: [{ type: "github-actions", appId: 4242, repos: [CFG.jobsFrom, TEST] }] };
 
-describe("S11: the simulator stays in test/", () => {
+describe("the simulator stays in test/", () => {
   test("no file in src/ imports the simulator or anything from test/", () => {
     const src = join(import.meta.dir, "../src");
     const files = readdirSync(src, { recursive: true }).map(String).filter((f) => f.endsWith(".ts"));
@@ -24,11 +25,11 @@ describe("S11: the simulator stays in test/", () => {
   });
 });
 
-describe("S3: the test repo row as root", () => {
+describe("the test repo row as root", () => {
   // The key's path is in the service account's home, which that account controls. Root never opens
   // it, so a link or a FIFO left there can neither redirect nor hang root's taskbox check.
   test("root skips the row and never opens the App key's path", async () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(join(p.key, ".."), { recursive: true });
     const elsewhere = join(tempRoot(), "other.pem");
     writeFileSync(elsewhere, PEM);
@@ -39,16 +40,16 @@ describe("S3: the test repo row as root", () => {
       calls++;
       throw new Error("no network in this test");
     };
-    const r = await testRepoRow({ sys, cfg: LOADCFG, paths: p, uid: 0, ciUid: 502 } as never);
-    expect(r).toEqual({ status: "SKIP", detail: `run as ${CI_USER} to check` });
+    const r = await testRepoRow({ sys, cfg: LOADCFG, paths: p, uid: 0, serviceUid: 502 } as never);
+    expect(r).toEqual({ status: "SKIP", detail: `run as ${serviceName()} to check` });
     expect(calls).toBe(0);
   });
 });
 
-describe("T8: the calibration path, end to end", () => {
+describe("the calibration path, end to end", () => {
   // A day made by the simulator, carried through the box's own jobs answer and JSON, then replayed:
   // the saved-day test's comparison must hold on a day that is the model's own.
-  test("a simulated day, as taskbox jobs --all --json, replays within 3 minutes on the macOS wait", () => {
+  test("a simulated day, as taskbox job list --all --json, replays within 3 minutes on the macOS wait", () => {
     const r = rng(7);
     const jobs: SimJob[] = Array.from({ length: 40 }, (_, i) => {
       const kind = r() < 0.5 ? "macos" : "linux";

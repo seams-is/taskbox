@@ -1,10 +1,9 @@
-// The loop's hardening after the 18 Nov review (work package A). Each describe names its finding.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashTree, listFiles } from "../src/checks.ts";
-import { CI_USER, type Config, GUARD_LABEL, paths } from "../src/config.ts";
+import { type Config, paths, GUARD_LABEL } from "../src/config.ts";
 import { appJwt } from "../src/github.ts";
 import { keepInert } from "../src/install.ts";
 import { FAILS_TO_PAUSE, takeTurns } from "../src/kinds.ts";
@@ -15,10 +14,10 @@ import { QueueReader } from "../src/queue.ts";
 import { GitHubActionsSource } from "../src/source.ts";
 import { writeProof } from "../src/proof.ts";
 import { IMAGE_GONE } from "../src/vm.ts";
-import { SOFTNET_USER, TART_KIT } from "../src/tart.ts";
+import { TART_KIT } from "../src/tart.ts";
 import { readLoop } from "../src/watch.ts";
 import { FakeSys, SECRETS } from "./fake.ts";
-import { CFG, fakeLaunchd, loopDeps, PEM, quietBox, servicesObey, tempRoot } from "./helpers.ts";
+import { CFG, loopDeps, PEM, tempRoot, testBox, fakeLaunchd, quietBox, servicesObey } from "./helpers.ts";
 
 // Tart lists these as its VMs and images.
 function tartLists(sys: FakeSys, vms: { Name: string; Source: string }[]) {
@@ -41,7 +40,7 @@ function happyGuest(sys: FakeSys) {
   };
 }
 
-describe("R7: the log's secret set stays small", () => {
+describe("the log's secret set stays small", () => {
   // Built the way GitHub builds encoded_jit_config: base64 of a JSON object whose first key is
   // ".runner", with fake values, several KB.
   const jit = Buffer.from(
@@ -101,7 +100,7 @@ describe("R7: the log's secret set stays small", () => {
   });
 });
 
-describe("R5: a full disk never skips deleting the VM", () => {
+describe("a full disk never skips deleting the VM", () => {
   // The runner takes its job, then the disk is full by the time it exits.
   function fullAtExit(sys: FakeSys, p: { loopState: string }) {
     sys.onSpawn = (proc) => {
@@ -163,13 +162,15 @@ describe("R5: a full disk never skips deleting the VM", () => {
   });
 });
 
-describe("R3: a slow GitHub never holds a slot past its beat", () => {
-  // GitHub that never answers: each call waits until its signal aborts.
+describe("a slow GitHub never holds a slot past its beat", () => {
+  // GitHub that never answers: each call waits until its signal aborts. The signal's timer is the
+  // fake clock's, so the clock runs on a minute while the call waits.
   class SlowSys extends FakeSys {
     fetches = 0;
     override async fetch(_url: string, init?: RequestInit): Promise<Response> {
       this.fetches++;
       const signal = init?.signal!;
+      void this.sleep(60_000);
       return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
     }
   }
@@ -198,7 +199,7 @@ describe("R3: a slow GitHub never holds a slot past its beat", () => {
   });
 });
 
-describe("R2: a runner that exits without a job is a failure", () => {
+describe("a runner that exits without a job is a failure", () => {
   // The runner prints these lines, then exits.
   function runnerSays(sys: FakeSys, lines: string[]) {
     sys.onSpawn = (p) => {
@@ -244,7 +245,7 @@ const LCFG: Config = { ...CFG, linux: { label: "taskbox-linux", image: "ghcr.io/
 const guestSilent = (sys: FakeSys) => sys.responders.unshift((cmd, args) => (cmd.endsWith("/tart") && args[0] === "exec" ? { code: 1, stdout: "", stderr: "no agent" } : undefined));
 const execs = (sys: FakeSys) => sys.calls.filter((c) => c.cmd.endsWith("/tart") && c.args[0] === "exec").length;
 
-describe("R6: the start's beat moves while its guest wait moves", () => {
+describe("the start's beat moves while its guest wait moves", () => {
   test("each try beats on the caller's slot, so a slow start is never stale", async () => {
     const sys = new FakeSys();
     guestSilent(sys);
@@ -272,7 +273,7 @@ describe("R6: the start's beat moves while its guest wait moves", () => {
   });
 });
 
-describe("R8: a VM that dies at once frees the start gate", () => {
+describe("a VM that dies at once frees the start gate", () => {
   // tart run ends as soon as it starts.
   const runDies = (sys: FakeSys) => (sys.onSpawn = (p) => p.args[0] === "run" && p.exit(1));
 
@@ -320,7 +321,7 @@ describe("R8: a VM that dies at once frees the start gate", () => {
   });
 });
 
-describe("R1: only taskbox's Softnet still root halts the box", () => {
+describe("only taskbox's Softnet still root halts the box", () => {
   const PS = "pid=,etime=,user=,ruser=,svuid=,comm=";
   const LAUNCHD = "1 9-00:00:00 root root 0 /sbin/launchd";
   // What ps answers for the Softnet check: a result, or a throw.
@@ -334,7 +335,7 @@ describe("R1: only taskbox's Softnet still root halts the box", () => {
     ["ps fails", { code: 1, stdout: "" }],
     ["ps throws", "throw"],
     ["ps's output doesn't parse", { code: 0, stdout: "PID ETIME USER\nsomething else entirely\n" }],
-    ["an age doesn't parse", { code: 0, stdout: `${LAUNCHD}\n77 later root ci 0 /opt/taskbox/softnet/softnet\n` }],
+    ["an age doesn't parse", { code: 0, stdout: `${LAUNCHD}\n77 later root taskbox 0 /opt/taskbox/softnet/softnet\n` }],
   ];
 
   for (const [name, out] of unreadable) {
@@ -378,10 +379,10 @@ describe("R1: only taskbox's Softnet still root halts the box", () => {
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("softnet-root");
   });
 
-  test("a ci Softnet still root past its grace halts, as before", async () => {
+  test("a Softnet of the service's still root past its grace halts, as before", async () => {
     const sys = new FakeSys();
     happyGuest(sys);
-    psSays(sys, { code: 0, stdout: `${LAUNCHD}\n77 03:00 root ci 0 /opt/taskbox/softnet/softnet\n` });
+    psSays(sys, { code: 0, stdout: `${LAUNCHD}\n77 03:00 root taskbox 0 /opt/taskbox/softnet/softnet\n` });
     const d = loopDeps(sys, tempRoot());
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("softnet-root");
     expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).failing).toStartWith("Softnet runs as root");
@@ -397,13 +398,20 @@ describe("R1: only taskbox's Softnet still root halts the box", () => {
     expect(r.detail).toStartWith("taskbox couldn't tell");
   });
 
-  test("tart.ts names the same ci as config.ts", () => {
-    expect(SOFTNET_USER).toBe(CI_USER);
+  // v2.7.0: the account is accounts.service, passed in, so tart.ts names no account of its own.
+  test("the Softnet folder's one ACL entry and the ps check name the configured service account", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskbox-inst-"));
+    mkdirSync(join(dir, "softnet"));
+    writeFileSync(join(dir, "softnet/softnet"), "softnet");
+    const calls: string[] = [];
+    await TART_KIT.finish(dir, "box-service", async () => {}, async (cmd, args) => void calls.push(`${cmd} ${args.join(" ")}`));
+    expect(calls).toContain(`/bin/chmod +a user:box-service allow list,search ${join(dir, "softnet")}`);
+    expect(calls.join("\n")).not.toMatch(/user:ci\b/);
   });
 });
 
-describe("X1: only ci and root can reach taskbox's setuid Softnet", () => {
-  // chmod for real, except the ACL calls, which name a ci this Mac may not have: those are recorded only.
+describe("only the service and root can reach taskbox's setuid Softnet", () => {
+  // chmod for real, except the ACL calls, which name a service account this Mac may not have: those are recorded only.
   function chmods(sys: FakeSys) {
     const calls: string[] = [];
     sys.responders.unshift((cmd, args) => {
@@ -426,14 +434,14 @@ describe("X1: only ci and root can reach taskbox's setuid Softnet", () => {
   }
   const softnetRow = TART_KIT.checks[0]![1];
 
-  test("finish closes the folder (700, every ACL entry off, then ci's) before it sets the setuid bit", async () => {
+  test("finish closes the folder (700, every ACL entry off, then the service's) before it sets the setuid bit", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inst-"));
     const softnet = installWith(dir, "folder");
     const calls: string[] = [];
-    await TART_KIT.finish(dir, async (p) => void calls.push(`setuid ${p}`), async (cmd, args) => void calls.push(`${cmd} ${args.join(" ")}`));
+    await TART_KIT.finish(dir, "taskbox", async (p) => void calls.push(`setuid ${p}`), async (cmd, args) => void calls.push(`${cmd} ${args.join(" ")}`));
     const folder = join(dir, "softnet");
     // A link made while the folder was open stays the same file, so the bit comes last.
-    expect(calls).toEqual([`/bin/chmod 700 ${folder}`, `/bin/chmod -N ${folder}`, `/bin/chmod +a user:ci allow list,search ${folder}`, `setuid ${softnet}`]);
+    expect(calls).toEqual([`/bin/chmod 700 ${folder}`, `/bin/chmod -N ${folder}`, `/bin/chmod +a user:taskbox allow list,search ${folder}`, `setuid ${softnet}`]);
   });
 
   test("place makes Softnet's folder closed, so no other account can link Softnet before finish", async () => {
@@ -451,7 +459,7 @@ describe("X1: only ci and root can reach taskbox's setuid Softnet", () => {
   test("the Softnet row fails a Softnet with a second hard link", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inst-"));
     const softnet = installWith(dir, "folder");
-    const p = { ...paths(dir, "app"), softnet };
+    const p = { ...paths(dir, testBox()), softnet };
     linkSync(softnet, join(dir, "copy"));
     expect(await softnetRow({ paths: p })).toEqual({ status: "FAIL", detail: "softnet has another hard link, which may be outside its folder" });
   });
@@ -460,14 +468,14 @@ describe("X1: only ci and root can reach taskbox's setuid Softnet", () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inst-"));
     const softnet = installWith(dir, "bin");
     const calls: string[] = [];
-    await TART_KIT.finish(dir, async (p) => void calls.push(`setuid ${p}`), async (cmd, args) => void calls.push(`${cmd} ${args.join(" ")}`));
+    await TART_KIT.finish(dir, "taskbox", async (p) => void calls.push(`setuid ${p}`), async (cmd, args) => void calls.push(`${cmd} ${args.join(" ")}`));
     expect(calls).toEqual([`setuid ${softnet}`]);
   });
 
   test("the Softnet row fails a folder open to others, one not root's, or a link", async () => {
     const dir = mkdtempSync(join(tmpdir(), "taskbox-inst-"));
     installWith(dir, "folder");
-    const p = { ...paths(dir, "app"), softnet: join(dir, "softnet/softnet") };
+    const p = { ...paths(dir, testBox()), softnet: join(dir, "softnet/softnet") };
     chmodSync(join(dir, "softnet"), 0o755);
     expect(await softnetRow({ paths: p })).toEqual({ status: "FAIL", detail: "softnet's folder is open to other users" });
     chmodSync(join(dir, "softnet"), 0o750);
@@ -513,7 +521,7 @@ describe("X1: only ci and root can reach taskbox's setuid Softnet", () => {
     fakeLaunchd(sys, new Set([GUARD_LABEL]));
     quietBox(sys);
     servicesObey(sys);
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     rmSync(p.opt, { recursive: true, force: true });
     const opt = join(p.opt, "..");
     mkdirSync(join(opt, "taskbox-aaaa0000aaaa-AAAAAA"));
@@ -528,7 +536,7 @@ describe("X1: only ci and root can reach taskbox's setuid Softnet", () => {
     writeFileSync(join(p.prev, "installed.json"), JSON.stringify({ commit: "prev0000aaaa", pr: 4, title: "older", format: 2, files: hashTree(p.prev) }));
     writeFileSync(p.installed, JSON.stringify({ commit: "c0ffee0", pr: 5, title: "newer", format: 2, files: hashTree(p.opt) }));
     const before = join(opt, "taskbox-aaaa0000aaaa-AAAAAA");
-    const d: OpsDeps = { sys, paths: p, uid: 501, ciUid: 502, rootUid: process.getuid!(), say: () => {}, ask: async () => "yes" };
+    const d: OpsDeps = { sys, paths: p, uid: 501, serviceUid: 502, rootUid: process.getuid!(), say: () => {}, ask: async () => "yes" };
     return { d, calls, before };
   }
 
@@ -536,7 +544,7 @@ describe("X1: only ci and root can reach taskbox's setuid Softnet", () => {
     const { d, calls, before } = undoTo("folder");
     expect(await undo(d)).toBe(0);
     const f = join(before, "softnet");
-    expect(calls.slice(0, 5)).toEqual([`700 ${f}`, `-N ${f}`, `+a user:ci allow list,search ${f}`, `4755 ${f}/softnet`, `755 ${before}`]);
+    expect(calls.slice(0, 5)).toEqual([`700 ${f}`, `-N ${f}`, `+a user:taskbox allow list,search ${f}`, `4755 ${f}/softnet`, `755 ${before}`]);
   });
 
   test("undo to a kept install from before the folder sets its bin Softnet and makes no folder calls", async () => {
@@ -546,7 +554,7 @@ describe("X1: only ci and root can reach taskbox's setuid Softnet", () => {
   });
 });
 
-describe("R4: a macOS image that won't pull never stops the box", () => {
+describe("a macOS image that won't pull never stops the box", () => {
   const LINUX = LCFG.linux!.image;
   // A box whose Tart lists the images in `on`, whose pulls of `image` act as `pulls` says (a list,
   // one per try, the last repeated), and whose free disk is `freeGB()`. The loop ends, to restart,

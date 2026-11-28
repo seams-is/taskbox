@@ -1,25 +1,18 @@
-// The docs a new owner reads stay true to the code and name nobody's org.
+// The docs stay true to the code and name nobody's org.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { COMMANDS } from "../src/ops.ts";
-import { SHELL_COMMANDS } from "../src/shell.ts";
+import { CONTROLLER } from "../src/controller/main.ts";
+import { parseLine } from "../src/registry.ts";
 
 const repo = join(import.meta.dir, "..");
 const readme = readFileSync(join(repo, "README.md"), "utf8");
-const example = JSON.parse(readFileSync(join(repo, "taskbox.example.json"), "utf8"));
 
 function files(dir: string): string[] {
   return readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? files(join(dir, f)) : [join(dir, f)]));
 }
 
 describe("the docs", () => {
-  test("README's remote line names exactly the commands remote's shell runs, in order", () => {
-    const line = readme.split("\n").find((l) => l.startsWith("- `remote` is for reading the box."))!;
-    const named = [...line.split("and nothing else")[0]!.matchAll(/`([a-z]+)`/g)].map((m) => m[1]);
-    expect(named.slice(1)).toEqual(SHELL_COMMANDS);
-  });
-
   test("README, docs and .github name no org's issues and no team", () => {
     for (const f of [join(repo, "README.md"), ...files(join(repo, "docs")), ...files(join(repo, ".github"))]) {
       const text = readFileSync(f, "utf8");
@@ -28,30 +21,62 @@ describe("the docs", () => {
     }
   });
 
+  // taskbox runs as a controller and its boxes on any Mac, and its old private repo is gone. The
+  // words are split here so this file passes its own test.
+  test("no file name or text in the tree says lap-top or names the old archive repo", () => {
+    const banned = new RegExp(["lap" + "top", "taskbox-" + "archive"].join("|"), "i");
+    const tree = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
+      if (dir === repo && f.startsWith(".") && f !== ".github") return [];
+      if (f === "node_modules") return [];
+      return statSync(join(dir, f)).isDirectory() ? tree(join(dir, f)) : [join(dir, f)];
+    });
+    const seen = tree(repo).filter((f) => banned.test(f.slice(repo.length)) || banned.test(readFileSync(f, "latin1")));
+    expect(seen).toEqual([]);
+  });
+
   test("every docs and templates file README names is there", () => {
     for (const [, p] of readme.matchAll(/((?:docs|templates)\/[\w./-]+\.(?:md|yml))/g)) expect({ p, there: existsSync(join(repo, p!)) }).toEqual({ p, there: true });
   });
 
-  test("the first job's labels are the example's, and its timeout fits jobTimeoutMinutes", () => {
-    const block = /### Your first job[\s\S]*?```yaml\n([\s\S]*?)```/.exec(readme)![1]!;
-    const runsOn = /runs-on: (\S+)\s+# or (\S+)/.exec(block)!;
-    expect([runsOn[1], runsOn[2]]).toEqual([example.label, example.linux.label]);
-    const timeout = Number(/timeout-minutes: (\d+)/.exec(block)![1]);
-    expect(timeout).toBeLessThanOrEqual(example.jobTimeoutMinutes);
-    expect(block).toMatch(/uses: actions\/checkout@[0-9a-f]{40} /);
+  test("every doc a comment, a message or a workflow names is in the repo", () => {
+    const seen: string[] = [];
+    for (const dir of ["src", "test", "templates", ".github"]) {
+      for (const f of files(join(repo, dir))) {
+        if (f.includes("/fixtures/") || f === import.meta.path) continue;
+        const text = readFileSync(f, "utf8");
+        for (const [p] of text.matchAll(/\b(?:docs|templates)\/[\w-]+\.md\b/g)) if (!existsSync(join(repo, p))) seen.push(`${f}: ${p}`);
+        for (const [p] of text.matchAll(/\b[\w-]*(?:design|review-wp\d\w*)\.md\b/g)) seen.push(`${f}: ${p}`);
+        if (/\bWP\d+[a-z]?\b|\bWave [A-E]\b|#47\b/.test(text)) seen.push(`${f}: a planning label`);
+        for (const line of text.split("\n")) {
+          const code = "(?:[A-Z]\\d{1,2}[a-z]?|M-[a-d])";
+          const lead = new RegExp(`^\\s*//\\s*${code}[:,]|\\b(?:test|describe|it)(?:\\.\\w+)?\\(["'\`]${code}[:,]`);
+          const tail = new RegExp(`//.*\\((?:v\\d+\\.\\d+\\.\\d+, )?${code}(?:, ${code})*\\)|//.*\\b(?:review \\d|reviews?\\)|finding \\d)`);
+          if (lead.test(line) || tail.test(line)) seen.push(`${f}: a review code: ${line.trim().slice(0, 60)}`);
+        }
+        if (/§\d/.test(text)) seen.push(`${f}: a § section of a doc that isn't here`);
+      }
+    }
+    expect(seen).toEqual([]);
   });
-  test("every taskbox command README and the docs name is one the box has, or one README says is gone", () => {
-    const known = new Set([...COMMANDS.matchAll(/([a-z]+)[,.]/g)].map((m) => m[1]!).concat(SHELL_COMMANDS, ["hold", "share"]));
-    for (const f of [join(repo, "README.md"), join(repo, "docs/tailnet-policy.md"), join(repo, "docs/build-tailscale.md")]) {
-      for (const [, cmd] of readFileSync(f, "utf8").matchAll(/`taskbox ([a-z]+)/g)) expect({ f, cmd, known: known.has(cmd!) }).toEqual({ f, cmd, known: true });
+
+  test("every taskbox command README and the docs name is one the box has, or help", () => {
+    for (const f of [join(repo, "README.md"), join(repo, "docs/tailnet-policy.md"), join(repo, "docs/build-tailscale.md"), join(repo, "templates/README.md")]) {
+      for (const [, line] of readFileSync(f, "utf8").matchAll(/`taskbox ([a-z][a-z -]*)/g)) {
+        const words = line!.trim().split(" ").filter((w) => /^[a-z]/.test(w));
+        // The longest run of words that is a command: prose after a command's name is the doc's own.
+        // The controller's own commands count too, such as box install and box add.
+        const controller = CONTROLLER.some((c) => c.path.every((w, i) => words[i] === w));
+        const known = controller || ["help", "hold", "share"].includes(words[0]!) || words.some((_, k) => parseLine(words.slice(0, words.length - k)).ok || (parseLine(words.slice(0, words.length - k)) as { usage?: string }).usage !== undefined);
+        expect({ f, line, known }).toEqual({ f, line, known: true });
+      }
       expect({ f, pair: /taskbox pair/.test(readFileSync(f, "utf8")) }).toEqual({ f, pair: false });
     }
   });
 
-  test("README and the key messages name GitHub's key steps one way, as GitHub's docs do", () => {
-    for (const f of ["README.md", "src/install.ts", "src/actionskey.ts"]) {
+  test("The key messages name GitHub's key steps one way, as GitHub's docs do", () => {
+    // connect github says the key steps; the install and keys.ts say none, and never the old way.
+    for (const f of ["src/install.ts", "src/connectflow.ts", "src/keys.ts"]) {
       const text = readFileSync(join(repo, f), "utf8");
-      expect(text).toContain("Key pairs");
       expect(text).not.toMatch(/Generate a private key|under Private keys/);
     }
   });

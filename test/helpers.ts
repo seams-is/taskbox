@@ -1,16 +1,21 @@
 import { spyOn } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import * as fs from "node:fs";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { Check } from "../src/checks.ts";
-import { assetUrl, type Config, paths } from "../src/config.ts";
+import { assetUrl, type BoxNames, type Config, paths } from "../src/config.ts";
 import type { InstallDeps } from "../src/install.ts";
+import { gitTreeSha } from "../src/hop.ts";
+import { NAMESPACE as RELEASE_NAMESPACE, type VerifyDeps } from "../src/release.ts";
+import { keyPair, sshsig } from "./sshsig.ts";
 import { GitHub } from "../src/github.ts";
 import { Log } from "../src/log.ts";
 import type { LoopDeps } from "../src/loop.ts";
 import type { RunResult } from "../src/sys.ts";
+import { Dir } from "./fake-dir.ts";
 import { FakeSys, NETSTAT_CLEAN, githubRoutes } from "./fake.ts";
 
 export const { privateKey: PEM, publicKey: PUB } = generateKeyPairSync("rsa", {
@@ -35,11 +40,17 @@ export const CFG: Config = {
   vmMemoryMB: 8192,
   vmMaxHours: 24,
   minFreeDiskGB: 60,
+  accounts: { service: "taskbox", agent: "taskbox-agent", people: [] },
 };
+
+// The names paths() takes, for the example's accounts. An earlier label prefix when given.
+export function testBox(previousLabelPrefix?: string): BoxNames {
+  return { project: "app", service: "taskbox", agent: "taskbox-agent", ...(previousLabelPrefix ? { previousLabelPrefix } : {}) };
+}
 
 export function tempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "taskbox-root-"));
-  const p = paths(root, "app");
+  const p = paths(root, testBox());
   mkdirSync(join(p.opt, "runner"), { recursive: true });
   mkdirSync(p.projectState, { recursive: true });
   writeFileSync(p.runnerTarball, "runner tarball bytes");
@@ -47,14 +58,14 @@ export function tempRoot(): string {
   return root;
 }
 
-// The box's own reads on a quiet box: the firewall and FileVault on, sharing off, ci its only user and
+// The box's own reads on a quiet box: the firewall and FileVault on, sharing off, the service its only user and
 // nobody logged in, no default route and no tailnet. A test's own responders come first.
 const QUIET: [string, RunResult][] = [
   ["/bin/launchctl print-disabled system", out('disabled services = {\n\t"com.openssh.sshd" => disabled\n\t"com.apple.screensharing" => disabled\n}\n')],
   ["/usr/sbin/netstat -an -p tcp", out(NETSTAT_CLEAN)],
   ["/bin/ps -axo uid=,comm=", out("0 /sbin/launchd\n")],
-  ["/usr/bin/dscl . -list /Users UniqueID", out("root 0\nci 502\n")],
-  ["/usr/bin/id -u ci", out("502\n")],
+  ["/usr/bin/dscl . -list /Users UniqueID", out("root 0\ntaskbox 502\n")],
+  ["/usr/bin/id -u taskbox", out("502\n")],
   ["/usr/bin/who", out("")],
   ["/sbin/route -n get default", { code: 1, stdout: "", stderr: "route: writing to routing socket: not in table\n" }],
   ["/sbin/ifconfig", out("lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n")],
@@ -62,16 +73,48 @@ const QUIET: [string, RunResult][] = [
   ["/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate", out("Firewall is enabled. (State = 1)\n")],
   ["/usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode", out("Firewall stealth mode is on\n")],
   ["/usr/bin/fdesetup isactive", out("true\n")],
+  // No Tailscale SSH login in macOS's login records (logins.ts).
+  ["/usr/bin/last --libxo json -y -s", out('{"last-information": {"last": []}}\n')],
 ];
 function out(stdout: string): RunResult {
   return { code: 0, stdout, stderr: "" };
 }
 export function quietBox(sys: FakeSys): void {
   sys.fallbacks.push((cmd, args) => QUIET.find(([line]) => line === [cmd, ...args].join(" "))?.[1]);
+  quietAccounts(sys);
+}
+
+// The accounts as v2.7.0 reads them on a quiet box: the service there, spelled as in taskbox.json and
+// not an admin, no agent yet, and Screen Sharing's list as macOS leaves it, with the admins' group
+// only (ran: macOS 27). A test's own responders, and the boxes above, come first.
+const QUIET_ACCOUNTS: [string, RunResult][] = [
+  ["/usr/bin/dscl . -read /Users/taskbox RecordName", out("RecordName: taskbox\n")],
+  ["/usr/bin/dscl . -list /Users UniqueID", out("root 0\ntaskbox 502\n")],
+  ["/usr/bin/dscl . -read /Users/taskbox GeneratedUID", out("GeneratedUID: 0F0F0F0F-0000-0000-0000-000000000502\n")],
+  ["/usr/sbin/dseditgroup -o checkmember -m taskbox admin", { code: 67, stdout: "", stderr: "" }],
+  ["/usr/bin/id -u taskbox-agent", { code: 1, stdout: "", stderr: "id: taskbox-agent: no such user\n" }],
+  // The agent's keys as a made agent has them, for a test whose agent is there: hidden, no password.
+  ["/usr/bin/dscl . -read /Users/taskbox-agent ShadowHashData", out("No such key: ShadowHashData\n")],
+  ["/usr/bin/dscl . -read /Users/taskbox-agent AuthenticationAuthority", out("No such key: AuthenticationAuthority\n")],
+  ["/usr/bin/dscl . -read /Groups/com.apple.access_screensharing GroupMembership NestedGroups", out("No such key: GroupMembership\nNestedGroups: ABCDEFAB-CDEF-ABCD-EFAB-CDEF00000050\n")],
+  // No account but the agent has taskbox's shell, and taskbox's own two aren't made yet.
+  ["/usr/bin/dscl . -list /Users UserShell", out("root /bin/sh\ntaskbox /bin/zsh\n")],
+  ["/usr/bin/id -u _taskboxnet", { code: 1, stdout: "", stderr: "id: _taskboxnet: no such user\n" }],
+  ["/usr/bin/id -u _taskboxgh", { code: 1, stdout: "", stderr: "id: _taskboxgh: no such user\n" }],
+];
+export function quietAccounts(sys: FakeSys): void {
+  sys.fallbacks.push((cmd, args) => QUIET_ACCOUNTS.find(([line]) => line === [cmd, ...args].join(" "))?.[1]);
+  keyFolderAcl(sys);
+}
+
+// root's key folder's ACL (keys.ts keyDirProblem): every entry off, then the service's one.
+// There is no service user here, so chmod's ACL calls are answered, not run.
+export function keyFolderAcl(sys: FakeSys): void {
+  sys.fallbacks.push((cmd, args) => (cmd === "/bin/chmod" && (args[0] === "-N" || (args[0] === "+a" && args[1] === "user:taskbox allow search")) ? out("") : undefined));
 }
 
 // What taskbox's own services answer as they are stopped, started and cleared: launchctl, pf's
-// anchor, and ci's own file removals.
+// anchor, and the service's own file removals.
 export function servicesObey(sys: FakeSys): void {
   sys.fallbacks.push((cmd, args) => {
     if (cmd === "/bin/launchctl" && ["bootout", "bootstrap", "kickstart", "enable"].includes(args[0]!)) return out("");
@@ -106,15 +149,16 @@ export function loopDeps(sys: FakeSys, root: string, prestart: () => Promise<Che
   githubRoutes(sys);
   quietBox(sys);
   guestTakesEverything(sys);
-  const p = paths(root, "app");
+  const p = paths(root, testBox());
   const log = new Log(p.log);
+  pfOpen(p);
   return {
     sys,
     cfg: CFG,
     paths: p,
     gh: new GitHub(sys, CFG, PEM, log),
     log,
-    checks: { sys, cfg: CFG, paths: p, uid: 501, ciUid: 501 },
+    checks: { sys, cfg: CFG, paths: p, uid: 501, serviceUid: 501 },
     slot: 1,
     prestart,
     // Memory to spare and the pinned image in place, unless a test says otherwise.
@@ -139,9 +183,17 @@ export function settingsDir(): string {
 // The commands no fake answered since the last test, as setup.ts checks after each one.
 export { unknownCommands } from "./setup.ts";
 
-// A box that passes the install's preflight, with ci made in System Settings: a secure token, and
-// not an admin. No other user is made.
-export function healthyBox(sys: FakeSys): void {
+// A box that passes the install's preflight: the service there already, and not an admin, able to
+// unlock the disk. The agent isn't there until the install makes it, with its ID. No other user is made.
+export function healthyBox(sys: FakeSys): Dir {
+  quietAccounts(sys);
+  const dir = new Dir().user("root", { uid: 0, attrs: {} }).user("taskbox", { uid: 502, attrs: { PrimaryGroupID: "20" } });
+  const made = /^(\/Users\/|\/Groups\/)?(taskbox-agent|_taskboxnet|_taskboxgh)$/;
+  const mine = (cmd: string, args: string[]) =>
+    (["/usr/bin/dscl", "/usr/bin/id", "/usr/sbin/dseditgroup", "/usr/sbin/sysadminctl"].includes(cmd) && args.some((a) => made.test(a))) ||
+    (cmd === "/usr/bin/dscl" && args[1] === "-list") ||
+    (cmd === "/usr/bin/id" && args[0] === "-nu") ||
+    cmd === "/usr/bin/dscacheutil";
   sys.responders.push((cmd, args) => {
     if (cmd === "/usr/bin/sw_vers") return out("27.1\n");
     if (cmd.endsWith("socketfilterfw")) return out(args[0] === "--getglobalstate" ? "Firewall is enabled. (State = 1)" : "Firewall stealth mode is on");
@@ -150,9 +202,16 @@ export function healthyBox(sys: FakeSys): void {
     if (cmd === "/usr/sbin/system_profiler") return out("          S.M.A.R.T. status: Verified\n");
     if (cmd === "/bin/df") return out("Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/disk3s5 1900000000 1 1500000000 1% /System/Volumes/Data\n");
     if (cmd === "/usr/sbin/netstat") return out(NETSTAT_CLEAN);
-    // ci's ID is the test's own, so what the install gives ci is the test's to give.
-    if (cmd === "/usr/bin/id") return args[1] === "ci" ? out(`${process.getuid!()}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user\n` };
-    if (cmd === "/usr/sbin/sysadminctl" && args[0] === "-secureTokenStatus") return { code: 0, stdout: "", stderr: "Secure token is ENABLED for user CI" };
+    // tailscaled's socket folder, as the install leaves it (tssocket.ts): root's, 700, with one entry for the service.
+    if (cmd === "/bin/ls" && args[0] === "-led" && args[1]?.endsWith("/taskbox-tailscale")) return out(`drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:taskbox allow search\n`);
+    // The accounts the install makes: the agent and taskbox's own two, with their groups, in a local
+    // directory that starts with root and the service only.
+    if (mine(cmd, args)) return dir.responder()(cmd, args);
+    // The service's ID is the test's own, so what the install gives the service is the test's to give.
+    if (cmd === "/usr/bin/id") return args[1] === "taskbox" ? out(`${process.getuid!()}\n`) : { code: 1, stdout: "", stderr: `id: ${args[1]}: no such user\n` };
+    // The service can unlock the disk: its GeneratedUID is in the disk's unlock list.
+    if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "GeneratedUID") return out("GeneratedUID: 0F0F0F0F-0000-0000-0000-000000000502\n");
+    if (cmd === "/usr/sbin/diskutil" && args[1] === "listCryptoUsers") return out("Cryptographic users for disk3s5 (1 found)\n+-- 0F0F0F0F-0000-0000-0000-000000000502\n    Type: Local Open Directory User\n");
     if (cmd === "/usr/sbin/dseditgroup") return { code: 67, stdout: "", stderr: "no" };
     if (cmd === "/bin/launchctl" && args[0] === "print-disabled") return out('"com.openssh.sshd" => disabled\n"com.apple.screensharing" => disabled\n');
     // The box's own settings, already true, so the install's writes of them (settleBox) take.
@@ -165,48 +224,95 @@ export function healthyBox(sys: FakeSys): void {
     if (cmd === "/bin/launchctl" && args[0] === "print" && args[1]?.startsWith("gui/")) return { code: 113, stdout: "", stderr: `Could not find service "${args[1]}"\n` };
     return undefined;
   });
+  return dir;
 }
 
 // The install's deps on a temp root, a Mac's own folders in it: the owner's Downloads holds the App
 // key, and the bootstrap folder the downloaded taskbox.json.
+// The release keys the install tests pin: a fixture key, never the repo's signers file.
+export const RELEASE_KEY = keyPair();
+export const RELEASE_PIN = `# the tests' release key\n${RELEASE_KEY.line}`;
+export const SETTINGS_REPO = "example-org/settings";
+export const SETTINGS_SHA = "5e77135e77135e77135e77135e77135e77135e77";
+export const RELEASE_VERSION = "3.0.0";
+// ssh-keygen itself, run straight: it only reads.
+export const testKeygen: VerifyDeps = {
+  run: async (cmd, args, opts = {}) => {
+    const p = Bun.spawn([cmd, ...args], { env: { PATH: "/usr/bin:/bin" }, stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]), stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    return { code, stdout, stderr };
+  },
+};
+
+// What stageRelease made for a FakeSys, and the release folder installDeps made for it, so either
+// may come first: each writes the release's files into the folder once both are there.
+type Staged = { files: Record<string, Uint8Array | string> };
+const staged = new WeakMap<FakeSys, Staged>();
+const folders = new WeakMap<FakeSys, string[]>();
+function placeRelease(sys: FakeSys): void {
+  const st = staged.get(sys);
+  for (const dir of st ? (folders.get(sys) ?? []) : []) {
+    for (const n of readdirSync(dir)) if (/^taskbox-v.*\.tar\.gz$/.test(n)) fs.rmSync(join(dir, n));
+    for (const [name, body] of Object.entries(st!.files)) writeFileSync(join(dir, name), body);
+  }
+}
+// The settings beside the release, as box install or install.sh puts them there.
+export function writeSettings(dir: string, cfg: unknown = CFG, sha = SETTINGS_SHA): void {
+  writeFileSync(join(dir, "taskbox.json"), JSON.stringify(cfg));
+  writeFileSync(join(dir, "taskbox.json.commit"), `${sha}\n`);
+}
+
 export function installDeps(sys: FakeSys, answer: string, root = mkdtempSync(join(tmpdir(), "taskbox-install-"))): { d: InstallDeps; said: string[]; root: string } {
   // The folders every Mac has.
   for (const f of ["usr", "Library/LaunchAgents", "Library/LaunchDaemons"]) mkdirSync(join(root, f), { recursive: true });
+  // /private/var is on every Mac: the agent's home goes there.
+  mkdirSync(join(root, "private/var"), { recursive: true });
   const ownerHome = join(root, "Users/owner");
-  mkdirSync(join(ownerHome, "Downloads"), { recursive: true });
-  writeFileSync(join(ownerHome, "Downloads/example-taskbox.2026-11-12.private-key.pem"), PEM);
-  const configDir = join(root, "bootstrap");
-  mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, "taskbox.json"), JSON.stringify(CFG));
+  mkdirSync(ownerHome, { recursive: true });
+  const release = mkdtempSync(join(root, "release-"));
+  writeSettings(release);
+  folders.set(sys, [...(folders.get(sys) ?? []), release]);
+  placeRelease(sys);
   const said: string[] = [];
   const d: InstallDeps = {
     sys,
-    paths: paths(root, "app"),
+    paths: paths(root, testBox()),
     log: new Log(),
     say: (l) => said.push(l),
     ask: async () => answer,
+    tty: () => 0,
     chown: () => {},
     owner: "owner",
     ownerHome,
     workRoot: root,
-    configDir,
-    bootstrap: configDir,
+    release,
+    settingsRepo: SETTINGS_REPO,
+    signers: RELEASE_PIN,
+    keygen: testKeygen,
     rootUid: process.getuid!(),
   };
-  // A first install makes ci's home when ci has never logged in.
-  sys.responders.push((cmd) => (cmd === "/usr/sbin/createhomedir" ? (mkdirSync(d.paths.ciHome, { recursive: true }), out("")) : undefined));
+  // A first install makes the service's home when it has never logged in.
+  sys.responders.push((cmd) => (cmd === "/usr/sbin/createhomedir" ? (mkdirSync(d.paths.serviceHome, { recursive: true }), out("")) : undefined));
   return { d, said, root };
 }
 
 const REPO = join(import.meta.dir, "..");
-const sha256 = (data: string) => createHash("sha256").update(data).digest("hex");
-export const TAILSCALE_ASSET = 123;
+const sha256 = (data: string | Uint8Array<ArrayBuffer>) => createHash("sha256").update(data).digest("hex");
+export const TAILSCALE_URL = "https://api.github.com/repos/example-org/taskbox/releases/assets/123";
 
-// A release on the fake GitHub. The commit's tarball is this repo with cfg as its taskbox.json, and
-// each tool's download is a fake archive its test pin matches. The fake tar and ditto unpack each
-// archive by its bytes, so nothing real is unpacked. edit changes versions.json after the pins.
-// extra: more files in the release's tree, such as a v3 release's signers file (hop.test.ts).
-export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<string, any>) => void = () => {}, extra: (dir: string) => void = () => {}): void {
+// The repo's files into dir, less node_modules, .git and skip, one top-level entry at a time. The
+// tests' temp folders are under node_modules/.cache (test/setup.ts), and cpSync refuses to copy a
+// folder into one inside it, even where its filter would leave that one out.
+export function copyRepo(dir: string, skip: string[] = []): void {
+  for (const name of fs.readdirSync(REPO)) if (![".git", "node_modules", ".tmp", ...skip].includes(name)) cpSync(join(REPO, name), join(dir, name), { recursive: true });
+}
+
+// A signed release in install.sh's folder: its statement, signed by the tests' release key, and a
+// gzip tarball that the fake tar unpacks to this repo's tree, with the tests' pin as its signers and
+// each tool's pin matching a fake archive the fake web serves. The fake tar and ditto unpack each
+// archive by its bytes, so nothing real is unpacked. edit changes versions.json after the pins;
+// extra adds files to the tree; statement changes the statement before it is signed.
+export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<string, any>) => void = () => {}, extra: (dir: string) => void = () => {}, statement: (s: Record<string, unknown>) => void = () => {}): { tree: string } {
   const unpack = new Map<string, (dir: string) => void>();
   const archive = (name: string, into: (dir: string) => void) => {
     const bytes = `fake archive: ${name}`;
@@ -232,21 +338,38 @@ export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<s
     served.set(v[name].url, bytes);
   }
   const ts = archive("tailscale", (dir) => (file("tailscale", "tailscale binary")(dir), file("tailscaled", "tailscaled binary")(dir)));
-  v.tailscale = { version: v.tailscale.version, asset: TAILSCALE_ASSET, sha256: sha256(ts), files: { tailscale: sha256("tailscale binary"), tailscaled: sha256("tailscaled binary") } };
-  served.set(assetUrl(cfg, TAILSCALE_ASSET), ts);
+  v.tailscale = { version: v.tailscale.version, asset: 123, url: TAILSCALE_URL, sha256: sha256(ts), files: { tailscale: sha256("tailscale binary"), tailscaled: sha256("tailscaled binary") } };
+  served.set(TAILSCALE_URL, ts);
   edit(v);
-  const src = archive("src", (dir) => {
-    cpSync(REPO, dir, { recursive: true, filter: (f) => !/\/(node_modules|\.git)(\/|$)/.test(f.slice(REPO.length)) });
-    writeFileSync(join(dir, "taskbox.json"), JSON.stringify(cfg));
-    writeFileSync(join(dir, "versions.json"), JSON.stringify(v));
-    extra(dir);
-  });
-  sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(src) : served.has(url) ? new Response(served.get(url)) : undefined));
+  // The release's tree, made once: the repo's files less test/ and docs/, which the install reads
+  // none of and which are half the tree.
+  const tree = mkdtempSync(join(tmpdir(), "taskbox-tree-"));
+  copyRepo(tree, ["test", "docs"]);
+  writeFileSync(join(tree, "versions.json"), JSON.stringify(v));
+  writeFileSync(join(tree, "signers/allowed_signers"), RELEASE_PIN);
+  extra(tree);
+  const tgz = new Uint8Array(Bun.gzipSync(Buffer.from(`the release tarball ${tree}`)));
+  const tarball = `taskbox-v${RELEASE_VERSION}.tar.gz`;
+  const s: Record<string, unknown> = { v: 1, name: "taskbox", version: RELEASE_VERSION, channel: "stable", tag: `v${RELEASE_VERSION}`, tarball, sha256: sha256(tgz), tree: gitTreeSha(tree), assets: { "tailscale-1.104.5.tar.gz": sha256(ts) }, minFrom: "2.6.1", settingsSchema: [4, 4], answers: [3, 4], pr: 61, mergedAt: "2026-11-30T10:00:00Z", commit: "abc1234def5678abc1234def5678abc1234def56", notes: "" };
+  statement(s);
+  const text = `${JSON.stringify(s)}\n`;
+  const st = new TextEncoder().encode(text);
+  staged.set(sys, { files: { "statement.json": text, "statement.json.sig": sshsig(RELEASE_KEY, st, { namespace: RELEASE_NAMESPACE, flags: 0x05 }), [tarball]: tgz } });
+  placeRelease(sys);
+  sys.routes.unshift((_m, url) => (served.has(url) ? new Response(served.get(url)) : undefined));
+  // tar -tvzf <tarball>, as tar lists one: a plain file and a folder.
+  sys.responders.push((cmd, args) => (cmd === "/usr/bin/tar" && args[0] === "-tvzf" && args[1]!.endsWith(".tar.gz") && readFileSync(args[1]!).equals(Buffer.from(tgz)) ? out("drwxr-xr-x  0 root   wheel       0 Nov 30 10:00 taskbox/\n-rw-r--r--  0 root   wheel    1000 Nov 30 10:00 taskbox/README.md\n") : undefined));
   // tar -xzf <file> -C <dir> and ditto -x -k <file> <dir>.
   sys.responders.push((cmd, args) => {
     const at = cmd === "/usr/bin/tar" && args[0] === "-xzf" ? [args[1]!, args[3]!] : cmd === "/usr/bin/ditto" && args.slice(0, 2).join(" ") === "-x -k" ? [args[2]!, args[3]!] : undefined;
     if (!at) return undefined;
-    const into = unpack.get(readFileSync(at[0]!, "utf8"));
+    const bytes = readFileSync(at[0]!);
+    if (bytes.equals(Buffer.from(tgz))) {
+      mkdirSync(at[1]!, { recursive: true });
+      cpSync(tree, at[1]!, { recursive: true });
+      return out("");
+    }
+    const into = unpack.get(bytes.toString("utf8"));
     if (!into) return { code: 1, stdout: "", stderr: "tar: Unrecognized archive format\n" };
     mkdirSync(at[1]!, { recursive: true });
     into(at[1]!);
@@ -259,12 +382,13 @@ export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<s
   sys.responders.push((cmd, args) => {
     if (cmd !== "/bin/chmod") return undefined;
     if (args.join(" ") === `-R go-w ${args[2]}`) return out("");
-    // The Softnet folder's ACL, cleared and given to ci (tart.ts closeFolder): no ci user here.
+    // The Softnet folder's ACL, cleared and given to the service (tart.ts closeFolder): no such user here.
     if (args[0] === "-N" || args[0] === "+a") return out("");
     if (!["4755", "u-s", "700", "755"].includes(args[0]!) || !args[1]!.startsWith(tmpdir())) return undefined;
     const r = Bun.spawnSync(["/bin/chmod", args[0]!, args[1]!], { env: {} });
     return { code: r.exitCode ?? 1, stdout: "", stderr: r.stderr.toString() };
   });
+  return { tree };
 }
 
 // launchd: what is loaded, by label. bootstrap loads a plist, bootout ends a service, print says
@@ -302,18 +426,67 @@ export function fakeTailscale(sys: FakeSys, signedIn = false): void {
 }
 
 // The test runs as its own user, so what a root install leaves as root's alone, Softnet with its
-// setuid bit (in bin, or in its own softnet folder, which is root's too) and taskbox jobs'
-// parent folder, is read as root's. Everything else is read as it is.
-export async function asRoot<T>(f: () => Promise<T>): Promise<T> {
-  const real = fs.lstatSync;
-  const spy = spyOn(fs, "lstatSync").mockImplementation(((path: string, o?: never) => {
-    const st = real(path, o);
-    return /\/(bin\/softnet|softnet\/softnet|softnet|opt\/taskbox-state)$/.test(String(path)) ? Object.assign(st, { uid: 0, gid: 0 }) : st;
-  }) as never);
-  try {
-    return await f();
-  } finally {
-    spy.mockRestore();
-  }
+// setuid bit (in bin, or in its own softnet folder, which is root's too), is read as root's.
+// taskbox job list' parent folder holds box.json too, so it is the install's rootUid's, as the
+// install's own folders are (placeShared). Everything else is read as it is.
+export function asRoot<T>(f: () => Promise<T>): Promise<T> {
+  return readAsRoot((path) => /\/(bin\/softnet|softnet\/softnet|softnet)$/.test(path), f);
 }
 
+// The paths read as root's while f runs, and only in f's own async flow: a test running at the same
+// time (bun test --concurrent) still reads its files as they are. The one spy on lstatSync is placed
+// once and passes every read through when no test has asked for root's paths.
+const rootOwned = new AsyncLocalStorage<((path: string) => boolean)[]>();
+let spied = false;
+export function readAsRoot<T>(match: (path: string) => boolean, f: () => Promise<T>): Promise<T> {
+  if (!spied) {
+    const real = fs.lstatSync;
+    spyOn(fs, "lstatSync").mockImplementation(((path: string, o?: never) => {
+      const st = real(path, o);
+      return st && rootOwned.getStore()?.some((m) => m(String(path))) ? Object.assign(st, { uid: 0, gid: 0 }) : st;
+    }) as never);
+    spied = true;
+  }
+  return rootOwned.run([...(rootOwned.getStore() ?? []), match], f);
+}
+
+// tailscaled's socket folder as the guard leaves it (tssocket.ts): root's (the tester's), 700, with
+// one entry for the service account, as ls -led prints it.
+export function socketDirOk(c: { sys: FakeSys; paths: { tailscaleSocketDir: string; service: string } }): void {
+  mkdirSync(c.paths.tailscaleSocketDir, { recursive: true, mode: 0o700 });
+  chmodSync(c.paths.tailscaleSocketDir, 0o700);
+  c.sys.responders.unshift((cmd, args) => (cmd === "/bin/ls" && args[1] === c.paths.tailscaleSocketDir ? { code: 0, stdout: `drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:${c.paths.service} allow search\n`, stderr: "" } : undefined));
+}
+
+// The tailnet pinned, as the install's Tailscale step leaves it (tsrotate.ts pinTailnet).
+export function tailnetPinned(p: { installId: string }, tailnet = "example.ts.net"): void {
+  const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const { dirname, join } = require("node:path") as typeof import("node:path");
+  mkdirSync(dirname(p.installId), { recursive: true });
+  writeFileSync(join(dirname(p.installId), "tailnet.json"), JSON.stringify({ v: 1, tailnet }));
+}
+
+// The guard's record of VM starts, on trial, as its first pass leaves it (pfstarts.ts): without one
+// the loop reads the box as closed while Screen Sharing is on.
+export function pfOpen(p: { installId: string; guardState: string }): void {
+  const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const { dirname } = require("node:path") as typeof import("node:path");
+  const { beganFile, markFile, recordFile, witnessFile } = require("../src/pfstarts.ts") as typeof import("../src/pfstarts.ts");
+  for (const f of [recordFile(p), witnessFile(p)]) mkdirSync(dirname(f), { recursive: true });
+  writeFileSync(recordFile(p), JSON.stringify({ v: 1, seq: 1, mode: "trial", clean: 0, judged: 0, losses: [], seen: [], v2Seen: false }), { mode: 0o644 });
+  writeFileSync(markFile(p), JSON.stringify({ v: 1, seq: 1, firstAt: 0 }), { mode: 0o644 });
+  writeFileSync(witnessFile(p), JSON.stringify({ v: 1, seq: 1 }), { mode: 0o644 });
+  writeFileSync(beganFile(p), JSON.stringify({ v: 1, at: 0 }), { mode: 0o644 });
+}
+
+// An approver key pinned in approvers.json, as key trust approver leaves it: the box then makes and
+// keeps its pool accounts (core/approvers.ts poolTrust).
+export async function approverPinned(p: { installId: string }): Promise<void> {
+  const { mkdirSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { trustFirst, updateApprovers } = await import("../src/core/approvers.ts");
+  const { rootStateOf } = await import("../src/core/paths.ts");
+  const { keyPair } = await import("./sshsig.ts");
+  mkdirSync(dirname(p.installId), { recursive: true });
+  await updateApprovers(rootStateOf(p).approvers, { rootUid: process.getuid!() }, (a) => trustFirst(a, keyPair().key, 1_800_000_000_000, "screen"));
+}

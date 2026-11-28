@@ -1,24 +1,26 @@
-// The watchdog and canary workflows (v2.5.0, docs/away-ready-design.md, "Alerts"), made from the
-// box's own settings so their labels can't drift from the box. `taskbox watchdog` and `taskbox
-// canary` print them, filled in from templates/: every label the box serves, the wait, and each
-// interval as a cron line. Each run's name carries a fingerprint of those settings, and `taskbox
-// away` reads the latest run through the job source's App (Actions read only) to tell whether the
-// copy in the repo is this box's, turned on, and running. A later release reuses these as they are.
+// The hourly box check and the test job, one pair per box, made from the box's settings so their
+// labels can't drift. The box gives only values (TemplateValues), checked strictly; the YAML is
+// always this release's own templates/, filled in. Each file, variable, concurrency group and cache
+// key carries the box's name, so boxes sharing a jobs repo never collide. Each run's name carries a
+// fingerprint of the values, which `taskbox check --away` reads through the job source's App.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Check, CheckContext } from "./checks.ts";
-import { awayOf, type Config, kindsOf, labelsFor, readStateJson, sourceAppId } from "./config.ts";
+import { awayOf, type Config, CRON_INTERVALS, kindsOf, labelsFor, readStateJson, sourceAppId } from "./config.ts";
+import { allLabelsFor, boxLabelFor } from "./settings/kinds.ts";
+import { BOX_NAME, holdVariable } from "./hold.ts";
+import { MAX_LEASE_HOURS, waitingFor } from "./settings/away.ts";
 import { appJwt } from "./github.ts";
 import { readActionsKey } from "./queue.ts";
+import { EMBEDDED } from "./embedded.ts";
 
-export const TEMPLATES = join(import.meta.dir, "..", "templates");
-export const WATCHDOG_FILE = ".github/workflows/taskbox-watchdog.yml";
-export const CANARY_FILE = ".github/workflows/taskbox-canary.yml";
+// Each box's two files in the jobs repo, and the one pair v2 named before boxes shared a repo.
+export const boxCheckFile = (box: string) => `.github/workflows/taskbox-watchdog-${box}.yml`;
+export const testJobFile = (box: string) => `.github/workflows/taskbox-canary-${box}.yml`;
+export const V2_FILES = [".github/workflows/taskbox-watchdog.yml", ".github/workflows/taskbox-canary.yml"];
 const API = "https://api.github.com";
 
-// A cron line for an interval taskbox.json allows (CRON_INTERVALS), at an offset past the hour away
-// from GitHub's busiest minute. The watchdog's 7 and the canary's 41 differ for every interval.
+// A cron line for an interval the settings allow (CRON_INTERVALS), at an offset past the hour away
+// from GitHub's busiest minute. The box check's 7 and the test job's 41 differ for every interval.
 export function cronFor(minutes: number, offset: number): string {
   // Under an hour: each minute listed, which every cron reads the same way.
   if (minutes < 60) return `${Array.from({ length: 60 / minutes }, (_, i) => (offset % minutes) + i * minutes).join(",")} * * * *`;
@@ -28,33 +30,89 @@ export function cronFor(minutes: number, offset: number): string {
 
 const schedule = (minutes: number, offset: number) => (minutes === 0 ? "  # No schedule: run it by hand from the Actions tab." : `  schedule:\n    - cron: "${cronFor(minutes, offset)}"`);
 
-// Every label the box's VMs may register, for the watchdog; one per kind, for the canary.
-export const boxLabels = (cfg: Config): string[] => [...new Set(kindsOf(cfg).flatMap((k) => labelsFor(cfg, k)))].sort();
-export const canaryLabels = (cfg: Config): string[] => kindsOf(cfg).map((k) => labelsFor(cfg, k)[0]!);
+// Every label the box's VMs may register, for the box check; one per kind, for the test job.
+// Every kind's and every size's: any job the box could take is watched.
+export const boxLabels = (cfg: Config): string[] => [...new Set(kindsOf(cfg).flatMap((k) => allLabelsFor(cfg, k)))].sort();
+// The test job asks for each kind's label of this box alone, so another box never takes it.
+export const canaryLabels = (cfg: Config): string[] => kindsOf(cfg).map((k) => boxLabelFor(cfg, k) ?? labelsFor(cfg, k)[0]!);
 
 export function fingerprint(v: unknown): string {
   return createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 12);
 }
 
-export function watchdogSettings(cfg: Config) {
-  const a = awayOf(cfg);
-  return { v: 1, labels: boxLabels(cfg), wait: a.watchdogWaitMinutes, every: a.watchdogIntervalMinutes };
+// The box's name: its tailnet host name, which the install gives tailscale up (runnerNamePrefix).
+export function boxName(cfg: Config): string {
+  const n = String(cfg.runnerNamePrefix ?? "").toLowerCase();
+  if (!BOX_NAME.test(n)) throw new Error("runnerNamePrefix isn't a name a box can have in the tailnet");
+  return n;
 }
-export function canarySettings(cfg: Config) {
-  return { v: 1, labels: canaryLabels(cfg), every: awayOf(cfg).canaryIntervalMinutes };
+
+// Everything a template takes from a box, and nothing else.
+export interface TemplateValues {
+  box: string;
+  labels: string[];
+  wait: number;
+  every: number;
+  lease: number;
+  holdAlarm: number;
+  request: number;
+  testLabels: string[];
+  testEvery: number;
+}
+export function valuesOf(cfg: Config): TemplateValues {
+  const a = awayOf(cfg);
+  return { box: boxName(cfg), labels: boxLabels(cfg), wait: waitingFor(cfg), every: a.watchdogIntervalMinutes, lease: a.holdLeaseHours, holdAlarm: a.holdAlarmHours, request: a.requestAlertMinutes, testLabels: canaryLabels(cfg), testEvery: a.canaryIntervalMinutes };
+}
+
+// Values from a box, as the controller takes them: the exact keys, names and numbers a box's
+// settings can give. Anything else is refused, so no text a box writes reaches a workflow.
+const LABEL = /^[A-Za-z0-9._-]{1,100}$/;
+const int = (v: unknown, lo: number, hi: number) => Number.isSafeInteger(v) && (v as number) >= lo && (v as number) <= hi;
+const labels = (v: unknown) => Array.isArray(v) && v.length >= 1 && v.length <= 20 && v.every((l) => typeof l === "string" && LABEL.test(l));
+export function checkValues(v: unknown): TemplateValues | string {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return "the box's values aren't an object";
+  const o = v as Record<string, unknown>;
+  if (Object.keys(o).sort().join() !== "box,every,holdAlarm,labels,lease,request,testEvery,testLabels,wait") return "the box's values aren't the ones a template takes";
+  if (typeof o.box !== "string" || !BOX_NAME.test(o.box)) return "the box's name isn't one";
+  if (!labels(o.labels) || !labels(o.testLabels)) return "a label isn't one GitHub takes";
+  if (!int(o.wait, 10, 720) || !int(o.lease, 1, MAX_LEASE_HOURS) || !int(o.holdAlarm, 1, 168) || !int(o.request, 10, 720)) return "a limit is out of its range";
+  if (!(o.every === 0 || (CRON_INTERVALS as readonly unknown[]).includes(o.every)) || !(CRON_INTERVALS as readonly unknown[]).includes(o.testEvery)) return "an interval isn't one a cron line says";
+  return o as unknown as TemplateValues;
+}
+
+// How long 3 runs take, for the line a third run in a row that couldn't read GitHub's API says.
+export function threeRuns(every: number): string {
+  if (every === 0) return "3 runs in a row";
+  const m = 3 * every;
+  return m % 60 === 0 ? `${m / 60} hours` : `${m} minutes`;
 }
 
 const fill = (template: string, values: Record<string, string>) => template.replace(/__([A-Z]+)__/g, (m, k: string) => values[k] ?? m);
+const boxCheckPart = ({ box, labels, wait, every, lease, holdAlarm, request }: TemplateValues) => ({ v: 3, box, labels, wait, every, lease, holdAlarm, request });
+const testJobPart = ({ box, testLabels, testEvery }: TemplateValues) => ({ v: 2, box, labels: testLabels, every: testEvery });
 
-export function watchdogYaml(cfg: Config, template = readFileSync(join(TEMPLATES, "taskbox-watchdog.yml"), "utf8")): string {
-  const s = watchdogSettings(cfg);
-  return fill(template, { FINGERPRINT: fingerprint(s), SCHEDULE: schedule(s.every, 7), LABELS: s.labels.join(" "), WAIT: String(s.wait) });
+export function boxCheckYaml(v: TemplateValues, template = EMBEDDED["templates/taskbox-watchdog.yml"]): string {
+  return fill(template, {
+    FINGERPRINT: fingerprint(boxCheckPart(v)),
+    SCHEDULE: schedule(v.every, 7),
+    BOX: v.box,
+    LABELS: v.labels.join(" "),
+    WAIT: String(v.wait),
+    LEASE: String(v.lease),
+    HOLDALARM: String(v.holdAlarm),
+    REQUEST: String(v.request),
+    SPAN: threeRuns(v.every),
+    HOLDVAR: holdVariable(v.box),
+  });
 }
-
-export function canaryYaml(cfg: Config, template = readFileSync(join(TEMPLATES, "taskbox-canary.yml"), "utf8")): string {
-  const s = canarySettings(cfg);
-  return fill(template, { FINGERPRINT: fingerprint(s), SCHEDULE: schedule(s.every, 41), LABELS: `[${s.labels.map((l) => JSON.stringify(l)).join(", ")}]` });
+export function testJobYaml(v: TemplateValues, template = EMBEDDED["templates/taskbox-canary.yml"]): string {
+  return fill(template, { FINGERPRINT: fingerprint(testJobPart(v)), SCHEDULE: schedule(v.testEvery, 41), BOX: v.box, LABELS: `[${v.testLabels.map((l) => JSON.stringify(l)).join(", ")}]` });
 }
+// The files a box's values make, at their fixed paths.
+export const templateFiles = (v: TemplateValues) => [
+  { path: boxCheckFile(v.box), content: boxCheckYaml(v) },
+  { path: testJobFile(v.box), content: testJobYaml(v) },
+];
 
 type Row = Omit<Check, "name">;
 const ok = (detail = ""): Row => ({ status: "OK", detail });
@@ -67,7 +125,7 @@ export type GetJson = (path: string) => Promise<unknown>;
 export async function sourceReader(c: CheckContext): Promise<GetJson | string> {
   const appId = sourceAppId(c.cfg);
   if (!appId) return "the box has no job source App";
-  const pem = readActionsKey(c.paths.actionsKeyDir, c.paths.actionsKey, c.ciUid, c.rootUid ?? 0);
+  const pem = readActionsKey(c.paths.actionsKeyDir, c.paths.actionsKey, c.serviceUid, c.rootUid ?? 0);
   if (!pem) return "the job source App's key couldn't be read";
   const [owner, repo] = c.cfg.jobsFrom.split("/");
   const call = (method: string, path: string, auth: string, body?: unknown) =>
@@ -76,7 +134,7 @@ export async function sourceReader(c: CheckContext): Promise<GetJson | string> {
       headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox", Authorization: `Bearer ${auth}`, ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
       redirect: "error",
-      signal: AbortSignal.timeout(15_000),
+      signal: c.sys.timeout(15_000),
     });
   const jwt = appJwt(appId, pem, c.sys.now());
   const inst = await call("GET", `/repos/${owner}/${repo}/installation`, jwt);
@@ -116,11 +174,17 @@ export function readWorkflows(v: unknown): WorkflowsRecord | undefined {
 }
 
 export async function deployedRow(c: CheckContext, which: "watchdog" | "canary", get?: GetJson): Promise<Row> {
-  const make = `taskbox ${which}`;
-  const file = which === "watchdog" ? WATCHDOG_FILE : CANARY_FILE;
-  const settings = which === "watchdog" ? watchdogSettings(c.cfg) : canarySettings(c.cfg);
-  const fix = `From away: type ${make}, put what it prints in ${file} of ${c.cfg.jobsFrom}, and commit it yourself, so GitHub's emails reach you (templates/README.md). Then run it once from its Actions tab (Run workflow)`;
-  const mayRead = c.uid === 0 || c.uid === c.ciUid;
+  const make = `taskbox template show ${which === "watchdog" ? "box-check" : "test-job"}`;
+  let values: TemplateValues;
+  try {
+    values = valuesOf(c.cfg);
+  } catch (e) {
+    return fail(`${(e as Error).message}, so the box's workflows can't be made. Nothing to do: agents fix it`);
+  }
+  const file = which === "watchdog" ? boxCheckFile(values.box) : testJobFile(values.box);
+  const settings = which === "watchdog" ? boxCheckPart(values) : testJobPart(values);
+  const fix = `From away: on the controller, type taskbox template apply and merge its pull request, or put what ${make} prints in ${file} of ${c.cfg.jobsFrom} yourself (templates/README.md). Then run it once from its Actions tab (Run workflow)`;
+  const mayRead = c.uid === 0 || c.uid === c.serviceUid;
   // remote reads the loop's hourly record, with the jobs repo's name left out: remote isn't told
   // which repo the box serves. Without a job source App there is nothing to read, as for ci.
   if (!get && !mayRead) {

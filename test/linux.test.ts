@@ -1,8 +1,9 @@
 // v2.1.0: the Linux VM kind. One slot serves both labels, a job at a time.
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { diskNeed } from "../src/checks.ts";
 import { type Config, DEFAULT_TURN_IDLE_MINUTES, forKind, kindsOf, loadConfig, paths, pathsForKind } from "../src/config.ts";
 import { DOCKER_BIP, DOCKER_NETS_SCRIPT, DOCKER_POOLS, GUESTS } from "../src/guest.ts";
@@ -14,8 +15,8 @@ import { activePull, readPull } from "../src/progress.ts";
 import { plainLogEntries } from "../src/ops.ts";
 import { computeState } from "../src/state.ts";
 import { readLoopState, screen } from "../src/watch.ts";
-import { FakeSys, githubRoutes, SECRETS } from "./fake.ts";
-import { asRoot, CFG, fakeLaunchd, fakeTailscale, healthyBox, installDeps, loopDeps, settingsDir, settingsText, stageRelease, tempRoot } from "./helpers.ts";
+import { FakeSys, githubRoutes, json, jwtOf, SECRETS } from "./fake.ts";
+import { CFG, loopDeps, PEM, settingsDir, settingsText, tempRoot, testBox, asRoot, fakeLaunchd, fakeTailscale, healthyBox, installDeps, stageRelease, writeSettings } from "./helpers.ts";
 
 const repo = join(import.meta.dir, "..");
 const LINUX_IMAGE = "ghcr.io/cirruslabs/ubuntu-runner-arm64@sha256:" + "1".repeat(64);
@@ -95,8 +96,8 @@ describe("the settings", () => {
     expect([k.kind, k.label, k.image, k.imageGB]).toEqual(["linux", "taskbox-linux", LINUX_IMAGE, 12]);
     expect(forKind(LCFG, "macos").label).toBe("taskbox-macos");
     expect(() => forKind(CFG, "linux")).toThrow();
-    const p = paths("/", "app");
-    expect(pathsForKind(p, "linux").pull).toBe("/Users/ci/.taskbox/app/pull-linux.json");
+    const p = paths("/", testBox());
+    expect(pathsForKind(p, "linux").pull).toBe("/Users/taskbox/.taskbox/app/pull-linux.json");
     expect(pathsForKind(p, "linux").runnerTarball).toBe("/opt/taskbox/runner/actions-runner-linux.tar.gz");
     expect(pathsForKind(p, "macos").pull).toBe(p.pull);
   });
@@ -128,7 +129,8 @@ describe("a Linux job", () => {
     expect(sys.allArgs()).not.toContain("launchctl");
     // Docker's daemon answered before the runner went in.
     expect(ex).toContainEqual(["exec", ...GUESTS.linux.ready!]);
-    expect(ports.sort((a, b) => a - b)).toEqual([22, 2375, 2376]);
+    // 5900 is the box's own Screen Sharing on 127.0.0.1, read as the VM starts (pfstarts.ts); the rest are the guest's.
+    expect(ports.filter((x) => x !== 5900).sort((a, b) => a - b)).toEqual([22, 2375, 2376]);
     // The runner into admin's Linux home, started from bash's login shell.
     expect(execs(sys).some((c) => c.args.join(" ").includes("mkdir -p /home/admin/taskbox-runner"))).toBe(true);
     const runner = sys.spawned.find((p) => p.args[0] === "exec")!;
@@ -138,7 +140,7 @@ describe("a Linux job", () => {
     const copy = sys.calls.find((c) => c.args.join(" ").includes("tar -xzf - -C /home/admin/taskbox-runner"));
     expect(copy).toBeDefined();
     const jit = sys.requests.find((r) => r.url.endsWith("generate-jitconfig"))!;
-    expect((jit.body as { labels: string[] }).labels).toEqual(["taskbox-linux"]);
+    expect((jit.body as { labels: string[] }).labels).toEqual(["taskbox-linux", "taskbox-1-linux"]);
     // The status file and the job line say Linux.
     const status = sys.calls.find((c) => c.stdin?.includes('"softnetBlock"'));
     expect(JSON.parse(status!.stdin!).vm).toEqual({ kind: "linux", cpus: 4, memoryMB: 8192 });
@@ -203,7 +205,7 @@ describe("a Linux job", () => {
     const d = linuxDeps(sys);
     expect(await oneJob(d, () => "c0ffee0", "c0ffee0")).toBe("done");
     expect(sys.tartCalls()[0]).toBe(`clone ${CFG.image}`);
-    expect((sys.requests.find((r) => r.url.endsWith("generate-jitconfig"))!.body as { labels: string[] }).labels).toEqual(["taskbox-macos"]);
+    expect((sys.requests.find((r) => r.url.endsWith("generate-jitconfig"))!.body as { labels: string[] }).labels).toEqual(["taskbox-macos", "taskbox-1-macos"]);
     expect(sys.allArgs()).toContain("system/com.openssh.sshd");
     expect(sys.allArgs()).not.toContain("/usr/bin/docker");
     expect(sys.spawned.find((p) => p.args[0] === "exec")!.args.slice(3, 6)).toEqual(["/bin/zsh", "-l", "-c"]);
@@ -500,7 +502,8 @@ describe("images", () => {
     expect(JSON.parse(readFileSync(d.paths.pullLinux, "utf8")).state).toBe("ready");
   });
 
-  test("Linux VMs that keep failing pause Linux, macOS carries on, and the box reads Failing", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("Linux VMs that keep failing pause Linux, macOS carries on, and the box reads Failing", async () => {
     const sys = new FakeSys();
     guest(sys, { docker: false });
     sys.responders.push((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? { code: 0, stderr: "", stdout: JSON.stringify([{ Name: CFG.image, Source: "OCI" }, { Name: LINUX_IMAGE, Source: "OCI" }]) } : undefined));
@@ -533,7 +536,7 @@ describe("images", () => {
 describe("the screens", () => {
   test("watch shows the Linux download and the kind of the VM in the slot", () => {
     const root = tempRoot();
-    const p = paths(root, "app");
+    const p = paths(root, testBox());
     const pull = (ref: string, image: string, state: string) => JSON.stringify({ image, ref, state, percent: state === "ready" ? 100 : 40, totalGB: 11.3, startedAt: 1, updatedAt: 1, failures: 0 });
     writeFileSync(p.pull, pull(CFG.image, "macos-golden-gate-xcode 27.2", "ready"));
     writeFileSync(p.pullLinux, pull(LINUX_IMAGE, "ubuntu-runner-arm64 24.04", "downloading"));
@@ -560,7 +563,7 @@ describe("the screens", () => {
     expect(activePull(mac, undefined)).toBe(mac);
   });
 
-  test("taskbox jobs names each job's kind; a line from before v2.1.0 is macOS", () => {
+  test("taskbox job list names each job's kind; a line from before v2.1.0 is macOS", () => {
     const r: JobRecord = { v: 1, startedAt: Date.parse("2026-11-17T10:00:00Z"), endedAt: Date.parse("2026-11-17T10:06:00Z"), repo: "example-org/ci", job: "db-tests", result: "passed", vmDeleted: true, guard: "ok", vmKind: "linux" };
     expect(jobLines(r)[0]).toContain("example-org/ci  Linux  db-tests");
     expect(jobLines({ ...r, vmKind: undefined })[0]).toContain("example-org/ci  macOS  db-tests");
@@ -575,7 +578,7 @@ describe("the screens", () => {
     expect(GUESTS.macos.ready).toBeUndefined();
   });
 
-  // v2.2.1: a buildkit build on taskbox-1 timed out on DNS when the VM's Softnet /29 fell inside
+  // Before v2.2.1, a buildkit build in a Linux VM timed out on DNS when the VM's Softnet /29 fell inside
   // Docker's 172.17.0.0/16. Docker's networks now sit where Softnet never picks.
   test("Docker's networks in a Linux VM never overlap a subnet Softnet can pick", () => {
     const toInt = (a: string) => a.split(".").reduce((n, o) => n * 256 + Number(o), 0);
@@ -596,7 +599,7 @@ describe("the screens", () => {
       expect(p.size).toBe(24);
     }
   });
-  test("the Linux seal sets Docker's networks, keeps the image's settings, then restarts Docker before the ready wait", () => {
+  test.serial("the Linux seal sets Docker's networks, keeps the image's settings, then restarts Docker before the ready wait", () => {
     const steps = GUESTS.linux.seal("pw");
     const i = steps.findIndex((s) => s.stdin === DOCKER_NETS_SCRIPT);
     expect(i).toBeGreaterThan(0);
@@ -614,7 +617,7 @@ describe("the screens", () => {
     expect(got).toEqual({ mtu: 1400, "default-network-opts": { bridge: { "com.docker.network.driver.mtu": "1400" } }, bip: DOCKER_BIP, "default-address-pools": DOCKER_POOLS });
     rmSync(dir, { recursive: true, force: true });
   });
-  test("Docker's settings script drops fixed-cidr, refuses a file that isn't an object or JSON, and replaces a link without writing through it", () => {
+  test.serial("Docker's settings script drops fixed-cidr, refuses a file that isn't an object or JSON, and replaces a link without writing through it", () => {
     const run = (setup: (file: string, dir: string) => void) => {
       const dir = mkdtempSync(join(tmpdir(), "tb-docker-"));
       const file = join(dir, "daemon.json");
@@ -638,7 +641,7 @@ describe("the screens", () => {
     expect(readFileSync(target, "utf8")).toBe("{}");
     expect(lstatSync(link.file).isSymbolicLink()).toBe(false);
   });
-  test("taskbox log leaves out VMs that gave way", () => {
+  test("taskbox logs leaves out VMs that gave way", () => {
     const at = "2026-11-17T10:00:00.000Z";
     const lines = [`${at} job job-a gave-way`, `${at} job job-b done`];
     expect(plainLogEntries(lines, Date.parse(at)).map((e) => e.text)).toEqual(["A job ran and finished."]);
@@ -674,34 +677,51 @@ describe("the install", () => {
     fakeLaunchd(sys);
     healthyBox(sys);
     fakeTailscale(sys);
-    githubRoutes(sys);
     stageRelease(sys, cfg, edit);
-    return { sys, ...installDeps(sys, "yes") };
+    const r = installDeps(sys, "yes");
+    writeSettings(r.d.release, cfg);
+    return { sys, ...r };
   }
 
-  test("fetches the Linux runner by its pin when the commit has a Linux kind", async () => {
+  test.serial("fetches the Linux runner by its pin when the commit has a Linux kind", async () => {
     const { sys, d, said } = box(LCFG);
-    await asRoot(() => install(d, { first: true }));
+    await asRoot(() => install(d));
     expect(said).toContain("  runnerLinux 2.338.2: matches its pin");
     expect(sys.requests.some((r) => r.url.endsWith("actions-runner-linux-arm64-2.338.2.tar.gz"))).toBe(true);
     expect(existsSync(join(d.paths.opt, "runner/actions-runner-linux.tar.gz"))).toBe(true);
-    expect(said.at(-1)).toBe("Installed. Now log in as ci.");
+    expect(said.at(-1)).toBe("Installed 3.0.0. At the box's screen, as your admin user, type taskbox confirm and check the release keys it shows against taskbox sign --fingerprint on the signing Mac. Then, from the controller: taskbox box add, then taskbox connect github.");
   });
 
-  test("a Linux kind with no Linux runner pinned installs nothing", async () => {
+  test.serial("a Linux kind with no Linux runner pinned installs nothing", async () => {
     const { sys, d, root } = box(LCFG, (v) => delete v.runnerLinux);
-    await expect(install(d, { first: true })).rejects.toThrow(/pins no Linux runner/);
+    await expect(install(d)).rejects.toThrow(/pins no Linux runner/);
     expect(existsSync(join(root, "opt/taskbox"))).toBe(false);
     expect(sys.requests.some((r) => new URL(r.url).hostname === "github.com")).toBe(false);
   });
 
-  test("a commit with no Linux kind fetches no Linux runner", async () => {
+  test.serial("a commit with no Linux kind fetches no Linux runner", async () => {
     const { d, said } = box(CFG);
-    await asRoot(() => install(d, { first: true }));
+    await asRoot(() => install(d));
     expect(said).toContain("  runner 2.338.2: matches its pin");
     expect(said.some((l) => l.includes("runnerLinux"))).toBe(false);
     expect(existsSync(join(d.paths.opt, "runner/actions-runner-linux.tar.gz"))).toBe(false);
-    expect(said.at(-1)).toBe("Installed. Now log in as ci.");
+    expect(said.at(-1)).toBe("Installed 3.0.0. At the box's screen, as your admin user, type taskbox confirm and check the release keys it shows against taskbox sign --fingerprint on the signing Mac. Then, from the controller: taskbox box add, then taskbox connect github.");
+  });
+
+  // Install.sh run again over a service with state keeps that state; the key goes in root's folder.
+  test.serial("a reinstall over an existing service keeps its ~/.taskbox", async () => {
+    const { healthyBox, installDeps } = await import("./helpers.ts");
+    const sys = new FakeSys();
+    healthyBox(sys);
+    stageRelease(sys, CFG);
+    const { d, said } = installDeps(sys, "yes");
+    mkdirSync(d.paths.projectState, { recursive: true });
+    writeFileSync(join(d.paths.projectState, "jobs.jsonl"), "{}\n");
+    await install(d).catch(() => undefined);
+    expect(said).toContain("  runner 2.338.2: matches its pin");
+    expect(readFileSync(join(d.paths.projectState, "jobs.jsonl"), "utf8")).toBe("{}\n");
+    // No key is placed by the install: connect github does that, from the controller.
+    expect(existsSync(join(d.paths.actionsKeyDir, "runner.pem"))).toBe(false);
   });
 
   void Stop;

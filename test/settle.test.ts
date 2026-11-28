@@ -1,4 +1,4 @@
-// The settings the install keeps true, and the rows that read them, whose fix is taskbox update (P4).
+// The settings the install keeps true, and the rows that read them, whose fix is taskbox update.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { AWAY_ONLY } from "../src/away.ts";
@@ -21,7 +21,7 @@ function ctx(respond: (cmd: string, args: string[]) => string | undefined, cfg: 
   });
   const d = loopDeps(sys, tempRoot());
   mkdirSync(d.paths.projectState, { recursive: true });
-  return { sys, cfg, paths: d.paths, uid: 501, ciUid: 501 };
+  return { sys, cfg, paths: d.paths, uid: 501, serviceUid: 501 };
 }
 
 describe("settleBox", () => {
@@ -35,7 +35,7 @@ describe("settleBox", () => {
     }
   });
 
-  test("a laptop: no autorestart write, and the row still SKIPs", async () => {
+  test("a portable Mac: no autorestart write, and the row still SKIPs", async () => {
     const sys = new FakeSys();
     sys.responders.push((cmd, args) => (cmd === "/usr/bin/pmset" && args[0] === "-g" ? { code: 0, stdout: " sleep 0\n displaysleep 10\n", stderr: "" } : undefined));
     healthyBox(sys);

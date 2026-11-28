@@ -3,7 +3,7 @@
 import { createPrivateKey, createSign } from "node:crypto";
 import { type Config, releaseRepoOf } from "./config.ts";
 import type { Log } from "./log.ts";
-import { bodyFailed, CALL_LIMIT_MS, classify, clockOffsetS, DOWNLOAD_LIMIT_MS, fetchFailed, GitHubError } from "./ghfail.ts";
+import { bodyFailed, CALL_LIMIT_MS, classify, clockOffsetS, fetchFailed, GitHubError } from "./ghfail.ts";
 import type { Sys } from "./sys.ts";
 
 const API = "https://api.github.com";
@@ -34,7 +34,7 @@ export interface Head {
 }
 
 // A release is a version tag on a commit on main, published on GitHub with notes. From v2.6.1 a
-// trial's tag, vX.Y.Z-rc.N, is one too (docs/v3-design.md §5.7).
+// trial's tag, vX.Y.Z-rc.N, is one too.
 // No leading zeros, as semver has it (rule 2), so two tags never name one version.
 export const RELEASE_TAG = /^v(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-rc\.([1-9]\d{0,3}))?$/;
 export interface Release {
@@ -78,6 +78,9 @@ export function repoMissing(e: unknown, step: "token" | "releases"): boolean {
 
 export type Scope = "contents" | "runners";
 
+// A runner in a runner group, as GitHub lists it.
+export type GroupRunner = { id: number; name: string; labels: string[] };
+
 export class GitHub {
   constructor(
     private sys: Sys,
@@ -93,7 +96,7 @@ export class GitHub {
     try {
       return await this.sys.fetch(API + path, {
         method,
-        signal: AbortSignal.timeout(CALL_LIMIT_MS),
+        signal: this.sys.timeout(CALL_LIMIT_MS),
         headers: {
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
@@ -171,104 +174,12 @@ export class GitHub {
     return parseHead(c);
   }
 
-  // The newest published release, or the named one. undefined when there is none.
-  async release(token: string, tag?: string): Promise<Release | undefined> {
-    if (tag !== undefined) {
-      if (!RELEASE_TAG.test(tag)) return undefined;
-      const res = await this.call("GET", `/repos/${this.cfg.org}/${this.repo}/releases/tags/${tag}`, token);
-      if (res.status === 404) return undefined;
-      if (!res.ok) throw new Error(`GitHub releases answered ${res.status}`);
-      return newestRelease([(await res.json()) as Record<string, unknown>], true);
-    }
-    return newestRelease(await this.json<Record<string, unknown>[]>("GET", `/repos/${this.cfg.org}/${this.repo}/releases?per_page=100`, token));
-  }
-
-  // A file attached to one of taskbox's own releases, such as tailscaled's. The
-  // repo is private, so the API serves it with the token. GitHub answers with a redirect to its file
-  // store; the token is never sent there.
-  async asset(token: string, url: string): Promise<Uint8Array> {
-    const want = `${API}/repos/${this.cfg.org}/${this.repo}/releases/assets/`;
-    if (!url.startsWith(want) || !/^\d{1,12}$/.test(url.slice(want.length))) throw new Error("not a taskbox release asset");
-    return this.download(token, url, "application/octet-stream");
-  }
-
-  // A file the API answers with a redirect to GitHub's file store. The token goes to the API only:
-  // the redirect is followed by hand, without it, and only to https. From v2.6.1 a redirect from the
-  // API to the API itself, as GitHub answers for a renamed repo, is followed with the token, at most
-  // twice, since it never leaves api.github.com.
-  private async download(token: string, url: string, accept: string): Promise<Uint8Array> {
-    // A download may be large, so it has 10 minutes, the whole file included (v2.5.0).
-    const signal = AbortSignal.timeout(DOWNLOAD_LIMIT_MS);
-    const api = (at: string) => this.sys.fetch(at, {
-      redirect: "manual",
-      signal,
-      headers: { Accept: accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox", Authorization: `Bearer ${token}` },
-    });
-    let file = await api(url);
-    for (let hop = 0; file.status >= 300 && file.status < 400; hop++) {
-      const to = file.headers.get("location") ?? "";
-      if (!/^https:\/\/[^/]+\//.test(to)) throw new Error("GitHub's redirect isn't https");
-      if (new URL(to).host === new URL(API).host) {
-        if (hop >= 2) throw new Error("GitHub's API redirected too many times");
-        file = await api(to);
-        continue;
-      }
-      file = await this.sys.fetch(to, { redirect: "manual", signal, headers: { "User-Agent": "taskbox" } });
-      break;
-    }
-    if (!file.ok) throw new Error(`GitHub's download answered ${file.status}`);
-    return new Uint8Array(await file.arrayBuffer());
-  }
-
-  // The commit a release tag names, read from refs/tags/<tag> so a branch of the same name can't
-  // stand in. An annotated tag is followed to its commit.
-  async tagCommit(token: string, tag: string): Promise<string> {
-    if (!RELEASE_TAG.test(tag)) throw new Error("not a release tag");
-    let o = (await this.json<{ object: { type: string; sha: string } }>("GET", `/repos/${this.cfg.org}/${this.repo}/git/ref/tags/${tag}`, token)).object;
-    for (let i = 0; o.type === "tag" && i < 3; i++) {
-      o = (await this.json<{ object: { type: string; sha: string } }>("GET", `/repos/${this.cfg.org}/${this.repo}/git/tags/${o.sha}`, token)).object;
-    }
-    if (o.type !== "commit" || !/^[0-9a-f]{40}$/.test(o.sha)) throw new Error(`release ${tag} doesn't name a commit`);
-    return o.sha;
-  }
-
   // The commit at the head of the branch main, read from refs/heads/main so a tag of the same name
   // can't stand in.
   async mainCommit(token: string): Promise<string> {
     const o = (await this.json<{ object: { type: string; sha: string } }>("GET", `/repos/${this.cfg.org}/${this.repo}/git/ref/heads/main`, token))?.object;
     if (o?.type !== "commit" || !/^[0-9a-f]{40}$/.test(o.sha)) throw new Error("taskbox main doesn't name a commit");
     return o.sha;
-  }
-
-  // True only when sha is main itself or an ancestor of it.
-  async onMain(token: string, sha: string): Promise<boolean> {
-    if (!/^[0-9a-f]{7,40}$/.test(sha)) return false;
-    return this.follows(token, sha, await this.mainCommit(token));
-  }
-
-  // Whether `to` is `from` or comes after it: GitHub's compare of from...to is ahead or identical, and
-  // not behind.
-  async follows(token: string, from: string, to: string): Promise<boolean> {
-    if (!/^[0-9a-f]{7,40}$/.test(from) || !/^[0-9a-f]{7,40}$/.test(to)) return false;
-    const res = await this.call("GET", `/repos/${this.cfg.org}/${this.repo}/compare/${from}...${to}`, token);
-    // A failed request is an error, never a "no": the update then says GitHub couldn't be asked (v2.1.1).
-    if (!res.ok) throw new Error(`GitHub's compare of two taskbox commits answered ${res.status}`);
-    const c = (await res.json()) as { status: string; behind_by: number };
-    return (c.status === "ahead" || c.status === "identical") && c.behind_by === 0;
-  }
-
-  async changedFiles(token: string, from: string, to: string): Promise<number> {
-    const c = await this.json<{ files?: unknown[] }>(
-      "GET",
-      `/repos/${this.cfg.org}/${this.repo}/compare/${from}...${to}`,
-      token,
-    );
-    return c.files?.length ?? 0;
-  }
-
-  async tarball(token: string, sha: string): Promise<Uint8Array> {
-    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a commit");
-    return this.download(token, `${API}/repos/${this.cfg.org}/${this.repo}/tarball/${sha}`, "application/vnd.github+json");
   }
 
   // group and repo: the runner group a VM registers in, and the one repo it must list. The box's own
@@ -295,6 +206,19 @@ export class GitHub {
       throw new Error(`runner group ${group} must list ${repo} only`);
     }
     return g.id;
+  }
+
+  // Every runner in the box's group, with its labels.
+  // Up to five pages, so a runner past the first hundred is seen too.
+  async groupRunners(token: string, groupId: number): Promise<GroupRunner[]> {
+    const all: GroupRunner[] = [];
+    for (let page = 1; page <= 5; page++) {
+      const r = await this.json<{ total_count?: number; runners?: { id?: unknown; name?: unknown; labels?: { name?: unknown }[] }[] }>("GET", `/orgs/${this.cfg.org}/actions/runner-groups/${groupId}/runners?per_page=100&page=${page}`, token);
+      const got = (r.runners ?? []).filter((x) => Number.isInteger(x.id) && typeof x.name === "string").map((x) => ({ id: x.id as number, name: x.name as string, labels: (x.labels ?? []).map((l) => String(l.name)) }));
+      all.push(...got);
+      if (got.length < 100 || all.length >= (r.total_count ?? 0)) break;
+    }
+    return all;
   }
 
   // labels: the one kind's label the VM serves (v2.1.0), so GitHub sends it only that kind's jobs.
@@ -331,4 +255,122 @@ export function parseHead(c: {
 // "12 November 2026", in UTC, the form main's step 3 message uses too.
 export function mergeDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+// ---- v3: calls as an App, for connect github and the GitHub key keeper (broker.ts) ----
+// One call to the API with a limit, no redirect followed, and the version header. Throws only when
+// GitHub can't be reached; every answer, a refusal too, is returned.
+export async function apiCall(sys: Pick<Sys, "fetch" | "timeout">, method: string, path: string, auth?: string, body?: unknown): Promise<Response> {
+  return sys.fetch(API + path, {
+    method,
+    headers: {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "taskbox",
+      ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    redirect: "error",
+    signal: sys.timeout(CALL_LIMIT_MS),
+  });
+}
+
+// An answer's JSON, or undefined when it has none.
+export const bodyOf = async (r: Response): Promise<unknown> => r.json().catch(() => undefined);
+
+// The rights an installation token may ask for, by App role: never more than the App has.
+export type TokenAsk = { repositories?: string[]; permissions: Record<string, "read" | "write"> };
+
+// One App, as its own key signs: its JWT for each call, never kept, never returned.
+export class AppClient {
+  constructor(
+    private sys: Pick<Sys, "fetch" | "timeout" | "now">,
+    private log: Pick<Log, "secret">,
+    readonly appId: number,
+    private pem: string,
+  ) {}
+
+  private jwt(): string {
+    const j = appJwt(this.appId, this.pem, this.sys.now());
+    this.log.secret(j);
+    return j;
+  }
+
+  call(method: string, path: string, body?: unknown): Promise<Response> {
+    return apiCall(this.sys, method, path, this.jwt(), body);
+  }
+
+  // A token for one installation, with the rights asked and no more, on the repos asked.
+  async token(installation: number, ask: TokenAsk): Promise<{ token: string; expiresAt?: string } | { status: number }> {
+    const r = await this.call("POST", `/app/installations/${installation}/access_tokens`, ask);
+    if (!r.ok) return { status: r.status };
+    const b = (await bodyOf(r)) as { token?: unknown; expires_at?: unknown } | undefined;
+    if (typeof b?.token !== "string" || !b.token) return { status: 0 };
+    this.log.secret(b.token);
+    return { token: b.token, ...(typeof b.expires_at === "string" ? { expiresAt: b.expires_at } : {}) };
+  }
+
+  // The App's installations, up to a hundred.
+  installations(): Promise<Response> {
+    return this.call("GET", "/app/installations?per_page=100");
+  }
+
+  uninstall(installation: number): Promise<Response> {
+    return this.call("DELETE", `/app/installations/${installation}`);
+  }
+}
+
+// A call with an installation token.
+export const tokenCall = (sys: Pick<Sys, "fetch" | "timeout">, token: string, method: string, path: string, body?: unknown) => apiCall(sys, method, path, token, body);
+
+// The repos an installation token reaches, up to a hundred, by full name.
+// Up to five pages, so an App that grew past a hundred repos is seen whole.
+export async function tokenRepos(sys: Pick<Sys, "fetch" | "timeout">, token: string): Promise<string[] | { status: number }> {
+  const all: string[] = [];
+  for (let page = 1; page <= 5; page++) {
+    const r = await tokenCall(sys, token, "GET", `/installation/repositories?per_page=100&page=${page}`);
+    if (!r.ok) return { status: r.status };
+    const got = (((await bodyOf(r)) as { repositories?: { full_name?: unknown }[] } | undefined)?.repositories ?? []).map((x) => (typeof x?.full_name === "string" ? x.full_name : ""));
+    all.push(...got);
+    if (got.length < 100) break;
+  }
+  return all;
+}
+
+// A token is done with: revoked, whatever happens.
+export const revokeToken = (sys: Pick<Sys, "fetch" | "timeout">, token: string) => tokenCall(sys, token, "DELETE", "/installation/token").then(() => undefined, () => undefined);
+
+// A runner group as GitHub lists it, with only what taskbox reads.
+export type RunnerGroup = { id: number; name: string; visibility: string; allowsPublic: boolean; restricted: boolean; workflows: string[]; isDefault: boolean };
+
+export function runnerGroupsOf(raw: unknown): RunnerGroup[] {
+  const list = (raw as { runner_groups?: unknown } | undefined)?.runner_groups;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((g) => {
+    if (!g || typeof g !== "object") return [];
+    const r = g as Record<string, unknown>;
+    if (!Number.isSafeInteger(r.id) || typeof r.name !== "string") return [];
+    return [{
+      id: r.id as number,
+      name: r.name,
+      visibility: typeof r.visibility === "string" ? r.visibility : "",
+      allowsPublic: r.allows_public_repositories === true,
+      restricted: r.restricted_to_workflows === true,
+      workflows: Array.isArray(r.selected_workflows) ? r.selected_workflows.filter((w): w is string => typeof w === "string") : [],
+      isDefault: r.default === true,
+    }];
+  });
+}
+
+// A runner in the org, as GitHub lists it.
+export type OrgRunner = { id: number; name: string; groupId?: number };
+
+export function orgRunnersOf(raw: unknown): OrgRunner[] {
+  const list = (raw as { runners?: unknown } | undefined)?.runners;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((x) => {
+    const r = (x ?? {}) as Record<string, unknown>;
+    return Number.isSafeInteger(r.id) && typeof r.name === "string" ? [{ id: r.id as number, name: r.name, ...(Number.isSafeInteger(r.runner_group_id) ? { groupId: r.runner_group_id as number } : {}) }] : [];
+  });
 }

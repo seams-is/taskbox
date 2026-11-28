@@ -1,4 +1,4 @@
-// The hop to v3 (v2.6.1, docs/v3-design.md §5.7). v3's releases are public and signed: each carries a
+// The hop to v3 (v2.6.1). v3's releases are public and signed: each carries a
 // tarball, a statement (one line of JSON naming the version, the tarball's SHA-256, the tree and the
 // commit) and the statement's signature, made with the owner's release key. v2.6.1 pins that key in
 // its own tree (signers/allowed_signers), merged by the owner, so nothing it
@@ -12,13 +12,17 @@
 // v2.6.1 never reads the v3 tree's settings: v3's own migration does. The new install is the v3 tree
 // beside the tools of the install in place, and its guard and loop plists.
 //
-// Before the swap, v2.6.1 places a rollback watcher, run from its own folder (§5.5). Once proving
+// Before the swap, v2.6.1 places a rollback watcher, run from its own folder. Once proving
 // passes, v3's guard removes the watcher (its plist, its launchd job and its file) or writes proved in
 // its file. If neither happens by the deadline, the watcher takes the box back to v2.6.1 with
 // v2.6.1's own undo, so a v3 whose guard never starts is still undone. A failed undo leaves it in
 // place: it says so in taskbox check and tries again later.
+import { skFlags as readFlags } from "./core/sshsig.ts";
+import { bootOutListed, jobLabel } from "./core/child.ts";
+import { rootStateOf } from "./core/paths.ts";
+import { inVerifyFolder } from "./core/verifyfolder.ts";
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, existsSync, renameSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, renameSync, lstatSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { SUDO } from "./elevate.ts";
 import { CALL_LIMIT_MS, DOWNLOAD_LIMIT_MS } from "./ghfail.ts";
@@ -45,61 +49,13 @@ export const SIGNERS_IN_TREE = "signers/allowed_signers";
 const LIMITS = { statement: 16_384, signature: 16_384, tarball: 256 * 1024 * 1024, asset: 128 * 1024 * 1024, unpacked: 1024 * 1024 * 1024 };
 export const UNPACKED_LIMIT = LIMITS.unpacked;
 
-export interface Statement {
-  v: 1;
-  name: "taskbox";
-  version: string;
-  channel: "stable" | "beta";
-  tag: string;
-  tarball: string;
-  sha256: string;
-  tree: string;
-  assets: Record<string, string>;
-  minFrom: string;
-  settingsSchema: [number, number];
-  answers: [number, number];
-  pr: number;
-  mergedAt: string;
-  commit: string;
-  notes: string;
-}
+// The statement: v3's own reader (release.ts), the same fields v2.6.1 reads.
+export { parseStatement, type Statement } from "./release.ts";
+import type { Statement } from "./release.ts";
 
-const KEYS = "answers,assets,channel,commit,mergedAt,minFrom,name,notes,pr,settingsSchema,sha256,tag,tarball,tree,v,version";
-const VERSION = /^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})(?:-rc\.([1-9]\d{0,3}))?$/;
-const HEX64 = /^[0-9a-f]{64}$/;
-const range = (r: unknown) => Array.isArray(r) && r.length === 2 && r.every((n) => Number.isInteger(n) && n >= 1 && n <= 999) && r[0] <= r[1];
-
-// The statement read strictly (§5.2, 2): these fields, these shapes, nothing else, one line.
-export function parseStatement(text: string): Statement | undefined {
-  if (text.length > LIMITS.statement || !text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) return undefined;
-  let v: unknown;
-  try {
-    v = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
-  const s = v as Statement;
-  if (Object.keys(s).sort().join(",") !== KEYS) return undefined;
-  if (s.v !== 1 || s.name !== "taskbox" || typeof s.version !== "string" || !VERSION.test(s.version)) return undefined;
-  if (s.tag !== `v${s.version}` || s.tarball !== `taskbox-${s.tag}.tar.gz`) return undefined;
-  if (s.channel !== (isTrial(s.tag) ? "beta" : "stable")) return undefined;
-  if (typeof s.sha256 !== "string" || !HEX64.test(s.sha256) || typeof s.tree !== "string" || !/^[0-9a-f]{40}$/.test(s.tree)) return undefined;
-  if (!s.assets || typeof s.assets !== "object" || Array.isArray(s.assets)) return undefined;
-  const assets = Object.entries(s.assets);
-  if (assets.length > 10 || assets.some(([n, h]) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(n) || n === s.tarball || typeof h !== "string" || !HEX64.test(h))) return undefined;
-  if (typeof s.minFrom !== "string" || !VERSION.test(s.minFrom)) return undefined;
-  if (!range(s.settingsSchema) || !range(s.answers)) return undefined;
-  if (!Number.isInteger(s.pr) || s.pr < 1 || s.pr > 999_999) return undefined;
-  if (typeof s.mergedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{3})?Z$/.test(s.mergedAt)) return undefined;
-  if (typeof s.commit !== "string" || !/^[0-9a-f]{40}$/.test(s.commit)) return undefined;
-  if (typeof s.notes !== "string" || s.notes.length > 2000) return undefined;
-  return s;
-}
-
-// Why the statement can't be installed over the release in place, or undefined (§5.2, 3 to 5).
+// Why the statement can't be installed over the release in place, or undefined.
 export function statementProblem(s: Statement, tag: string, installed: string | undefined): string | undefined {
-  if (s.tag !== tag) return `the signed statement is for ${s.tag}, not ${tag}`;
+  if (s.tag !== tag) return `the signed statement is for ${s.tag}, and this is ${tag}`;
   if (!installed || !RELEASE_TAG.test(installed)) return "the release in place has no version taskbox reads, so it can't be compared";
   if (compareTags(s.tag, installed) <= 0) return `${s.tag} isn't newer than ${installed}, the installed release`;
   const major = (t: string) => Number(RELEASE_TAG.exec(t)![1]);
@@ -109,7 +65,7 @@ export function statementProblem(s: Statement, tag: string, installed: string | 
 }
 
 // The pinned signers file: comments, and one or two lines naming PRINCIPAL for NAMESPACE, each with
-// one security key's public half (§5.1). An empty file pins no key, so nothing verifies.
+// one security key's public half. An empty file pins no key, so nothing verifies.
 export function signersProblem(text: string): string | undefined {
   const lines = text.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
   if (!lines.length) return "v2.6.1 pins no release key yet: a later v2.6.x pins it";
@@ -124,39 +80,7 @@ export function signersProblem(text: string): string | undefined {
 // armoured SSHSIG, or undefined when it isn't a security key's signature in that form. ssh-keygen -Y
 // verify accepts a signature whatever its flags, so taskbox reads them itself (from #15).
 export function skFlags(armoured: Uint8Array): number | undefined {
-  const m = /^-----BEGIN SSH SIGNATURE-----\n([A-Za-z0-9+/=\n]+)-----END SSH SIGNATURE-----\n?$/.exec(new TextDecoder().decode(armoured));
-  if (!m) return undefined;
-  const b = Buffer.from(m[1]!.replace(/\n/g, ""), "base64");
-  let off = 0;
-  const take = (n: number) => {
-    if (off + n > b.length) throw new Error("short");
-    const v = b.subarray(off, off + n);
-    off += n;
-    return v;
-  };
-  const str = () => take(take(4).readUInt32BE(0));
-  try {
-    if (take(6).toString("latin1") !== "SSHSIG" || take(4).readUInt32BE(0) !== 1) return undefined;
-    str(); // public key
-    str(); // namespace
-    str(); // reserved
-    str(); // hash
-    const sig = str();
-    if (off !== b.length) return undefined;
-    let o = 0;
-    const s1 = () => {
-      const n = sig.readUInt32BE(o);
-      const v = sig.subarray(o + 4, o + 4 + n);
-      o += 4 + n;
-      return v;
-    };
-    if (s1().toString("latin1") !== "sk-ecdsa-sha2-nistp256@openssh.com") return undefined;
-    s1(); // the ECDSA signature
-    if (o + 5 !== sig.length) return undefined;
-    return sig[o]!;
-  } catch {
-    return undefined;
-  }
+  return readFlags(armoured);
 }
 
 // The git tree object ID of an unpacked release: plain files only, mode 100755 when executable, as the
@@ -257,7 +181,7 @@ export const SAFE_UNTAR = ["--no-same-owner", "--no-same-permissions", "--no-xat
 export async function publicRelease(sys: Sys, repo: string, tag: string): Promise<PublicRelease> {
   const res = await sys.fetch(`https://api.github.com/repos/${repo}/releases/tags/${tag}`, {
     redirect: "error",
-    signal: AbortSignal.timeout(CALL_LIMIT_MS),
+    signal: sys.timeout(CALL_LIMIT_MS),
     headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox" },
   });
   if (res.status === 404) throw new HopStop(`There is no release ${tag} on ${repo}. Check the release in the update line you typed.`, true);
@@ -274,7 +198,7 @@ export async function publicRelease(sys: Sys, repo: string, tag: string): Promis
     if (size === undefined) throw new HopStop(`release ${tag} on ${repo} has no ${name}.`);
     if (size > limit) throw new HopStop(`release ${tag}'s ${name} is larger than taskbox takes.`);
     const url = `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
-    const got = await sys.fetch(url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_LIMIT_MS), headers: { "User-Agent": "taskbox" } });
+    const got = await sys.fetch(url, { redirect: "follow", signal: sys.timeout(DOWNLOAD_LIMIT_MS), headers: { "User-Agent": "taskbox" } });
     if (!got.ok) throw new HopStop(`could not download ${name} of ${tag} (${got.status}).`);
     await readCapped(got, limit, chunk, () => new HopStop(`release ${tag}'s ${name} is larger than taskbox takes.`));
   };
@@ -337,20 +261,14 @@ export async function verifySignature(sys: Sys, o: { statement: Uint8Array; sign
 // The line the elevating command prints when it won't run one: its own name, then a colon.
 const REFUSED_RUN = new RegExp(`^${basename(SUDO)}: `, "m");
 
-// The ssh-keygen step alone: the signers and the signature copied to a folder of their own that
-// nobody can read, ssh-keygen -Y verify run there as nobody with no environment but PATH, the
+// The ssh-keygen step alone: the signers and the signature copied to a folder of their own
+// (core/verifyfolder.ts), ssh-keygen -Y verify run there as nobody with no environment but PATH, the
 // statement on stdin, and its line read. Tested with the real ssh-keygen (hop.test.ts).
 export async function sshVerify(sys: Sys, o: { statement: Uint8Array; signature: Uint8Array; signers: string; workRoot: string }): Promise<{ type: string; fingerprint: string }> {
-  const dir = mkdtempSync(join(o.workRoot, "taskbox-verify-"));
-  try {
-    chmodSync(dir, 0o755);
-    writeFileSync(join(dir, "allowed_signers"), o.signers, { mode: 0o644 });
-    writeFileSync(join(dir, "statement.json.sig"), o.signature, { mode: 0o644 });
-    chmodSync(join(dir, "allowed_signers"), 0o644);
-    chmodSync(join(dir, "statement.json.sig"), 0o644);
+  return inVerifyFolder(o.workRoot, { signers: o.signers, signature: o.signature, readable: true }, async (f) => {
     const r = await sys.run(
       SUDO,
-      ["-n", "-u", "nobody", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", SSH_KEYGEN, "-Y", "verify", "-f", join(dir, "allowed_signers"), "-I", PRINCIPAL, "-n", NAMESPACE, "-s", join(dir, "statement.json.sig")],
+      ["-n", "-u", "nobody", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", SSH_KEYGEN, "-Y", "verify", "-f", f.signers, "-I", PRINCIPAL, "-n", NAMESPACE, "-s", f.signature],
       { stdin: o.statement, timeoutMs: 20_000 },
     );
     // Refused the run as nobody: the box's setup, never a bad release, so said apart.
@@ -359,12 +277,10 @@ export async function sshVerify(sys: Sys, o: { statement: Uint8Array; signature:
     const good = goodSignature(r.stdout + r.stderr);
     if (!good) throw new HopStop("ssh-keygen didn't name the key that signed the release.");
     return good;
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 }
 
-// The rollback watcher (§5.5): a LaunchDaemon run every minute from the install before, and its file.
+// The rollback watcher: a LaunchDaemon run every minute from the install before, and its file.
 export const ROLLBACK_LABEL = `${LABEL_PREFIX}.rollback-watch`;
 // v3's guard proves a release within 60 minutes (proveMinutes), so the watcher waits 10 more.
 export const ROLLBACK_AFTER_MS = 70 * 60_000;
@@ -379,13 +295,17 @@ export interface RollbackWatch {
   // up to MAX_HOLD_MS after placedAt.
   deadline: number;
   proved?: boolean; // written by v3's guard once proving passes
-  // A go-back that failed: how many, the last reason, and when the next try is (v2.6.1, M2).
+  // A go-back that failed: how many, the last reason, and when the next try is (v2.6.1).
   failures?: number;
   lastError?: string;
   nextTry?: number;
-  // The update lock held by another process for over 30 minutes, and when that was last logged (L7).
+  // The update lock held by another process for over 30 minutes, and when that was last logged.
   blocked?: string;
   blockedLogAt?: number;
+  // v3 on: the monotonic clock and the boot when it was placed (core/boot.ts). v3's watcher judges the
+  // deadline by them, so a wall clock step neither rolls back nor holds an update. v2.6.1 ignores them.
+  placedMono?: number;
+  boot?: string;
 }
 
 // The latest a deadline may be moved to: 3 hours after the watcher was placed.
@@ -486,18 +406,34 @@ export async function removeRollbackWatch(sys: Sys, p: Pick<Paths, "guardPlist" 
   const { file, plist } = rollbackWatchPaths(p);
   rmSync(file, { force: true });
   rmSync(`${file}.unreadable`, { force: true });
+  // v3's watcher's own count of the time used (ops.ts watchClock).
+  rmSync(`${file}.clock`, { force: true });
   rmSync(plist, { force: true });
   await sys.run("/bin/launchctl", ["bootout", `system/${ROLLBACK_LABEL}`], { timeoutMs: LAUNCHCTL_MS });
 }
 
-// launchd labels v2.6.1 knows. Undo boots out every other local.taskbox.* daemon and agent (§5.7, 6):
+// launchd labels v2.6.1 knows. Undo boots out every other local.taskbox.* daemon and agent:
 // a later release's own, which the install gone back to doesn't know.
 export const KNOWN_DAEMONS = [GUARD_LABEL, TAILSCALED_LABEL, `${LABEL_PREFIX}.tailscaled-reload`, ROLLBACK_LABEL];
 export const KNOWN_AGENTS = [AGENT_LABEL];
 
+// The daemons of v3 and later that an install keeps, from its install record's tag: guardwatch, and
+// netwatch when the tag says v3 or later.
+// Only a tag that says v2 or older drops it; a missing or unreadable tag keeps it, so the guard is
+// never left unwatched (on a v2 install it fails each minute, which check shows).
+export function laterDaemons(tag: unknown): string[] {
+  const major = typeof tag === "string" ? Number(/^v(\d{1,3})\./.exec(tag)?.[1]) : NaN;
+  return major < 3 ? [] : [`${LABEL_PREFIX}.guardwatch`, ...(major >= 3 ? [`${LABEL_PREFIX}.netwatch`] : [])];
+}
+
 // agentsUid: whose gui domain the agents run in (ci's); with none, their plists still go.
-export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist">, keep: string[] = KNOWN_DAEMONS, agentsUid?: number): Promise<string[]> {
+// v3's op jobs (core/child.ts) have their plists in root's ops folder, outside these folders, so with
+// an ops folder there, every op job launchd lists is booted out too.
+// missed: the op jobs it couldn't end, for the caller to say.
+// selfOp: the op whose child runs this (an update or rollback going back), whose job stays.
+export async function bootOutUnknown(sys: Sys, p: Pick<Paths, "guardPlist" | "agentPlist"> & Partial<Pick<Paths, "installId">>, keep: string[] = KNOWN_DAEMONS, agentsUid?: number, missed: string[] = [], selfOp?: string): Promise<string[]> {
   const gone: string[] = [];
+  if (p.installId && existsSync(rootStateOf({ installId: p.installId }).ops)) missed.push(...(await bootOutListed(sys, selfOp ? new Set([jobLabel(selfOp)]) : undefined).catch(() => ["launchd's list of jobs couldn't be read"])));
   for (const [dir, known, domain] of [
     [dirname(p.guardPlist), keep, "system"],
     [dirname(p.agentPlist), KNOWN_AGENTS, agentsUid === undefined ? undefined : `gui/${agentsUid}`],

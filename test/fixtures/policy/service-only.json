@@ -1,0 +1,15 @@
+{
+  "tagOwners": {
+    "tag:taskbox": ["YOUR_LOGIN"]
+  },
+  "grants": [
+    { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] }
+  ],
+  "ssh": [],
+  "sshTests": [
+    { "src": "YOUR_LOGIN", "dst": ["tag:taskbox"], "deny": ["root", "taskbox", "ADMIN"] }
+  ],
+  "tests": [
+    { "src": "tag:taskbox", "deny": ["YOUR_LOGIN:22", "YOUR_LOGIN:80", "YOUR_LOGIN:443", "YOUR_LOGIN:445", "YOUR_LOGIN:548", "YOUR_LOGIN:3283", "YOUR_LOGIN:5900", "YOUR_LOGIN:7000"] }
+  ]
+}

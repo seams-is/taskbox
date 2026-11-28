@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 8 (docs/away-ready-design.md): a Linux proof that couldn't run tries
+// v2.5.0 away-ready: a Linux proof that couldn't run tries
 // again in proofRetryMinutes, hourly after 4 in a row, and writes no result; a real failure keeps the
 // 6-hour wait.
 import { describe, expect, test } from "bun:test";
@@ -37,7 +37,8 @@ function runFor(sys: FakeSys, d: ReturnType<typeof linuxBox>["d"], hours: number
 }
 
 describe("a proof that couldn't run", () => {
-  test("tries again in 15 minutes, hourly after 4 in a row, and writes no result", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("tries again in 15 minutes, hourly after 4 in a row, and writes no result", async () => {
     const { sys, d } = linuxBox();
     const at: number[] = [];
     d.proveLinux = async (): Promise<ProofRun> => (at.push(sys.now()), { ok: false, detail: "the Linux guest never answered", infra: true });
@@ -65,7 +66,7 @@ describe("a proof that couldn't run", () => {
     expect(readProof(d.paths.projectState)).toBeUndefined();
   });
 
-  test("a real failure keeps the 6-hour wait, and a finished proof clears the count", async () => {
+  test.serial("a real failure keeps the 6-hour wait, and a finished proof clears the count", async () => {
     const { sys, d } = linuxBox();
     const at: number[] = [];
     d.proveLinux = async () => (at.push(sys.now()), { ok: false, detail: "the box could reach the Linux VM (answered)" });
@@ -96,7 +97,7 @@ describe("a pass that still holds", () => {
     expect(infraProofLine(false, "the Linux guest never answered", Date.UTC(2026, 10, 18, 14, 30)).linuxProof).toMatch(/^couldn't run: the Linux guest never answered\. It tries again at \d\d:\d\d$/);
   });
 
-  test("taskbox away reads it OK whatever its age, as ci and as remote", async () => {
+  test("taskbox check --away reads it OK whatever its age, as ci and as remote", async () => {
     const { sys, d } = linuxBox();
     const { writeProof } = await import("../src/proof.ts");
     writeProof(d.paths.projectState, { v: 1, at: sys.now() - 10 * 86_400_000, ok: true, image: LINUX_IMAGE, commit: "c0ffee0", detail: "x" });
@@ -104,6 +105,6 @@ describe("a pass that still holds", () => {
     writeLoopState(d.paths, { linuxProof: "passed: x" });
     const { AWAY_ONLY } = await import("../src/away.ts");
     const proof = AWAY_ONLY.find(([n]) => n === "Linux proof")![1];
-    for (const uid of [501, 502]) expect((await proof({ sys, cfg: LCFG, paths: d.paths, uid, ciUid: 501 } as never)).status).toBe("OK");
+    for (const uid of [501, 502]) expect((await proof({ sys, cfg: LCFG, paths: d.paths, uid, serviceUid: 501 } as never)).status).toBe("OK");
   });
 });

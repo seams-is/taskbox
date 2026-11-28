@@ -1,0 +1,126 @@
+# A taskbox release, as a draft: run by a push of a tag vX.Y.Z on main, once the owner merges the
+# release PR. The repo's tag rule lets only the owner make v* tags, and the owner approves the run
+# (the release environment). It runs only from a tag, and only when the tag's commit is on main and
+# is a PR's merge; there is no run by hand, so no branch's copy of this file makes a draft. Then the
+# tarball (git archive of the tag under one top folder), the Tailscale build (two hosts, compared),
+# the revoke list and the statement, unsigned, all attached to a draft release. CI holds no signing
+# key and can't publish: taskbox sign on the signing Mac checks every file against GitHub (the PR,
+# main and this run), signs the statement and publishes it.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: '1.4.4'
+
+jobs:
+  tailscale:
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/build-tailscale.yml
+    with:
+      attach: false
+
+  draft:
+    needs: tailscale
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      BUN_ZIP: bun-linux-x64
+      BUN_SHA256: bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The version is a release's, and its tag is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          [ "$GITHUB_REF_TYPE" = tag ] || { echo "::error::a release runs only from a tag"; exit 1; }
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || { echo "::error::$TAG's commit isn't on main"; exit 1; }
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})(-rc\.[1-9][0-9]{0,3})?$ ]] || { echo "::error::$VERSION isn't a release version"; exit 1; }
+      - name: Fetch and check bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_ZIP}.zip"
+          echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
+      - name: The revoke list, every revoke so far
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/out"; mkdir -p "$out" "$RUNNER_TEMP/rv"
+          # The latest release's list, and each revoke signed on its own on a published release.
+          files=()
+          prev=$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name 2>/dev/null || true)
+          if [ -n "$prev" ] && gh release download "$prev" --pattern signers-revokes.json --dir "$RUNNER_TEMP/rv/latest" 2>/dev/null; then files+=("$RUNNER_TEMP/rv/latest/signers-revokes.json"); fi
+          for t in $(gh api "repos/${GH_REPO}/releases?per_page=100" --jq '.[] | select(.draft == false) | select(any(.assets[]; .name == "signers-revoke.json")) | .tag_name'); do
+            gh release download "$t" --pattern signers-revoke.json --dir "$RUNNER_TEMP/rv/$t"
+            files+=("$RUNNER_TEMP/rv/$t/signers-revoke.json")
+          done
+          bun release/revokes.ts "${files[@]}" > "$out/signers-revokes.json"
+      - name: The tarball, the tag's tree under one top folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          git archive --format=tar --prefix=taskbox/ "$GITHUB_SHA" | gzip -n -9 > "$out/taskbox-v${VERSION}.tar.gz"
+          echo "TREE=$(git rev-parse "${GITHUB_SHA}^{tree}")" >> "$GITHUB_ENV"
+      - name: The Tailscale build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0, GitHub-owned
+        with:
+          name: tailscale-macos
+          path: ${{ runner.temp }}/ts
+      - name: The statement, unsigned
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/out"
+          ts="tailscale-$(jq -r .tailscale.version versions.json 2>/dev/null || echo build).tar.gz"
+          (cd "$RUNNER_TEMP/ts" && chmod 755 tailscale tailscaled && chmod 644 LICENSE-tailscale LICENSE-go && tar --owner=0 --group=0 --numeric-owner --mtime='2000-01-01 00:00Z' -czf "$out/$ts" tailscale tailscaled LICENSE-tailscale LICENSE-go)
+          # The asset must be the build versions.json pins, which boxes check again on install.
+          want=$(jq -r .tailscale.sha256 versions.json)
+          got=$(sha256sum "$out/$ts" | cut -d' ' -f1)
+          [ "$got" = "$want" ] || { echo "::error::the Tailscale build is $got, and versions.json pins $want"; exit 1; }
+          pr=$(gh api "repos/${GH_REPO}/commits/${GITHUB_SHA}/pulls" | jq --arg sha "$GITHUB_SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)][0]')
+          number=$(jq -r .number <<<"$pr"); merged=$(jq -r .merged_at <<<"$pr"); title=$(jq -r .title <<<"$pr")
+          [ "$number" != "null" ] || { echo "::error::$GITHUB_SHA isn't the merge of a PR into main"; exit 1; }
+          bun release/draft.ts "$VERSION" "$GITHUB_SHA" "$TREE" "$out/taskbox-v${VERSION}.tar.gz" "$number" "$merged" "$title" "$out/$ts" "$out/signers-revokes.json" > "$out/statement.json"
+          cat "$out/statement.json"
+      - name: The draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/out"
+          gh release create "v${VERSION}" --draft --verify-tag --title "taskbox ${VERSION}" \
+            --notes "Unsigned draft from run ${GITHUB_RUN_ID} at ${GITHUB_SHA}. taskbox sign ${VERSION} on the signing Mac checks, signs and publishes it." \
+            "$out"/statement.json "$out"/taskbox-v${VERSION}.tar.gz "$out"/tailscale-*.tar.gz "$out"/signers-revokes.json
+          {
+            echo "### Draft v${VERSION}"
+            echo
+            echo '```'
+            cat "$out/statement.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

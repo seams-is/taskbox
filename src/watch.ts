@@ -1,15 +1,22 @@
-// `taskbox watch`: one screen that stays open and shows what the box is doing, redrawn every two
+// `taskbox status -w`: one screen that stays open and shows what the box is doing, redrawn every two
 // seconds. It only reads files the loop writes, so it never slows or changes the box.
+import { serviceName } from "./names.ts";
 import { type Beat, readBeat } from "./beat.ts";
 import { type GitHubRecord, readGitHubRecord } from "./ghfail.ts";
 import { readStateJson } from "./config.ts";
 import { KIND_WORD } from "./config.ts";
 import { activePull, clean, type PullState, pullLine, readPull } from "./progress.ts";
 import { computeState } from "./state.ts";
-import { stoppedLine } from "./stopstart.ts";
+import { stoppedLine } from "./availability.ts";
+import { type Clock, realClock } from "./clock.ts";
 
 export interface LoopView {
-  drainingSince?: number; // taskbox stop --drain: when it began, or 0 when it can't be read
+  drainingSince?: number; // taskbox drain: when it began, or 0 when it can't be read
+  // Why the box is held now (loop.ts showHold): workspace for a Whole the owner approved, which is
+  // expected; bad or stale for a workspaces state the loop can't trust; newer, which holds nothing,
+  // for taskbox update. heldFor is the line.
+  heldKind?: string;
+  heldFor?: string;
   slot?: string;
   slotAt?: number;
   job?: string;
@@ -23,7 +30,10 @@ export interface LoopView {
   waitingFor?: string; // why the box starts no new VM: the guard, memory or disk
   vmSize?: string; // "4 CPUs, 8 GB" while a job runs
   beside?: string[]; // the box's other users logged in when the VM started
+  net?: string; // v3: the running job's network so far (hooks/net.ts)
   vmKind?: string; // "macos" or "linux": the kind of the VM in the slot now
+  size?: string; // its size, such as small; default for the kind's own
+  budget?: string; // what the VMs hold of the box's memory and CPUs (sizes.ts holdsLine)
   kindPaused?: string; // a kind whose VMs kept failing, paused for an hour
   kindChoice?: string; // "queue", or "turns: <why>"
   linuxProof?: string; // "passed: ..." or "FAIL: ...": the Linux Softnet proof
@@ -37,6 +47,13 @@ export interface LoopView {
   selfRestartCount?: number; // v2.5.0: the loop's restarts for a stale beat, since selfRestartSince
   selfRestartSince?: number;
   endingAt?: number; // v2.5.0: the loop is ending on purpose (a halt), so nothing restarts it
+  sourceReadAt?: number; // the job source's failed reads in a row (sourcefail.ts)
+  sourceFailures?: number;
+  sourceFailingSince?: number;
+  sourceWhy?: string;
+  sourceKind?: import("./source.ts").SourceKind;
+  sourceRetryAt?: number;
+  endingUntil?: number; // the latest it should take to end; past it, the guard ends it (passes/ending.ts)
   watchKickSeen?: number; // v2.5.0: the last restart by the guard that the loop has counted (loopwatch.ts)
 }
 
@@ -47,10 +64,12 @@ export interface SlotView {
   job?: string;
   vmKind?: string;
   vmSize?: string;
+  size?: string;
   beside?: string[];
   waitingFor?: string;
   why?: string; // v2.4.0: the scheduler's reason for what this slot does now
   beat?: Beat; // v2.5.0: the slot's heartbeat (beat.ts)
+  net?: string; // v3: the running job's network so far (hooks/net.ts)
 }
 
 // The slots in order, read from the state file's slots: at most 9, each a number from 1.
@@ -63,7 +82,7 @@ function readSlots(v: unknown): Record<string, SlotView> | undefined {
     const beat = readBeat((x as Record<string, unknown>).beat);
     if (beat) s.beat = beat;
     for (const [f, y] of Object.entries(x)) {
-      if (!["slot", "slotAt", "job", "vmKind", "vmSize", "beside", "waitingFor", "why"].includes(f)) continue;
+      if (!["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "waitingFor", "why", "net"].includes(f)) continue;
       if (typeof y === "string") s[f] = clean(y).slice(0, 200);
       else if (typeof y === "number" && Number.isFinite(y)) s[f] = y;
       else if (Array.isArray(y)) s[f] = y.filter((z) => typeof z === "string").map((z) => clean(z).slice(0, 80)).slice(0, 20);
@@ -122,13 +141,13 @@ const SLOT_WORDS: Record<string, string> = {
   "starting a VM": "Starting a fresh VM.",
   "waiting for a job": "Ready, waiting for a job from GitHub.",
   "proving Linux": "Proving a Linux VM under Softnet reaches nothing on the box or the LAN. It runs no job.",
+  "baking tools": "Baking the pinned tools into a base VM for jobs to clone. It runs no job.",
   "running a job": "Running a job",
   "cleaning up": "Deleting the VM after its job.",
   idle: "Between jobs.",
   "checks failed": "Not starting VMs: a check failed.",
   "no public address": "Not starting VMs: the box can't read its public address. It tries again in a minute.",
   waiting: "Waiting: no new VM for now.",
-  held: "Held, by a hold from before v2.2.0. It ends when the loop restarts.",
 };
 
 // What one slot's VM is doing, in words.
@@ -138,7 +157,7 @@ export function vmWords(loop: SlotView, now: number): string {
   const size = loop.vmSize ? `, ${clean(loop.vmSize)}${loop.beside?.length ? `, beside ${loop.beside.join(" and ")}` : ""}` : "";
   const job = loop.slot === "running a job" && loop.job ? `: ${clean(loop.job)}${size}` : "";
   const since = loop.slotAt ? ` (for ${ago(now - loop.slotAt)})` : "";
-  const kind = loop.slot && loop.slot !== "idle" && !waiting ? kindPrefix(loop) : "";
+  const kind = loop.slot && loop.slot !== "idle" && !waiting ? kindPrefix(loop).replace(/: $/, loop.size && loop.size !== "default" ? ` ${clean(loop.size)}: ` : ": ") : "";
   return `${kind}${words}${job}${since}`;
 }
 
@@ -162,7 +181,7 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   const linux = o.pullLinuxFile ? readPull(o.pullLinuxFile) : undefined;
   const loop = readLoop(o.loopFile);
   const st = computeState({ now: o.now, loopRunning: o.loopRunning, stoppedAt: o.stoppedAt, pull: activePull(pull, linux), loop, others: o.others, unfinished: o.unfinished });
-  const lines = [`Now: ${st.word}. Next: ${st.next}`, "", `taskbox watch, redrawn every 2 s. Last drawn ${clock(o.now)}. Ctrl-C stops watching; the box carries on.`, ""];
+  const lines = [`Now: ${st.word}. Next: ${st.next}`, "", `taskbox status -w, redrawn every 2 s. Last drawn ${clock(o.now)}. Ctrl-C stops watching; the box carries on.`, ""];
   if (o.unfinished) lines.push("Update:    the update isn't finished.");
   lines.push(`Download:  ${downloadLine(pull, loop, o.now, o.loopRunning, o.stoppedAt)}`);
   if (linux) lines.push(`Linux:     ${pullLine(linux, o.now, o.loopRunning, o.stoppedAt)}`);
@@ -170,13 +189,14 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   if (o.logins) lines.push(`Logins:    ${o.logins}`);
   if (o.loopRunning !== undefined) {
     const stopped = o.loopRunning === false && o.stoppedAt !== undefined;
-    lines.push(`Loop:      ${o.loopRunning ? "running" : stopped ? stoppedLine(o.stoppedAt!) : "not running. Type taskbox start, or log out and log in as ci."}`);
+    lines.push(`Loop:      ${o.loopRunning ? "running" : stopped ? stoppedLine(o.stoppedAt!) : `not running. Type taskbox start, or log out and log in as ${serviceName()}.`}`);
   }
   const shown = slotsShown(loop);
   // v2.4.0: under each VM line, the scheduler's reason for it.
-  const why = (s: SlotView) => (s.why ? [`${" ".repeat(11)}Why: ${clean(s.why)}.`] : []);
+  const why = (s: SlotView) => [...(s.why ? [`${" ".repeat(11)}Why: ${clean(s.why)}.`] : []), ...(s.net && s.slot === "running a job" ? [`${" ".repeat(11)}Net: ${clean(s.net)}.`] : [])];
   if (shown.length) for (const [k, s] of shown) lines.push(`${`VM ${k}:`.padEnd(11)}${vmWords(s, o.now)}`, ...why(s));
   else if (pull?.state === "ready" || loop.slot) lines.push(`VM:        ${vmWords(loop, o.now)}`, ...why(loop));
+  if (loop.budget) lines.push(`Budget:    ${clean(loop.budget)}`);
   if (loop.lastCheck === "FAIL") lines.push(`Checks:    FAIL: ${clean((loop.failed ?? []).join(", "))}. Type taskbox check for the fix.`);
   else if (loop.lastCheck === "OK") lines.push("Checks:    all OK");
   // Shown for a day after it happens.
@@ -185,15 +205,14 @@ export function screen(o: { pullFile: string; pullLinuxFile?: string; loopFile: 
   return lines;
 }
 
-export async function watch(o: { pullFile: string; pullLinuxFile?: string; loopFile: string; loopRunning: () => Promise<boolean | undefined>; stoppedAt?: () => number | undefined; others?: () => Promise<string[]>; unfinished?: () => boolean; logins?: () => Promise<string | undefined>; once: boolean }): Promise<void> {
+export async function watch(o: { pullFile: string; pullLinuxFile?: string; loopFile: string; loopRunning: () => Promise<boolean | undefined>; stoppedAt?: () => number | undefined; others?: () => Promise<string[]>; unfinished?: () => boolean; logins?: () => Promise<string | undefined>; extra?: () => string[]; clock?: Clock }): Promise<void> {
+  const clock = o.clock ?? realClock;
   for (;;) {
-    const lines = screen({ ...o, now: Date.now(), loopRunning: await o.loopRunning(), stoppedAt: o.stoppedAt?.(), others: await o.others?.(), unfinished: o.unfinished?.(), logins: await o.logins?.() });
-    if (o.once) {
-      console.log(lines.join("\n"));
-      return;
-    }
+    const lines = screen({ ...o, now: clock.now(), loopRunning: await o.loopRunning(), stoppedAt: o.stoppedAt?.(), others: await o.others?.(), unfinished: o.unfinished?.(), logins: await o.logins?.() });
+    // The move to v3 while it runs (migrate/status.ts).
+    lines.push(...(o.extra?.() ?? []).map((l) => `  ${l}`));
     // Clear the screen and draw from the top.
     process.stdout.write("\x1b[H\x1b[2J" + lines.join("\n") + "\n");
-    await new Promise((r) => setTimeout(r, 2000));
+    await clock.sleep(2000);
   }
 }

@@ -24,7 +24,7 @@ function setup(o: { print?: string; ci?: boolean } = {}) {
   servicesObey(sys);
   const calls: string[][] = [];
   sys.responders.unshift((cmd, args) => {
-    if (cmd === "/usr/bin/id" && args.join(" ") === "-u ci") return o.ci === false ? { code: 1, stdout: "", stderr: "no such user" } : { code: 0, stdout: `${ME}\n`, stderr: "" };
+    if (cmd === "/usr/bin/id" && args.join(" ") === "-u taskbox") return o.ci === false ? { code: 1, stdout: "", stderr: "no such user" } : { code: 0, stdout: `${ME}\n`, stderr: "" };
     if (cmd === "/bin/launchctl") {
       calls.push(args);
       if (args[0] === "print") return { code: 0, stdout: o.print ?? RUNNING, stderr: "" };
@@ -43,11 +43,19 @@ const staleBy = (sys: FakeSys, past: number, phase = "starting a VM") => {
   return { slotCount: 1, slots: { "1": { slot: phase, beat: beatFor(phase, sys.now() - limit - DEFAULT_GRACE_MS - past) } } };
 };
 
+// The watch counts how long a beat has stood on mono from the pass that first saw it (loopwatch.ts).
+// A beat made stale above is taken as seen since it was written, as a guard watching all along would.
+const mono = (sys: FakeSys) => sys.clock + sys.monoOffset;
+function watched<S extends { slots: Record<string, { beat?: { at: number } }> }>(w: ReturnType<typeof newLoopWatch>, sys: FakeSys, state: S): S {
+  for (const [slot, x] of Object.entries(state.slots)) if (x.beat) w.firstSeen.set(`${slot}@${x.beat.at}`, mono(sys) - (sys.now() - x.beat.at));
+  return state;
+}
+
 describe("the guard's watch of the loop", () => {
   test("a frozen loop is restarted on its own label only, once its beat is past the loop's bound by the margin", async () => {
     const { sys, d, calls, kicks } = setup();
     const w = newLoopWatch();
-    writeLoopState(d.paths, staleBy(sys, LOOP_WATCH_EXTRA_MS - MIN));
+    writeLoopState(d.paths, watched(w, sys, staleBy(sys, LOOP_WATCH_EXTRA_MS - MIN)));
     expect(await watchLoop(sys, d.paths, w)).toBeUndefined();
     expect(kicks()).toEqual([]);
     sys.clock += 2 * MIN;
@@ -67,7 +75,7 @@ describe("the guard's watch of the loop", () => {
   async function primed(o: Parameters<typeof setup>[0] = {}) {
     const t = setup(o);
     const w = newLoopWatch();
-    const state = staleBy(t.sys, 10 * MIN);
+    const state = watched(w, t.sys, staleBy(t.sys, 10 * MIN));
     writeLoopState(t.d.paths, state);
     expect(await watchLoop(t.sys, t.d.paths, w)).toBeUndefined();
     t.sys.clock += MIN;
@@ -121,7 +129,7 @@ describe("the guard's watch of the loop", () => {
     expect([...t.kicks(), ...u.kicks()]).toEqual([]);
   });
 
-  test("the clock going back: no action, and no restart time left in the future", async () => {
+  test("the monotonic clock going back, as after a restart: no action, and no restart time left in the future", async () => {
     const t = await primed();
     t.sys.clock -= 30 * MIN;
     expect(await watchLoop(t.sys, t.d.paths, t.w)).toBeUndefined();
@@ -134,14 +142,14 @@ describe("the guard's watch of the loop", () => {
     // The control: slot 2's last beat left in place is taken for a frozen loop.
     const kept = setup();
     const kw = newLoopWatch();
-    writeLoopState(kept.d.paths, two(kept.sys));
+    writeLoopState(kept.d.paths, watched(kw, kept.sys, two(kept.sys)));
     await watchLoop(kept.sys, kept.d.paths, kw);
     kept.sys.clock += MIN;
     expect(await watchLoop(kept.sys, kept.d.paths, kw)).toBeDefined();
     // As the loop leaves it: the ended worker's beat cleared, slot 1 still beating.
     const t = setup();
     const w = newLoopWatch();
-    writeLoopState(t.d.paths, two(t.sys));
+    writeLoopState(t.d.paths, watched(w, t.sys, two(t.sys)));
     await watchLoop(t.sys, t.d.paths, w);
     writeLoopState(t.d.paths, {}, { slot: 2, patch: { beat: undefined } });
     expect(readLoop(t.d.paths.loopState).slots?.["2"]?.beat).toBeUndefined();
@@ -153,21 +161,23 @@ describe("the guard's watch of the loop", () => {
   test("a sleep gap and a second restart within 15 minutes: no action", async () => {
     const { sys, d, kicks } = setup();
     const w = newLoopWatch();
-    writeLoopState(d.paths, staleBy(sys, 10 * MIN));
-    w.lastPass = sys.now() - 10 * MIN; // the Mac slept between passes
+    writeLoopState(d.paths, watched(w, sys, staleBy(sys, 10 * MIN)));
+    w.lastPass = mono(sys) - 10 * MIN; // the Mac slept between passes
     expect(await watchLoop(sys, d.paths, w)).toBeUndefined();
+    // After a sleep every beat is counted again from then; here, as if seen since written.
+    watched(w, sys, readLoop(d.paths.loopState) as never);
     expect(await watchLoop(sys, d.paths, w)).toBeUndefined(); // seen once
     expect(await watchLoop(sys, d.paths, w)).toBeDefined();
     sys.clock += MIN;
-    writeLoopState(d.paths, staleBy(sys, 10 * MIN));
+    writeLoopState(d.paths, watched(w, sys, staleBy(sys, 10 * MIN)));
     for (let i = 0; i < 13; i++) {
       expect(await watchLoop(sys, d.paths, w)).toBeUndefined();
       sys.clock += MIN;
     }
     expect(kicks().length).toBe(1);
     sys.clock += LOOP_KICK_GAP_MS;
-    w.lastPass = sys.now() - MIN;
-    writeLoopState(d.paths, staleBy(sys, 10 * MIN));
+    w.lastPass = mono(sys) - MIN;
+    writeLoopState(d.paths, watched(w, sys, staleBy(sys, 10 * MIN)));
     expect(await watchLoop(sys, d.paths, w)).toBeUndefined();
     sys.clock += MIN;
     expect(await watchLoop(sys, d.paths, w)).toBeDefined();
@@ -217,25 +227,28 @@ describe("the guard's watch of the loop", () => {
     expect(runningNow("x = {\n\t\tstate = running\n\t\tpid = 9\n}\n")).toBe(false);
   });
 
-  test("the guard runs it on its full passes", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("the guard runs it on its full passes", async () => {
     const { sys, d, kicks } = setup();
-    writeLoopState(d.paths, staleBy(sys, 10 * MIN));
+    // A beat that goes quiet: its 3 minutes, the grace and the margin, counted on mono from the first pass.
+    writeLoopState(d.paths, { slotCount: 1, slots: { "1": { beat: beatFor("waiting", sys.now()) } } });
     mkdirSync(dirname(d.paths.guardState), { recursive: true });
     mkdirSync(dirname(d.paths.guardLog), { recursive: true });
     let ticks = 0;
-    // Two watches, a minute apart: 31 ticks of 2 s. The fake box has no pf, so every guard pass
+    // Watches a minute apart, 13 minutes of 2 s ticks. The fake box has no pf, so every guard pass
     // fails and runs each tick; the watch keeps its own minute.
     sys.responders.push((cmd, args) => {
       if (cmd === "/sbin/pfctl") return { code: 1, stdout: "", stderr: "pfctl: /dev/pf: No such file or directory\n" };
       if (cmd === "/usr/sbin/sysctl" && args.join(" ") === "-n kern.boottime") return { code: 0, stdout: "{ sec = 1799990000, usec = 0 }\n", stderr: "" };
       return undefined;
     });
-    await guardWatch(sys, { label: "x" } as never, d.paths, () => ticks++ < 31).catch(() => undefined);
+    // The workspace pass has tests of its own (ws-guard-tick.test.ts); here it does nothing.
+    await guardWatch(sys, { label: "x" } as never, d.paths, () => ticks++ < 391, async () => undefined).catch(() => undefined);
     // The watch runs beside the tick, never awaited by it: its own sleeps wake first.
     await sys.sleep(GUARD_FULL_MS);
     expect(kicks().length).toBe(1);
     // Root's own log says what it did and why.
-    expect(readFileSync(d.paths.guardLog, "utf8")).toMatch(/Z restarted the loop: slot 1 hadn't moved since its beat \(starting a VM\)\n$/);
+    expect(readFileSync(d.paths.guardLog, "utf8")).toMatch(/Z restarted the loop: slot 1 hadn't moved since its beat \(waiting\)\n$/);
   });
 });
 

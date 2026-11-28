@@ -1,17 +1,43 @@
 // Everything that touches the machine goes through Sys, so tests can fake it.
 import { connect } from "node:net";
 import { networkInterfaces } from "node:os";
+import { type Clock, realClock } from "./clock.ts";
 
 export interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
+  over?: true; // maxBytes was passed: the child was killed and its output cut
 }
 
 export interface RunOptions {
   stdin?: string | Uint8Array;
   timeoutMs?: number;
   env?: Record<string, string>; // added to childEnv's, never in place of it
+  cwd?: string; // the child's folder; the caller's when absent
+  group?: boolean; // the child leads a process group of its own, and a timeout kills the whole group
+  maxBytes?: number; // the most of stdout, and of stderr, read: past it the child is killed (output a guest makes)
+}
+
+// A stream read whole, or up to max bytes: past it, over() is called once and the rest is left.
+export async function readCapped(s: ReadableStream<Uint8Array>, max: number | undefined, over: () => void): Promise<{ text: string; over: boolean }> {
+  if (max === undefined) return { text: await new Response(s).text(), over: false };
+  const parts: Uint8Array[] = [];
+  let held = 0;
+  const reader = s.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (held + value.length > max) {
+      parts.push(value.subarray(0, max - held));
+      over();
+      void reader.cancel().catch(() => {});
+      return { text: new TextDecoder().decode(Buffer.concat(parts)), over: true };
+    }
+    parts.push(value);
+    held += value.length;
+  }
+  return { text: new TextDecoder().decode(Buffer.concat(parts)), over: false };
 }
 
 export interface Proc {
@@ -27,16 +53,18 @@ export interface SpawnOptions {
   onLine?: (line: string) => void;
 }
 
+// The longest line spawn passes on; the rest of a longer one is dropped.
+export const LINE_MAX = 64 * 1024;
+
 export type ProbeResult = "refused" | "open" | "timeout" | "error";
 
-export interface Sys {
+// The machine's clock is part of it: now, sleep and every timer (clock.ts).
+export interface Sys extends Clock {
   run(cmd: string, args: string[], opts?: RunOptions): Promise<RunResult>;
   spawn(cmd: string, args: string[], opts?: SpawnOptions): Proc;
   fetch(url: string, init?: RequestInit): Promise<Response>;
   tcpProbe(host: string, port: number, timeoutMs: number): Promise<ProbeResult>;
   localIPv4(): string[];
-  now(): number;
-  sleep(ms: number): Promise<void>;
 }
 
 // Children get this environment and nothing else. Nothing is inherited, so
@@ -67,41 +95,51 @@ export function realSys(home: string): Sys {
         stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]),
         stdout: "pipe",
         stderr: "pipe",
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        ...(opts.group ? { detached: true } : {}),
       });
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      if (opts.timeoutMs) timer = setTimeout(() => p.kill(9), opts.timeoutMs);
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(p.stdout).text(),
-        new Response(p.stderr).text(),
-        p.exited,
-      ]);
-      if (timer) clearTimeout(timer);
-      return { code, stdout, stderr };
+      let cancel: (() => void) | undefined;
+      const kill = () => {
+        if (opts.group) {
+          try {
+            process.kill(-p.pid, "SIGKILL");
+            return;
+          } catch {}
+        }
+        p.kill(9);
+      };
+      if (opts.timeoutMs) cancel = realClock.after(opts.timeoutMs, kill);
+      const [out, err, code] = await Promise.all([readCapped(p.stdout as ReadableStream<Uint8Array>, opts.maxBytes, kill), readCapped(p.stderr as ReadableStream<Uint8Array>, opts.maxBytes, kill), p.exited]);
+      cancel?.();
+      return { code, stdout: out.text, stderr: err.text, ...(out.over || err.over ? { over: true as const } : {}) };
     },
     spawn(cmd, args, opts = {}) {
       assertNotTest();
+      const stdin = opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]);
       const p = Bun.spawn([cmd, ...args], {
         env: { ...env, ...(opts.env ?? {}) },
-        stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]),
+        stdin,
         stdout: "pipe",
         stderr: "pipe",
       });
-      const read = async (s: ReadableStream<Uint8Array>) => {
+      const read = async (s: ReadableStream<Uint8Array>, onLine: ((line: string) => void) | undefined, cr: boolean) => {
         let buf = "";
         const dec = new TextDecoder();
         for await (const chunk of s) {
           buf += dec.decode(chunk, { stream: true });
           let i: number;
           // Tart redraws a line with \r when it thinks it has a terminal, so both end a line.
-          buf = buf.replace(/\r(?!\n)/g, "\n");
+          if (cr) buf = buf.replace(/\r(?!\n)/g, "\n");
           while ((i = buf.indexOf("\n")) >= 0) {
-            opts.onLine?.(buf.slice(0, i));
+            onLine?.(buf.slice(0, Math.min(i, LINE_MAX)));
             buf = buf.slice(i + 1);
           }
+          if (buf.length > LINE_MAX) buf = buf.slice(0, LINE_MAX);
         }
-        if (buf) opts.onLine?.(buf);
+        if (buf) onLine?.(buf);
       };
-      const drained = Promise.all([read(p.stdout), read(p.stderr)]);
+      const streams = [read(p.stdout as ReadableStream<Uint8Array>, opts.onLine, true), read(p.stderr as ReadableStream<Uint8Array>, opts.onLine, true)];
+      const drained = Promise.all(streams);
       return { exited: p.exited, done: Promise.all([p.exited, drained]).then(([c]) => c), kill: () => p.kill(9), pid: p.pid };
     },
     fetch(url, init) {
@@ -112,11 +150,13 @@ export function realSys(home: string): Sys {
       assertNotTest();
       return new Promise((resolve) => {
         const s = connect({ host, port });
+        // The socket sends nothing, so its time limit is one timer from the start.
+        const cancel = realClock.after(timeoutMs, () => done("timeout"));
         const done = (r: ProbeResult) => {
+          cancel();
           s.destroy();
           resolve(r);
         };
-        s.setTimeout(timeoutMs, () => done("timeout"));
         s.on("connect", () => done("open"));
         s.on("error", (e: NodeJS.ErrnoException) => done(e.code === "ECONNREFUSED" ? "refused" : "error"));
       });
@@ -129,7 +169,6 @@ export function realSys(home: string): Sys {
       }
       return out;
     },
-    now: () => Date.now(),
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    ...realClock,
   };
 }

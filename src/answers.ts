@@ -1,5 +1,6 @@
-// What a controller reads from a box: `hello`, and `--json` on status, jobs,
-// log and check. Every answer carries ANSWERS, the version of these shapes, so a controller can tell
+// Version 3 of what a controller reads from a box: `hello`, and `--json` on status, jobs,
+// log and check. Version 4 (envelope.ts) carries these same fields as its result, and a box still
+// answers version 3 to a reader that asks for it (--answers 3). Every answer carries ANSWERS, the version of these shapes, so a controller can tell
 // a box it can read from one it can't. Every field is picked by name here: nothing else the box
 // holds reaches an answer. Text is the box's or a job's, so it is printable ASCII, cut to 120
 // characters. States, results and times come from the loop, and are checked against their lists.
@@ -11,6 +12,7 @@ import type { Criterion, KindTimings, Spread, Suggestion } from "./timings.ts";
 import type { LoadReport } from "./loadreport.ts";
 import type { State } from "./state.ts";
 import { type LabelUsage, validUsage } from "./usage.ts";
+import { KINDS, OUTCOMES, RESULTS, STATUSES, WORDS } from "./schema.ts";
 
 // 2 from v2.2.0: status has jobs and slots, for more than one VM at once, and no hold, since hold
 // and share are gone. Every other field of 1 is kept with its meaning, and job is the first running
@@ -44,10 +46,9 @@ export function helloAnswer(installed: Installed | undefined, installId: string 
   return { answers: ANSWERS, kind: "hello", role: "box", release: tag, installId: installId ?? null };
 }
 
-// The loop's outcomes for a job (loop.ts).
-export const OUTCOMES = ["done", "ceiling", "update", "no-guest", "failed", "softnet-root", "held-back", "prestart-failed", "pressure", "guard-closed", "halted"] as const;
-export const KINDS = ["macos", "linux"] as const;
-export const WORDS = ["Stopped", "Downloading", "Ready", "Running", "Waiting", "Updating", "Needs you", "Failing"] as const;
+// The loop's outcomes for a job (loop.ts), and the other word lists: one list, in the schema module
+// the box and the controller share (schema.ts).
+export { KINDS, OUTCOMES, RESULTS, STATUSES, WORDS };
 
 // The state's word and plain facts. The screen's sentences are left out: they can name the box's
 // users and carry error text. A controller writes its own sentences from these.
@@ -84,7 +85,6 @@ export function statusAnswer(i: StatusInputs) {
 // taskbox's own words, never an error's text.
 export const errorAnswer = (error: "state-unreadable" | "jobs-unreadable" | "unreadable" | "usage") => ({ answers: ANSWERS, kind: "error", error });
 
-export const RESULTS = ["passed", "failed", "cancelled", "finished", "stopped", "no job", "box failure"] as const;
 
 // Job lines only: a hold line left from before v2.2.0 is no job, and isn't read (jobs.ts).
 // Memory in whole MB and CPUs to a tenth, or null out of range.
@@ -143,7 +143,7 @@ export function loadReportAnswer(r: LoadReport) {
   return {
     answers: ANSWERS,
     kind: "load-report",
-    session: { n: r.session.n, only: r.session.only, from: time(r.from), to: time(r.to), running: r.running },
+    session: { n: r.session.n, only: r.session.only, pattern: r.session.pattern ?? null, from: time(r.from), to: time(r.to), running: r.running },
     loadJobs: r.loadJobs,
     realJobs: r.realJobs,
     load: crit(r.load),
@@ -154,6 +154,9 @@ export function loadReportAnswer(r: LoadReport) {
     endedBy: r.session.why ? text(r.session.why, 160) : null,
     checklist: r.checklist.map((x) => text(x, 120)),
     reads: r.reads ?? null,
+    sizes: r.sizes,
+    tools: { withCache: r.tools.withCache, without: r.tools.without, generations: r.tools.generations.map((g) => text(g, 40)) },
+    network: { load: r.network.load ?? null, real: r.network.real ?? null },
   };
 }
 
@@ -161,9 +164,8 @@ export function logAnswer(lines: { at: number; text: string }[]) {
   return { answers: ANSWERS, kind: "log", lines: lines.map((l) => ({ at: time(l.at), text: text(l.text) })) };
 }
 
-export const STATUSES = ["OK", "FAIL", "SKIP"] as const;
 
-// For anyone but ci and root, a check's detail is left out: the screen's own text can name the
+// For anyone but the service and root, a check's detail is left out: the screen's own text can name the
 // box's users. The names and results are taskbox's own.
 export function checkAnswer(checks: Check[], details: boolean) {
   return { answers: ANSWERS, kind: "check", checks: checks.map((c) => ({ name: text(c.name, 60), status: oneOf(c.status, STATUSES), ...(details ? { detail: text(c.detail) } : {}) })) };

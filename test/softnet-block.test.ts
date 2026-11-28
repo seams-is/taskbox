@@ -6,7 +6,7 @@ import { loadConfig } from "../src/config.ts";
 import { netFor, TAILNET_RANGE } from "../src/loop.ts";
 import { CFG, settingsText } from "./helpers.ts";
 
-// X7 (#902): softnetBlock is gone. Every VM is blocked from the box's public addresses and the
+// SoftnetBlock is gone. Every VM is blocked from the box's public addresses and the
 // tailnet, and a taskbox.json that still names the field is refused, so no block is dropped unsaid.
 function dirWith(text: string): string {
   const d = mkdtempSync(join(tmpdir(), "taskbox-cfg-"));

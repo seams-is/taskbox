@@ -1,21 +1,20 @@
-# The load test's workflow (taskbox v2.6.0, docs/load-test-design.md). Made by `taskbox load
-# workflow` from the box's own settings: don't edit the copy in your test repo; change the settings
-# and make it again. It goes in .github/workflows/load.yml of your test repo, never the repo whose
-# jobs your box runs. It runs only on your box, so it uses no GitHub-hosted minutes, and only when
-# you start it: Actions, load, Run workflow. Every job only sleeps or echoes. Nothing builds,
-# fetches or keeps anything. It holds no secret and gets no token.
+# The load test's workflow. Made by `taskbox template show load` from the box's own settings; the
+# controller's `taskbox load start` writes it into the test repo the settings name, at
+# .github/workflows/load.yml, and starts it there through your own GitHub session. Never put it in
+# the repo whose jobs your box runs. Each box job only sleeps or echoes: nothing builds, fetches or
+# keeps anything, and none holds a secret or gets a token. The box runs test jobs only while a
+# session is on.
 #
 # Patterns, and what each measures in taskbox load report:
-#   canary: one tiny job per kind of VM, as taskbox canary asks for. Each kind's boot and wait.
-#   burst:  12 Linux jobs at once, each sleeping 30 to 240 s. Linux bursts keep the slots busy, give-ways.
-#   push:   one macOS job of 6 min with 9 Linux jobs, as a real push. The same, beside a macOS job.
-#   day:    6 macOS jobs and 54 Linux jobs at once. Every criterion, macOS waits too.
-# Runs may overlap: start push again while one runs for a busier moment. A job that waited to space
-# them would hold a slot. Each load job has a 15 minute limit here, and the box ends any after 20.
-# day beside the real repo needs 3 or more VMs at once to finish well inside a 4 hour session.
-# The merge pattern comes after its trial on GitHub (the design's "The merge pattern's trial").
+#   burst: 12 Linux jobs at once, each sleeping 30 to 240 s. Linux bursts keep the slots busy, give-ways.
+#   day:   6 macOS jobs of 6 min and 54 Linux jobs at once. Every criterion, macOS waits too. Its
+#          sessions are the saved days the simulator is calibrated from.
+#   merge: one job on a GitHub-hosted runner opens throwaway pull requests in this repo with its own
+#          token and adds each to the merge queue, so the box runs merge_group jobs. Each one merged
+#          adds a small file under load/.
+# Each box job has a 15 minute limit here, and the box ends any after 20.
 name: load
-run-name: taskbox load ${{ inputs.pattern }} __FINGERPRINT__
+run-name: taskbox load ${{ inputs.pattern || 'merge queue' }} session ${{ inputs.session || 'none' }} __FINGERPRINT__
 
 on:
   workflow_dispatch:
@@ -24,28 +23,22 @@ on:
         description: the pattern
         type: choice
         options: __PATTERNS__
-        default: push
+        default: __DEFAULTPATTERN__
+      session:
+        description: the box's load test session, as taskbox load start opened it
+        type: string
+        required: true
+  merge_group:
 
 permissions: {}
 
 jobs:
-  canary:
-    if: inputs.pattern == 'canary'
-    strategy:
-      fail-fast: false
-      matrix:
-        label: __CANARYLABELS__
-    runs-on: ${{ matrix.label }}
-    timeout-minutes: 15
-    steps:
-      - run: echo ok
-
   macos:
-    if: inputs.pattern == 'push' || inputs.pattern == 'day'
+    if: github.event_name == 'workflow_dispatch' && inputs.pattern == 'day'
     strategy:
       fail-fast: false
       matrix:
-        n: ${{ fromJSON(inputs.pattern == 'day' && '[1,2,3,4,5,6]' || '[1]') }}
+        n: [1, 2, 3, 4, 5, 6]
     runs-on: [__MACOSLABEL__]
     timeout-minutes: 15
     steps:
@@ -54,14 +47,70 @@ jobs:
 # __LINUXSTART__
 
   linux:
-    if: inputs.pattern != 'canary'
+    if: github.event_name == 'workflow_dispatch' && (inputs.pattern == 'burst' || inputs.pattern == 'day')
     strategy:
       fail-fast: false
       matrix:
-        n: ${{ fromJSON(inputs.pattern == 'day' && '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54]' || inputs.pattern == 'burst' && '[1,2,3,4,5,6,7,8,9,10,11,12]' || '[1,2,3,4,5,6,7,8,9]') }}
+        n: ${{ fromJSON(inputs.pattern == 'day' && '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54]' || '[1,2,3,4,5,6,7,8,9,10,11,12]') }}
     runs-on: [__LINUXLABEL__]
     timeout-minutes: 15
     steps:
       - name: sleep 30 to 240 s
         run: sleep $(( 30 + RANDOM % 211 ))
 # __LINUXEND__
+
+  # The merge pattern, on a hosted runner: throwaway pull requests opened with this repo's own token,
+  # each marked checked on its own commit and added to the merge queue. The queue then asks for the
+  # merge_group jobs below, which run on the box.
+  open-prs:
+    if: github.event_name == 'workflow_dispatch' && inputs.pattern == 'merge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SESSION: ${{ inputs.session }}
+      PRS: __MERGEPRS__
+    steps:
+      - name: open throwaway pull requests and add them to the merge queue
+        run: |
+          set -euo pipefail
+          case "$SESSION" in ''|*[!0-9]*) echo "the session isn't a number"; exit 1;; esac
+          repo="$GITHUB_REPOSITORY"
+          base=$(gh api "repos/$repo" --jq .default_branch)
+          sha=$(gh api "repos/$repo/git/ref/heads/$base" --jq .object.sha)
+          for i in $(seq 1 "$PRS"); do
+            name="s$SESSION-$GITHUB_RUN_ID-$i"
+            gh api "repos/$repo/git/refs" -f ref="refs/heads/taskbox-load/$name" -f sha="$sha" > /dev/null
+            gh api -X PUT "repos/$repo/contents/load/$name.txt" -f message="taskbox load: throwaway $name" -f branch="taskbox-load/$name" -f content="$(printf 'taskbox load %s\n' "$name" | base64)" > /dev/null
+            num=$(gh api "repos/$repo/pulls" -f title="taskbox load: throwaway $name" -f head="taskbox-load/$name" -f base="$base" -f body="A throwaway pull request of the load test's merge pattern." --jq .number)
+            head=$(gh api "repos/$repo/pulls/$num" --jq .head.sha)
+            node=$(gh api "repos/$repo/pulls/$num" --jq .node_id)
+            gh api "repos/$repo/statuses/$head" -f state=success -f context=taskbox-load -f description="a throwaway pull request: nothing to check" > /dev/null
+            gh api graphql -f query='mutation($id: ID!) { enqueuePullRequest(input: { pullRequestId: $id }) { mergeQueueEntry { position } } }' -f id="$node" > /dev/null
+            echo "pull request $num is in the merge queue"
+          done
+
+  merge-jobs:
+    if: github.event_name == 'merge_group'
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3]
+    runs-on: [__MERGELABEL__]
+    timeout-minutes: 15
+    steps:
+      - name: sleep 30 to 120 s
+        run: sleep $(( 30 + RANDOM % 91 ))
+
+  # The merge queue's required check: the ruleset taskbox load start makes asks for this name.
+  taskbox-load:
+    if: github.event_name == 'merge_group'
+    needs: [merge-jobs]
+    runs-on: [__MERGELABEL__]
+    timeout-minutes: 15
+    steps:
+      - run: echo ok

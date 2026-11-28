@@ -1,13 +1,14 @@
-// `taskbox away` (v2.5.0, docs/away-ready-design.md): one screen of checks before the owner leaves
+// `taskbox check --away`: one screen of checks before the owner leaves
 // the box for days. Every check row, then the rows that matter only for leaving. Each line is OK,
 // FAIL with its fix and where it is done, WARN (worth a look, no reason to stay), or SKIP; the
 // screen ends "Ready to leave." or "N things to do before leaving." remote may run it, as it runs check: no row names a user, and rows that need
 // ci or root say what the loop last recorded. With --json, one line in a versioned shape, for a
-// laptop's controller. A later release reuses AWAY_ONLY and awayChecks as they are.
-import { restartPlanRow } from "./awaychecks.ts";
+// controller. A later release reuses AWAY_ONLY and awayChecks as they are.
+import { confirmRow, kvmRow, powerHistoryRow, restartPlanRow, sourceRow, tailnetRow } from "./awaychecks.ts";
 import { upsCheck } from "./ups.ts";
-import { type Check, CHECK_EXTRA, type CheckContext, freeGB, otherLogins, PRESTART, runChecks, screenSharingOn } from "./checks.ts";
-import { CI_USER, forKind, KIND_WORD, kindsOf } from "./config.ts";
+import { type Check, type CheckContext, freeGB, otherLogins, runChecks, screenSharingOn } from "./checks.ts";
+import { rows } from "./rows/index.ts";
+import { forKind, KIND_WORD, kindsOf } from "./config.ts";
 import { awayLoginsDetail, readSeen } from "./logins.ts";
 import { footer, UPDATE_FIX } from "./state.ts";
 import { type OpsDeps, stateNow } from "./ops.ts";
@@ -21,6 +22,8 @@ type Row = Omit<Check, "name">;
 const ok = (detail = ""): Row => ({ status: "OK", detail });
 const fail = (detail: string): Row => ({ status: "FAIL", detail });
 const skip = (detail: string): Row => ({ status: "SKIP", detail });
+const warn = (detail: string): Row => ({ status: "WARN", detail });
+export const TAILSCALE_STATUS_ONLY = "only the service account can see Tailscale's status";
 const AT_BOX = "At the box, as your admin user:";
 
 async function sleepRow(c: CheckContext): Promise<Row> {
@@ -48,32 +51,61 @@ async function screenSharingRow(c: CheckContext): Promise<Row> {
 }
 
 async function loggedInRow(c: CheckContext): Promise<Row> {
-  const others = (await otherLogins(c.sys, CI_USER).catch(() => [])).length;
-  return others ? fail(`${others} other ${others === 1 ? "user is" : "users are"} logged in, and their apps share the box's memory with the VMs. At the box: log ${others === 1 ? "them" : "each"} out`) : ok("nobody but ci is logged in");
+  const others = (await otherLogins(c.sys, c.paths.service).catch(() => [])).length;
+  return others ? fail(`${others} other ${others === 1 ? "user is" : "users are"} logged in, and their apps share the box's memory with the VMs. At the box: log ${others === 1 ? "them" : "each"} out`) : ok(`nobody but  is logged in`);
+}
+
+// A row, and whether it waits on the loop alone: a download or a proof not run yet, which a hold
+// for a workspace stops until it ends.
+type Waiting = { row: Row; waitsOnLoop: boolean };
+
+// While a Whole the owner approved holds the box, downloads and the Linux proof wait for it: CI
+// paused for it is expected, so a row that waits on them warns, never fails, for that. A row that
+// failed for its own reason, such as a failed download or proof, still fails.
+function paused(c: CheckContext, w: Waiting, what: string): Row {
+  if (w.row.status !== "FAIL" || !w.waitsOnLoop) return w.row;
+  const loop = readLoopState(c.paths.loopState);
+  if (loop.heldKind !== "workspace" || !loop.heldFor) return w.row;
+  return warn(`${loop.heldFor}, so ${what} waits until it ends. Nothing to do: it carries on by itself`);
 }
 
 async function imagesRow(c: CheckContext): Promise<Row> {
+  return paused(c, imagesNow(c), "the download");
+}
+
+function imagesNow(c: CheckContext): Waiting {
   const waiting: string[] = [];
+  let failed = false;
   for (const k of kindsOf(c.cfg)) {
     const pull = readPull(k === "linux" ? c.paths.pullLinux : c.paths.pull);
-    if (pull?.state !== "ready" || (pull.ref !== undefined && pull.ref !== forKind(c.cfg, k).image)) waiting.push(KIND_WORD[k]);
+    if (pull?.state !== "ready" || (pull.ref !== undefined && pull.ref !== forKind(c.cfg, k).image)) {
+      waiting.push(KIND_WORD[k]);
+      if (pull?.state === "failed") failed = true;
+    }
   }
-  return waiting.length ? fail(`the ${waiting.join(" and ")} ${waiting.length === 1 ? "image isn't" : "images aren't"} on the box yet. Nothing to do: wait for ${waiting.length === 1 ? "its download" : "their downloads"} before leaving (taskbox watch)`) : ok("every kind's image is on the box");
+  if (!waiting.length) return { row: ok("every kind's image is on the box"), waitsOnLoop: false };
+  return { row: fail(`the ${waiting.join(" and ")} ${waiting.length === 1 ? "image isn't" : "images aren't"} on the box yet. Nothing to do: wait for ${waiting.length === 1 ? "its download" : "their downloads"} before leaving (taskbox status -w)`), waitsOnLoop: !failed };
 }
 
 // The Linux proof holds while its image and taskbox's install are the ones it proved, whatever its
 // age: the loop proves again on a new image or install, or after a failure.
 async function proofRow(c: CheckContext): Promise<Row> {
-  if (!kindsOf(c.cfg).includes("linux")) return skip("the box runs no Linux VMs");
-  const asCi = c.uid === 0 || c.uid === c.ciUid;
-  if (asCi) {
+  return paused(c, proofNow(c), "the Linux proof");
+}
+
+function proofNow(c: CheckContext): Waiting {
+  if (!kindsOf(c.cfg).includes("linux")) return { row: skip("the box runs no Linux VMs"), waitsOnLoop: false };
+  const passed = { row: ok("the Linux proof passed for this image and install"), waitsOnLoop: false };
+  const asService = c.uid === 0 || c.uid === c.serviceUid;
+  if (asService) {
     const p = readProof(c.paths.projectState);
-    if (proofHolds(p, forKind(c.cfg, "linux").image, installedCommit(c.paths.installed))) return ok("the Linux proof passed for this image and install");
-    return fail(p && !p.ok && p.image === forKind(c.cfg, "linux").image ? "the Linux proof failed, so Linux jobs wait. Nothing to do: agents fix it" : "the Linux proof hasn't passed for this image and install yet. Nothing to do: it runs by itself; wait for it before leaving");
+    if (proofHolds(p, forKind(c.cfg, "linux").image, installedCommit(c.paths.installed))) return passed;
+    if (p && !p.ok && p.image === forKind(c.cfg, "linux").image) return { row: fail("the Linux proof failed, so Linux jobs wait. Nothing to do: agents fix it"), waitsOnLoop: false };
+    return { row: fail("the Linux proof hasn't passed for this image and install yet. Nothing to do: it runs by itself; wait for it before leaving"), waitsOnLoop: true };
   }
   const line = readLoopState(c.paths.loopState).linuxProof;
-  if (line?.startsWith("passed: ")) return ok("the Linux proof passed for this image and install");
-  return fail("the Linux proof hasn't passed yet, so Linux jobs wait. Nothing to do: it runs by itself; wait for it before leaving");
+  if (line?.startsWith("passed: ")) return passed;
+  return { row: fail("the Linux proof hasn't passed yet, so Linux jobs wait. Nothing to do: it runs by itself; wait for it before leaving"), waitsOnLoop: !line?.startsWith("FAIL") };
 }
 
 async function roomRow(c: CheckContext): Promise<Row> {
@@ -81,11 +113,13 @@ async function roomRow(c: CheckContext): Promise<Row> {
   if (free === undefined) return skip("free disk couldn't be read");
   const biggest = Math.max(0, ...kindsOf(c.cfg).map((k) => forKind(c.cfg, k).imageGB ?? 0));
   const need = c.cfg.minFreeDiskGB + biggest;
-  return free >= need ? ok(`${free} GB free, room for a new image (${need} GB)`) : fail(`${free} GB free, and a new image needs ${need} GB. At the box: as ci, type taskbox clean, or free space`);
+  return free >= need ? ok(`${free} GB free, room for a new image (${need} GB)`) : fail(`${free} GB free, and a new image needs ${need} GB. At the box: as ${c.paths.service}, type taskbox prune, or free space`);
 }
 
 // The box's own Tailscale key. A tagged node's doesn't expire unless someone set it to.
 async function tailscaleKeyRow(c: CheckContext): Promise<Row> {
+  // tailscaled's socket lets in root and the service account only (tssocket.ts).
+  if (c.uid !== 0 && (c.serviceUid === undefined || c.uid !== c.serviceUid)) return skip(TAILSCALE_STATUS_ONLY);
   const r = await c.sys.run(c.paths.tailscale, [`--socket=${c.paths.tailscaleSocket}`, "status", "--json"], { timeoutMs: 15_000 }).catch(() => ({ code: 1, stdout: "" }));
   let expiry: unknown;
   let backend: unknown;
@@ -115,6 +149,8 @@ export async function loginsRow(c: CheckContext): Promise<Row> {
 export const AWAY_ONLY: [string, (c: CheckContext) => Promise<Row>][] = [
   ["Restart plan", restartPlanRow],
   ["UPS", upsCheck],
+  ["KVM", kvmRow],
+  ["Power losses", powerHistoryRow],
   ["Sleep", sleepRow],
   ["Network", ethernetRow],
   ["Screen Sharing", screenSharingRow],
@@ -124,13 +160,16 @@ export const AWAY_ONLY: [string, (c: CheckContext) => Promise<Row>][] = [
   ["Room for a download", roomRow],
   ["Tailscale key", tailscaleKeyRow],
   ["Tailscale SSH logins", loginsRow],
-  ["Watchdog", (c) => deployedRow(c, "watchdog")],
-  ["Canary", (c) => deployedRow(c, "canary")],
+  ["Tailnet name", tailnetRow],
+  ["Waiting for confirm", confirmRow],
+  ["Job source", sourceRow],
+  ["Hourly box check", (c) => deployedRow(c, "watchdog")],
+  ["Test job", (c) => deployedRow(c, "canary")],
 ];
 
 // The rows for leaving first, then every check row. Screen Sharing on reads OK while the guard is.
 export async function awayChecks(c: CheckContext): Promise<Check[]> {
-  return withGuard(await runChecks([...AWAY_ONLY, ...PRESTART, ...CHECK_EXTRA], c));
+  return withGuard(await runChecks(rows("away", c), c));
 }
 export function withGuard(rows: Check[]): Check[] {
   const guard = rows.find((k) => k.name === "Screen Sharing guard");
@@ -160,7 +199,7 @@ export async function away(c: CheckContext, d: OpsDeps, json = false): Promise<n
   const checks = await awayChecks(c);
   const failed = checks.filter((k) => k.status === "FAIL");
   if (json) {
-    d.say(JSON.stringify(awayAnswer(checks, d.uid === 0 || d.uid === d.ciUid)));
+    d.say(JSON.stringify(awayAnswer(checks, d.uid === 0 || d.uid === d.serviceUid)));
     return failed.length ? 1 : 0;
   }
   for (const k of checks) d.say(`${k.status.padEnd(4)} ${k.name}${k.detail ? `: ${k.detail}` : ""}`);

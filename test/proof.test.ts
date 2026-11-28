@@ -80,6 +80,7 @@ describe("the targets", () => {
       ["the box's tailnet address", "100.101.102.103"],
       ["Tailscale's DNS address", "100.100.100.100"],
       ["the box's public address", "203.0.113.7"],
+      ["a link-local address", "169.254.169.254"],
     ]);
     expect(t[0]!.ports).toEqual(PROOF_PORTS);
     expect(PROOF_PORTS).not.toContain(53);
@@ -181,7 +182,8 @@ describe("the loop fails closed", () => {
     expect(JSON.parse(readFileSync(d.paths.loopState, "utf8")).linuxProof).toBe("passed: held");
   });
 
-  test("a failed proof is tried again after 6 hours, not before", async () => {
+  // test.serial: more than 50 ms of work alone (test/setup.ts).
+  test.serial("a failed proof is tried again after 6 hours, not before", async () => {
     const sys = new FakeSys();
     both(sys);
     const d = linuxDeps(sys);
@@ -284,15 +286,15 @@ describe("one job VM can't reach another", () => {
   });
 
   test("an answer or a refusal from the other VM fails the proof", async () => {
-    // The six fixed targets come first (bridge, LAN, router, tailnet, Tailscale's DNS, public), so the other VM is 6.
-    const { r } = await withPeer((l) => (l.includes('"T 6 22 ') ? "1" : "124"));
+    // The seven fixed targets come first (bridge, LAN, router, tailnet, Tailscale's DNS, public, link-local), so the other VM is 7.
+    const { r } = await withPeer((l) => (l.includes('"T 7 22 ') ? "1" : "124"));
     expect(r.ok).toBe(false);
     expect(r.detail).toBe("a Linux VM under Softnet reached another job VM port 22 refused");
   });
 
   test("no route to the other VM is blocked, as Softnet dropping it shows; no route anywhere else still fails", async () => {
     const { NO_ROUTE } = await import("../src/proof.ts");
-    const peer = await withPeer((l) => (l.includes('"T 6 ') ? String(NO_ROUTE) : "124"));
+    const peer = await withPeer((l) => (l.includes('"T 7 ') ? String(NO_ROUTE) : "124"));
     expect(peer.r.ok).toBe(true);
     const lan = await withPeer((l) => (l.includes('"T 1 22 ') ? String(NO_ROUTE) : "124"));
     expect(lan.r.ok).toBe(false);
@@ -315,5 +317,20 @@ describe("one job VM can't reach another", () => {
   test("an address that isn't IPv4 is never put in the script", async () => {
     const { peerTargets } = await import("../src/proof.ts");
     expect(peerTargets(["192.168.64.9", "", "203.0.113.4; rm -rf /", "fe80::1"]).map((t) => t.host)).toEqual(["192.168.64.9"]);
+  });
+});
+
+// A Whole workspace can begin while the proof waits for the gate.
+describe("the proof and a held box", () => {
+  test("a hold that began before the gate let the proof in: no proof VM, and it says it didn't run", async () => {
+    const { Slots } = await import("../src/loop.ts");
+    const sys = new FakeSys();
+    guestAnswers(sys);
+    const d = linuxDeps(sys);
+    d.box = new Slots(2);
+    d.workspaces = () => ({ views: [{ size: "whole", state: "ready", name: "nova-1", approvedAt: null, ok: "approved", hold: { memoryMB: 22360, cpus: 10 } }] });
+    const r = await proveLinux(d);
+    expect(r).toMatchObject({ ok: false, notRun: true, detail: "CI paused for nova-1 (Whole), approved" });
+    expect(sys.tartCalls().some((c) => c.startsWith("clone"))).toBe(false);
   });
 });

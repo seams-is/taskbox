@@ -6,7 +6,7 @@ import { oneJob } from "../src/loop.ts";
 import { FakeSys, MAIN_SHA } from "./fake.ts";
 import { CFG, loopDeps, PEM, tempRoot } from "./helpers.ts";
 
-// X4: "on main" means the branch refs/heads/main. A tag or any other ref named main changes nothing.
+// "on main" means the branch refs/heads/main. A tag or any other ref named main changes nothing.
 const A = "aaaa1234def5678abc1234def5678abc1234def5";
 const X = "cccc1234def5678abc1234def5678abc1234def5";
 const REPO = "/repos/example-org/taskbox";
@@ -35,30 +35,10 @@ function fake(o: { main?: unknown; status?: string } = {}): FakeSys {
 
 const gh = (sys: FakeSys) => new GitHub(sys, CFG, PEM, new Log());
 
-describe("the on-main check reads the branch main", () => {
-  test("a tag named main standing on the commit doesn't make it on main", async () => {
-    const sys = fake();
-    expect(await gh(sys).onMain("t", X)).toBe(false);
-    expect(sys.requests.some((r) => r.url.endsWith("...main"))).toBe(false);
-    expect(sys.requests.map((r) => new URL(r.url).pathname)).toEqual([`${REPO}/git/ref/heads/main`, `${REPO}/compare/${X}...${A}`]);
-  });
-
-  for (const [status, want] of [
-    ["ahead", true],
-    ["identical", true],
-    ["diverged", false],
-    ["behind", false],
-  ] as const) {
-    test(`compare to the branch's commit ${status}`, async () => {
-      expect(await gh(fake({ status })).onMain("t", X)).toBe(want);
-    });
-  }
-
+describe("main's head is read from the branch main", () => {
   test("a branch main that names no commit is an error", async () => {
     for (const main of [{ object: { type: "tag", sha: A } }, { object: { type: "commit", sha: "main" } }, { object: { type: "commit", sha: A.slice(0, 7) } }, {}]) {
-      const sys = fake({ main });
-      await expect(gh(sys).onMain("t", X)).rejects.toThrow("taskbox main doesn't name a commit");
-      await expect(gh(sys).mainCommit("t")).rejects.toThrow("taskbox main doesn't name a commit");
+      await expect(gh(fake({ main })).mainCommit("t")).rejects.toThrow("taskbox main doesn't name a commit");
     }
   });
 });

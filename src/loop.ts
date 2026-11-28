@@ -1,14 +1,23 @@
 // The runner loop. One fresh VM per job, deleted after it.
 // It runs as ci, in ci's login session, from the LaunchAgent.
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { within } from "./clock.ts";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
-import { appendJob, type JobRecord, type Phases, runnerResult, type Wait } from "./jobs.ts";
-import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, PRESTART, publicAddresses, runChecks, screenSharingOn, sharingOff } from "./checks.ts";
+import { appendJob, type JobRecord, jobOfVm, newJobId, stopJob, type Phases, runnerNameFor, runnerResult, vmOfJob, type Wait } from "./jobs.ts";
+import { allOk, type Check, type CheckContext, diskNeed, freeGB, loginSessions, publicAddresses, runChecks, screenSharingOn, screenSharingSeen, sharingOff } from "./checks.ts";
+import { rows } from "./rows/index.ts";
+import { bootId, monoNow } from "./core/boot.ts";
+import { eventLog } from "./core/events.ts";
+import { loopState, rootStateOf } from "./core/paths.ts";
+import { afterEnd, beforeStart, type GuestAccess, type JobHook, jobStarted, runnerEnded, type TokenSource, withHookFields } from "./core/hooks.ts";
+import { jobHooks } from "./hooks/index.ts";
 import type { Config, Installed, Kind, Paths } from "./config.ts";
-import { AGENT_LABEL, awayOf, CI_USER, forKind, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf } from "./config.ts";
+import { AGENT_LABEL, awayOf, budgetOf, DEFAULT_SIZE, keepsOf, forKind, forSize, sizeOf, sizesOf, sizeWord, smallestSize, sourceAppId, KIND_WORD, kindsOf, LAUNCHCTL_MS, labelsFor, loadRepoOf, MACOS_MAX, pathsForKind, previousLabels, readJson, readStateJson, releaseRepoOf, timingsOf, vmsAtMostOf } from "./config.ts";
 import { guestOf } from "./guest.ts";
+import { recordAgreement } from "./net/agree.ts";
+import { verdictWords } from "./net/words.ts";
 import { installedCommit, peerTargets, PROOF_RETRY_MS, proofHolds, proofResult, proofScript, proofTargets, readProof, writeProof } from "./proof.ts";
 import { type KindChooser, type Occupant, QUEUE_POLL_MS, schedule, type Turn } from "./kinds.ts";
 import type { KindHistory } from "./scheduler.ts";
@@ -16,19 +25,36 @@ import { NoSource, type JobSource } from "./source.ts";
 import { type GitHub, repoMissing } from "./github.ts";
 import { RunnerChain } from "./ghfail.ts";
 import { beatFor, RESTARTS_WINDOW_MS, staleBeat } from "./beat.ts";
+import { holdsLine } from "./sizes.ts";
 import { MAX_SAMPLES, plausible, SAMPLE_EVERY_MS, SAMPLE_LIMIT_MS, summarise, type UsageSample } from "./usage.ts";
+import { closedNow, recordStart, v2Seen } from "./pfstarts.ts";
 import { readLoop } from "./watch.ts";
+import { forcingView, heldOf, holdReason, isHeld, lessHeld, roomHeld, type WorkspacesNow } from "./held.ts";
 import { readKick } from "./loopwatch.ts";
 import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
-import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readMemory } from "./memory.ts";
-import { clean, mirrorPull, PullRecorder, writeReady } from "./progress.ts";
-import { clearRequests } from "./requests.ts";
+import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readLogicalCpus, readMemory } from "./memory.ts";
+import { clean, mirrorPull, PullRecorder, pullLine, readPull, writeReady } from "./progress.ts";
+import { askLoop, type AskSteps, readAsk, takeAsk } from "./loopask.ts";
+import { trialOf } from "./trialresult.ts";
+import { listedReleases, pick } from "./update/pick.ts";
+import { channelOf } from "./release.ts";
+import { type TrialEnv, type TrialResult, tryRelease } from "./trial.ts";
+import { publicRelease, TARBALL_LIMIT } from "./hop.ts";
+import { verifyRelease, type VerifyDeps } from "./release.ts";
+import { readInstallRecord } from "./update/records.ts";
+import { linkTarget } from "./layout.ts";
+import { readInForce, settingsFilesForApp } from "./settings/inforce.ts";
+import { updateOf } from "./settings/update.ts";
 import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from "./load.ts";
+import { sourceStep } from "./sourcefail.ts";
+import type { Snapshot } from "./source.ts";
 import { mirrorJson } from "./shared.ts";
-import { clearStopped, markStopped } from "./stopstart.ts";
+import { controlGate, downAtNote, type Gate, readStartedHere } from "./availability.ts";
+import { readBeat, watchPaths } from "./guardwatch.ts";
 import type { Sys } from "./sys.ts";
 import { engineFor, IMAGE_GONE, type NetPolicy, type VmEngine } from "./vm.ts";
+import { cloneSource, runnerEnvScript, type ToolsDeps, toolsOn, toolsStep } from "./tools/inloop.ts";
 
 // Exit code that tells launchd to start the loop again, after an update.
 export const RESTART = 75;
@@ -42,7 +68,7 @@ export interface LoopDeps {
   log: Log;
   checks: CheckContext;
   slot: number;
-  // Tests replace the pre-start check; the box always runs PRESTART.
+  // Tests replace the pre-start check; the box always runs the prestart rows (rows/index.ts).
   prestart?: (c: CheckContext) => Promise<Check[]>;
   // Tests replace the sharing check made while a VM waits.
   sharing?: () => Promise<{ status: string }>;
@@ -57,6 +83,8 @@ export interface LoopDeps {
   source?: JobSource;
   // Tests replace the Linux Softnet proof.
   proveLinux?: () => Promise<{ ok: boolean; detail: string }>;
+  // A release trial (trial.ts), for tests: the version in, the result out.
+  tryRelease?: (version: string) => Promise<TrialResult>;
   // The slots this loop runs (v2.2.0): who holds each, the gate VM starts take one at a time, and
   // the times VMs started and stopped, for the guard. Absent: one slot, as before.
   box?: Slots;
@@ -68,6 +96,15 @@ export interface LoopDeps {
   chain?: RunnerChain;
   // v2.5.0: what happens when a slot's beat goes stale. Absent: the process exits, and launchd restarts it.
   onStale?: () => void;
+  // The workspaces now, as the loop needs them (held.ts): on the box, root's state read by
+  // workspace/hold.ts. Absent: none, so no slot is held.
+  workspaces?: () => WorkspacesNow;
+  // The job hooks (core/hooks.ts). Absent: every package's (hooks/index.ts).
+  hooks?: JobHook[];
+  // Short-lived GitHub tokens for the hooks (core/hooks.ts). Absent: no hook reads GitHub.
+  tokens?: TokenSource;
+  // The tool cache's network (tools/inloop.ts). Absent: the box's own.
+  tools?: ToolsDeps;
 }
 
 // A start or stop of a VM: from when its engine was asked, to when it was done. Open until then.
@@ -121,6 +158,13 @@ export function countRestart(p: Paths, now: number, extra: Record<string, unknow
 }
 
 // The guard's restart of a frozen loop, logged and counted once by the loop that starts after it.
+// Why a running job's VM stops now: a forced drain or stop at its deadline, or, for a test job, the
+// end of its load test session, which the box ignores test jobs outside of. undefined: it runs on.
+export const LOAD_ENDED = "the end of the load test session";
+export function stopFor(forcing: string | undefined, role: string | undefined, loadOn: () => boolean): string | undefined {
+  return forcing ?? (role === "load" && !loadOn() ? LOAD_ENDED : undefined);
+}
+
 export function noteGuardRestart(d: Pick<LoopDeps, "paths" | "log"> & { rootUid?: number }, now: number): void {
   const k = readKick(d.paths, d.rootUid ?? 0);
   if (!k || k.at <= (readLoop(d.paths.loopState).watchKickSeen ?? 0)) return;
@@ -134,9 +178,27 @@ export function noteGuardRestart(d: Pick<LoopDeps, "paths" | "log"> & { rootUid?
   countRestart(d.paths, now, { watchKickSeen: k.at });
 }
 
-// The loop is ending on purpose: the guard's watcher leaves it alone, as checkSelf does.
-function markEnding(d: Pick<LoopDeps, "paths" | "sys">): void {
-  if (readLoop(d.paths.loopState).endingAt === undefined) writeLoopState(d.paths, { endingAt: d.sys.now() });
+// The job source's failures in a row (sourcefail.ts), with one job.source-failing event.
+function noteSource(d: Pick<LoopDeps, "paths" | "sys" | "cfg">, s: Snapshot): void {
+  const step = sourceStep(readLoop(d.paths.loopState), s, awayOf(d.cfg).sourceFailures);
+  if (!step) return;
+  writeLoopState(d.paths, { ...step.patch });
+  if (step.failing)
+    try {
+      eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys).write({ type: "job.source-failing", actor: "taskbox", text: `The job source couldn't be read ${awayOf(d.cfg).sourceFailures} times in a row (${step.patch.sourceWhy}), so the box chooses without it.` });
+    } catch {}
+}
+
+// The loop is ending on purpose: the guard's watcher leaves it alone, as checkSelf does. until is
+// the latest it should take: its slots' running jobs finish first, so their beats' deadlines, and
+// the cleanup after. Past it, the guard ends the loop (passes/ending.ts).
+export const ENDING_CLEANUP_MS = 15 * 60_000;
+export function markEnding(d: Pick<LoopDeps, "paths" | "sys">): void {
+  const loop = readLoop(d.paths.loopState);
+  if (loop.endingAt !== undefined) return;
+  const now = d.sys.now();
+  const beats = Object.values(loop.slots ?? {}).flatMap((s) => (s.beat && s.beat.until > now ? [s.beat.until] : []));
+  writeLoopState(d.paths, { endingAt: now, endingUntil: Math.max(now, ...beats) + ENDING_CLEANUP_MS });
 }
 // How often a start that waits for the gate looks again.
 export const GATE_POLL_MS = 2_000;
@@ -155,18 +217,18 @@ export class Slots {
   // v2.5.0: the idle cleanup of leaked job VMs, at most every LEAK_CHECK_MS, one slot at a time.
   leakCheckAt = 0;
   leakChecking = false;
+  leakSeen = new Set<string>(); // job VMs no slot held at the last look
   // v2.5.0: the hourly check of the watchdog's and canary's copies.
   workflowsAt = 0;
   workflowsChecking = false;
   fatal: unknown;
   // The GB a download between VMs may still write, counted in every other slot's disk check.
   downloadGB = 0;
-  // Whether this loop run has ended a hold kept from before v2.2.0 (endOldHold).
-  oldHoldEnded = false;
-  // The slots that are empty and waiting on a drain (taskbox stop --drain). All of them: drained.
+  // The slots that are empty and waiting on a drain (taskbox drain). All of them: drained.
   readonly drained = new Set<number>();
-  drainedAt: number | undefined; // when the last slot found the drain done
-  drainShown: number | undefined; // the drain's start, as the loop's state shows it
+  emptyFor: number | undefined; // the control gen the loop last said every slot was empty for
+  boot: string | undefined; // this boot's id, read once at the loop's start
+  holdShown: string | undefined; // the hold's reason, as the loop's state shows it
   // v2.4.0, for the scheduler: when a VM of each kind last took a job soon after it was ready, when
   // each kind's last VM ended, and how many VMs of each kind gave way, since the loop started.
   readonly fastAt: Partial<Record<Kind, number>> = {};
@@ -174,26 +236,48 @@ export class Slots {
   readonly gaveWay: Partial<Record<Kind, number>> = {};
   readonly jobStarts: Partial<Record<Kind, { at: number; labels: string[] }[]>> = {};
   readonly gaveWayAt: Partial<Record<Kind, number>> = {};
+  // The same per size, by "kind/size", for the sizes above the warm one (scheduler.ts).
+  readonly sizeTimes: Record<string, { fastAt?: number; gaveWayAt?: number; lastEnd?: number }> = {};
+  // What the VMs' budget is made from: the box's memory as last read, and its logical CPUs.
+  totalGB: number | undefined;
+  logicalCpus: number | undefined;
+  budgetShown: string | undefined; // status's budget line, as last written
   startedAt = 0;
 
   constructor(readonly count: number) {}
 
   // What the scheduler reads per kind (scheduler.ts KindHistory).
-  history(kinds: Kind[]): Partial<Record<Kind, KindHistory>> {
+  history(kinds: Kind[], sizes?: (k: Kind) => string[]): Partial<Record<Kind, KindHistory>> {
     const out: Partial<Record<Kind, KindHistory>> = {};
     for (const k of kinds) {
       const has = [...this.held.values()].some((o) => o.kind === k);
-      out[k] = { ...(this.fastAt[k] !== undefined ? { fastAt: this.fastAt[k] } : {}), ...(has ? {} : { noVmSince: this.lastVmEnd[k] ?? this.startedAt }), jobStarts: [...(this.jobStarts[k] ?? [])], ...(this.gaveWayAt[k] !== undefined ? { gaveWayAt: this.gaveWayAt[k] } : {}) };
+      out[k] = { ...(this.fastAt[k] !== undefined ? { fastAt: this.fastAt[k] } : {}), ...(has ? {} : { noVmSince: this.lastVmEnd[k] ?? this.startedAt }), jobStarts: [...(this.jobStarts[k] ?? [])], ...(this.gaveWayAt[k] !== undefined ? { gaveWayAt: this.gaveWayAt[k] } : {}), sizes: this.sizesOf(k, sizes?.(k) ?? []) };
     }
     return out;
   }
 
+  private sizesOf(k: Kind, names: string[]): NonNullable<KindHistory["sizes"]> {
+    const out: NonNullable<KindHistory["sizes"]> = {};
+    for (const n of names) {
+      const t = this.sizeTimes[`${k}/${n}`] ?? {};
+      const has = [...this.held.values()].some((x) => x.kind === k && (x.size ?? DEFAULT_SIZE) === n);
+      out[n] = { ...(t.fastAt !== undefined ? { fastAt: t.fastAt } : {}), ...(t.gaveWayAt !== undefined ? { gaveWayAt: t.gaveWayAt } : {}), ...(has ? {} : { noVmSince: t.lastEnd ?? this.startedAt }) };
+    }
+    return out;
+  }
+  // One size's time: when its VM took a job fast, or gave way.
+  sizeTime(kind: Kind, size: string | undefined, what: "fastAt" | "gaveWayAt", now: number): void {
+    const t = (this.sizeTimes[`${kind}/${size ?? DEFAULT_SIZE}`] ??= {});
+    t[what] = now;
+  }
+
   // A slot's VM is gone: its kind may now have none. A start the box's checks refused made no VM,
-  // so it leaves the kind's no-VM time as it was (product review, finding 3).
+  // so it leaves the kind's no-VM time as it was.
   release(slot: number, now: number): void {
     const o = this.held.get(slot);
     this.held.delete(slot);
     if (o?.up && ![...this.held.values()].some((x) => x.kind === o.kind)) this.lastVmEnd[o.kind] = now;
+    if (o?.up && ![...this.held.values()].some((x) => x.kind === o.kind && x.size === o.size)) (this.sizeTimes[`${o.kind}/${o.size ?? DEFAULT_SIZE}`] ??= {}).lastEnd = now;
   }
 
   // A VM of this kind took a job now. The last few, for the job source's lag (scheduler.ts).
@@ -229,6 +313,11 @@ export class Slots {
     };
   }
 
+  // Whether a VM start holds the gate now: the tool cache removes no base VM while one does.
+  gateHeld(): boolean {
+    return this.gate !== undefined;
+  }
+
   // Records a start or a stop; the returned function closes it. Only the last 50 are kept.
   window(slot: number, what: "start" | "stop", now: number): (now: number) => void {
     const w: VmWindow = { slot, what, from: now };
@@ -240,12 +329,13 @@ export class Slots {
   }
 }
 
-// How many VMs this box may run at once.
-export const slotCount = (cfg: Config) => (Number.isInteger(cfg.vmsAtOnce) && cfg.vmsAtOnce! >= 1 ? cfg.vmsAtOnce! : 1);
+// How many VMs this box may run at once: vmsAtMost, or v2's vmsAtOnce. The budget packs within it.
+export const slotCount = (cfg: Config) => vmsAtMostOf(cfg);
 
 // The loop's settings and paths as one kind sees them: its label, image, size and download record.
-export function kindDeps(d: LoopDeps, kind: Kind): LoopDeps {
-  const cfg = forKind(d.cfg, kind);
+// size: one of the kind's sizes (sizesOf), whose CPUs and memory the VM gets. Absent: the default.
+export function kindDeps(d: LoopDeps, kind: Kind, size?: string): LoopDeps {
+  const cfg = forSize(d.cfg, kind, size);
   const paths = pathsForKind(d.paths, kind);
   // The pre-start checks see the same kind: its image, size and download record.
   return { ...d, cfg, paths, checks: { ...d.checks, cfg, paths } };
@@ -259,14 +349,9 @@ export function servedKinds(d: { cfg: Config; paths: Paths }): Kind[] {
 
 // v2.5.0: job VMs left behind while the loop runs (a delete that failed, a crash between clone and
 // delete). A free slot lists the VMs at most every LEAK_CHECK_MS and deletes each job VM that no slot
-// or proof records and whose name says it is at least LEAK_MIN_AGE_MS old. Images are never touched.
+// or proof records, on two looks in a row, so a VM a slot is naming as the list is read is never
+// taken. Images are never touched.
 export const LEAK_CHECK_MS = 10 * 60_000;
-export const LEAK_MIN_AGE_MS = 2 * 60_000;
-export const vmNameTime = (name: string): number | undefined => {
-  const m = /^job-([0-9a-z]{1,12})-[0-9a-f]{6}$/.exec(name);
-  const t = m ? Number.parseInt(m[1]!, 36) : NaN;
-  return Number.isSafeInteger(t) ? t : undefined;
-};
 export async function cleanLeakedVms(d: LoopDeps & { box: Slots }): Promise<string[]> {
   const box = d.box;
   if (box.leakChecking) return [];
@@ -276,10 +361,14 @@ export async function cleanLeakedVms(d: LoopDeps & { box: Slots }): Promise<stri
   try {
     const t = engineOf(d);
     const owned = new Set([...box.held.values()].map((o) => o.name).filter((n): n is string => !!n));
+    const seen = box.leakSeen;
+    box.leakSeen = new Set();
     for (const vm of await t.list()) {
       if (!isJobVm(vm) || owned.has(vm.name)) continue;
-      const born = vmNameTime(vm.name);
-      if (born === undefined || d.sys.now() - born < LEAK_MIN_AGE_MS) continue;
+      if (!seen.has(vm.name)) {
+        box.leakSeen.add(vm.name);
+        continue;
+      }
       // Asked again: a slot may have taken this name while the list was read.
       if ([...box.held.values()].some((o) => o.name === vm.name)) continue;
       await t.stop(vm.name, 10);
@@ -302,8 +391,9 @@ export async function cleanLeakedVms(d: LoopDeps & { box: Slots }): Promise<stri
 // A job VM, never an image: what a loop leaves behind when it ends without deleting its VMs.
 export const isJobVm = (vm: { name: string; image?: unknown }) => !vm.image && vm.name.startsWith("job-");
 
-export function vmName(sys: Sys): string {
-  return `job-${sys.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+// The VM's name is its job's id (jobs.ts), made as a slot starts a VM. The argument is v2's.
+export function vmName(_sys?: Sys): string {
+  return vmOfJob(newJobId());
 }
 
 // The VM engine taskbox.json names (vm.ts). Tests pass their own.
@@ -347,7 +437,8 @@ function recordName(d: LoopDeps, ref: string, name: string): void {
 
 // Only the pinned image stays. A finished image that isn't the pin is deleted once the pin is
 // ready. Each removal gets a line the owner sees in watch and check.
-export async function removeOldImages(d: LoopDeps): Promise<string[]> {
+// dry: names each one that would go, and removes nothing.
+export async function removeOldImages(d: LoopDeps, dry = false): Promise<string[]> {
   const notes: string[] = [];
   const t = engineOf(d);
   let vms;
@@ -359,14 +450,19 @@ export async function removeOldImages(d: LoopDeps): Promise<string[]> {
   const names = readNames(d);
   for (const vm of vms) {
     if (!vm.image || kindsOf(d.cfg).some((k) => forKind(d.cfg, k).image === vm.name)) continue;
+    // Its name from when this loop pulled it; an image an older loop pulled is named by its repo.
+    const name = clean(names[vm.name] ?? `${vm.name.replace(/@sha256:.*/, "").replace(/^ghcr\.io\/cirruslabs\//, "")}, an older image`);
+    // The engine's size is whole gigabytes, rounded down.
+    const gb = vm.sizeGB ? `, about ${vm.sizeGB} GB` : "";
+    if (dry) {
+      notes.push(`Old image ${name}${gb}.`);
+      continue;
+    }
     const del = await t.delete(vm.name);
     if (del.code !== 0) continue;
-    // Its name from when this loop pulled it; an image an older loop pulled is named by its repo.
-    const name = names[vm.name] ?? `${vm.name.replace(/@sha256:.*/, "").replace(/^ghcr\.io\/cirruslabs\//, "")}, an older image`;
-    // The engine's size is whole gigabytes, rounded down.
-    notes.push(`Removed old image ${clean(name)}${vm.sizeGB ? `, about ${vm.sizeGB} GB freed` : ""}.`);
+    notes.push(`Removed old image ${name}${gb ? `${gb} freed` : ""}.`);
   }
-  if (notes.length) {
+  if (notes.length && !dry) {
     writeState(d, { cleanup: notes.join(" "), cleanupAt: d.sys.now() });
     for (const n of notes) d.log.write(n);
   }
@@ -405,7 +501,7 @@ export async function pullImage(
     const stop = stopIf();
     if (stop) {
       p.kill();
-      await Promise.race([done, sys.sleep(30_000)]);
+      await within(sys, done, 30_000);
       const why = typeof stop === "string" ? stop : "an update was installed";
       rec.finish(false, why, false);
       return { ok: false, updated: true, error: typeof stop === "string" ? `stopped: ${why}` : "stopped for an update" };
@@ -415,10 +511,10 @@ export async function pullImage(
       p.kill();
       break;
     }
-    await Promise.race([done, sys.sleep(10_000)]);
+    await within(sys, done, 10_000);
   }
   // After a kill, don't wait forever for output a child process might keep open.
-  const code = stopped ? await Promise.race([done, p.exited.then(async (c) => (await sys.sleep(30_000), c))]) : await done;
+  const code = stopped ? await Promise.race([done, p.exited.then(async (c) => (await within(sys, done, 30_000)) ?? c)]) : await done;
   if (code === 0 && !stopped) {
     rec.finish(true);
     return { ok: true };
@@ -458,7 +554,7 @@ export async function ensureImage(d: LoopDeps, stopIf: () => boolean | string = 
 
 // Each slot's own fields (v2.2.0) go under slots, by slot number. The top-level copies are the
 // busiest slot's, so a reader from before v2.2.0 still reads one slot.
-export const SLOT_KEYS = ["slot", "slotAt", "job", "vmKind", "vmSize", "beside", "runner", "registeredAt", "waitingFor", "labels", "why", "beat"];
+export const SLOT_KEYS = ["slot", "slotAt", "job", "vmKind", "vmSize", "size", "beside", "runner", "registeredAt", "waitingFor", "labels", "why", "beat", "net"];
 // Busiest first: a job running anywhere is what the box is doing.
 // A slot that waits for memory while another has a VM up shows that VM: the box is ready.
 const SLOT_ORDER = ["running a job", "checks failed", "no public address", "proving Linux", "starting a VM", "waiting for a job", "waiting", "cleaning up", "idle"];
@@ -531,7 +627,7 @@ export async function guestReady(d: LoopDeps, vm: string, phase: string, exited:
     const r = await Promise.race([t.exec(vm, cmd, undefined, 15_000), died]);
     if (r === "died") return false;
     if (r.code === 0) return true;
-    if ((await Promise.race([d.sys.sleep(5000), died])) === "died") return false;
+    if ((await within(d.sys, died, 5000)) === "died") return false;
   }
   return false;
 }
@@ -546,8 +642,9 @@ export type JobOutcome = "done" | "ceiling" | "no-guest" | "update" | "held-back
 
 // How often the loop reads the guard and memory while it waits, and while a VM waits for a job.
 export const HOLD_CHECK_MS = 30_000;
-// A drain keeps a VM whose runner GitHub won't delete for this many asks, 30 s apart: long enough for
-// a job GitHub just gave it to start. After that the VM goes, whatever GitHub says.
+// A drain or a held slot keeps a VM whose runner GitHub won't delete for this many asks, 30 s
+// apart: long enough for a job GitHub gave it a moment ago to start. After that the VM goes,
+// whatever GitHub says.
 export const DRAIN_REFUSALS = 4;
 
 // Turns off the guest's SSH, gives its admin a password nobody keeps, then tries the guest from the
@@ -569,7 +666,7 @@ export async function sealGuest(d: LoopDeps, vm: string): Promise<string> {
   return got.length ? got.map((t) => `${t.port} ${t.r}`).join(", ") : "blocked";
 }
 
-// A job's result for taskbox jobs: the runner's own word when it gave one, else what the loop saw.
+// A job's result for taskbox job list: the runner's own word when it gave one, else what the loop saw.
 export function jobRecordResult(outcome: JobOutcome, runner: JobRecord["result"] | undefined, ran: boolean): JobRecord["result"] {
   // gave-way ends a VM only while no job has started, so it ran none.
   if (outcome === "ceiling" || outcome === "pressure") return "stopped";
@@ -583,9 +680,27 @@ export function jobRecordResult(outcome: JobOutcome, runner: JobRecord["result"]
 // gate keeps starts apart, but another VM can stop while this one starts. When the rules went
 // missing while another VM started or stopped too, the box can't tell which did it: shared is true,
 // and it still counts as this start's, so the box fails closed.
-export function vmStartGuard(g: GuardRecord | undefined, startedAt: number, besides: VmWindow[] = []): { read: boolean; rulesWentMissing: boolean; shared?: boolean } {
+// startMono: the monotonic clock at the start. With a loss on record, the rules went missing in this
+// start if either clock says so, if the guard couldn't read mono for its last loss, or if mono can't
+// be read at the start: a clock the box can't read never lets a VM start pass, so no wall clock step,
+// either way, hides a loss. A loss from before a restart (no mono time kept) is judged by the wall.
+// Ticks in a row (5 s each) that can't read the monotonic clock before the loop says so: a minute.
+export const MONO_MISSES_ALARM = 12;
+// The loop can't read the monotonic clock: its caps wait, so the state the "Loop clock" row reads, a
+// line in the log, and once per run of misses, an event.
+function clockUnread(d: LoopDeps, misses: number): void {
+  const was = readState(d).clockUnread as { since?: number } | undefined;
+  writeState(d, { clockUnread: { since: was?.since ?? d.sys.now(), misses } });
+  if (misses !== MONO_MISSES_ALARM) return;
+  d.log.write("the loop can't read the box's monotonic clock, so a job's ceilings wait until it reads again; type taskbox check");
+  try {
+    eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys).write({ type: "job.clock-unread", actor: "taskbox", text: "The loop can't read the box's monotonic clock, so job ceilings wait until it reads again." });
+  } catch {}
+}
+
+export function vmStartGuard(g: GuardRecord | undefined, startedAt: number, besides: VmWindow[] = [], startMono?: number): { read: boolean; rulesWentMissing: boolean; shared?: boolean } {
   const read = !!g && g.at > startedAt;
-  const rulesWentMissing = !!g && g.missingAt !== undefined && g.missingAt >= startedAt;
+  const rulesWentMissing = !!g && g.missingAt !== undefined && (g.missingAt >= startedAt || g.missingUnread === true || startMono === undefined || (g.missingMono !== undefined && g.missingMono >= startMono));
   if (!rulesWentMissing) return { read, rulesWentMissing };
   const m = g!.missingAt!;
   // The guard notices a change up to a tick late, so a window counts for a tick after it closed.
@@ -607,48 +722,86 @@ export function netFor(cfg: Config, pub: string | string[]): NetPolicy {
 // A job's ceiling: its own time limit plus 10 min.
 export const ceilingMs = (cfg: Config) => (cfg.jobTimeoutMinutes + 10) * 60_000;
 
-// hold and share are gone in v2.2.0. A hold kept in the state from before, and any request
-// left in the old requests folder, end at the loop's first read after the update, with one log line. The
-// folder is ci's, so ci may remove what anyone left there; the next install removes the folder.
-export function endOldHold(d: LoopDeps): void {
-  const st = readState(d);
-  const h = st.hold as { until?: unknown; by?: unknown } | undefined;
-  const kept = h && typeof h === "object" && typeof h.until === "number" && h.until > d.sys.now() && typeof h.by === "string" ? { until: h.until, by: h.by } : undefined;
-  // Never walks into what someone else left (requests.ts).
-  const cleared = clearRequests(d.paths.requests);
-  const left = cleared.files;
-  if (st.hold !== undefined || st.holdUse !== undefined) writeState(d, { hold: undefined, holdUse: undefined });
-  if (kept || left) {
-    const what = [kept ? `${clean(kept.by).slice(0, 32)}'s hold until ${new Date(kept.until).toISOString()}` : "", left ? `${left} request${left > 1 ? "s" : ""} left for one` : ""].filter(Boolean).join(" and ");
-    d.log.write(`hold: ${what} ended: hold is gone in v2.2.0`);
-  }
-  // A folder someone left there with files in it stays, and the install can't remove the folder.
-  if (cleared.left && !st.requestsLeftSaid) {
-    d.log.write(`the old requests folder keeps ${cleared.left} name${cleared.left > 1 ? "s" : ""} another user left, so it stays. Nothing reads it`);
-    writeState(d, { requestsLeftSaid: true });
-  }
-}
-
-// The memory of the other slots' VMs, in MB.
+// The memory of the other slots' VMs, in MB: each one's own size.
 function othersMB(d: LoopDeps): number {
-  return (d.box?.othersUp(d.slot) ?? []).reduce((n, o) => n + forKind(d.cfg, o.kind).vmMemoryMB, 0);
+  return (d.box?.othersUp(d.slot) ?? []).reduce((n, o) => n + (o.memoryMB ?? sizeOf(d.cfg, o.kind, o.size).vmMemoryMB), 0);
 }
 
-// Why the box starts no VM now, or undefined. The guard first, then memory.
+// How many of the box's slots are held for workspaces now, and whether this slot is one of them.
+const NONE: WorkspacesNow = { views: [] };
+export const heldNow = (d: Pick<LoopDeps, "workspaces" | "box" | "cfg">): number => heldOf(d.workspaces?.() ?? NONE, d.box?.count ?? slotCount(d.cfg));
+const slotHeld = (d: LoopDeps): boolean => isHeld(d.slot, d.box?.count ?? slotCount(d.cfg), heldNow(d));
+
+// The VM this slot holds up and waiting, when it doesn't fit in the VM budget beside the other VMs
+// and what Lights and Heavies hold: the hold's wait, which ends it. A running job is never ended.
+function roomWait(d: LoopDeps): { key: string; text: string } | undefined {
+  const room = roomHeld(d.workspaces?.() ?? NONE);
+  if (room.memoryMB <= 0 || !d.box) return undefined;
+  const b = budgetOf(d.cfg, d.box.totalGB, d.box.logicalCpus);
+  if (b.memoryMB === undefined) return undefined;
+  const me = d.box.held.get(d.slot);
+  const mine = me ? (me.memoryMB ?? sizeOf(d.cfg, me.kind, me.size).vmMemoryMB) : 0;
+  if (othersMB(d) + mine + room.memoryMB <= b.memoryMB) return undefined;
+  return { key: "workspace", text: `workspaces hold ${(room.memoryMB / 1024).toFixed(1)} GB of the VM budget, so this waiting VM gives them room` };
+}
+
+// A workspace rushed with --force (workspace/flows.ts) stops this slot's running job when the job is
+// in its way: every job for a Whole; for a Light or Heavy, while the VMs and the holds pass the budget.
+export function rushForcing(d: LoopDeps): string | undefined {
+  const w = d.workspaces?.() ?? NONE;
+  const v = forcingView(w);
+  if (!v) return undefined;
+  const by = `workspace rush --force for ${v.name}`;
+  if (v.size === "whole") return by;
+  if (!d.box) return undefined;
+  const b = budgetOf(d.cfg, d.box.totalGB, d.box.logicalCpus);
+  if (b.memoryMB === undefined) return by;
+  const me = d.box.held.get(d.slot);
+  const mine = me ? (me.memoryMB ?? sizeOf(d.cfg, me.kind, me.size).vmMemoryMB) : 0;
+  const room = roomHeld(w).memoryMB;
+  return othersMB(d) + mine + room > b.memoryMB ? by : undefined;
+}
+
+// The box's availability, from root's control.json (availability.ts): read on every turn, inside the
+// start gate, and every few seconds while a job runs.
+// A break-glass start at the box (startHere) runs past the gen it was asked over, while its note counts:
+// written in this boot with the guard down, and no beat of the guard since.
+export const gateOf = (d: Pick<LoopDeps, "paths" | "checks" | "box">): Gate => {
+  const root = d.checks.rootUid ?? 0;
+  const note = readStartedHere(d.paths, process.getuid?.() ?? 0);
+  const counts = note && downAtNote(note, readBeat(watchPaths(d.paths).guardBeat, root), d.box?.boot);
+  return controlGate(rootStateOf(d.paths).control, root, counts ? note.gen : undefined);
+};
+// A wait that ends a waiting VM and lets a running job finish: the box's availability, or a slot held for a workspace.
+const quiet = (w: { key: string } | undefined) => w?.key === "paused" || w?.key === "workspace";
+
+// The waits that end a VM waiting for a job, and let a running one finish: the box's availability
+// (paused, draining, drained or stopped) first, then a slot held for a workspace, which starts no VM.
+function drainOrHold(d: LoopDeps): { key: string; text: string } | undefined {
+  const g = gateOf(d);
+  if (g.wait) return g.wait;
+  // A held slot always has a reason: a Whole, or a state the loop can't trust.
+  if (slotHeld(d)) return { key: "workspace", text: holdReason(d.workspaces?.() ?? NONE)!.text };
+  return undefined;
+}
+
+// Why the box starts no VM now, or undefined. A drain or a hold first, then the guard, then memory.
 // up: this slot's VM is already up and waits for a job, so its own memory is in use already.
 export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; text: string } | undefined> {
-  // Once per loop run, so files someone keeps leaving in the old folder can't fill the log.
-  if (!d.box?.oldHoldEnded) {
-    endOldHold(d);
-    if (d.box) d.box.oldHoldEnded = true;
-  }
-  // A drain (taskbox stop --drain) goes first: no VM starts, and a VM waiting for a job ends.
-  if (existsSync(d.paths.drain)) return { key: "drain", text: "taskbox stop --drain: running jobs finish, then the loop stops" };
-  if (readState(d).guardClosed === true && !d.cfg.vmnetPfProven && (await screenSharingOn(d.sys))) {
+  const hold = drainOrHold(d);
+  if (hold) return hold;
+  // A waiting VM that no longer fits beside what Lights and Heavies hold gives way to them.
+  const room = up ? roomWait(d) : undefined;
+  if (room) return room;
+  // v2's guardClosed goes once the guard has taken it into account (pfstarts.ts).
+  if (readState(d).guardClosed === true && v2Seen(d.paths, d.checks.rootUid ?? 0)) writeState(d, { guardClosed: undefined });
+  if (!d.cfg.vmnetPfProven && closedNow(d.paths, d.checks.rootUid ?? 0, process.getuid?.() ?? 0, d.cfg, readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0)) && (await screenSharingOn(d.sys))) {
     return { key: "guard", text: "the guard's rules went missing when a VM started, so no VM starts while Screen Sharing is on" };
   }
   const mem = await (d.memory ?? (() => readMemory(d.sys)))();
-  const short = up ? memoryShortWhileUp(mem) : memoryShort(mem, d.cfg.vmMemoryMB, othersMB(d));
+  // The last good read stands for the budget; a start still fails closed below.
+  if (d.box && mem.totalGB !== undefined) d.box.totalGB = mem.totalGB;
+  const short = up ? memoryShortWhileUp(mem) : memoryShort(mem, d.cfg.vmMemoryMB, othersMB(d), keepsOf(d.cfg, mem.totalGB ?? 0));
   if (short) return { key: "memory", text: `${short}, so the box starts no new VM` };
   return undefined;
 }
@@ -656,7 +809,7 @@ export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; t
 // One job, start to finish. Returns how it ended. waits: why the loop waited before this VM.
 // The Linux Softnet proof (proof.ts): a Linux VM under a job's Softnet rules, sealed as a job's is,
 // tries the box and its networks from inside. No runner, nothing from GitHub. The VM is deleted.
-// notRun: the proof never started, so it says nothing about Softnet (review, finding 6).
+// notRun: the proof never started, so it says nothing about Softnet.
 // What a proof that couldn't run writes: nothing over a pass that still holds, else when it tries again.
 export function infraProofLine(held: boolean, detail: string, nextAt: number): { linuxProof?: string } {
   return held ? {} : { linuxProof: `couldn't run: ${detail}. It tries again at ${new Date(nextAt).toTimeString().slice(0, 5)}` };
@@ -666,8 +819,117 @@ export function infraProofLine(held: boolean, detail: string, nextAt: number): {
 export const PROOF_INFRA_FAST = 4;
 // infra (v2.5.0): the proof couldn't run, so it says nothing about Softnet and tries again soon.
 export type ProofRun = { ok: boolean; detail: string; notRun?: boolean; peers?: number; infra?: boolean };
+// It runs at the smallest Linux size: its network rules don't depend on size.
+// The loop's ops folder, where selftest run and image pull leave their asks (loopask.ts).
+export const loopAsks = (d: Pick<LoopDeps, "paths">) => ({ dir: loopState(d.paths.state).ops, owner: process.getuid?.() ?? 0 });
+// One selftest run's event, for selftest list and events --type selftest. Never throws.
+function selftestEvent(d: Pick<LoopDeps, "paths" | "sys">, result: "passed" | "failed" | "not-run", text: string, data: { why: string; ms: number; version?: string }, op?: string): void {
+  try {
+    eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys).write({ type: `selftest.${result}`, actor: "taskbox", subject: "selftest", text: text.slice(0, 200), data, ...(op ? { op } : {}) });
+  } catch {}
+}
+
+// The loop's own trial ask: hourly it reads the public repo's releases with no token, and the release
+// an auto-update would take next, when it is a trial (rc) release with no trial result yet, is asked
+// for as selftest run --release would ask. A trial that didn't run is asked again the next hour.
+const trialChecked = new WeakMap<object, number>();
+export const TRIAL_CHECK_MS = 3_600_000;
+export async function autoTrial(d: LoopDeps, box: object): Promise<string | undefined> {
+  const now = d.sys.now();
+  if (now - (trialChecked.get(box) ?? -Infinity) < TRIAL_CHECK_MS) return undefined;
+  trialChecked.set(box, now);
+  const repo = d.cfg.publicRepo;
+  const dir = linkTarget(d.paths.opt);
+  const rec = dir ? readInstallRecord(dir, d.checks.rootUid ?? 0) : undefined;
+  if (!repo || rec?.kind !== "ok") return undefined;
+  const res = await d.sys.fetch(`https://api.github.com/repos/${repo}/releases?per_page=100`, { redirect: "error", signal: d.sys.timeout(30_000), headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox" } });
+  if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+  const p = pick({ listed: listedReleases(await res.json()), installed: rec.value.version, channel: updateOf(d.cfg).channel, marks: { v: 1, bad: [] } });
+  if (p.kind !== "take" || channelOf(p.version) !== "beta") return undefined;
+  const ev = loopState(d.paths.state).events;
+  if (trialOf({ dir: ev, owner: process.getuid?.() ?? 0 }, p.version) !== "none") return undefined;
+  const asked = askLoop(loopAsks(d), "selftest-run", "release", { release: p.version }, now, "taskbox");
+  if ("busy" in asked) return undefined;
+  d.log.write(`release ${p.version} is new on this box's channel: trying it in taskbox's own VM before it installs (${asked.op.id})`);
+  return p.version;
+}
+
+// One asked release trial, from its ask to its event. Never throws.
+export async function releaseTrialStep(d: LoopDeps): Promise<void> {
+  const asked = takeAsk(loopAsks(d), "release", () => d.sys.now());
+  if (!asked) return;
+  const version = typeof asked.op.params.release === "string" ? asked.op.params.release : "";
+  const began = d.sys.now();
+  asked.phase("proving", `trying ${version} in a macOS VM`);
+  writeState(d, { slot: `trying ${version}`, slotAt: d.sys.now(), vmKind: "macos" });
+  let r: TrialResult;
+  try {
+    r = await (d.tryRelease ?? ((v: string) => tryRelease(trialEnv(d, (t) => asked.progress(t), () => asked.cancelled()), v)))(version);
+  } catch (e) {
+    r = { ok: false, notRun: true, detail: `the trial errored: ${String((e as Error)?.message ?? e).slice(0, 120)}` };
+  }
+  const result = r.ok ? "passed" : r.notRun ? "not-run" : "failed";
+  d.log.write(`release trial of ${version}: ${result}: ${r.detail}`);
+  selftestEvent(d, result, `The trial of ${version} ${r.ok ? "passed" : r.notRun ? "didn't run" : "failed"}: ${r.detail}.`, { why: "release", ms: d.sys.now() - began, version }, asked.op.id);
+  if (r.ok) asked.done({ detail: r.detail.slice(0, 200), version });
+  else asked.fail(r.detail, { detail: r.detail.slice(0, 200), version });
+  writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
+}
+
+// The trial's environment on the box: the public repo with no token, ssh-keygen as this account
+// against the release keys this engine pins, the macOS kind's image under a job's network rules,
+// and the settings in force.
+function trialEnv(d: LoopDeps, progress: (t: string) => void, cancelled: () => boolean): TrialEnv {
+  const mac = forKind(d.cfg, "macos");
+  const t = engineOf(d);
+  const repo = d.cfg.publicRepo;
+  const vm = vmName(d.sys);
+  const settings = (() => {
+    const f = readInForce(settingsFilesForApp(d.paths.app));
+    if (f.kind === "ok") return { text: JSON.stringify(f.value.doc), sha: f.value.sha };
+    return { text: readFileSync(join(d.paths.app, "taskbox.json"), "utf8"), sha: "0".repeat(40) };
+  })();
+  let net: NetPolicy | undefined;
+  return {
+    engine: {
+      clone: (image, name) => t.clone(image, name),
+      size: (name, cpus, mem) => t.size(name, cpus, mem),
+      start: (name, n) => t.start(name, net ?? n),
+      exec: (name, cmd, stdin, ms) => t.exec(name, cmd, stdin, ms),
+      stop: (name, s) => t.stop(name, s),
+      delete: (name) => t.delete(name),
+    },
+    image: mac.image,
+    cpus: mac.vmCpus,
+    memoryMB: mac.vmMemoryMB,
+    get net() {
+      return net ?? netFor(d.cfg, []);
+    },
+    vm,
+    async fetch(version) {
+      if (!repo) throw new Error("taskbox.json names no publicRepo");
+      net = netFor(d.cfg, (await publicAddresses(d.sys, awayOf(d.cfg).publicAddress)).addresses);
+      const rel = await publicRelease(d.sys, repo, `v${version}`);
+      return { statement: rel.statement, signature: rel.signature, tarball: await rel.asset(`taskbox-v${version}.tar.gz`, TARBALL_LIMIT) };
+    },
+    async verify(r, version) {
+      const dir = linkTarget(d.paths.opt);
+      const rec = dir ? readInstallRecord(dir, d.checks.rootUid ?? 0) : undefined;
+      const installed = rec?.kind === "ok" ? { version: rec.value.version, sha256: rec.value.sha256 } : null;
+      const keygen: VerifyDeps = { run: (cmd, args, o) => d.sys.run(cmd, args, o) };
+      const workRoot = join(d.paths.projectState, "trial");
+      mkdirSync(workRoot, { recursive: true, mode: 0o700 });
+      return verifyRelease(keygen, { statement: r.statement, signature: r.signature, workRoot, installed, want: version, channel: updateOf(d.cfg).channel, tarballSha256: createHash("sha256").update(r.tarball).digest("hex") });
+    },
+    settings: { ...settings, repo: d.cfg.settingsRepo ?? "example-org/settings" },
+    ready: (name, exited) => guestReady(d, name, `trying a release`, exited),
+    progress,
+    cancelled,
+  };
+}
+
 export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
-  const d = kindDeps(d0, "linux");
+  const d = kindDeps(d0, "linux", smallestSize(d0.cfg, "linux").name);
   const t = engineOf(d);
   const pubs = (await publicAddresses(d.sys, awayOf(d.cfg).publicAddress)).addresses;
   const pub = pubs[0];
@@ -682,6 +944,12 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
   if (!leave) return { ok: false, detail: "another VM's start held the gate too long", notRun: true };
   // A fresh beat now the gate is passed: the proof's own steps take their full time from here.
   if (d0.box) writeState(d0, { beat: beatFor("proving Linux", d0.sys.now()) });
+  // The checks before the gate took time: a drain or a hold may have begun since.
+  const why = drainOrHold(d0);
+  if (why) {
+    leave();
+    return { ok: false, detail: why.text, notRun: true };
+  }
   let startDone: ((now: number) => void) | undefined;
   let stopDone: ((now: number) => void) | undefined;
   try {
@@ -708,6 +976,8 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
     const r = await t.exec(vm, ["/bin/bash", "-s"], proofScript(targets), 600_000);
     if (r.code !== 0) return { ok: false, detail: `the proof script ended with exit ${r.code}` };
     const res = proofResult(targets, r.stdout);
+    // The rules evaluator beside what the guest met, for the "Network rules" row (net/agree.ts).
+    recordAgreement(d, t.evaluator(net), verdictWords(net), targets, r.stdout);
     // With more than one slot, a pass says when it tried no other job VM.
     const none = d.box && d.box.count > 1 && !peerList.length && res.ok ? "; no other job VM was up to try" : "";
     return { ...res, detail: `${res.detail}${none}`, peers: peerList.length };
@@ -717,7 +987,10 @@ export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
     stopDone = d.box?.window(d.slot, "stop", d.sys.now());
     try {
       await t.stop(vm, 30);
-      proc?.kill();
+      if (proc) {
+        proc.kill();
+        await within(d.sys, proc.exited, 30_000);
+      }
       await t.delete(vm);
     } catch (e) {
       d.log.write(`cleaning up ${vm} failed: ${(e as Error).message}`);
@@ -745,22 +1018,22 @@ export async function oneJob(d0: LoopDeps, installedCommit: () => string, startC
 }
 
 async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCommit: string, waits: Wait[], turn: Turn, leave: () => void): Promise<JobOutcome> {
-  const d = kindDeps(d0, turn.kind);
+  const d = kindDeps(d0, turn.kind, turn.size);
   const kind = turn.kind;
   const others = d.box?.othersUp(d.slot) ?? [];
   // v2.4.0: when each phase of this VM began, in ms after it was asked for (jobs.ts Phases).
   const asked = d.sys.now();
   // queued is when the job the VM was started for was queued; GitHub may give it another of the same labels.
   const phases: Phases = turn.queuedAt !== undefined && asked - turn.queuedAt <= 7 * 86_400_000 && turn.queuedAt <= asked ? { queued: Math.round(turn.queuedAt - asked) } : {};
-  // Never before the ask, even if the clock steps back (product review, finding 10).
+  // Never before the ask, even if the clock steps back.
   const mark = (p: keyof Phases) => (phases[p] = Math.max(0, Math.round(d.sys.now() - asked)));
   const guest = guestOf(kind);
-  // Inside the gate, so exact: never a third macOS VM, whatever chose this one (review, finding 3).
+  // Inside the gate, so exact: never a third macOS VM, whatever chose this one.
   if (kind === "macos" && others.filter((o) => o.kind === "macos").length >= MACOS_MAX) {
     d.log.write(`slot ${d.slot}: no VM started: ${MACOS_MAX} macOS VMs run already`);
     return "held-back";
   }
-  // A loop that is stopping starts nothing more (finding 4).
+  // A loop that is stopping starts nothing more.
   if (d.box?.halt !== undefined) return "halted";
   const RUNNER_DIR = `${guest.home}/taskbox-runner`;
   const STATUS_FILE = `${guest.home}/taskbox-status.json`;
@@ -768,13 +1041,13 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   try {
     // Free disk counts the floor for this VM and for each one running.
     const ctx = { ...d.checks, vmsRunning: others.length, downloadGB: d.box?.downloadGB ?? 0 };
-    checks = d.prestart ? await d.prestart(ctx) : await runChecks(PRESTART, ctx);
+    checks = d.prestart ? await d.prestart(ctx) : await runChecks(rows("prestart", ctx), ctx);
   } catch (e) {
     checks = [{ name: "Pre-start check", status: "FAIL", detail: `errored: ${(e as Error).message}` }];
   }
   if (!allOk(checks)) {
     const failed = checks.filter((c) => c.status === "FAIL").map((c) => c.name);
-    // Room for one VM but not one more: the box works, one VM fewer. A wait, never a FAIL (finding 1).
+    // Room for one VM but not one more: the box works, one VM fewer. A wait, never a FAIL.
     if (others.length && failed.length === 1 && failed[0] === "Free disk") {
       const detail = checks.find((c) => c.name === "Free disk")!.detail.split(". ")[0];
       d.log.write(`slot ${d.slot}: no VM started: no room for one more VM (${detail})`);
@@ -816,7 +1089,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   const net = netFor(d.cfg, pubs);
   if (d.box?.halt !== undefined) return "halted";
   // A start that gets this far clears a failure, unless another slot is stopping the loop for one.
-  writeState(d, { lastCheck: "OK", failed: [], slot: "starting a VM", slotAt: d.sys.now(), vmKind: kind, waitingFor: undefined, ...(turn.why ? { why: turn.why } : {}), ...(d.box?.halt === undefined ? { failing: undefined } : {}) });
+  writeState(d, { lastCheck: "OK", failed: [], slot: "starting a VM", slotAt: d.sys.now(), vmKind: kind, size: turn.size ?? DEFAULT_SIZE, waitingFor: undefined, ...(turn.why ? { why: turn.why } : {}), ...(d.box?.halt === undefined ? { failing: undefined } : {}) });
 
   // The head of main is for the status file only, so an odd head never stops a job.
   let mainHead = "unknown";
@@ -856,13 +1129,13 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
           } catch (e) {
             // The test repo's group is set up wrong: the session ends, so the box doesn't try each
             // minute. Anything else, such as GitHub being down, is tried again and counted by the
-            // chain (product review, finding 4). The real repo carries on either way.
+            // chain. The real repo carries on either way.
             const m = (e as Error).message;
-            if (groupSetupWrong(m)) loadFailed(d.paths, d.sys.now(), `the test repo's runner group: ${m}`);
+            if (groupSetupWrong(m)) loadFailed(d.paths, d.sys.now(), `the test repo's runner group: ${m}`, d.checks.rootUid ?? 0);
             throw e;
           }
         } else group = await d.gh.runnerGroupId(runners);
-        return d.gh.jitConfig(runners, group, `${d.cfg.runnerNamePrefix}-${d.slot}-${vm.slice(4)}`, labels);
+        return d.gh.jitConfig(runners, group, runnerNameFor(d.cfg, d.slot, vm), labels);
       },
     );
   } finally {
@@ -872,7 +1145,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
 
   const t = engineOf(d);
   let outcome: JobOutcome = "done";
-  // For taskbox jobs: what this VM did, filled in as it happens.
+  // For taskbox job list: what this VM did, filled in as it happens.
   let vmStartedAt: number | undefined;
   let jobAt: number | undefined;
   let jobName: string | undefined;
@@ -889,13 +1162,35 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
   let startDone: ((now: number) => void) | undefined;
   // From the clone on, an error is this VM's failure, so the turn passes to the other kind.
   let cloned = false;
+  // What the VM was cloned from: a base VM with the tools in it, or the pinned image.
+  let from: Awaited<ReturnType<typeof cloneSource>> = { source: d.cfg.image };
+  // Set once every hook let this start through, so each hook hears of its end (core/hooks.ts).
+  const hooks = d.hooks ?? jobHooks();
+  const hookJob = { slot: d.slot, kind, vm, labels, ...(turn.role ? { role: turn.role } : {}), ...(turn.className ? { className: turn.className } : {}), net };
+  let hooked = false;
+  // The guest while it is up, for the hooks: set once it answered, so a hook reads only a guest that did.
+  let guestUp: GuestAccess | undefined;
   try {
+    const hold = await beforeStart(hooks, d, hookJob);
+    if (hold) {
+      d.log.write(`slot ${d.slot}: no VM started: ${hold}`);
+      outcome = "held-back";
+      return outcome;
+    }
+    hooked = true;
     cloned = true;
     const me = d.box?.held.get(d.slot);
     // up from the clone, for memory and disk. vm once its guest answers, below, so the Linux proof
     // never tries an address that isn't there yet.
     if (me) me.up = true;
-    const clone = await t.clone(d.cfg.image, vm);
+    // The kind's base VM, with the pinned tools baked in, or the image (tools/inloop.ts).
+    if (toolsOn(d.cfg, kind)) from = await cloneSource(d, kind);
+    let clone = await t.clone(from.source, vm);
+    if (clone.code !== 0 && from.base) {
+      d.log.write(`could not clone ${from.source}, so the VM clones the image`);
+      from = { source: d.cfg.image };
+      clone = await t.clone(d.cfg.image, vm);
+    }
     mark("cloned");
     writeState(d, { beat: beatFor("starting a VM", d.sys.now()) });
     if (clone.code !== 0) {
@@ -906,10 +1201,13 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // Shared mode: the same size whoever else is on the box, set on the clone only.
     const sized = await t.size(vm, d.cfg.vmCpus, d.cfg.vmMemoryMB);
     if (sized.code !== 0) throw new Error("tart set failed on the VM's size");
-    // Who else is logged in, for taskbox jobs. A list that can't be read is left out, never empty.
+    // Who else is logged in, for taskbox job list. A list that can't be read is left out, never empty.
     const logins = await loginSessions(d.sys).catch(() => undefined);
-    beside = logins?.known ? logins.users.filter((u) => u !== CI_USER) : undefined;
+    beside = logins?.known ? logins.users.filter((u) => u !== d.cfg.accounts.service) : undefined;
+    // Screen Sharing as the VM starts, for the guard's count (pfstarts.ts). null when it can't be read.
+    const sharingAtStart = await screenSharingSeen(d.sys).catch(() => null);
     vmStartedAt = d.sys.now();
+    const vmStartedMono = await monoNow(d.sys);
     startDone = d.box?.window(d.slot, "start", vmStartedAt);
     vmProc = t.start(vm, net);
     if (!(await guestReady(d, vm, "starting a VM", vmProc.exited))) {
@@ -920,13 +1218,21 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     // A VM start is when vmnet could reload pf. The guard reads its rules every 2 s, so by now it has
     // read them since the start; a time in missingAt after the start means they went missing then.
     const besides = (d.box?.windows ?? []).filter((w) => w.slot !== d.slot);
-    const guardAtStart = vmStartGuard(readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0), vmStartedAt, besides);
+    const guardAtStart = vmStartGuard(readGuard(d.paths, d.sys.now(), d.checks.rootUid ?? 0), vmStartedAt, besides, vmStartedMono);
     const meUp = d.box?.held.get(d.slot);
     if (meUp) meUp.vm = vm;
     mark("guestUp");
+    guestUp = { ip: () => t.ip(vm), exec: (cmd: string[], ms: number) => t.exec(vm, cmd, undefined, ms) };
     startDone?.(d.sys.now());
     guardSeen = guardAtStart.rulesWentMissing ? "rules went missing at start" : guardAtStart.read ? "ok" : "not read";
     writeState(d, { vmStartGuard: { ...guardAtStart, at: vmStartedAt, slot: d.slot } });
+    // Each start, for the guard to judge against its pf reads (pfstarts.ts), with Screen Sharing as it
+    // started and the loop's own sighting of a loss, which closes the box too.
+    try {
+      recordStart(d.paths, { at: vmStartedAt, vm, sharing: sharingAtStart, ...(guardAtStart.rulesWentMissing ? { lost: true as const } : {}) });
+    } catch (e) {
+      d.log.write(`could not record the VM's start for the guard: ${(e as Error).message}`);
+    }
     if (guardAtStart.rulesWentMissing) {
       d.log.write(
         guardAtStart.shared
@@ -935,8 +1241,8 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
       );
       // Until a box-check job shows VM starts leave the rules alone, fail closed: no VM while
       // Screen Sharing is on, this one included.
+      // The guard closes the box when it judges this start; this VM goes now if Screen Sharing is on.
       if (!d.cfg.vmnetPfProven) {
-        writeState(d, { guardClosed: true });
         if (await screenSharingOn(d.sys)) {
           d.log.write("VM deleted: the guard's rules went missing at its start while Screen Sharing is on");
           outcome = "guard-closed";
@@ -1008,6 +1314,9 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     const tarball = new Uint8Array(readFileSync(d.paths.runnerTarball));
     const copy = await t.exec(vm, ["/bin/sh", "-c", `mkdir -p ${RUNNER_DIR} && tar -xzf - -C ${RUNNER_DIR}`], tarball);
     if (copy.code !== 0) throw new Error("copying the runner into the VM failed");
+    // The runner's .env names the tools a base VM carries, read from the guest's own files.
+    // A failure is logged and the job runs: the tools are on its disk, and only the names are missing.
+    if (from.base && (await t.exec(vm, ["/bin/sh", "-s"], runnerEnvScript(RUNNER_DIR)).catch(() => ({ code: -1 }))).code !== 0) d.log.write(`the runner wasn't told about the tools in ${from.source}; its job runs without TASKBOX_TOOLS`);
 
     if (d.box?.halt !== undefined) {
       outcome = "halted";
@@ -1037,20 +1346,31 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
         jobAt = started;
         mark("jobStarted");
         // A job this soon after the runner started was already waiting: this kind is busy.
-        if (d.box && started - readyAt <= timingsOf(d.cfg).busyWithinSeconds * 1000) d.box.fastAt[kind] = started;
+        if (d.box && started - readyAt <= timingsOf(d.cfg).busyWithinSeconds * 1000) {
+          d.box.fastAt[kind] = started;
+          d.box.sizeTime(kind, turn.size, "fastAt", started);
+        }
         d.box?.jobStarted(kind, started, labels);
         jobName = clean(m[1]!).slice(0, 120);
+        jobStarted(hooks, d, { ...hookJob, at: started, name: jobName, ...(guestUp ? { guest: guestUp } : {}), note: (text) => writeState(d, { net: text ? clean(text).slice(0, 80) : undefined }) });
         const me = d.box?.held.get(d.slot);
         if (me) me.job = true;
-        writeState(d, { why: undefined, slot: "running a job", job: clean(m[1]!).slice(0, 120), slotAt: started, vmSize: `${KIND_WORD[kind]}, ${d.cfg.vmCpus} CPUs, ${d.cfg.vmMemoryMB / 1024} GB`, beside });
+        writeState(d, { why: undefined, slot: "running a job", job: clean(m[1]!).slice(0, 120), slotAt: started, vmSize: `${sizeWord(kind, turn.size)}, ${d.cfg.vmCpus} CPUs, ${d.cfg.vmMemoryMB / 1024} GB`, beside });
       }
     });
     writeState(d, { slot: "waiting for a job", slotAt: d.sys.now() });
     let exited = false;
     void runner.exited.then(() => (exited = true));
-    // A load job has a short ceiling of its own, whatever its workflow says (security review, finding 3).
+    // A load job has a short ceiling of its own, whatever its workflow says.
     const ceiling = turn.role === "load" ? Math.min(ceilingMs(d.cfg), LOAD_JOB_MAX_MS) : ceilingMs(d.cfg);
     const booted = d.sys.now();
+    // The caps below are on the monotonic clock alone, so a wall clock step ends no job (core/boot.ts).
+    // The VM's and the job's starts are taken on the first tick that reads mono after each. A tick
+    // that can't read it decides nothing and keeps the job; MONO_MISSES_ALARM of them in a row write
+    // job.clock-unread and the state the "Loop clock" row FAILs on, until mono reads again.
+    let bootedMono: number | undefined;
+    let startedMono: number | undefined;
+    let monoMisses = 0;
     let giveWayAskedAt = 0;
     let queueAskedAt = booted;
     let wantGiveWay = false;
@@ -1059,8 +1379,21 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     let drainRefusals = 0;
     let keepForDrain = false;
     let beatAt = booted;
+    let forced = false;
     while (!exited) {
       await d.sys.sleep(5000);
+      // A forced drain or stop at its deadline, or the end of the load test session a test job ran
+      // in: the job's VM stops, as job cancel stops it, and the job ends as stopped by it.
+      if (started !== undefined && !forced) {
+        const by = stopFor(gateOf(d).forcing ?? rushForcing(d), turn.role, () => !!loadNow(d.paths, d.sys.now(), d.checks.rootUid ?? 0));
+        if (by) {
+          forced = true;
+          const id = jobOfVm(vm);
+          // A VM with no job id is stopped by its name, so a forced one never stops nothing.
+          const r = id ? await stopJob({ paths: d.paths, engine: t, now: () => d.sys.now() }, { id, vm }, by) : await t.stop(vm, 10).then((x) => ({ stopped: x.code === 0, why: clean(x.stderr).slice(0, 160) || `tart stop answered ${x.code}` }), (e: Error) => ({ stopped: false, why: clean(e.message).slice(0, 160) }));
+          d.log.write(r.stopped ? `${by} stopped the job's VM${id ? "" : ` ${vm}, which has no job id`}` : `${by} couldn't stop the job's VM: ${r.why}`);
+        }
+      }
       // A VM waiting for a job beats each minute; a running job's beat lasts to its ceiling.
       if (started === undefined && d.sys.now() - beatAt >= 60_000) {
         beatAt = d.sys.now();
@@ -1077,16 +1410,26 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
           .catch(() => {})
           .finally(() => (sampling = undefined));
       }
-      // A hard cap on any VM, in case the runner's "Running job" line changes.
-      if (d.sys.now() - booted > d.cfg.vmMaxHours * 3600_000) {
-        outcome = "ceiling";
-        runner.kill();
-        break;
-      }
-      if (started !== undefined && d.sys.now() - started > ceiling) {
-        outcome = "ceiling";
-        runner.kill();
-        break;
+      const mono = await monoNow(d.sys);
+      if (mono === undefined) {
+        monoMisses++;
+        if (monoMisses % MONO_MISSES_ALARM === 0) clockUnread(d, monoMisses);
+      } else {
+        if (monoMisses >= MONO_MISSES_ALARM) writeState(d, { clockUnread: undefined });
+        monoMisses = 0;
+        bootedMono ??= mono;
+        if (started !== undefined) startedMono ??= mono;
+        // A hard cap on any VM, in case the runner's "Running job" line changes.
+        if (mono - bootedMono > d.cfg.vmMaxHours * 3600_000) {
+          outcome = "ceiling";
+          runner.kill();
+          break;
+        }
+        if (startedMono !== undefined && mono - startedMono > ceiling) {
+          outcome = "ceiling";
+          runner.kill();
+          break;
+        }
       }
       // While no job has started, an update ends the wait, and so does a loop that is stopping.
       if (started === undefined && (installedCommit() !== startCommit || d.box?.halt !== undefined)) {
@@ -1117,8 +1460,9 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
           if (d.box) {
             d.box.gaveWay[kind] = (d.box.gaveWay[kind] ?? 0) + 1;
             d.box.gaveWayAt[kind] = d.sys.now();
+            d.box.sizeTime(kind, turn.size, "gaveWayAt", d.box.gaveWayAt[kind]);
             // A dated log of give-ways, kept across restarts for a week and at most 500, for the
-            // acceptance criteria in taskbox timings.
+            // acceptance criteria in taskbox job timings.
             const now = d.sys.now();
             const was = readStateJson<{ gaveWayLog?: unknown }>(d.paths.loopState)?.gaveWayLog;
             const log = (Array.isArray(was) ? was : []).filter((x): x is { at: number; kind: string } => !!x && typeof x === "object" && Number.isFinite((x as { at?: unknown }).at) && now - (x as { at: number }).at < 7 * 86_400_000);
@@ -1144,17 +1488,21 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
       // with it. A job that has started finishes.
       if (started === undefined) {
         const w = await whyWait(d, true);
+        // A hold that began while this VM waits shows at once, not when a slot next reaches its top.
+        if (d.box) showHold(d, d.box);
         keepForDrain = false;
-        if (w?.key !== "drain") drainRefusals = 0;
-        // A drain promises no job fails, so the runner goes from GitHub first, as a give-way's does.
-        // GitHub refuses to delete a runner it has just given a job: then the VM keeps waiting.
-        if (w?.key === "drain" && started === undefined) {
+        // A drain or a held slot promises no job fails, so the runner goes from GitHub first, as a
+        // give-way's does. GitHub refuses to delete a runner it gave a job a moment ago: then the VM
+        // keeps waiting.
+        const freeing = quiet(w);
+        if (!freeing) drainRefusals = 0;
+        if (freeing && started === undefined) {
           const freed = await d.gh
             .token("runners")
             .then((tk) => d.gh.deleteRunner(tk, jit.runnerId))
             .then(
               () => true,
-              (e: Error) => (d.log.write(`the VM kept waiting through the drain: GitHub didn't delete its runner (${e.message})`), false),
+              (e: Error) => (d.log.write(`the VM kept waiting through the ${w?.key === "workspace" ? "hold for a workspace" : "pause"}: GitHub didn't delete its runner (${e.message})`), false),
             );
           if (!freed) drainRefusals++;
           keepForDrain = !freed && drainRefusals < DRAIN_REFUSALS;
@@ -1197,12 +1545,18 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     let deleted = { code: -1 };
     // Each on its own: a state file it can't write, such as on a disk this VM filled, never skips the delete.
     try {
-      writeState(d, { slot: "cleaning up", slotAt: d.sys.now(), vmSize: undefined, beside: undefined });
+      writeState(d, { slot: "cleaning up", slotAt: d.sys.now(), vmSize: undefined, beside: undefined, net: undefined });
     } catch {}
+    // The hooks read the guest once before it stops (core/hooks.ts).
+    if (hooked && guestUp) await runnerEnded(hooks, d, { ...hookJob, guest: guestUp }).catch(() => {});
     const stopDone = d.box?.window(d.slot, "stop", d.sys.now());
     try {
       await t.stop(vm, 30);
-      vmProc?.kill();
+      // A killed tart run holds the VM until it ends, and Tart won't delete a VM still held.
+      if (vmProc) {
+        vmProc.kill();
+        await within(d.sys, vmProc.exited, 30_000);
+      }
       deleted = await t.delete(vm);
       if (deleted.code === 0) mark("deleted");
     } catch (e) {
@@ -1210,35 +1564,44 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
     } finally {
       stopDone?.(d.sys.now());
     }
-    // One line for taskbox jobs, for every VM that started: a job it ran, or why it ran none. A VM
+    // One line for taskbox job list, for every VM that started: a job it ran, or why it ran none. A VM
     // that gave way ran none and would fill the list every few minutes, so it has no line.
-    if (vmStartedAt !== undefined && outcome !== "gave-way") {
+    const line: JobRecord | undefined =
+      vmStartedAt !== undefined && outcome !== "gave-way"
+        ? {
+            v: 1,
+            id: jobOfVm(vm),
+            vm,
+            startedAt: vmStartedAt,
+            jobAt,
+            endedAt: d.sys.now(),
+            repo: served?.name ?? d.cfg.jobsFrom,
+            vmKind: kind,
+            slot: d.box && d.box.count > 1 ? d.slot : undefined,
+            job: jobName,
+            result: jobRecordResult(outcome, result, jobAt !== undefined),
+            why: outcome === "done" ? undefined : outcome,
+            vmDeleted: deleted.code === 0,
+            guard: guardSeen,
+            cpus: d.cfg.vmCpus,
+            memoryMB: d.cfg.vmMemoryMB,
+            beside,
+            pressure: highest === undefined ? undefined : pressureWord(highest),
+            waits: waits.length ? waits : undefined,
+            phases: Object.keys(phases).length ? phases : undefined,
+            className: turn.className,
+            labels,
+            usage: summarise(samples),
+            tools: from.gen,
+          }
+        : undefined;
+    // Each hook hears of the end, once the VM is gone, and may add fields to the job's line (core/hooks.ts).
+    const extra = hooked ? await afterEnd(hooks, d, { ...hookJob, outcome, vmDeleted: deleted.code === 0, ...(line ? { record: { ...line } } : {}) }).catch(() => ({})) : {};
+    if (line) {
       try {
-        appendJob(d.paths, {
-          v: 1,
-          startedAt: vmStartedAt,
-          jobAt,
-          endedAt: d.sys.now(),
-          repo: served?.name ?? d.cfg.jobsFrom,
-          vmKind: kind,
-          slot: d.box && d.box.count > 1 ? d.slot : undefined,
-          job: jobName,
-          result: jobRecordResult(outcome, result, jobAt !== undefined),
-          why: outcome === "done" ? undefined : outcome,
-          vmDeleted: deleted.code === 0,
-          guard: guardSeen,
-          cpus: d.cfg.vmCpus,
-          memoryMB: d.cfg.vmMemoryMB,
-          beside,
-          pressure: highest === undefined ? undefined : pressureWord(highest),
-          waits: waits.length ? waits : undefined,
-          phases: Object.keys(phases).length ? phases : undefined,
-          className: turn.className,
-          labels,
-          usage: summarise(samples),
-        });
+        appendJob(d.paths, withHookFields(line, extra));
       } catch (e) {
-        d.log.write(`could not record the job for taskbox jobs: ${(e as Error).message}`);
+        d.log.write(`could not record the job for taskbox job list: ${(e as Error).message}`);
       }
     }
     // A fresh token: the first is an hour old by the ceiling.
@@ -1249,7 +1612,7 @@ async function startAndRun(d0: LoopDeps, installedCommit: () => string, startCom
         .catch((e) => d.log.write(`could not delete runner ${jit.runnerId}: ${(e as Error).message}`));
     }
     d.log.write(`job ${vm} ${outcome}`);
-    writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined, job: undefined, runner: undefined, registeredAt: undefined, labels: undefined });
+    writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined, size: undefined, job: undefined, runner: undefined, registeredAt: undefined, labels: undefined });
   }
 }
 
@@ -1345,19 +1708,6 @@ export function relabelDue(d: Pick<LoopDeps, "paths" | "log">, oldName: boolean)
   };
 }
 
-async function dropDrainFromBeforeBoot(d: Pick<LoopDeps, "sys" | "paths" | "log">): Promise<void> {
-  const at = readStateJson<{ at?: unknown }>(d.paths.drain)?.at;
-  if (at === undefined && !existsSync(d.paths.drain)) return;
-  // kern.boottime reads "{ sec = 1700000000, usec = 0 } ...", as the guard reads it.
-  const r = await d.sys.run("/usr/sbin/sysctl", ["-n", "kern.boottime"], { timeoutMs: 5_000 }).catch(() => undefined);
-  const m = r?.code === 0 ? /sec = (\d+)/.exec(r.stdout) : null;
-  const boot = m ? Number(m[1]) : undefined;
-  if (typeof at !== "number" || (boot !== undefined && at < boot * 1000)) {
-    rmSync(d.paths.drain, { force: true });
-    d.log.write("a drain from before the restart ended: the restart had already ended its jobs");
-  }
-}
-
 export async function runLoop(d: LoopDeps): Promise<number> {
   mirrorPull(d.paths.pull, (s) => mirrorJson(d.paths, "pull", s));
   mirrorPull(d.paths.pullLinux, (s) => mirrorJson(d.paths, "pullLinux", s));
@@ -1365,6 +1715,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   const startCommit = commitNow();
   const n = slotCount(d.cfg);
   const box = d.box ?? new Slots(n);
+  box.boot ??= await bootId(d.sys);
   const chain = d.chain ?? new RunnerChain(awayOf(d.cfg).githubFailures);
   // A fresh beat in place of the last run's, which may be stale: the guard restarts a loop whose beat
   // it reads stale twice, and the cleanup below can take that long. On its own, so a full disk never
@@ -1376,22 +1727,22 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   await cleanLeftovers(d);
   // A fresh start: nothing from a run before a logout or a power cut is shown as current, and a
   // taskbox stop ends here (this runs at ci's login or taskbox start). A hold from before v2.2.0 ends.
-  writeLoopState(d.paths, { slot: "idle", slotAt: d.sys.now(), job: undefined, failing: undefined, waitingFor: undefined, kindPaused: undefined, kindChoice: undefined, slots: {}, slotCount: n, vmKind: undefined, vmSize: undefined, beside: undefined, github: undefined, imageBroken: undefined, drainingSince: undefined });
-  clearStopped(d.paths);
-  // A drain survives the loop's own restarts (an update, a hand-over, a crash): it is the owner's, and
-  // only taskbox start or the drain's end clears it. One from before this boot goes: the restart
-  // already ended its jobs. A logout and login without a restart keeps it, and the loop stops again.
-  await dropDrainFromBeforeBoot(d);
+  writeLoopState(d.paths, { slot: "idle", slotAt: d.sys.now(), job: undefined, failing: undefined, waitingFor: undefined, kindPaused: undefined, kindChoice: undefined, slots: {}, slotCount: n, vmKind: undefined, vmSize: undefined, beside: undefined, github: undefined, imageBroken: undefined, drainingSince: undefined, heldKind: undefined, heldFor: undefined });
   // v2.5.0: the grace for every reader, and a beat through the start.
-  writeLoopState(d.paths, { beatGraceMs: awayOf(d.cfg).heartbeatGraceMinutes * 60_000, endingAt: undefined });
+  writeLoopState(d.paths, { beatGraceMs: awayOf(d.cfg).heartbeatGraceMinutes * 60_000, endingAt: undefined, endingUntil: undefined });
   noteGuardRestart({ ...d, rootUid: d.checks.rootUid }, d.sys.now());
   writeState({ ...d, slot: 1 }, { beat: beatFor("starting the loop", d.sys.now()) });
   // v2.5.0: a slot stuck past its beat's deadline plus the grace ends the loop, so launchd starts it
   // again and the start cleans up. A timer reads the beats; it never writes one. From here, so the
   // start itself is covered.
   const selfWatch: SelfWatch = { live: new Set(), started: false, lastTick: null, halted: () => box.halt !== undefined };
-  const selfCheck = setInterval(() => checkSelf(d, selfWatch), SELF_CHECK_MS);
-  selfCheck.unref?.();
+  // The hold's line is written on this tick too, so it shows while every slot runs a job.
+  const selfCheck = d.sys.every(SELF_CHECK_MS, () => {
+    checkSelf(d, selfWatch);
+    try {
+      showHold(d, box);
+    } catch {}
+  });
   const updated = () => commitNow() !== startCommit || (d.relabel?.() ?? false);
   // Linux runs jobs only after its Softnet proof passed for this image and this install.
   const proven = () => proofHolds(readProof(d.paths.projectState), forKind(d.cfg, "linux").image, installedCommit(d.paths.installed));
@@ -1420,6 +1771,7 @@ export async function runLoop(d: LoopDeps): Promise<number> {
   };
   const source: JobSource = d.source ?? new NoSource();
   box.startedAt = d.sys.now();
+  box.logicalCpus ??= await readLogicalCpus(d.sys);
   // With more than one slot, the proof waits for another job VM to be up, so it can try that VM too,
   // for at most PEER_WAIT_MS: a box whose other kind can't start still proves Linux.
   let peerWaitFrom: number | undefined;
@@ -1449,7 +1801,8 @@ export async function runLoop(d: LoopDeps): Promise<number> {
     // The proof, once Linux's image and runner are in place, and again 6 hours after a failure.
     // With more than one slot, a pass that tried no other job VM is proved again once one is up, so
     // the box shows one job VM can't reach another. Linux jobs run meanwhile: the pass still holds.
-    proofDue: () => !existsSync(d.paths.drain) && c.held.has("linux") && servedKinds(d).includes("linux") && d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()),
+    // An asked run (taskbox selftest run) goes in the next free slot, whatever the schedule says.
+    proofDue: () => !gateOf(d).wait && heldNow({ ...d, box }) === 0 && c.held.has("linux") && servedKinds(d).includes("linux") && (readAsk(loopAsks(d), "selftest") !== undefined || (d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()))),
     served: () => servedKinds(d).filter((k) => c.held.has(k) && (k !== "linux" || proven())),
     choose:
       d.chooseKind ??
@@ -1460,10 +1813,18 @@ export async function runLoop(d: LoopDeps): Promise<number> {
         slots: n,
         occupants: () => [...box.held.values()],
         claim: (o) => box.held.set(o.slot, o),
-        history: () => box.history(kindsOf(d.cfg)),
+        history: () => box.history(kindsOf(d.cfg), (k) => sizesOf(d.cfg, k).map((z) => z.name)),
+        // The VMs' share of the box: its memory as last read, less boxKeepsGB, and its CPUs.
+        // Less what Lights and Heavies hold of it (held.ts): the scheduler starts only what fits beside them.
+        budget: () => lessHeld(budgetOf(d.cfg, box.totalGB, box.logicalCpus), roomHeld(d.workspaces?.() ?? NONE)),
         // v2.6.0: the load test's window, read each time a slot asks (load.ts).
-        load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now()) : undefined),
-        seen: (s) => noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.()),
+        load: () => (loadRepoOf(d.cfg) ? loadNow(d.paths, d.sys.now(), d.checks.rootUid ?? 0) : undefined),
+        // The slots held for workspaces, read each time a slot asks: the scheduler sees the rest.
+        held: () => heldNow({ ...d, box }),
+        seen: (s) => {
+          noteSeen(d.paths, s, d.sys.now(), source.reads?.(), source.loadProblem?.(), d.checks.rootUid ?? 0);
+          noteSource(d, s);
+        },
       }),
   };
   // One worker per slot. A worker that throws stops the others' waiting VMs; their running jobs
@@ -1490,52 +1851,64 @@ export async function runLoop(d: LoopDeps): Promise<number> {
       }),
     );
   } finally {
-    clearInterval(selfCheck);
+    selfCheck();
   }
   if (box.fatal !== undefined) throw box.fatal;
-  // A drain's end leaves the loop down, as taskbox stop does. A taskbox start in the time the other
-  // slots took to see it removed the stopped record: then the loop starts again.
-  if (box.drainedAt !== undefined && !existsSync(d.paths.stopped)) {
-    d.log.write("taskbox start came as the drain ended, so the loop starts again");
-    return RESTART;
-  }
   for (const r of results) if (r.status === "fulfilled" && r.value === 0) return 0;
   return RESTART;
 }
 
-// The drain's start in the loop's state, for status, watch and away (state.ts), on a change only.
-function showDrain(d: Pick<LoopDeps, "paths">, box: Slots): void {
-  const at = readStateJson<{ at?: unknown }>(d.paths.drain)?.at;
-  const now = typeof at === "number" && Number.isFinite(at) ? at : existsSync(d.paths.drain) ? 0 : undefined;
-  if (now === box.drainShown) return;
-  box.drainShown = now;
-  writeLoopState(d.paths, { drainingSince: now });
+// Why the box is held now, in the loop's state for status, watch, away and check (state.ts), on a
+// change only: heldKind workspace is a Whole the owner approved; bad, stale and newer the state's.
+function showHold(d: Pick<LoopDeps, "paths" | "workspaces">, box: Slots): void {
+  const r = holdReason(d.workspaces?.() ?? NONE);
+  const key = r ? `${r.kind}:${r.text}` : undefined;
+  if (key === box.holdShown) return;
+  box.holdShown = key;
+  writeLoopState(d.paths, { heldKind: r?.kind, heldFor: r?.text });
 }
 
 // One slot: wait while the box says so, download and prove between VMs, then one VM at a time.
 async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
   const multi = c.box.count > 1;
   let last: { kind: Kind; outcome: JobOutcome } | undefined;
-  // Each wait since the last VM, with its reason and length, for taskbox jobs.
+  // Each wait since the last VM, with its reason and length, for taskbox job list.
   let waits: Wait[] = [];
   let waiting: { key: string; since: number } | undefined;
+  let heldEmptyShown: boolean | undefined;
   for (;;) {
     if (c.box.halt !== undefined) return c.box.halt;
     if (c.updated()) return RESTART;
     const w = await whyWait(d);
-    showDrain(d, c.box);
+    showHold(d, c.box);
+    // A slot here holds no VM. Held and empty, from this pass's wait, for the guard's check that a
+    // waiting Whole may go active (heldSlotsEmpty, held.ts). That is all the guard
+    // needs from the loop. A held slot starts no VM, so the mark stays true until the hold ends.
+    // Written on a change only.
+    // A deliberate guard: a slot reaches here only with no occupant, and the mark checks it anyway,
+    // since the guard lets a Whole go active on it. A slot that still holds one is never empty.
+    const heldEmpty = (w?.key === "workspace" || (w?.key === "paused" && slotHeld(d))) && !c.box.held.has(d.slot);
+    if (heldEmpty !== heldEmptyShown) {
+      heldEmptyShown = heldEmpty;
+      writeLoopState(d.paths, {}, { slot: d.slot, patch: { heldEmpty: heldEmpty || undefined } });
+    }
     // A slot here holds no VM, so a drain is done once every slot waits on it.
-    if (w?.key === "drain") {
+    if (w?.key === "paused") {
       c.box.drained.add(d.slot);
+      // Every slot empty: said for the state seen, so the guard moves a drain on. Stopped: the loop
+      // exits 0, and launchd keeps it down until taskbox start.
       if (c.box.drained.size === c.box.count && c.box.halt === undefined) {
-        c.box.drainedAt = d.sys.now();
-        markStopped(d.paths, d.sys.now());
-        rmSync(d.paths.drain, { force: true });
-        writeLoopState(d.paths, { drainingSince: undefined });
-        d.log.write("drained: every job finished, so the loop stops until taskbox start or the next login");
-        markEnding(d);
-        c.box.halt = 0;
-        return 0;
+        const g = gateOf(d);
+        if (g.gen >= 0 && c.box.emptyFor !== g.gen) {
+          c.box.emptyFor = g.gen;
+          writeLoopState(d.paths, { controlEmpty: g.gen });
+        }
+        if (g.stopped) {
+          d.log.write("stopped: every job finished, so the loop stops until taskbox start");
+          markEnding(d);
+          c.box.halt = 0;
+          return 0;
+        }
       }
     } else c.box.drained.delete(d.slot);
     if (w) {
@@ -1543,7 +1916,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         if (waiting) waits.push({ why: waiting.key, minutes: Math.round((d.sys.now() - waiting.since) / 60_000) });
         waiting = { key: w.key, since: d.sys.now() };
         // One line for the box, not one per slot, while the wait is box-wide.
-        if (d.slot === 1 || w.key === "memory") d.log.write(`${multi ? `slot ${d.slot}: ` : ""}no new VM: ${w.text}`);
+        if (d.slot === 1 || w.key === "memory" || w.key === "workspace") d.log.write(`${multi ? `slot ${d.slot}: ` : ""}no new VM: ${w.text}`);
       }
       writeState(d, { slot: "waiting", waitingFor: w.text, slotAt: waiting.since });
       await d.sys.sleep(HOLD_CHECK_MS);
@@ -1551,7 +1924,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     }
     if (waiting) {
       waits.push({ why: waiting.key, minutes: Math.round((d.sys.now() - waiting.since) / 60_000) });
-      if (d.slot === 1 || waiting.key === "memory") d.log.write(`${multi ? `slot ${d.slot}: ` : ""}starting VMs again`);
+      if (d.slot === 1 || waiting.key === "memory" || waiting.key === "workspace") d.log.write(`${multi ? `slot ${d.slot}: ` : ""}starting VMs again`);
       writeState(d, { slot: "idle", waitingFor: undefined, slotAt: d.sys.now() });
       waiting = undefined;
     }
@@ -1564,8 +1937,11 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       c.box.missing.delete(k);
       c.refetch.add(k);
     }
-    const due = kindsOf(d.cfg).filter((k) => !c.held.has(k) && (c.nextPull.get(k) ?? 0) <= d.sys.now());
-    let drainStopped = false;
+    // An asked pull (taskbox image pull) is due now; one of an image already held ends at once.
+    const askedPull = (k: Kind) => readAsk(loopAsks(d), `image-${k}`) !== undefined;
+    for (const k of kindsOf(d.cfg)) if (c.held.has(k) && askedPull(k)) takeAsk(loopAsks(d), `image-${k}`, () => d.sys.now())?.done({ text: "it was held already" });
+    const due = kindsOf(d.cfg).filter((k) => !c.held.has(k) && ((c.nextPull.get(k) ?? 0) <= d.sys.now() || askedPull(k)));
+    let stoppedToWait = false;
     if (due.length && !c.pulling) {
       c.pulling = true;
       try {
@@ -1573,7 +1949,19 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const onDisk = (k: Kind) => (listed.has(forKind(d.cfg, k).image) ? 0 : 1);
         for (const k of due.sort((a, b) => onDisk(a) - onDisk(b))) {
           c.box.downloadGB = forKind(d.cfg, k).imageGB ?? 0;
-          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (existsSync(d.paths.drain) && "a drain began (taskbox stop --drain); it starts again after"))
+          const asked: AskSteps | undefined = takeAsk(loopAsks(d), `image-${k}`, () => d.sys.now());
+          asked?.phase("downloading", "starting");
+          let cancelled = false;
+          let said = "";
+          // The asked op's progress is the pull file's line, said again when it changes.
+          const onPull = () => {
+            if (!asked) return false;
+            if (asked.cancelled()) return (cancelled = true), "the pull was cancelled";
+            const line = pullLine(readPull(kindDeps(d, k).paths.pull), d.sys.now()).slice(0, 120);
+            if (line !== said) asked.progress((said = line));
+            return false;
+          };
+          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (gateOf(d).wait && "the box isn't active (taskbox pause, drain or stop); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after") || onPull())
             .finally(() => (c.box.downloadGB = 0))
             .catch((e: Error) => {
               const why = `the ${KIND_WORD[k]} image: ${e.message}`;
@@ -1581,9 +1969,15 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
               c.pullWhy.set(k, why);
               return "failed" as const;
             });
-          // A drain stops a download, and the slot then waits on the drain at the top, like the others.
-          if (got === "stopped" && c.box.halt === undefined && !c.updated() && existsSync(d.paths.drain)) {
-            drainStopped = true;
+          if (got === "failed") asked?.fail(c.pullWhy.get(k) ?? "the download failed");
+          // A cancelled pull keeps its bytes; the loop's own schedule takes it up again later.
+          if (got === "stopped" && cancelled) {
+            c.nextPull.set(k, d.sys.now() + 10 * 60_000);
+            continue;
+          }
+          // A drain or a hold stops a download, and the slot then waits on it at the top, like the others.
+          if (got === "stopped" && c.box.halt === undefined && !c.updated() && (gateOf(d).wait || slotHeld(d))) {
+            stoppedToWait = true;
             break;
           }
           if (got === "stopped") return c.box.halt ?? RESTART;
@@ -1602,6 +1996,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
             writeState(d, { imageBroken: undefined });
           }
           if (got === "ready") {
+            asked?.done({ text: forKind(d.cfg, k).image.split("@")[0]! });
             c.held.add(k);
             c.pullWhy.delete(k);
             await removeOldImages(d);
@@ -1611,18 +2006,44 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         c.pulling = false;
       }
     }
-    if (drainStopped) continue;
+    if (stoppedToWait) continue;
+    // The tool cache: fetch, build and bake between VMs (tools/inloop.ts). A bake holds this slot.
+    if (toolsOn(d.cfg) && (await toolsStep(d, c))) continue;
+    // A new trial release on the box's channel is tried before the box installs it: the loop asks
+    // itself, at most hourly (autoTrial).
+    if (!c.proving && c.held.has("macos")) await autoTrial(d, c.box).catch((e: Error) => d.log.write(`the release trial check failed: ${String(e?.message ?? e).slice(0, 120)}`));
+    // A signed release tried in taskbox's own macOS VM (selftest run --release, trial.ts): asked
+    // by the command or by autoTrial, in a free slot, one at a time with the Linux proof.
+    if (!c.proving && readAsk(loopAsks(d), "release") !== undefined && !gateOf(d).wait && heldNow({ ...d, box: c.box }) === 0 && c.held.has("macos")) {
+      c.proving = true;
+      const mac = forKind(d.cfg, "macos");
+      c.box.held.set(d.slot, { slot: d.slot, kind: "macos", labels: [], job: true, up: true, size: DEFAULT_SIZE, memoryMB: mac.vmMemoryMB, cpus: mac.vmCpus });
+      try {
+        await releaseTrialStep(d);
+      } finally {
+        c.box.release(d.slot, d.sys.now());
+        c.proving = false;
+      }
+      continue;
+    }
     // The Linux proof takes this slot, one proof at a time.
     if (c.proofDue() && !c.proving) {
       c.proving = true;
-      c.box.held.set(d.slot, { slot: d.slot, kind: "linux", labels: [], job: true, up: true });
+      const asked = takeAsk(loopAsks(d), "selftest", () => d.sys.now());
+      const why = asked ? "asked" : "scheduled";
+      const began = d.sys.now();
+      const ms = () => d.sys.now() - began;
+      asked?.phase("proving", "starting a Linux VM under a job's network rules");
+      const small = smallestSize(d.cfg, "linux");
+      c.box.held.set(d.slot, { slot: d.slot, kind: "linux", labels: [], job: true, up: true, size: small.name, memoryMB: small.vmMemoryMB, cpus: small.vmCpus });
       try {
         // The same pre-start checks as any VM's start.
-        const dl = kindDeps(d, "linux");
+        const dl = kindDeps(d, "linux", small.name);
         const ctx = { ...dl.checks, vmsRunning: c.box.others(d.slot).length };
-        const pre = await (dl.prestart ? dl.prestart(ctx) : runChecks(PRESTART, ctx)).catch(() => [{ name: "Pre-start check", status: "FAIL" as const, detail: "errored" }]);
+        const pre = await (dl.prestart ? dl.prestart(ctx) : runChecks(rows("prestart", ctx), ctx)).catch(() => [{ name: "Pre-start check", status: "FAIL" as const, detail: "errored" }]);
         if (!allOk(pre)) {
           d.log.write(`no Linux proof: a check failed (${pre.filter((x) => x.status === "FAIL").map((x) => x.name).join(", ")})`);
+          asked?.fail(`a check failed before the VM started: ${pre.filter((x) => x.status === "FAIL").map((x) => x.name).join(", ")}`);
           // 10 minutes, so a waiting macOS VM isn't made to give way every minute (v2.1.1).
           c.nextProof = d.sys.now() + 10 * 60_000;
           await d.sys.sleep(60_000);
@@ -1633,6 +2054,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const r: ProofRun = await (d.proveLinux ?? (() => proveLinux(d)))().catch((e: Error) => ({ ok: false, detail: `the proof errored: ${e.message}`, infra: true }));
         if (r.notRun) {
           d.log.write(`no Linux proof yet: ${r.detail}`);
+          selftestEvent(d, "not-run", `The selftest didn't run: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+          asked?.fail(`it didn't run: ${r.detail}`);
           writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
           c.nextProof = d.sys.now() + 10 * 60_000;
           continue;
@@ -1644,6 +2067,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
           const wait = c.proofInfra > PROOF_INFRA_FAST ? 3600_000 : awayOf(d.cfg).proofRetryMinutes * 60_000;
           c.nextProof = d.sys.now() + wait;
           d.log.write(`the Linux proof couldn't run: ${r.detail}`);
+          selftestEvent(d, "not-run", `The selftest couldn't run: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+          asked?.fail(`it couldn't run: ${r.detail}`);
           // A pass that still holds keeps its line: Linux jobs run on it meanwhile.
           const held = proofHolds(readProof(d.paths.projectState), forKind(d.cfg, "linux").image, installedCommit(d.paths.installed));
           writeState(d, { ...infraProofLine(held, r.detail, c.nextProof), slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
@@ -1653,6 +2078,11 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const image = forKind(d.cfg, "linux").image;
         writeProof(d.paths.projectState, { v: 1, at: d.sys.now(), ok: r.ok, image, commit: installedCommit(d.paths.installed), detail: r.detail, ...(r.peers !== undefined ? { peers: r.peers } : {}) });
         d.log.write(`${r.ok ? "Linux proof passed" : "FAIL: Linux proof"}: ${r.detail}`);
+        selftestEvent(d, r.ok ? "passed" : "failed", `The selftest ${r.ok ? "passed" : "failed"}: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+        if (asked) {
+          if (r.ok) asked.done({ detail: r.detail.slice(0, 200) });
+          else asked.fail(r.detail, { detail: r.detail.slice(0, 200) });
+        }
         writeState(d, { linuxProof: `${r.ok ? "passed" : "FAIL"}: ${r.detail}`, slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
         if (!r.ok) c.nextProof = d.sys.now() + PROOF_RETRY_MS;
         // A pass that tried no other job VM, with more than one slot, is tried again at most every
@@ -1674,7 +2104,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       c.box.workflowsChecking = true;
       c.box.workflowsAt = d.sys.now();
       try {
-        const ctx = { ...d.checks, uid: d.checks.ciUid ?? d.checks.uid };
+        const ctx = { ...d.checks, uid: d.checks.serviceUid ?? d.checks.uid };
         writeLoopState(d.paths, { workflows: { at: d.sys.now(), watchdog: await deployedRow(ctx, "watchdog"), canary: await deployedRow(ctx, "canary") } });
       } catch {
         // check says why when asked; the loop carries on.
@@ -1685,11 +2115,19 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     // A free slot: VMs left from jobs go, at most every LEAK_CHECK_MS (v2.5.0).
     if (!c.box.held.has(d.slot) && d.sys.now() - c.box.leakCheckAt >= LEAK_CHECK_MS) await cleanLeakedVms({ ...d, box: c.box });
     const chosen = await c.choose(last, c.served(), d.slot);
+    // status's budget line, written when it changes.
+    const budgetNow = holdsLine(budgetOf(d.cfg, c.box.totalGB, c.box.logicalCpus), [...c.box.held.values()]);
+    if (budgetNow !== c.box.budgetShown) {
+      c.box.budgetShown = budgetNow;
+      writeLoopState(d.paths, { budget: budgetNow });
+    }
     // A VM waiting for a job gives way once the proof is due, such as when the second update brings
     // the Linux runner mid-wait. The proof then runs at the top of the loop. A VM with a job keeps it.
     // With more than one slot, only when no slot is free, and only the highest waiting slot.
     const proofWants = () => {
       if (!c.proofDue() || c.proving) return false;
+      // A held slot's VM is whyWait's to end.
+      if (slotHeld(d)) return false;
       if (!multi) return true;
       if (c.box.held.size < c.box.count) return false;
       const idle = [...c.box.held.values()].filter((o) => !o.job).sort((a, b) => b.slot - a.slot);
@@ -1708,7 +2146,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       await d.sys.sleep(multi ? QUEUE_POLL_MS : 60_000);
       continue;
     }
-    c.box.held.set(d.slot, { slot: d.slot, kind: turn.kind, labels: turn.labels?.length ? turn.labels : labelsFor(d.cfg, turn.kind), job: false, since: c.box.held.get(d.slot)?.since ?? d.sys.now(), ...(turn.role === "load" ? { role: turn.role } : {}) });
+    const z = sizeOf(d.cfg, turn.kind, turn.size);
+    c.box.held.set(d.slot, { slot: d.slot, kind: turn.kind, labels: turn.labels?.length ? turn.labels : labelsFor(d.cfg, turn.kind), job: false, since: c.box.held.get(d.slot)?.since ?? d.sys.now(), ...(turn.role === "load" ? { role: turn.role } : {}), size: z.name, memoryMB: z.vmMemoryMB, cpus: z.vmCpus });
     let outcome: JobOutcome;
     try {
       outcome = await oneJob(d, c.commitNow, c.startCommit, waits.slice(-10), turn);

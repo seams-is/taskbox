@@ -29,20 +29,10 @@ describe("the setuid bit", () => {
     // Tests don't run as root, so the owner check is off here; the install keeps it on.
     await setSetuid(chmodOnly, f, false);
     const mode = statSync(f).mode & 0o7777;
-    console.log(`bun ${Bun.version}: setSetuid gives ${mode.toString(8)}`);
     expect(mode).toBe(0o4755);
   });
 
   test("the install refuses a file not owned by root", async () => {
     await expect(setSetuid(chmodOnly, file())).rejects.toThrow(/root-owned file with mode 4755/);
   });
-
-  // bun 1.3.13's chmodSync dropped the setuid bit (bun 1.4.4 keeps it). The install uses /bin/chmod
-  // and checks the result, so it holds on either. This only prints what this bun does.
-  test("a note, which checks nothing: what this bun's own chmodSync does with the bit", () => {
-    const f = file();
-    chmodSync(f, 0o4755);
-    console.log(`bun ${Bun.version}: chmodSync(0o4755) gives ${(statSync(f).mode & 0o7777).toString(8)}`);
-  });
-
 });

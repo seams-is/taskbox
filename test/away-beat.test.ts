@@ -1,4 +1,4 @@
-// v2.5.0 away-ready, scenario 3 (docs/away-ready-design.md): the loop's heartbeat. Each phase
+// v2.5.0 away-ready: the loop's heartbeat. Each phase
 // carries its own deadline; a beat past it plus the grace reads Failing for every reader, after
 // Stopped, ci away and Downloading.
 import { describe, expect, test } from "bun:test";
@@ -54,7 +54,7 @@ describe("status reads a stale beat", () => {
     const s = computeState({ now: late, loopRunning: true, loop: { ...stale, endingAt: T0 } as never });
     expect(s.word).toBe("Failing");
     expect(s.detail).toMatch(/, while it was ending$/);
-    expect(s.next).toBe("At the box: as ci, type taskbox stop, then taskbox start.");
+    expect(s.next).toBe("At the box: as the service account, type taskbox stop, then taskbox start.");
     expect(s.next).not.toContain("guard");
   });
 
@@ -65,7 +65,7 @@ describe("status reads a stale beat", () => {
 
   test("Stopped, ci away and a loop that isn't running keep their words", () => {
     expect(computeState({ now: late, stoppedAt: T0, loop: stale as never }).word).toBe("Stopped");
-    expect(computeState({ now: late, ciAway: true, loop: stale as never }).word).toBe("Needs you");
+    expect(computeState({ now: late, serviceAway: true, loop: stale as never }).word).toBe("Needs you");
     expect(computeState({ now: late, loopRunning: false, loop: stale as never }).word).toBe("Needs you");
   });
 

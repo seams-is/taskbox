@@ -1,11 +1,11 @@
-// taskbox timings: each kind's measured phases, and the settings they suggest (v2.4.0).
+// taskbox job timings: each kind's measured phases, and the settings they suggest (v2.4.0).
 import { describe, expect, test } from "bun:test";
 import { ANSWERS, jobsAnswer, timingsAnswer } from "../src/answers.ts";
 import type { JobRecord } from "../src/jobs.ts";
 import { kindTimings, spread, suggestions, timingsLine, timingsScreen } from "../src/timings.ts";
 import { CFG } from "./helpers.ts";
 
-describe("taskbox timings", () => {
+describe("taskbox job timings", () => {
   const job = (kind: "macos" | "linux", i: number, phases: JobRecord["phases"]): JobRecord => ({ v: 1, startedAt: i, endedAt: i + 1, repo: "o/r", vmKind: kind, result: "passed", vmDeleted: true, guard: "ok", phases });
   const ph = (boot: number, ready: number, run: number) => ({ runnerStarted: boot, jobStarted: boot + ready, jobDone: boot + ready + run, deleted: boot + ready + run + 9_000 });
   const jobs = [...Array.from({ length: 12 }, (_, i) => job("macos", i, ph(150_000, 4_000, 8 * 60_000))), ...Array.from({ length: 12 }, (_, i) => job("linux", i, ph(60_000, 3_000, 90_000)))];

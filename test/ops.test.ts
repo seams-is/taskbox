@@ -1,24 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hashTree } from "../src/checks.ts";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { paths } from "../src/config.ts";
-import { cleanBox, COMMANDS, commandsFor, log, type OpsDeps, plainLog, remove, status, undo } from "../src/ops.ts";
+import { cleanBox, commandsFor, log, type OpsDeps, plainLog, remove, status, undo } from "../src/ops.ts";
 import { linkTarget } from "../src/layout.ts";
+import { commandList } from "../src/registry.ts";
 import { computeState, footer } from "../src/state.ts";
 import { FakeSys } from "./fake.ts";
 import { screen } from "../src/watch.ts";
-import { loopDeps, quietBox, servicesObey, tempRoot } from "./helpers.ts";
+import { loopDeps, tempRoot, testBox, quietBox, servicesObey } from "./helpers.ts";
 
 const NOW = Date.parse("2026-11-12T16:00:00Z");
 
-function ops(o: { asCi?: boolean; running?: boolean; answers?: string[]; tartList?: unknown[] } = {}) {
+function ops(o: { asService?: boolean; running?: boolean; answers?: string[]; tartList?: unknown[] } = {}) {
   const sys = new FakeSys();
   quietBox(sys);
   servicesObey(sys);
   sys.clock = NOW;
   const root = tempRoot();
-  const p = paths(root, "app");
+  const p = paths(root, testBox());
   sys.responders.push((cmd, args) => {
     if (cmd === "/bin/launchctl" && args[0] === "print") return o.running ? { code: 0, stdout: "state = running\n", stderr: "" } : { code: 113, stdout: "", stderr: "" };
     if (cmd.endsWith("/tart") && args[0] === "list") return { code: 0, stdout: JSON.stringify(o.tartList ?? []), stderr: "" };
@@ -28,7 +29,7 @@ function ops(o: { asCi?: boolean; running?: boolean; answers?: string[]; tartLis
   });
   const said: string[] = [];
   const answers = [...(o.answers ?? [])];
-  const d: OpsDeps = { sys, paths: p, uid: o.asCi === false ? 501 : 502, ciUid: 502, say: (l) => said.push(l), ask: async () => answers.shift() ?? "no" };
+  const d: OpsDeps = { sys, paths: p, uid: o.asService === false ? 501 : 502, serviceUid: 502, say: (l) => said.push(l), ask: async () => answers.shift() ?? "no" };
   return { d, said, sys, p, root };
 }
 
@@ -65,7 +66,7 @@ describe("the state word", () => {
     expect(s.notify).toBe(false);
     const soft = computeState({ ...base, loop: { failing: "Softnet runs as root (pid 77)" } });
     expect(soft.word).toBe("Failing");
-    expect(soft.next).toContain("As ci, type taskbox start");
+    expect(soft.next).toContain("As the service account, type taskbox start");
     expect(soft.notify).toBe(true);
   });
 
@@ -80,9 +81,7 @@ describe("the state word", () => {
     expect(computeState({ ...base, loopRunning: false, stoppedAt: NOW, others: ["pat"] }).detail).not.toContain("pat");
   });
 
-  test("a wait reads Waiting with its reason; a slot left as held from before v2.2.0 reads no Held", () => {
-    const s = computeState({ ...base, loopRunning: true, loop: { slot: "held", waitingFor: "x" } });
-    expect([s.word, s.detail]).toEqual(["Waiting", "a hold from before v2.2.0, which ends when the loop restarts after the update"]);
+  test("a wait reads Waiting with its reason", () => {
     const w = computeState({ ...base, loopRunning: true, loop: { slot: "waiting", waitingFor: "memory pressure is high, so the box starts no new VM" } });
     expect([w.word, w.detail]).toEqual(["Waiting", "memory pressure is high, so the box starts no new VM"]);
     // A job already running shows as Running, with its size, and pat alongside.
@@ -92,7 +91,7 @@ describe("the state word", () => {
 
   test("watch's VM line says why no new VM starts", () => {
     const root = tempRoot();
-    const p = paths(root, "app");
+    const p = paths(root, testBox());
     writeFileSync(p.loopState, JSON.stringify({ slot: "waiting", waitingFor: "memory pressure is high, so the box starts no new VM", slotAt: NOW - 120_000 }));
     const lines = screen({ pullFile: p.pull, loopFile: p.loopState, now: NOW, loopRunning: true });
     expect(lines[0]).toBe("Now: Waiting. Next: Nothing to do. It carries on by itself.");
@@ -111,7 +110,7 @@ describe("taskbox status", () => {
     linked(p);
     expect(await status(d)).toBe(0);
     expect(said[0]).toBe("app: Ready. Waiting for a job.");
-    expect(said.join("\n")).toContain("Commands: status, watch, jobs, timings, load, logins, stop, start, check, away, watchdog, canary, clean, log");
+    expect(said.join("\n")).toContain("Commands: check, drain, events, image, job, key, load, logins, logs, op, pause, policy, prune, release, resume, rollback, selftest, settings, withdraw, size, connect, start, status, stop, template, tool, update");
     expect(tail(said)).toEqual(["Now: Ready. Waiting for a job.", "Did: Nothing changed.", "Next: Nothing to do."]);
   });
 
@@ -120,22 +119,22 @@ describe("taskbox status", () => {
     const LW = "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow";
     const sessions = (ps: string) => (cmd: string) =>
       cmd === "/bin/ps" ? { code: 0, stdout: ps, stderr: "" }
-      : cmd === "/usr/bin/dscl" ? { code: 0, stdout: "ci 502\npat 501\nremote 503\n", stderr: "" }
+      : cmd === "/usr/bin/dscl" ? { code: 0, stdout: "taskbox 502\npat 501\ntaskbox-agent 503\n", stderr: "" }
       : cmd === "/usr/bin/who" ? { code: 0, stdout: "", stderr: "" }
       : undefined;
-    const away = ops({ asCi: false });
+    const away = ops({ asService: false });
     linked(away.p);
     away.sys.responders.unshift(sessions(`  501 ${LW}\n`));
     await status(away.d);
-    expect(away.said[0]).toBe("app: Needs you. Nobody is logged in as ci at the box, so no jobs run.");
-    expect(tail(away.said)[2]).toBe("Next: At the box: log in as ci. Jobs wait until then.");
-    const there = ops({ asCi: false });
+    expect(away.said[0]).toBe("app: Needs you. Nobody is logged in as taskbox at the box, so no jobs run.");
+    expect(tail(away.said)[2]).toBe("Next: At the box: log in as taskbox. Jobs wait until then.");
+    const there = ops({ asService: false });
     linked(there.p);
     there.sys.responders.unshift(sessions(`  502 ${LW}\n`));
     await status(there.d);
     expect(there.said[0]).not.toContain("logged in as ci");
     // ps that can't be read: not known, so no claim either way.
-    const unknown = ops({ asCi: false });
+    const unknown = ops({ asService: false });
     linked(unknown.p);
     unknown.sys.responders.unshift((cmd: string) => (cmd === "/bin/ps" ? { code: 1, stdout: "", stderr: "" } : undefined));
     await status(unknown.d);
@@ -144,14 +143,130 @@ describe("taskbox status", () => {
 
   // v2.1.1: remote's status listed stop, start, clean and the admin commands, none of which it can run.
   test("each user sees only the commands they can run", () => {
+    // One command per line, so two branches adding commands to different files don't touch one line.
+    const says = (words: string[], lead?: string, more?: string[]) => `Commands: ${words.join(", ")}${more ? `, and ${lead}${more.join(", ")}` : ""}.`;
     const { d } = ops({ running: true });
     const notCi = { ...d, uid: d.uid + 1 };
-    expect(commandsFor(d, { remote: false, admin: false })).toBe(COMMANDS);
-    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: status, watch, jobs, timings, load, log, logins, check, hello, away, watchdog, canary.");
-    expect(commandsFor(notCi, { remote: true, admin: false })).toBe("Commands: status, watch, jobs, timings, load, log, logins, check, hello, away, watchdog, canary.");
-    expect(commandsFor(notCi, { remote: false, admin: true })).toBe("Commands: status, watch, jobs, timings, load report, log, logins, check, and update, undo, remove, unlock.");
-    expect(commandsFor(notCi, { remote: false, admin: false })).toBe("Commands: status, watch, jobs, timings, load report, log, logins, check.");
-    expect(commandsFor(notCi, undefined)).toBe(COMMANDS);
+    expect(commandsFor(d, { remote: false, admin: false })).toBe(commandList());
+    expect(commandList()).toBe(says([
+      "check",
+      "drain",
+      "events",
+      "image",
+      "job",
+      "key",
+      "load",
+      "logins",
+      "logs",
+      "op",
+      "pause",
+      "policy",
+      "prune",
+      "release",
+      "resume",
+      "rollback",
+      "selftest",
+      "settings",
+      "withdraw",
+      "size",
+      "connect",
+      "start",
+      "status",
+      "stop",
+      "template",
+      "tool",
+      "update",
+      "workspace",
+    ], "as your admin user: ", [
+      "confirm",
+      "connect",
+      "disconnect",
+      "key",
+      "remove",
+      "unlock",
+    ]));
+    expect(commandsFor(notCi, { remote: true, admin: false })).toBe(says([
+      "check",
+      "connect",
+      "drain",
+      "events",
+      "hello",
+      "image",
+      "job",
+      "key",
+      "load",
+      "logins",
+      "logs",
+      "nonce",
+      "op",
+      "pause",
+      "policy",
+      "poll",
+      "release",
+      "resume",
+      "rollback",
+      "selftest",
+      "settings",
+      "withdraw",
+      "size",
+      "start",
+      "status",
+      "stop",
+      "template",
+      "tool",
+      "update",
+      "workspace",
+    ]));
+    expect(commandsFor(notCi, { remote: false, admin: true })).toBe(says([
+      "check",
+      "events",
+      "image",
+      "job",
+      "key",
+      "load",
+      "logins",
+      "logs",
+      "op",
+      "policy",
+      "release",
+      "selftest",
+      "settings",
+      "size",
+      "connect",
+      "status",
+      "template",
+      "tool",
+      "workspace",
+    ], "", [
+      "confirm",
+      "connect",
+      "disconnect",
+      "key",
+      "remove",
+      "unlock",
+    ]));
+    expect(commandsFor(notCi, { remote: false, admin: false })).toBe(says([
+      "check",
+      "events",
+      "image",
+      "job",
+      "key",
+      "load",
+      "logins",
+      "logs",
+      "op",
+      "policy",
+      "release",
+      "selftest",
+      "settings",
+      "size",
+      "connect",
+      "status",
+      "template",
+      "tool",
+      "workspace",
+    ]));
+    expect(commandsFor(notCi, undefined)).toBe(commandList());
   });
 
   test("between the two updates to the links, status says the update isn't finished, with its fix", async () => {
@@ -162,14 +277,14 @@ describe("taskbox status", () => {
   });
 
   test("as the admin, it says what only ci can see", async () => {
-    const { d, said } = ops({ asCi: false });
+    const { d, said } = ops({ asService: false });
     await status(d);
     // The admin reads the copies every user may read, so status says no more than ci's.
     expect(said.join("\n")).not.toContain("Run as ci");
   });
 });
 
-describe("taskbox clean", () => {
+describe("taskbox prune", () => {
   test("nothing to clean", async () => {
     const { d, said } = ops({ running: true });
     expect(await cleanBox(d, loopDeps(d.sys as FakeSys, d.paths.opt.replace(/\/opt\/taskbox$/, "")))).toBe(0);
@@ -183,13 +298,13 @@ describe("taskbox clean", () => {
   });
 
   test("as the admin: run it as ci", async () => {
-    const { d, said } = ops({ asCi: false });
+    const { d, said } = ops({ asService: false });
     expect(await cleanBox(d, {} as never)).toBe(1);
-    expect(said[0]).toBe("Run taskbox clean as ci: the images and VMs are ci's.");
+    expect(said[0]).toBe("Run taskbox prune as taskbox: the images and VMs are taskbox's.");
   });
 });
 
-describe("taskbox log", () => {
+describe("taskbox logs", () => {
   test("the last day in plain sentences, and nothing older", () => {
     const lines = [
       "2026-11-11T10:00:00.000Z job job-old done",
@@ -212,7 +327,7 @@ describe("taskbox log", () => {
   });
 });
 
-describe("taskbox undo", () => {
+describe("taskbox rollback", () => {
   test("no kept install: says so, changes nothing", async () => {
     const { d, said } = ops();
     expect(await undo(d)).toBe(1);
@@ -314,12 +429,92 @@ describe("taskbox undo", () => {
   });
 });
 
+describe("a guard with no watcher", () => {
+  test("status reads Needs you while the guard's LaunchDaemon has no guardwatch beside it", async () => {
+    const { stateNow } = await import("../src/ops.ts");
+    const { d, p } = ops({ running: true });
+    linked(p);
+    mkdirSync(join(p.guardPlist, ".."), { recursive: true });
+    writeFileSync(p.guardPlist, "<plist/>");
+    expect((await stateNow(d)).detail).toBe("guardwatch isn't installed, so nothing restarts the guard if it sticks");
+    writeFileSync(join(p.guardPlist, "..", "local.taskbox.guardwatch.plist"), "<plist/>");
+    expect((await stateNow(d)).detail).not.toContain("guardwatch");
+  });
+});
+
 describe("taskbox remove", () => {
+  test("guardwatch goes first, before the guard, so it never restarts the guard on its way out", async () => {
+    const { d, sys } = ops({ answers: ["yes"] });
+    const plist = join(d.paths.guardPlist, "..", "local.taskbox.guardwatch.plist");
+    mkdirSync(join(plist, ".."), { recursive: true });
+    writeFileSync(plist, "<plist/>");
+    await remove(d, { serviceUid: 502, people: [] });
+    const outs = sys.calls.filter((c) => c.cmd === "/bin/launchctl" && c.args[0] === "bootout").map((c) => c.args[1]);
+    expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeGreaterThanOrEqual(0);
+    expect(outs.indexOf("system/local.taskbox.guardwatch")).toBeLessThan(outs.indexOf("system/local.taskbox.guard"));
+    expect(existsSync(plist)).toBe(false);
+  });
+
+  test("the guard's record of VM starts goes, its witness in /var/db too, so a box installed again starts afresh", async () => {
+    const { pfFiles, pfState } = await import("../src/pfstarts.ts");
+    const { pfOpen } = await import("./helpers.ts");
+    const { d, p } = ops({ answers: ["yes"] });
+    pfOpen(p);
+    for (const f of pfFiles(p).slice(3, 5)) writeFileSync(f, "1 x");
+    await remove(d, { serviceUid: 502, people: [] });
+    for (const f of pfFiles(p)) expect(existsSync(f)).toBe(false);
+    // Installed again: root's install record is the box's first v3 install, so the record starts on trial.
+    mkdirSync(dirname(p.installed), { recursive: true });
+    writeFileSync(p.installed, JSON.stringify({ installedAt: "2027-03-01T00:00:00.000Z", v3Since: "2027-03-01T00:00:00.000Z" }), { mode: 0o644 });
+    expect(pfState(p, process.getuid!()).kind).toBe("fresh");
+  });
+
   test("no: nothing removed", async () => {
     const { d, p, said } = ops({ answers: ["no"] });
     expect(await remove(d, {})).toBe(1);
     expect(existsSync(p.opt)).toBe(true);
     expect(said.at(-2)).toBe("Did: Nothing changed.");
+  });
+
+  test("an agent that isn't a standard account with taskbox's shell keeps its shell", async () => {
+    for (const [shell, admin] of [["/bin/zsh", 67], ["/opt/taskbox/bin/taskbox-shell", 0]] as const) {
+      const { d, sys } = ops({ answers: ["yes"] });
+      sys.responders.unshift((cmd, args) => {
+        if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "UserShell") return { code: 0, stdout: `UserShell: ${shell}\n`, stderr: "" };
+        if (cmd === "/usr/sbin/dseditgroup") return { code: admin, stdout: "", stderr: "" };
+        return undefined;
+      });
+      await remove(d, { serviceUid: 502, people: [] });
+      expect(sys.calls.some((c) => c.cmd === "/usr/bin/dscl" && c.args.includes("/usr/bin/false"))).toBe(false);
+    }
+  });
+
+  test("an account kept in the record: the folder stays, and the owner is told to delete it after", async () => {
+    const { d, sys, said } = ops({ answers: ["yes", "no"] });
+    mkdirSync(join(d.paths.accountsRecord, ".."), { recursive: true });
+    writeFileSync(d.paths.accountsRecord, JSON.stringify({ made: { "taskbox-agent": { role: "agent", uid: 471 } } }));
+    sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args[1] === "taskbox-agent" ? { code: 0, stdout: "471\n", stderr: "" } : cmd === "/usr/sbin/dseditgroup" ? { code: 67, stdout: "", stderr: "" } : cmd === "/usr/bin/who" || cmd === "/bin/ps" ? { code: 0, stdout: "", stderr: "" } : undefined));
+    await remove(d, { serviceUid: 502, people: [] });
+    expect(existsSync(d.paths.accountsRecord)).toBe(true);
+    expect(said.at(-1)).toMatch(/Once you delete taskbox-agent, delete the folder .*opt\/taskbox-state too, in Finder/);
+  });
+
+  test("an App taskbox connect made and didn't finish is named, with where to delete it", async () => {
+    const { d, said } = ops({ answers: ["yes"] });
+    mkdirSync(join(d.paths.boxSettings, ".."), { recursive: true });
+    writeFileSync(join(d.paths.boxSettings, "../connect-pending.json"), JSON.stringify({ appId: 5150, slug: "example-org-box-jobs-1f2e", at: 1 }));
+    await remove(d, { serviceUid: 502, people: [] });
+    expect(said.at(-1)).toContain("taskbox connect github made the App example-org-box-jobs-1f2e and didn't finish: delete it on GitHub");
+    expect(existsSync(join(d.paths.boxSettings, "../connect-pending.json"))).toBe(false);
+  });
+
+  test("with the settings unreadable, remove deletes no account", async () => {
+    const { d, sys } = ops({ answers: ["yes", "yes", "yes"] });
+    mkdirSync(join(d.paths.accountsRecord, ".."), { recursive: true });
+    writeFileSync(d.paths.accountsRecord, JSON.stringify({ made: { "taskbox-agent": { role: "agent", uid: 471 } } }));
+    sys.responders.unshift((cmd) => (cmd === "/usr/bin/id" ? { code: 0, stdout: "471\n", stderr: "" } : undefined));
+    await remove(d, { serviceUid: 502 });
+    expect(sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl" && c.args[0] === "-deleteUser")).toBe(false);
   });
 
   test("yes: the files, then the two browser steps", async () => {
@@ -334,31 +529,43 @@ describe("taskbox remove", () => {
     symlinkSync(join(p.bin, "taskbox"), p.commandLink);
     mkdirSync(p.shared, { recursive: true });
     writeFileSync(join(p.shared, "jobs.jsonl"), "{}\n");
-    mkdirSync(p.requests);
     writeFileSync(p.installId, `${"a".repeat(32)}\n`, { mode: 0o444 });
-    // ci's rm, as the box runs it.
+    // The service's rm, as the box runs it.
     sys.responders.unshift((cmd, args) => {
       if (cmd === "/usr/bin/sudo" && args.includes("/usr/bin/find") && args.includes(p.shared)) for (const f of readdirSync(p.shared)) rmSync(join(p.shared, f), { recursive: true, force: true });
       return undefined;
     });
-    expect(await remove(d, { ciUid: 502 })).toBe(0);
+    // The agent as taskbox placed it before v2.7.0: a standard account with taskbox's shell.
+    sys.responders.unshift((cmd, args) => {
+      if (cmd === "/usr/bin/id" && args[1] === "taskbox-agent") return { code: 0, stdout: "504\n", stderr: "" };
+      if (cmd === "/usr/bin/dscl" && args[1] === "-read" && args[3] === "UserShell") return { code: 0, stdout: "UserShell: /opt/taskbox/bin/taskbox-shell\n", stderr: "" };
+      if (cmd === "/usr/bin/dscl" && args[1] === "-create") return { code: 0, stdout: "", stderr: "" };
+      if (cmd === "/usr/sbin/dseditgroup") return { code: 67, stdout: "", stderr: "" };
+      return undefined;
+    });
+    expect(await remove(d, { serviceUid: 502, people: [] })).toBe(0);
     expect(() => lstatSync(p.installId)).toThrow();
     expect(existsSync(join(p.shared, ".."))).toBe(false);
     expect(existsSync(p.opt)).toBe(false);
     expect(readdirSync(opt)).toEqual([]);
     expect(() => lstatSync(p.commandLink)).toThrow();
-    // ci's folder goes as ci, never as root.
+    // The service's folder goes as the service, never as root.
     expect(sys.calls.some((c) => c.cmd === "/usr/bin/sudo" && c.args.join(" ") === `-n -u #502 -- /bin/rm -rf -- ${p.state}`)).toBe(true);
     expect(sys.calls.some((c) => c.cmd === "/bin/launchctl" && c.args[0] === "bootout")).toBe(true);
-    expect(said.at(-1)).toContain("delete the ci user. Then, if no other box uses the App, uninstall it on GitHub");
+    // taskbox made neither account here, as on a box from before v2.7.0: neither is deleted, the agent's
+    // shell is set back, and the owner is told both are theirs to delete.
+    expect(said.at(-1)).toContain("delete taskbox and taskbox-agent if you no longer need them. Then, if no other box uses the App, uninstall it on GitHub");
+    expect(sys.calls.some((c) => c.cmd === "/usr/sbin/sysadminctl" && c.args[0] === "-deleteUser")).toBe(false);
+    expect(sys.calls.some((c) => c.cmd === "/usr/bin/dscl" && c.args.join(" ") === ". -create /Users/taskbox-agent UserShell /usr/bin/false")).toBe(true);
+    // Its home goes back to where macOS made it, since taskbox's empty folder is removed.
+    expect(sys.calls.some((c) => c.cmd === "/usr/bin/dscl" && c.args.join(" ") === ". -create /Users/taskbox-agent NFSHomeDirectory /Users/taskbox-agent")).toBe(true);
     // The guard goes too, with its pf rules, and the owner is told Screen Sharing now reaches every network.
     expect(sys.calls.some((c) => c.cmd === "/bin/launchctl" && c.args.join(" ") === "bootout system/local.taskbox.guard")).toBe(true);
     expect(sys.calls.some((c) => c.cmd === "/sbin/pfctl" && c.args.join(" ") === "-a com.apple/250.taskbox -F rules")).toBe(true);
     expect(said.at(-1)).toContain("Next: Turn Screen Sharing off in System Settings, General, Sharing");
-    // The job history is emptied as ci, then root removes the empty folder and the requests folder.
+    // The job history is emptied as ci, then root removes the empty folder.
     expect(sys.calls.some((c) => c.cmd === "/usr/bin/sudo" && c.args.join(" ") === `-n -u #502 -- /usr/bin/find ${p.shared} -mindepth 1 -delete`)).toBe(true);
     expect(existsSync(p.shared)).toBe(false);
-    expect(existsSync(p.requests)).toBe(false);
   });
 
   // v2.2.2: remove left tailscaled running, with its plist, state and socket (ran: a Tart test).
@@ -377,7 +584,7 @@ describe("taskbox remove", () => {
         if (cmd === p.tailscale && args.includes("status")) return { code: 0, stdout: JSON.stringify({ BackendState: state }), stderr: "" };
         return undefined;
       });
-      await remove(d, { ciUid: 502 });
+      await remove(d, { serviceUid: 502 });
       expect(sys.calls.some((c) => c.cmd === p.tailscale && c.args.includes("logout"))).toBe(false);
       const all = said.join("\n");
       expect(all).not.toContain("signed the box out");
@@ -402,7 +609,7 @@ describe("taskbox remove", () => {
       if (cmd === p.tailscale && args.includes("logout")) return { code: 0, stdout: "", stderr: "" };
       return undefined;
     });
-    await remove(d, { ciUid: 502 });
+    await remove(d, { serviceUid: 502 });
     const order = sys.calls.map((c) => `${c.cmd.split("/").pop()} ${c.args.filter((a) => !a.startsWith("--socket")).slice(0, 2).join(" ")}`);
     expect(order.indexOf("tailscale logout")).toBeLessThan(order.findIndex((c) => c.startsWith("launchctl bootout system/") && c.endsWith("tailscaled")));
     expect(prints).toBe(3);
@@ -428,7 +635,7 @@ describe("taskbox remove", () => {
       if (cmd === "/bin/launchctl" && args[0] === "print" && args[1]!.endsWith("tailscaled")) return (prints++, { code: 0, stdout: "", stderr: "" });
       return undefined;
     });
-    expect(await remove(d, { ciUid: 502 })).toBe(1);
+    expect(await remove(d, { serviceUid: 502 })).toBe(1);
     expect(prints).toBe(TAILSCALED_STOP_TRIES + 1);
     expect(existsSync(p.tailscaledPlist)).toBe(true);
     expect(existsSync(p.tailscaleState)).toBe(true);
@@ -443,7 +650,7 @@ describe("taskbox remove", () => {
 
   test("remove over SSH or Tailscale SSH is refused before it asks anything", async () => {
     const { d, said, sys } = ops({ answers: ["yes"] });
-    expect(await remove(d, { ciUid: 502, overSsh: true })).toBe(1);
+    expect(await remove(d, { serviceUid: 502, overSsh: true })).toBe(1);
     expect(said[0]).toContain("runs at the box only");
     expect(sys.calls).toEqual([]);
   });
@@ -464,7 +671,7 @@ describe("taskbox remove", () => {
     mkdirSync(join(p.tailscaleSocket, ".."), { recursive: true });
     writeFileSync(p.tailscaleSocket, "x");
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "print" ? { code: 113, stdout: "", stderr: "" } : undefined));
-    await remove(d, { ciUid: 502 });
+    await remove(d, { serviceUid: 502 });
     expect(existsSync(p.tailscaleSocket)).toBe(false);
     expect(sys.calls.some((c) => c.args.includes("logout"))).toBe(false);
     expect(said.join("\n")).toContain("remove this box in Tailscale's admin console");
@@ -478,7 +685,6 @@ describe("state files ci could have replaced", () => {
     mkdirSync(p.projectState, { recursive: true });
     Bun.spawnSync(["/usr/bin/mkfifo", p.pull]);
     symlinkSync("/dev/zero", p.loopState);
-    writeFileSync(p.stopped, "null");
     const t = Date.now();
     expect(await status(d)).toBe(0);
     expect(Date.now() - t).toBeLessThan(2000);

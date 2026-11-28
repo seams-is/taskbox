@@ -1,15 +1,14 @@
-// taskbox jobs: one record per VM, readable by every user, and nothing a job controls shown raw.
+// taskbox job list: one record per VM, readable by every user, and nothing a job controls shown raw.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { paths } from "../src/config.ts";
 import { placeShared } from "../src/install.ts";
-import { removeRequests } from "../src/requests.ts";
-import { appendJob, type JobRecord, jobLines, jobsScreen, readJobs, runnerResult } from "../src/jobs.ts";
+import { appendJob, type JobRecord, jobLines, jobListScreen, readJobs, runnerResult, viewOfRecord } from "../src/jobs.ts";
 const jobsOnly = (all: JobRecord[] | undefined) => all ?? [];
 import { jobRecordResult, oneJob } from "../src/loop.ts";
 import { FakeSys } from "./fake.ts";
-import { loopDeps, tempRoot } from "./helpers.ts";
+import { loopDeps, tempRoot, testBox } from "./helpers.ts";
 
 const me = process.getuid!();
 const T0 = Date.UTC(2026, 10, 15, 20, 41);
@@ -26,7 +25,7 @@ const rec = (o: Partial<JobRecord> = {}): JobRecord => ({
   ...o,
 });
 const shared = () => {
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   mkdirSync(p.shared, { recursive: true });
   return p;
 };
@@ -67,7 +66,7 @@ describe("the record", () => {
     expect(raw).not.toContain("\u001b");
     expect(jobsOnly(readJobs(p, me))[0]!.job).not.toContain("\n");
   });
-  test("isn't shown when it or its folder isn't ci's alone, or is a link", () => {
+  test("isn't shown when it or its folder isn't the service account's alone, or is a link", () => {
     const a = shared();
     appendJob(a, rec());
     expect(readJobs(a, me + 1)).toBeUndefined();
@@ -102,7 +101,7 @@ describe("the screen", () => {
     expect(l[0]).toContain("VM NOT deleted");
     expect(l[0]).toContain("guard: rules went missing at start");
     expect(l[2]).toBe("              The job reached its ceiling, so the box stopped it.");
-    expect(l[3]).toBe("              The VM wasn't deleted. taskbox clean removes it once no job runs.");
+    expect(l[3]).toBe("              The VM wasn't deleted. taskbox prune removes it once no job runs.");
   });
   test("a line with a field of the wrong type or an unknown value isn't shown", () => {
     const p = shared();
@@ -125,10 +124,11 @@ describe("the screen", () => {
     for (const line of l) expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
   test("shows 20, says how many there are, and --all shows every one", () => {
-    const all = Array.from({ length: 25 }, (_, i) => rec({ startedAt: T0 + i }));
-    expect(jobsScreen(all, 20)[0]).toBe("taskbox jobs: 20 of 25, newest first. Type taskbox jobs --all for every one.");
-    expect(jobsScreen(all, "all")[0]).toBe("taskbox jobs: 25 of 25, newest first.");
-    expect(jobsScreen([], 20)).toEqual(["taskbox jobs: no jobs yet."]);
+    const all = Array.from({ length: 25 }, (_, i) => viewOfRecord(rec({ startedAt: T0 + i })));
+    expect(jobListScreen(all.slice(0, 20), 25, T0)[0]).toBe("taskbox job list: 20 of 25, newest first. Type taskbox job list --all for every one.");
+    expect(jobListScreen(all, 25, T0)[0]).toBe("taskbox job list: 25 of 25, newest first.");
+    expect(jobListScreen(all, 25, T0).length).toBe(28);
+    expect(jobListScreen([], 0, T0)).toEqual(["taskbox job list: no jobs yet."]);
   });
 });
 
@@ -172,7 +172,7 @@ describe("the extra facts, and hold lines from before v2.2.0", () => {
     writeFileSync(p.jobsFile, JSON.stringify({ v: 1, kind: "hold", at: T0, until: T0 + 3 * 3600_000, by: "pat", reason: "render" }) + "\n", { flag: "a" });
     const all = readJobs(p, me)!;
     expect(all.length).toBe(1);
-    const screen = jobsScreen(all, 20).join("\n");
+    const screen = jobLines(all[0]!).join("\n");
     expect(screen).not.toContain("hold until");
     expect(screen).toContain("4 CPUs, 8 GB, beside pat. Memory pressure: high. Waited 12 min for a hold.");
   });
@@ -187,26 +187,12 @@ describe("the extra facts, and hold lines from before v2.2.0", () => {
 
 describe("the install's folder for it", () => {
   test("makes it ci's and readable by every user, and stops on someone else's or a link", () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(dirname(dirname(p.shared)), { recursive: true });
     const chowned: string[] = [];
     placeShared(p, me, (path) => void chowned.push(path));
     expect(chowned).toEqual([dirname(p.shared), p.shared]);
-    // The requests folder went with hold in v2.2.0: none is made, and one left from before goes.
-    expect(existsSync(p.requests)).toBe(false);
-    // No folder at all counts as removed, so no install says another user kept something in it.
-    expect(removeRequests(p.requests)).toEqual({ removed: true, left: 0 });
-    mkdirSync(p.requests);
-    writeFileSync(join(p.requests, "left"), "x");
-    removeRequests(p.requests);
-    expect(existsSync(p.requests)).toBe(false);
-    // A link in its place goes, and what it points to stays.
-    const keep = join(dirname(p.shared), "keep");
-    mkdirSync(keep);
-    symlinkSync(keep, p.requests);
-    removeRequests(p.requests);
-    expect([existsSync(p.requests), existsSync(keep)]).toEqual([false, true]);
-    const q = paths(tempRoot(), "app");
+    const q = paths(tempRoot(), testBox());
     mkdirSync(dirname(dirname(q.shared)), { recursive: true });
     symlinkSync("/tmp", dirname(q.shared));
     expect(() => placeShared(q, me, () => {})).toThrow("isn't taskbox's");

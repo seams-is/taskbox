@@ -1,5 +1,7 @@
-# taskbox's own CI: the test suite on macOS and the typecheck on Linux, on GitHub-hosted runners.
-# A box never runs this repo's jobs. No secrets, read-only token, every action pinned by commit SHA.
+# taskbox's own CI: the test suite on macOS, the same suite under stress, the engine compiled to one
+# binary and run, and the typecheck on Linux, on GitHub-hosted runners.
+# A box never runs this repo's jobs. Read-only token, every action pinned by commit SHA, and no secret
+# but the name search's word list (NAME_SEARCH), which only that step reads.
 # Bun is fetched from its release by version and checked against its SHA-256. The macOS pin is the
 # one versions.json pins for the box (test/install.test.ts checks they match).
 
@@ -43,6 +45,134 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
 
+  # The suite under stress: each file's tests all at once (bun test --concurrent), ten times over. A
+  # test that leans on real time, or on another test's state, fails here first. Every timer in src
+  # goes through the clock (src/clock.ts), so the fake clock drives them all (test/clock.test.ts).
+  stress:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      BUN_ZIP: bun-darwin-aarch64
+      BUN_SHA256: c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - name: Fetch and check bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_ZIP}.zip"
+          echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
+      - run: bun --version
+      - run: bun install --frozen-lockfile
+      - name: bun test --concurrent, ten times
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 10); do
+            echo "::group::run $i of 10"
+            bun test --concurrent
+            echo "::endgroup::"
+          done
+
+  # The engine compiled to one binary, as v4.0.0's app carries it, and each entry bun still runs on its
+  # own, then each run with the source tree moved away: it starts, finds its commands and its own data
+  # files, and says what it says from source. test/compiled.test.ts keeps src from reading its tree.
+  compiled:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      BUN_ZIP: bun-darwin-aarch64
+      BUN_SHA256: c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - name: Fetch and check bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_ZIP}.zip"
+          echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
+      - run: bun --version
+      - run: bun install --frozen-lockfile
+      - name: Build the engine and each separate entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/engine"
+          # Each entry's binary is named for its path: src/workspace/probe.ts is workspace-probe.
+          for e in cli shell gate workspace/probe controller/main; do
+            bun build --compile "src/$e.ts" --outfile "$RUNNER_TEMP/engine/${e//\//-}"
+          done
+          ls -l "$RUNNER_TEMP/engine"
+      - name: The engine carries the reviewed signers file, byte for byte
+        shell: bash
+        run: bun -e 'const [b, s] = await Promise.all([Bun.file(process.argv[1]).bytes(), Bun.file("signers/allowed_signers").bytes()]); if (Buffer.from(b).indexOf(Buffer.from(s)) < 0) { console.error("The engine does not carry signers/allowed_signers."); process.exit(1); }' "$RUNNER_TEMP/engine/cli"
+      - name: Smoke through each binary, with the source tree moved away
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The settings the template verbs read: the example, with a made-up load repo. The runner is
+          # thrown away after.
+          sudo mkdir -p /opt/taskbox/app
+          bun -e 'const c = JSON.parse(await Bun.file("taskbox.example.json").text()); c.sources = [{ type: "github-actions", appId: c.appId + 1, repos: [c.jobsFrom, { name: `${c.jobsFrom.split("/")[0]}/load`, role: "load", runnerGroup: "taskbox-load" }] }]; console.log(JSON.stringify(c, null, 2));' > "$RUNNER_TEMP/taskbox.json"
+          sudo cp "$RUNNER_TEMP/taskbox.json" /opt/taskbox/app/taskbox.json
+          # An empty home, so the controller has no settings and reads no network.
+          mkdir "$RUNNER_TEMP/home"
+          # Each line: the entry, then its words. Every one is read only, with stdin empty.
+          lines=(
+            "cli --help" "cli help" "cli --version" "cli status --version" "cli policy show --help"
+            "cli template show --help" "cli template show box-check" "cli template show test-job" "cli template show load" "cli no-such-command"
+            "shell -c no-such-command" "shell -c remove"
+            "gate one two three"
+            "workspace/probe" "workspace/probe tcp not-a-host 1 x"
+            "controller/main --version" "controller/main help" "controller/main self --help"
+          )
+          # Each line's output and exit, in a file named for the line.
+          named() { local f=${1// /_}; echo "${f//\//-}"; }
+          say() { local out=$1; shift; (cd / && HOME="$RUNNER_TEMP/home" "$@" < /dev/null) > "$out" 2>&1 && echo "exit 0" >> "$out" || echo "exit $?" >> "$out"; }
+          mkdir "$RUNNER_TEMP/want" "$RUNNER_TEMP/got"
+          for l in "${lines[@]}"; do
+            read -r e words <<< "$l"
+            # shellcheck disable=SC2086
+            say "$RUNNER_TEMP/want/$(named "$l")" bun --no-install --no-env-file --cwd=/ "--config=$PWD/bunfig.run.toml" "$PWD/src/$e.ts" $words
+          done
+          mv src src.away && mv templates templates.away && mv signers signers.away && mv launchd launchd.away && mv versions.json versions.json.away
+          for l in "${lines[@]}"; do
+            read -r e words <<< "$l"
+            # shellcheck disable=SC2086
+            say "$RUNNER_TEMP/got/$(named "$l")" "$RUNNER_TEMP/engine/${e//\//-}" $words
+            echo "::group::$l"
+            cat "$RUNNER_TEMP/got/$(named "$l")"
+            echo "::endgroup::"
+            diff -u "$RUNNER_TEMP/want/$(named "$l")" "$RUNNER_TEMP/got/$(named "$l")"
+          done
+          # Each workflow came from the template the engine carries, filled in.
+          for t in box-check test-job load; do
+            f="$RUNNER_TEMP/got/$(named "cli template show $t")"
+            if ! grep -q "^exit 0$" "$f" || ! grep -q "^name: " "$f" || grep -q "__[A-Z]*__" "$f"; then
+              echo "::error::taskbox template show $t isn't filled in from the template the engine carries."
+              exit 1
+            fi
+          done
+      - name: Compiled, rollback-watch has no install folder and refuses
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=0
+          out=$(cd / && sudo "$RUNNER_TEMP/engine/cli" rollback-watch < /dev/null 2>&1) || code=$?
+          echo "$out"
+          if [ "$code" != 1 ] || ! grep -q "^The compiled engine has no install folder of its own, so the rollback watcher can't run." <<< "$out"; then
+            echo "::error::taskbox rollback-watch, compiled and as root, didn't refuse as it should (exit $code)."
+            exit 1
+          fi
+
   typecheck:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -64,3 +194,55 @@ jobs:
       - run: bun --version
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+
+  # The PR check: gitleaks, pinned by SHA-256, over the change's commits, and the name search over
+  # its added lines (release/namesearch.ts). A hit fails the PR. NAME_SEARCH holds the repo's own
+  # private words, one a line; a PR from a fork has none, and the search runs on its fixed rules.
+  pr-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BUN_ZIP: bun-linux-x64
+      BUN_SHA256: bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
+      GITLEAKS_VERSION: '8.30.1'
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch and check bun and gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/bun.zip" "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_ZIP}.zip"
+          echo "$BUN_SHA256  $RUNNER_TEMP/bun.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/bun.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$BUN_ZIP" >> "$GITHUB_PATH"
+          f="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/$f" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$f"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP/gitleaks" gitleaks
+      - name: gitleaks over the PR's commits
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --no-banner --redact --log-opts="$BASE..$HEAD" .
+      - name: The name search over the PR's added lines
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          NAME_SEARCH: ${{ secrets.NAME_SEARCH }}
+        # The search runs from the base commit's own tree, in that folder, so a PR can't change the
+        # script, or a bunfig preload, to print the secret words.
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE"
+          git diff --unified=0 "$BASE...$HEAD" > "$RUNNER_TEMP/pr.diff"
+          cd "$RUNNER_TEMP/base" && bun release/namesearch.ts < "$RUNNER_TEMP/pr.diff"

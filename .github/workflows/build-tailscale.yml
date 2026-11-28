@@ -12,6 +12,12 @@ name: build-tailscale
 
 on:
   workflow_dispatch:
+  # The release workflow runs it too, for the asset its draft carries, with attach off.
+  workflow_call:
+    inputs:
+      attach:
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -41,8 +47,9 @@ jobs:
             go_archive: linux-amd64
     name: build (${{ matrix.name }})
     # Guards against a mistake only. A branch can edit this line, so the
-    # owner checks the run's branch and commit on the run page (step D2).
-    if: github.ref == 'refs/heads/main'
+    # owner checks the run's branch and commit on the run page (docs/build-tailscale.md). The release
+    # workflow calls it from a v* tag, which it checks is on main.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     permissions: {}
@@ -97,7 +104,7 @@ jobs:
           go version -m tailscaled | head -20
 
       - name: Upload
-        # Pinned by commit SHA (docs/build-tailscale.md, What it pins).
+        # Pinned by commit SHA (docs/build-tailscale.md).
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2, GitHub-owned
         with:
           name: tailscale-${{ matrix.name }}
@@ -140,14 +147,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The two identical builds, as one file on a draft taskbox release named tailscale-<version>
-  # (docs/build-tailscale.md, Checking a run). The owner reads the hashes in the summary above, publishes the
-  # draft, and a reviewed PR pins the file's asset URL and SHA-256 in versions.json. The pin is what
+  # The two identical builds, as one file on a draft taskbox release named tailscale-<version>-run<run ID>
+  # (docs/build-tailscale.md). The owner publishes the draft, and a reviewed PR pins the asset's ID and the SHA-256s in versions.json. The pin is what
   # the box trusts: this job can't change what an install accepts. A tailscale-* tag is never a
   # taskbox release, which is a v* tag (src/github.ts).
   release:
     needs: compare
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.attach != false
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -170,8 +176,12 @@ jobs:
           chmod 644 LICENSE-tailscale LICENSE-go
           tar --owner=0 --group=0 --numeric-owner --mtime='2000-01-01 00:00Z' -czf tailscale.tar.gz tailscale tailscaled LICENSE-tailscale LICENSE-go
           shasum -a 256 tailscale tailscaled tailscale.tar.gz | tee SHA256SUMS
-          tag="tailscale-${TAILSCALE_VERSION}"
-          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "tailscale ${TAILSCALE_VERSION} for the box" \
+          # A published release's tag stays reserved for good, even after the repo is renamed. The
+          # run's ID makes the tag new, and making it here means a refused tag fails this run
+          # instead of the owner's publish.
+          tag="tailscale-${TAILSCALE_VERSION}-run${GITHUB_RUN_ID}"
+          gh api "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${tag}" -f sha="$GITHUB_SHA" > /dev/null
+          gh release create "$tag" --draft --verify-tag --title "tailscale ${TAILSCALE_VERSION} for the box" \
             --notes "tailscale and tailscaled ${TAILSCALE_VERSION}, built twice with Go ${GO_VERSION} by run ${GITHUB_RUN_ID} at ${GITHUB_SHA}. Not a taskbox release." \
             tailscale.tar.gz SHA256SUMS
           {

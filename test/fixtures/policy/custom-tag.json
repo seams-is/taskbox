@@ -1,0 +1,20 @@
+{
+  "tagOwners": {
+    "tag:taskbox-2": ["YOUR_LOGIN"]
+  },
+  "grants": [
+    { "src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"] },
+    { "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox-2"], "ip": ["tcp:22", "tcp:5900"] }
+  ],
+  "ssh": [
+    { "action": "accept", "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox-2"], "users": ["taskbox-agent"] },
+    { "action": "check", "src": ["YOUR_LOGIN"], "dst": ["tag:taskbox-2"], "users": ["pat"] }
+  ],
+  "sshTests": [
+    { "src": "YOUR_LOGIN", "dst": ["tag:taskbox-2"], "accept": ["taskbox-agent"], "check": ["pat"], "deny": ["root", "taskbox", "ADMIN"] }
+  ],
+  "tests": [
+    { "src": "YOUR_LOGIN", "accept": ["tag:taskbox-2:22", "tag:taskbox-2:5900"] },
+    { "src": "tag:taskbox-2", "deny": ["YOUR_LOGIN:22", "YOUR_LOGIN:80", "YOUR_LOGIN:443", "YOUR_LOGIN:445", "YOUR_LOGIN:548", "YOUR_LOGIN:3283", "YOUR_LOGIN:5900", "YOUR_LOGIN:7000"] }
+  ]
+}

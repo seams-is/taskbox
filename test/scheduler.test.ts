@@ -1,5 +1,5 @@
-// v2.4.0: the scheduler (docs/scheduling-design.md). Each scenario in docs/scheduling-scenarios.md
-// is a table test of decide(); the 17 Nov list and the 18 Nov stall are replays through a model of
+// v2.4.0: the scheduler. Each scenario
+// is a table test of decide(); a burst day and a merge-queue stall are replays through a model of
 // the box (test/sim.ts); and random loads check the rules that must always hold.
 import { describe, expect, test } from "bun:test";
 import { classOf, ranked } from "../src/classes.ts";
@@ -44,7 +44,7 @@ describe("job sources", () => {
     let reads = 0;
     let fail = true;
     const src = new GitHubActionsSource({ items: async () => (reads++, fail ? Promise.reject(new Error("offline")) : []) }, 15_000);
-    expect(await src.read(0)).toEqual({ known: false, at: 0, why: "GitHub's queued jobs couldn't be read" });
+    expect(await src.read(0)).toEqual({ known: false, at: 0, why: "GitHub's queued jobs couldn't be read", kind: "network" });
     fail = false;
     expect((await src.read(59_000)).known).toBe(false);
     expect(reads).toBe(1);
@@ -57,7 +57,7 @@ describe("job sources", () => {
   });
 });
 
-// docs/scheduling-scenarios.md, scenario by scenario.
+// Scenario by scenario.
 describe("scenarios", () => {
   test("a Linux burst while ios runs, no source: a free slot goes to busy Linux, with its reason", () => {
     const d = decide(input({ slotStates: [vm(1, "macos", "busy")], history: { linux: busy("linux"), macos: {} } }));
@@ -153,7 +153,7 @@ describe("scenarios", () => {
   });
 });
 
-// The v2.4.0 security review's findings.
+// More scheduler cases.
 describe("what a job can hold a VM with", () => {
   test("a job asking for a label no runner of the box has, such as windows, x64 or one out of shape, holds no VM", () => {
     const phantom = (k: string, labels: string[], odd = false) => ({ ...item(k, labels, NOW - 10 * M, "pull_request"), ...(odd ? { odd } : {}) });
@@ -180,18 +180,18 @@ describe("what a job can hold a VM with", () => {
   });
 });
 
-// Two real days of a CI load, anonymised, as the owner's taskbox jobs showed them, replayed. Times are minutes after 20:40.
+// Two real days of a CI load, anonymised, as the owner's taskbox job list showed them, replayed. Times are minutes after 20:40.
 const at = (min: number) => min * M;
 const L = (name: string, q: number, minutes: number, labels = ["taskbox-linux"], event?: string): SimJob => ({ name, kind: "linux", labels, queuedAt: at(q), minutes, ...(event ? { event } : {}) });
 const MAC = (name: string, q: number, minutes: number): SimJob => ({ name, kind: "macos", labels: ["taskbox-macos"], queuedAt: at(q), minutes });
-// 17 Nov: two pushes, at 20:52 and 21:07, each with one ios and its Linux jobs. "0 min" is 0.5.
+// A burst: two pushes 15 min apart, each with one ios job and its Linux jobs. "0 min" is 0.5.
 const NOV17: SimJob[] = [
   MAC("mac1", 12, 2), ...[0.5, 2, 4, 2, 3, 0.5, 0.5].map((m, i) => L(`a${i + 1}`, 12, m)),
   MAC("mac2", 27, 8), ...[0.5, 0.5, 0.5, 0.5, 0.5, 2, 1, 1, 2, 0.5, 2].map((m, i) => L(`b${i + 1}`, 27, m)),
 ];
 const lastLinuxEnd = (runs: { kind: Kind; endedAt: number }[]) => Math.max(...runs.filter((r) => r.kind === "linux").map((r) => r.endedAt));
 
-describe("replay: 17 Nov, a Linux burst beside a macOS job", () => {
+describe("replay: a burst of 18 Linux jobs beside 2 macOS jobs", () => {
   const before = simulate({ jobs: NOV17, slots: 2, mode: "v221" });
   const follow = simulate({ jobs: NOV17, slots: 2, mode: "follow" });
   const source = simulate({ jobs: NOV17, slots: 2, mode: "source", classes: MERGE });
@@ -217,7 +217,7 @@ describe("replay: 17 Nov, a Linux burst beside a macOS job", () => {
   });
 });
 
-// 18 Nov, 23:28 to 23:59: merge-queue gate jobs waited behind later PR jobs on one Linux slot.
+// A stall: merge-queue gate jobs waited behind later PR jobs on one Linux slot for half an hour.
 // Modelled with GitHub handing the newest job first, the worst case the box can't see without a source.
 const NOV18: SimJob[] = [
   ...Array.from({ length: 14 }, (_, i) => L(`pr-${i}`, i * 2, 2.5)),
@@ -228,7 +228,7 @@ const NOV18: SimJob[] = [
   L("forged", 5, 1, ["taskbox-linux-merge"], "pull_request"),
 ];
 
-describe("replay: 18 Nov, the merge-queue stall", () => {
+describe("replay: 14 PR jobs and 3 merge-group gates, the merge-queue stall", () => {
   const gate = (r: { name: string }) => r.name.startsWith("gate-");
   const before = simulate({ jobs: NOV18, slots: 2, mode: "v221", github: "newest" });
   const source = simulate({ jobs: NOV18, slots: 2, mode: "source", classes: MERGE, github: "newest" });

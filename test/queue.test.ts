@@ -142,7 +142,7 @@ describe("reading the queue", () => {
     expect(queueWhy(new Error("offline"))).toBe("GitHub's queued jobs couldn't be read");
   });
 
-  test("with no second App the box takes turns (the key's own rules are in test/actionskey.test.ts)", () => {
+  test("with no second App the box takes turns (the key's own rules are in test/keys.test.ts)", () => {
     const sys = new FakeSys();
     expect(queueReaderFor(sys, LCFG, "/nowhere", "/nowhere/k.pem", 501, new Log())).toBe("there is no job source App yet");
     expect(queueReaderFor(sys, { ...LCFG, sources: [{ type: "none" }] }, "/nowhere", "/nowhere/k.pem", 501, new Log())).toBe("the job source is none");

@@ -1,4 +1,4 @@
-// v2.5.0: taskbox away's UPS line, from pmset -g ps. OK when a UPS is seen and the box runs on AC
+// v2.5.0: taskbox check --away's UPS line, from pmset -g ps. OK when a UPS is seen and the box runs on AC
 // through it, WARN when none is seen under the restart plan accept, SKIP for other plans.
 import { describe, expect, test } from "bun:test";
 import { AWAY_ONLY, verdict } from "../src/away.ts";
@@ -8,12 +8,12 @@ import { FakeSys } from "./fake.ts";
 import { CFG, loopDeps, tempRoot } from "./helpers.ts";
 
 // pmset -g ps as macOS prints it: a desktop Mac with a UPS on USB, on AC and on the UPS's battery;
-// a desktop with none; a laptop's own battery.
+// a desktop with none; a portable Mac's own battery.
 const UPS_AC = "Now drawing from 'AC Power'\n -Example UPS 1500 (id=4128768)\t100%; charged; 0:00 remaining present: true\n";
 const UPS_CHARGING = "Now drawing from 'AC Power'\n -Example UPS 1500 (id=4128768)\t87%; charging present: true\n";
 const UPS_BATTERY = "Now drawing from 'UPS Power'\n -Example UPS 1500 (id=4128768)\t64%; discharging; 0:21 remaining present: true\n";
 const NONE = "Now drawing from 'AC Power'\n";
-const LAPTOP = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=6488163)\t85%; discharging; 4:12 remaining present: true\n";
+const BATTERY = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=6488163)\t85%; discharging; 4:12 remaining present: true\n";
 
 describe("pmset -g ps", () => {
   test("a UPS with its level and state; the Mac's own battery isn't one", () => {
@@ -21,7 +21,7 @@ describe("pmset -g ps", () => {
     expect(parsePowerSource(UPS_CHARGING)?.ups).toEqual({ name: "Example UPS 1500", percent: 87, state: "charging" });
     expect(parsePowerSource(UPS_BATTERY)).toEqual({ from: "UPS Power", ups: { name: "Example UPS 1500", percent: 64, state: "discharging" } });
     expect(parsePowerSource(NONE)).toEqual({ from: "AC Power" });
-    expect(parsePowerSource(LAPTOP)).toEqual({ from: "Battery Power" });
+    expect(parsePowerSource(BATTERY)).toEqual({ from: "Battery Power" });
     expect(parsePowerSource("")).toBeUndefined();
   });
   test("a device name is cut to printable text", () => {
@@ -45,7 +45,7 @@ describe("the UPS line", () => {
     const r = upsRow(parsePowerSource(NONE), "accept");
     expect(r.status).toBe("WARN");
     expect(r.detail).toContain("A UPS without the cable can't be seen");
-    expect(upsRow(parsePowerSource(LAPTOP), "accept").status).toBe("WARN");
+    expect(upsRow(parsePowerSource(BATTERY), "accept").status).toBe("WARN");
     for (const plan of ["kvm", "filevault-off", undefined]) expect(upsRow(parsePowerSource(NONE), plan).status).toBe("SKIP");
     expect(upsRow(undefined, "accept")).toEqual({ status: "SKIP", detail: "pmset couldn't be read" });
   });
@@ -59,7 +59,7 @@ describe("the UPS line", () => {
       return out;
     });
     const d = loopDeps(sys, tempRoot());
-    const c = { sys, cfg: { ...CFG, away: { restartPlan: "accept" } }, paths: d.paths, uid: 501, ciUid: 501 } as unknown as CheckContext;
+    const c = { sys, cfg: { ...CFG, away: { restartPlan: "accept" } }, paths: d.paths, uid: 501, serviceUid: 501 } as unknown as CheckContext;
     expect((await upsCheck(c)).status).toBe("WARN");
     expect(seen).toEqual([UPS_LIMIT_MS]);
     expect(UPS_LIMIT_MS).toBeLessThanOrEqual(10_000);

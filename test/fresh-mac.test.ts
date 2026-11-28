@@ -1,11 +1,11 @@
 // A stock Mac: the firewall and stealth mode off, AirPlay Receiver on. The install makes the box's
-// own settings true itself, so the preflight passes (P1, P6).
+// own settings true itself, so the preflight passes.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { install, placeCi, settleBox, Stop } from "../src/install.ts";
+import { install, makeServiceHome, settleBox, Stop } from "../src/install.ts";
 import { FIREWALL_FIX } from "../src/checks.ts";
-import { FakeSys, githubRoutes, NETSTAT_CLEAN } from "./fake.ts";
-import { CFG, healthyBox, installDeps, PEM } from "./helpers.ts";
+import { FakeSys, NETSTAT_CLEAN } from "./fake.ts";
+import { CFG, healthyBox, installDeps, stageRelease } from "./helpers.ts";
 
 const AIRPLAY = `${NETSTAT_CLEAN}tcp4       0      0  *.5000                 *.*                    LISTEN
 tcp4       0      0  *.7000                 *.*                    LISTEN
@@ -17,7 +17,7 @@ const isWrite = (args: string[], user?: string) => args.includes("AirplayRecieve
 // What a stock Mac says until the install sets each thing. airplayUntil: whose write closes 5000 and 7000.
 // timeSaysNo: systemsetup refuses the way the real one does, with a message and exit code 0 (ran in a Tart
 // test Mac, macOS 27.2: "You need administrator access to run this tool... exiting!", exit 0).
-function stockMac(sys: FakeSys, o: { airplayUntil?: string; refuse?: string[]; macos?: string; fileVault?: boolean; ciSession?: boolean; timeSaysNo?: boolean } = {}) {
+function stockMac(sys: FakeSys, o: { airplayUntil?: string; refuse?: string[]; macos?: string; fileVault?: boolean; serviceSession?: boolean; timeSaysNo?: boolean } = {}) {
   const st = { fw: false, stealth: false, airplay: true, time: false };
   sys.responders.push((cmd, args) => {
     const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
@@ -33,10 +33,10 @@ function stockMac(sys: FakeSys, o: { airplayUntil?: string; refuse?: string[]; m
     if (cmd === "/usr/bin/pmset" && args[0] === "-g") return out(" sleep 1\n displaysleep 10\n autorestart 0\n");
     if (cmd === "/usr/bin/sw_vers" && o.macos) return out(`${o.macos}\n`);
     if (cmd === "/usr/bin/fdesetup" && o.fileVault === false) return out("false\n");
-    // The owner, the admin a stock Mac is set up with. ci is the test's own user (helpers.ts).
+    // The owner, the admin a stock Mac is set up with. The service is the test's own user (helpers.ts).
     if (cmd === "/usr/bin/id" && args.join(" ") === "-u owner") return out(`${OWNER_UID}\n`);
-    // ci logged in at the console has a GUI session; nobody else does.
-    if (cmd === "/bin/launchctl" && args[0] === "print" && args[1]?.startsWith("gui/")) return o.ciSession && args[1] === `gui/${process.getuid!()}` ? out("\tstate = running\n") : out("", 113);
+    // The service logged in at the console has a GUI session; nobody else does.
+    if (cmd === "/bin/launchctl" && args[0] === "print" && args[1]?.startsWith("gui/")) return o.serviceSession && args[1] === `gui/${process.getuid!()}` ? out("\tstate = running\n") : out("", 113);
     return undefined;
   });
   healthyBox(sys);
@@ -49,9 +49,9 @@ describe("a fresh Mac", () => {
   test("the install sets the box's own settings, then the preflight passes", async () => {
     const sys = new FakeSys();
     stockMac(sys);
-    githubRoutes(sys);
+    stageRelease(sys);
     const { d, said } = installDeps(sys, "no");
-    await expect(install(d, { first: true })).rejects.toThrow('You typed "no"');
+    await expect(install(d)).rejects.toThrow('You typed "no"');
     const ran = sys.calls.map(line);
     for (const want of [
       `${FW} --setglobalstate on`,
@@ -66,41 +66,40 @@ describe("a fresh Mac", () => {
     expect(said.some((l) => l.startsWith("FAIL"))).toBe(false);
   });
 
-  test("first install: ci has no home yet, so its write comes after createhomedir, beside the key, as ci", async () => {
+  test("first install: the service has no home yet, so its write comes after createhomedir, as the service (the keys go in root's folder)", async () => {
     const sys = new FakeSys();
     stockMac(sys);
     const { d, said } = installDeps(sys, "yes");
     await settleBox(d, CFG);
-    expect(said.join("\n")).not.toContain("for ci");
-    expect(sys.calls.some((c) => isWrite(c.args, "ci"))).toBe(false);
-    sys.responders.unshift((cmd) => (cmd === "/usr/sbin/createhomedir" ? (mkdirSync(d.paths.ciHome, { recursive: true }), { code: 0, stdout: "", stderr: "" }) : undefined));
-    await placeCi(d, process.getuid!(), PEM, `${d.ownerHome}/Downloads/example-taskbox.2026-11-12.private-key.pem`);
+    expect(said.join("\n")).not.toContain("for taskbox");
+    expect(sys.calls.some((c) => isWrite(c.args, "taskbox"))).toBe(false);
+    sys.responders.unshift((cmd) => (cmd === "/usr/sbin/createhomedir" ? (mkdirSync(d.paths.serviceHome, { recursive: true }), { code: 0, stdout: "", stderr: "" }) : undefined));
+    await makeServiceHome(d);
     const ran = sys.calls.map(line);
-    const made = ran.indexOf("/usr/sbin/createhomedir -c -u ci");
-    const write = ran.indexOf("/usr/bin/sudo -H -u ci /usr/bin/defaults -currentHost write com.apple.controlcenter AirplayRecieverEnabled -bool false");
+    const made = ran.indexOf("/usr/sbin/createhomedir -c -u taskbox");
+    const write = ran.indexOf("/usr/bin/sudo -H -u taskbox /usr/bin/defaults -currentHost write com.apple.controlcenter AirplayRecieverEnabled -bool false");
     expect(made).toBeGreaterThanOrEqual(0);
     expect(write).toBeGreaterThan(made);
   });
 
-  test("an update writes ci's setting in ci's session, as ci, and root names no path in ci's home", async () => {
+  test("a service logged in already gets its setting in its session, as the service, and root names no path in its home", async () => {
     const sys = new FakeSys();
-    stockMac(sys, { airplayUntil: "ci", ciSession: true });
-    githubRoutes(sys);
+    stockMac(sys, { airplayUntil: "taskbox", serviceSession: true });
+    stageRelease(sys);
     const { d, said } = installDeps(sys, "no");
-    mkdirSync(d.paths.state, { recursive: true });
-    writeFileSync(d.paths.key, PEM);
-    await expect(install(d, { first: false })).rejects.toThrow('You typed "no"');
-    expect(sys.calls.map(line)).toContain(`/bin/launchctl asuser ${process.getuid!()} /usr/bin/sudo -H -u ci /usr/bin/defaults -currentHost write com.apple.controlcenter AirplayRecieverEnabled -bool false`);
+    mkdirSync(d.paths.serviceHome, { recursive: true });
+    await expect(install(d)).rejects.toThrow('You typed "no"');
+    expect(sys.calls.map(line)).toContain(`/bin/launchctl asuser ${process.getuid!()} /usr/bin/sudo -H -u taskbox /usr/bin/defaults -currentHost write com.apple.controlcenter AirplayRecieverEnabled -bool false`);
     expect(said.some((l) => l.startsWith("FAIL"))).toBe(false);
-    for (const c of sys.calls) expect(line(c)).not.toContain(d.paths.ciHome);
+    for (const c of sys.calls) expect(line(c)).not.toContain(d.paths.serviceHome);
   });
 
   test("a step that fails is named, and the install goes on", async () => {
     const sys = new FakeSys();
     stockMac(sys, { refuse: ["systemsetup"] });
-    githubRoutes(sys);
+    stageRelease(sys);
     const { d, said } = installDeps(sys, "no");
-    await expect(install(d, { first: true })).rejects.toThrow('You typed "no"');
+    await expect(install(d)).rejects.toThrow('You typed "no"');
     const i = said.findIndex((l) => l.startsWith("  Box settings:"));
     expect(said[i]).not.toContain("automatic time");
     expect(said[i + 1]!.trim()).toStartWith("taskbox couldn't set: automatic time.");
@@ -120,7 +119,7 @@ describe("a fresh Mac", () => {
     const sys = new FakeSys();
     stockMac(sys, { macos: "15.6" });
     const { d, said } = installDeps(sys, "yes");
-    await expect(install(d, { first: true })).rejects.toThrow("A preflight check failed");
+    await expect(install(d)).rejects.toThrow("A preflight check failed");
     expect(said).toContain("FAIL macOS version: macOS 15.6 is too old");
     for (const c of sys.calls) expect(line(c)).not.toMatch(/--set|pmset -a|systemsetup|defaults write|sudo/);
   });
@@ -129,7 +128,7 @@ describe("a fresh Mac", () => {
     const sys = new FakeSys();
     stockMac(sys, { fileVault: false });
     const { d, said } = installDeps(sys, "yes");
-    await expect(install(d, { first: true })).rejects.toBeInstanceOf(Stop);
+    await expect(install(d)).rejects.toBeInstanceOf(Stop);
     const row = said.find((l) => l.startsWith("FAIL FileVault"))!;
     expect(row).toContain("System Settings, Privacy & Security, FileVault");
     expect(row).not.toMatch(/filevault-off|restartPlan/);
@@ -139,51 +138,56 @@ describe("a fresh Mac", () => {
     const sys = new FakeSys();
     stockMac(sys, { refuse: ["--setglobalstate"] });
     const { d, said } = installDeps(sys, "yes");
-    await expect(install(d, { first: true })).rejects.toThrow("A preflight check failed");
+    await expect(install(d)).rejects.toThrow("A preflight check failed");
     expect(said).toContain(`FAIL Firewall and stealth mode: the firewall is off. ${FIREWALL_FIX}`);
   });
 
   test("the yes asks only whether this is the release the owner expects", async () => {
     const sys = new FakeSys();
     stockMac(sys);
-    githubRoutes(sys);
+    stageRelease(sys);
     const { d } = installDeps(sys, "no");
     const asked: string[] = [];
     d.ask = async (p) => (asked.push(p), "no");
-    await expect(install(d, { first: true })).rejects.toBeInstanceOf(Stop);
-    expect(asked).toEqual(["Type yes to install v2.0.0: "]);
+    await expect(install(d)).rejects.toBeInstanceOf(Stop);
+    expect(asked).toEqual(["Type yes to install 3.0.0: "]);
     expect(asked[0]).not.toMatch(/main|match/);
   });
-  // Found by the package B test pass: on a first install there is no taskbox command yet, and the
+  // On a first install there is no taskbox command yet, and the
   // owner is already the admin user, so "type taskbox update" is a step that can't be taken.
   test("a first install whose firewall step is refused names a step that works on a Mac with no taskbox yet", async () => {
     const sys = new FakeSys();
     stockMac(sys, { refuse: ["--setglobalstate"] });
     const { d, said } = installDeps(sys, "yes");
-    await expect(install(d, { first: true })).rejects.toThrow("A preflight check failed");
+    await expect(install(d)).rejects.toThrow("A preflight check failed");
     const row = said.find((l) => l.startsWith("FAIL Firewall"))!;
     expect(row).not.toContain("taskbox update");
     expect(row).toEndWith(FIREWALL_FIX);
   });
 
-  test("ci with a home before the first install: one AirPlay write for ci, as ci, before the yes", async () => {
+  test("a service with a home before the first install: one AirPlay write for it, as it, before the yes", async () => {
     const sys = new FakeSys();
     stockMac(sys);
-    githubRoutes(sys);
+    stageRelease(sys);
     const { d, said } = installDeps(sys, "no");
-    mkdirSync(d.paths.ciHome, { recursive: true });
-    await expect(install(d, { first: true })).rejects.toThrow('You typed "no"');
-    expect(sys.calls.filter((c) => isWrite(c.args, "ci")).length).toBe(1);
-    expect(said.find((l) => l.startsWith("  Box settings:"))).toContain("AirPlay Receiver off for ci");
+    mkdirSync(d.paths.serviceHome, { recursive: true });
+    await expect(install(d)).rejects.toThrow('You typed "no"');
+    expect(sys.calls.filter((c) => isWrite(c.args, "taskbox")).length).toBe(1);
+    expect(said.find((l) => l.startsWith("  Box settings:"))).toContain("AirPlay Receiver off for taskbox");
   });
 
-  test("no ci user yet: the install stops at ci, and every setting it changed was named first", async () => {
+  // v2.7.0: the install makes the service account after the yes, so a box without it doesn't stop.
+  test("no service account yet: no AirPlay write for it before the yes, which names making it, and every setting it changed was named first", async () => {
     const sys = new FakeSys();
     stockMac(sys);
-    sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args.includes("ci") ? { code: 1, stdout: "", stderr: "no such user" } : undefined));
-    const { d, said } = installDeps(sys, "yes");
-    await expect(install(d, { first: true })).rejects.toThrow("There is no ci user yet");
-    expect(said.some((l) => l.startsWith("  Box settings: firewall on, stealth mode on"))).toBe(true);
-    expect(sys.calls.some((c) => isWrite(c.args, "ci"))).toBe(false);
+    stageRelease(sys);
+    sys.responders.unshift((cmd, args) => (cmd === "/usr/bin/id" && args.includes("taskbox") ? { code: 1, stdout: "", stderr: "no such user" } : undefined));
+    const { d, said } = installDeps(sys, "no");
+    await expect(install(d)).rejects.toThrow('You typed "no"');
+    const settings = said.findIndex((l) => l.startsWith("  Box settings: firewall on, stealth mode on"));
+    const makes = said.findIndex((l) => l.includes("It also makes the account taskbox"));
+    expect(settings).toBeGreaterThanOrEqual(0);
+    expect(makes).toBeGreaterThan(settings);
+    expect(sys.calls.some((c) => isWrite(c.args, "taskbox"))).toBe(false);
   });
 });

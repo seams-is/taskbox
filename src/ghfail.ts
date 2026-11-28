@@ -1,5 +1,4 @@
-// GitHub's failures, classed, and the runner chain's count (v2.5.0, docs/away-ready-design.md,
-// scenario 2). Before a VM is cloned, the loop asks GitHub for a runners token, the runner group and
+// GitHub's failures, classed, and the runner chain's count. Before a VM is cloned, the loop asks GitHub for a runners token, the runner group and
 // a JIT config. Today a failure there reads Ready. Here each failure is classed, the chain is counted
 // for the whole box, and after a setting's number in a row the box reads Failing, naming who acts.
 
@@ -161,7 +160,7 @@ export function githubState(r: GitHubRecord | undefined, now: number): { word: "
 export function githubLine(kind: GitHubKind, status: number | null, offsetS: number | null): { detail: string; next: string } {
   switch (kind) {
     case "key":
-      return { detail: "GitHub refuses the App's key (401)", next: "At the box: make a new key for the App and install it, as the README's key step says." };
+      return { detail: "GitHub refuses the App's key (401)", next: "At the box: make a new key for the App on GitHub, then type taskbox update." };
     case "clock": {
       const off = offsetS ?? 0;
       const m = Math.max(1, Math.round(Math.abs(off) / 60));

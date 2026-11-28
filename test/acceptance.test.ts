@@ -68,7 +68,7 @@ describe("the acceptance criteria", () => {
     expect(byId(acceptance(C2, jobs, gave, now, false), "give-ways").status).toBe("PASS");
     expect(byId(c, "vms-deleted")).toMatchObject({ status: "FAIL", value: "1 not deleted" });
     expect(byId(c, "box-failures")).toMatchObject({ status: "FAIL", value: "33.3%" });
-    expect(acceptanceLines(c)[0]).toBe("Acceptance (v2.4.0), the last 48 h:");
+    expect(acceptanceLines(c)[0]).toBe("Acceptance, the last 48 h:");
   });
   test("only the last 48 h count", () => {
     const old = [line({ at: -60 * 3600_000, run: M, vmDeleted: false })];
@@ -94,7 +94,7 @@ describe("the criteria on a modelled day", () => {
 });
 
 describe("calibrating the simulator from a saved day", () => {
-  test("a day from taskbox jobs --json becomes a replay with that day's boots, and names no job", () => {
+  test("a day from taskbox job list --json becomes a replay with that day's boots, and names no job", () => {
     const answer = {
       jobs: [
         { vmKind: "linux", className: null, jobAt: T0 + 2 * M, endedAt: T0 + 5 * M, phases: { queued: -30_000, runnerStarted: 70_000, jobStarted: 80_000, jobDone: 260_000 } },

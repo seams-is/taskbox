@@ -27,7 +27,7 @@
     <string>/opt/taskbox/bin/tailscaled</string>
     <string>--tun=utun99</string>
     <string>--statedir=/var/db/taskbox-tailscale</string>
-    <string>--socket=/var/run/taskbox-tailscaled.socket</string>
+    <string>--socket=/var/run/taskbox-tailscale/tailscaled.socket</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

@@ -3,18 +3,18 @@
 // know both names while the old loop may still run. Also the settings that make the code general.
 import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { AGENT_LABEL, assetUrl, boxNames, DEFAULT_SCREEN_SHARING_USERS, GUARD_LABEL, LABEL_PREFIX, loadConfig, paths, previousLabels, TAILSCALED_LABEL } from "../src/config.ts";
-import { BOOTOUT_WAIT_S, keepsKept, labelsBack, retirePrevious, Stop, tailscaleUrlProblem } from "../src/install.ts";
+import { AGENT_LABEL, assetUrl, boxNames, GUARD_LABEL, LABEL_PREFIX, loadConfig, paths, previousLabels, OLD_TAILSCALE_SOCKET, TAILSCALE_SOCKET, TAILSCALED_LABEL } from "../src/config.ts";
+import { BOOTOUT_WAIT_S, labelsBack, retirePrevious, Stop } from "../src/install.ts";
 import { CHECK_EXTRA, serviceNamesRow, tailscaleRow } from "../src/checks.ts";
 import { handOver, relabelDue, RESTART, underOldLabel } from "../src/loop.ts";
 import { Log } from "../src/log.ts";
-import { remove, restartServices } from "../src/ops.ts";
-import { start, stop } from "../src/stopstart.ts";
+import { reloadToken, remove, restartServices } from "../src/ops.ts";
+import { startHere as start, stopHere as stop } from "../src/availability.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, servicesObey, tempRoot } from "./helpers.ts";
+import { CFG, quietBox, servicesObey, socketDirOk, tailnetPinned, tempRoot, testBox } from "./helpers.ts";
 
 const OLD = "org.example.taskbox";
 const old = previousLabels(OLD);
@@ -74,7 +74,8 @@ describe("the labels", () => {
   // too, the same but for the Label. The public export never copies these files.
   test("any other plist is a bridge: a neutral one under an earlier prefix, the same but for the Label", () => {
     const neutral = { loop: AGENT_LABEL, guard: GUARD_LABEL, tailscaled: TAILSCALED_LABEL };
-    for (const f of readdirSync(join(repo, "launchd")).filter((f) => !Object.values(neutral).some((l) => f === `${l}.plist`))) {
+    // guardwatch, the GitHub key keeper and network capture are v3's own, with no earlier name.
+    for (const f of readdirSync(join(repo, "launchd")).filter((f) => !Object.values(neutral).some((l) => f === `${l}.plist`) && !["local.taskbox.guardwatch.plist", "local.taskbox.broker.plist", "local.taskbox.netwatch.plist"].includes(f))) {
       const m = /^(.+)\.(loop|guard|tailscaled)\.plist$/.exec(f);
       expect(m ? `${m[1]} ${m[2]}` : f).toMatch(/^[a-z0-9.-]+ (loop|guard|tailscaled)$/);
       const [, prefix, kind] = m! as unknown as [string, string, keyof typeof neutral];
@@ -85,8 +86,8 @@ describe("the labels", () => {
   });
 
   test("paths know the old loop label only when taskbox.json names a previous prefix", () => {
-    expect(paths(tempRoot(), "app").loopLabels).toEqual([AGENT_LABEL]);
-    const p = paths(tempRoot(), "app", OLD);
+    expect(paths(tempRoot(), testBox()).loopLabels).toEqual([AGENT_LABEL]);
+    const p = paths(tempRoot(), testBox(OLD));
     expect(p.loopLabels).toEqual([AGENT_LABEL, `${OLD}.loop`]);
     expect(p.previousLabelPrefix).toBe(OLD);
   });
@@ -96,8 +97,9 @@ describe("an update on a box installed under the old labels", () => {
   function box(loaded: Record<string, number>) {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, loaded);
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     for (const f of [p.agentPlist, p.guardPlist]) mkdirSync(join(f, ".."), { recursive: true });
     const files = [join(p.agentPlist, "..", `${old.loop}.plist`), join(p.guardPlist, "..", `${old.guard}.plist`), join(p.guardPlist, "..", `${old.tailscaled}.plist`)];
     for (const f of files) writeFileSync(f, "<plist/>");
@@ -120,8 +122,9 @@ describe("an update on a box installed under the old labels", () => {
   test("an old tailscaled that won't stop loads nothing new, puts the guard back, keeps every old file and stops the update", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`system/${old.guard}`]: 100, [`system/${old.tailscaled}`]: 101 }, { bootoutFails: [`system/${old.tailscaled}`] });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     mkdirSync(join(p.guardPlist, ".."), { recursive: true });
     mkdirSync(join(p.agentPlist, ".."), { recursive: true });
     const files = [join(p.agentPlist, "..", `${old.loop}.plist`), join(p.guardPlist, "..", `${old.guard}.plist`), join(p.guardPlist, "..", `${old.tailscaled}.plist`)];
@@ -145,7 +148,7 @@ describe("an update on a box installed under the old labels", () => {
 
 describe("the loop moving to its new label", () => {
   const d = (sys: FakeSys, prefix: string | null = OLD, withAgent = true) => {
-    const p = paths(tempRoot(), "app", prefix ?? undefined);
+    const p = paths(tempRoot(), testBox(prefix ?? undefined));
     if (withAgent) {
       mkdirSync(join(p.agentPlist, ".."), { recursive: true });
       writeFileSync(p.agentPlist, "<plist/>");
@@ -156,6 +159,7 @@ describe("the loop moving to its new label", () => {
   test("nothing to do with no previous prefix, or no old loop loaded", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     launchd(sys, {});
     expect(await handOver(d(sys, null), 502, 4242)).toBeUndefined();
     expect(sys.calls).toEqual([]);
@@ -166,6 +170,7 @@ describe("the loop moving to its new label", () => {
   test("the old loop loads the new one, then boots itself out", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`gui/502/${old.loop}`]: 4242 });
     const x = d(sys);
     // A real bootout ends this process; here it returns, so the loop exits 0 and launchd won't restart the old one.
@@ -181,6 +186,7 @@ describe("the loop moving to its new label", () => {
   test("before the new LaunchAgent is in place, the old loop tries nothing and logs one plain line", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`gui/502/${old.loop}`]: 4242 });
     const x = d(sys, OLD, false);
     expect(await handOver(x, 502, 4242)).toBeUndefined();
@@ -192,6 +198,7 @@ describe("the loop moving to its new label", () => {
   test("an old loop that can't load the new one keeps running under the old name", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`gui/502/${old.loop}`]: 4242 }, { bootstrapFails: true });
     const x = d(sys);
     expect(await handOver(x, 502, 4242)).toBeUndefined();
@@ -202,6 +209,7 @@ describe("the loop moving to its new label", () => {
   test("the new loop waits for the old one to end, so two loops never take jobs", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`gui/502/${old.loop}`]: 4242, [`gui/502/${AGENT_LABEL}`]: 5000 });
     let sleeps = 0;
     sys.sleep = async () => {
@@ -214,6 +222,7 @@ describe("the loop moving to its new label", () => {
   test("and tries again later if the old one doesn't end", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     launchd(sys, { [`gui/502/${old.loop}`]: 4242 });
     sys.sleep = async () => {};
     const x = d(sys);
@@ -224,6 +233,7 @@ describe("the loop moving to its new label", () => {
   test("an old loop that is loaded but not running is booted out", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`gui/502/${old.loop}`]: 0 });
     expect(await handOver(d(sys), 502, 5000)).toBeUndefined();
     expect(l[`gui/502/${old.loop}`]).toBeUndefined();
@@ -234,39 +244,40 @@ describe("stop, start and remove while the old loop may still run", () => {
   test("stop stops the loop under whichever name it runs", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`gui/502/${old.loop}`]: 4242 });
     const said: string[] = [];
-    const p = paths(tempRoot(), "app", OLD);
-    expect(await stop({ sys, paths: p, uid: 502, say: (s) => said.push(s), ask: async () => "no" })).toBe(0);
+    const p = paths(tempRoot(), testBox(OLD));
+    expect(await stop({ sys, paths: p, uid: 502, say: (s) => said.push(s) })).toBe(0);
     expect(l[`gui/502/${old.loop}`]).toBeUndefined();
   });
 
   test("start, between the two updates, loads the old LaunchAgent when the new one isn't there yet", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, {});
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     mkdirSync(join(p.agentPlist, ".."), { recursive: true });
     const oldFile = join(p.agentPlist, "..", `${old.loop}.plist`);
     writeFileSync(oldFile, "<plist/>");
-    writeFileSync(p.stopped, JSON.stringify({ at: 1 }));
     const said: string[] = [];
-    expect(await start({ sys, paths: p, uid: 502, say: (s) => said.push(s), ask: async () => "no" })).toBe(0);
+    expect(await start({ sys, paths: p, uid: 502, say: (s) => said.push(s) })).toBe(0);
     expect(sys.calls.find((c) => c.args[0] === "bootstrap")!.args).toEqual(["bootstrap", "gui/502", oldFile]);
     expect(l[`gui/502/${old.loop}`]).toBeGreaterThan(0);
-    expect(said.at(-1)).toBe("Started. Type taskbox watch to see what it does.");
-    expect(existsSync(p.stopped)).toBe(false);
+    expect(said.at(-1)).toBe("Started here, at the box. The guard writes the start in control.json once it is back.");
   });
 
   test("start loads the new LaunchAgent once its file is there", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, {});
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     mkdirSync(join(p.agentPlist, ".."), { recursive: true });
     writeFileSync(p.agentPlist, "<plist/>");
     writeFileSync(join(p.agentPlist, "..", `${old.loop}.plist`), "<plist/>");
-    expect(await start({ sys, paths: p, uid: 502, say: () => {}, ask: async () => "no" })).toBe(0);
+    expect(await start({ sys, paths: p, uid: 502, say: () => {} })).toBe(0);
     expect(l[`gui/502/${AGENT_LABEL}`]).toBeGreaterThan(0);
     expect(l[`gui/502/${old.loop}`]).toBeUndefined();
   });
@@ -274,22 +285,24 @@ describe("stop, start and remove while the old loop may still run", () => {
   test("start counts the old loop as running", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     launchd(sys, { [`gui/502/${old.loop}`]: 4242 });
     const said: string[] = [];
-    expect(await start({ sys, paths: paths(tempRoot(), "app", OLD), uid: 502, say: (s) => said.push(s), ask: async () => "no" })).toBe(3);
-    expect(said.at(-1)).toContain("Already running");
+    expect(await start({ sys, paths: paths(tempRoot(), testBox(OLD)), uid: 502, say: (s) => said.push(s) })).toBe(0);
+    expect(said.at(-1)).toContain("The loop runs already");
   });
 
   test("remove boots out and deletes the old loop and guard too", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`gui/502/${old.loop}`]: 1, [`system/${old.guard}`]: 2, [`gui/502/${AGENT_LABEL}`]: 3, [`system/${GUARD_LABEL}`]: 4 });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     for (const f of [p.agentPlist, p.guardPlist]) mkdirSync(join(f, ".."), { recursive: true });
     const oldFiles = [join(p.agentPlist, "..", `${old.loop}.plist`), join(p.guardPlist, "..", `${old.guard}.plist`)];
     for (const f of oldFiles) writeFileSync(f, "<plist/>");
     const said: string[] = [];
-    await remove({ sys, paths: p, uid: 0, say: (s) => said.push(s), ask: async () => "yes" }, { ciUid: 502 });
+    await remove({ sys, paths: p, uid: 0, say: (s) => said.push(s), ask: async () => "yes" }, { serviceUid: 502 });
     expect(l).toEqual({});
     for (const f of oldFiles) expect(existsSync(f)).toBe(false);
   });
@@ -313,12 +326,11 @@ describe("the settings that make the code general", () => {
     for (const bad of [undefined, "app", "a/b/c", "a b/c"]) expect(load({ jobsFrom: bad })).toThrow("jobsFrom");
   });
 
-  test("screenSharingUsers names the box's own users, and no user is built in", () => {
-    expect(load({ screenSharingUsers: [] })().screenSharingUsers).toEqual([]);
-    expect(load({ screenSharingUsers: ["pat"] })().screenSharingUsers).toEqual(["pat"]);
-    for (const bad of [["ci"], "pat", [7]]) expect(load({ screenSharingUsers: bad })).toThrow("screenSharingUsers");
-    // A box whose settings name nobody lets nobody share its screen.
-    expect(load({ screenSharingUsers: undefined })().screenSharingUsers ?? DEFAULT_SCREEN_SHARING_USERS).toEqual([]);
+  test("accounts.people names the box's own users, and no user is built in", () => {
+    expect(load({ accounts: { service: "taskbox", people: [] } })().accounts.people).toEqual([]);
+    expect(load({ accounts: { service: "taskbox", people: ["pat"] } })().accounts.people).toEqual(["pat"]);
+    for (const bad of [["root"], "pat", [7]]) expect(load({ accounts: { service: "taskbox", people: bad } })).toThrow("accounts.people");
+    expect(load({ accounts: { service: "taskbox" } })().accounts).toEqual({ service: "taskbox", people: [] });
   });
 
   test("previousLabelPrefix is an earlier prefix, never the current one", () => {
@@ -327,10 +339,13 @@ describe("the settings that make the code general", () => {
   });
 
   test("boxNames reads the project and prefix from settings that may not be complete", () => {
-    writeFileSync(join(dir, "taskbox.json"), JSON.stringify({ project: "app", previousLabelPrefix: OLD }));
-    expect(boxNames(dir)).toEqual({ project: "app", previousLabelPrefix: OLD });
-    writeFileSync(join(dir, "taskbox.json"), JSON.stringify({ project: "app", previousLabelPrefix: LABEL_PREFIX }));
-    expect(boxNames(dir)).toEqual({ project: "app" });
+    const accounts = { service: "taskbox", agent: "taskbox-agent" };
+    writeFileSync(join(dir, "taskbox.json"), JSON.stringify({ project: "app", accounts, previousLabelPrefix: OLD }));
+    expect(boxNames(dir)).toEqual({ project: "app", service: "taskbox", agent: "taskbox-agent", previousLabelPrefix: OLD });
+    writeFileSync(join(dir, "taskbox.json"), JSON.stringify({ project: "app", accounts: { service: "taskbox" }, previousLabelPrefix: LABEL_PREFIX }));
+    expect(boxNames(dir)).toEqual({ project: "app", service: "taskbox" });
+    writeFileSync(join(dir, "taskbox.json"), JSON.stringify({ project: "app" }));
+    expect(() => boxNames(dir)).toThrow("taskbox.json has no accounts.service");
     writeFileSync(join(dir, "taskbox.json"), JSON.stringify({}));
     expect(() => boxNames(dir)).toThrow("taskbox.json has no project");
     expect(() => boxNames(join(dir, "none"))).toThrow("taskbox.json can't be read");
@@ -343,20 +358,21 @@ describe("the settings that make the code general", () => {
 
 describe("time limits", () => {
   test("every launchctl call has a time limit", () => {
-    for (const f of readdirSync(join(repo, "src")).filter((f) => f.endsWith(".ts"))) {
+    for (const f of readdirSync(join(repo, "src"), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts"))) {
       const text = readFileSync(join(repo, "src", f), "utf8");
       for (const m of text.matchAll(/run\("\/bin\/launchctl", \[[^\]]*\]\)/g)) throw new Error(`${f}: ${m[0]} has no time limit`);
     }
   });
 });
 
-describe("taskbox undo back across the label move", () => {
+describe("taskbox rollback back across the label move", () => {
   // The kept install, now behind /opt/taskbox: its launchd folder has the old labels' files only.
   function box(keptHasNew = false) {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const l = launchd(sys, { [`system/${GUARD_LABEL}`]: 10, [`system/${TAILSCALED_LABEL}`]: 11, [`gui/502/${AGENT_LABEL}`]: 12 });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     const kept = join(p.app, "launchd");
     mkdirSync(kept, { recursive: true });
     for (const k of ["loop", "guard", "tailscaled"]) writeFileSync(join(kept, `${OLD}.${k}.plist`), `<plist>${k}</plist>`);
@@ -371,7 +387,7 @@ describe("taskbox undo back across the label move", () => {
 
   test("the guard and tailscaled go back to their old names from the kept install's plists, one at a time", async () => {
     const b = box();
-    expect(await labelsBack(b.d, OLD)).toBe("The guard and tailscaled run under their old names again. Log out ci and log in again, so the loop does too.");
+    expect(await labelsBack(b.d, OLD)).toBe("The guard and tailscaled run under their old names again. Log out taskbox and log in again, so the loop does too.");
     expect(b.l[`system/${GUARD_LABEL}`]).toBeUndefined();
     expect(b.l[`system/${TAILSCALED_LABEL}`]).toBeUndefined();
     expect(b.l[`system/${old.guard}`]).toBeGreaterThan(0);
@@ -406,9 +422,10 @@ describe("the old tailscaled at the second update", () => {
   test("the second update waits for the old tailscaled to finish exiting, then retires it", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     sys.sleep = async () => {};
     const l = launchd(sys, { [`system/${old.guard}`]: 100, [`system/${old.tailscaled}`]: 101 }, { lingers: { [`system/${old.tailscaled}`]: 3 } });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     mkdirSync(join(p.guardPlist, ".."), { recursive: true });
     mkdirSync(join(p.agentPlist, ".."), { recursive: true });
     await retirePrevious({ sys, paths: p, say: () => {} }, OLD);
@@ -419,10 +436,11 @@ describe("the old tailscaled at the second update", () => {
   test("one that never goes is stuck only after the wait", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     let slept = 0;
     sys.sleep = async () => void slept++;
     launchd(sys, { [`system/${old.tailscaled}`]: 101 }, { lingers: { [`system/${old.tailscaled}`]: 999 } });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     mkdirSync(join(p.guardPlist, ".."), { recursive: true });
     await expect(retirePrevious({ sys, paths: p, say: () => {} }, OLD)).rejects.toThrow("tailscaled under the old name didn't stop");
     expect(slept).toBe(BOOTOUT_WAIT_S);
@@ -431,9 +449,10 @@ describe("the old tailscaled at the second update", () => {
   test("undo starts the old tailscaled only once the new one has gone, since they share a socket", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     sys.sleep = async () => {};
     const l = launchd(sys, { [`system/${GUARD_LABEL}`]: 10, [`system/${TAILSCALED_LABEL}`]: 11 }, { lingers: { [`system/${TAILSCALED_LABEL}`]: 3 } });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     const kept = join(p.app, "launchd");
     mkdirSync(kept, { recursive: true });
     for (const k of ["loop", "guard", "tailscaled"]) writeFileSync(join(kept, `${OLD}.${k}.plist`), `<plist>${k}</plist>`);
@@ -441,7 +460,7 @@ describe("the old tailscaled at the second update", () => {
       mkdirSync(join(f, ".."), { recursive: true });
       writeFileSync(f, "<plist>new</plist>");
     }
-    expect(await labelsBack({ sys, paths: p, say: () => {} }, OLD)).toBe("The guard and tailscaled run under their old names again. Log out ci and log in again, so the loop does too.");
+    expect(await labelsBack({ sys, paths: p, say: () => {} }, OLD)).toBe("The guard and tailscaled run under their old names again. Log out taskbox and log in again, so the loop does too.");
     expect(l[`system/${old.tailscaled}`]).toBeGreaterThan(0);
     // No bootstrap was refused for a tailscaled still exiting.
     expect(sys.calls.filter((c) => c.args[0] === "bootstrap").length).toBe(2);
@@ -450,8 +469,9 @@ describe("the old tailscaled at the second update", () => {
   test("undo straight after the first update, with every service still under its old name, moves nothing", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     launchd(sys, { [`system/${old.guard}`]: 1, [`system/${old.tailscaled}`]: 2 });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     const kept = join(p.app, "launchd");
     mkdirSync(kept, { recursive: true });
     for (const k of ["loop", "guard", "tailscaled"]) writeFileSync(join(kept, `${OLD}.${k}.plist`), "<plist/>");
@@ -462,7 +482,7 @@ describe("the old tailscaled at the second update", () => {
   });
 
   test("a loop under its old name restarts, as for an update, once the new LaunchAgent is in place", async () => {
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     const log = new Log(p.log);
     expect(relabelDue({ paths: p, log }, false)()).toBe(false);
     const due = relabelDue({ paths: p, log }, true);
@@ -476,6 +496,7 @@ describe("the old tailscaled at the second update", () => {
   test("the loop knows when it runs under the old label", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     launchd(sys, { [`gui/502/${old.loop}`]: 4242 });
     const cfg = { ...CFG, previousLabelPrefix: OLD };
     expect(await underOldLabel({ sys, cfg }, 502, 4242)).toBe(true);
@@ -486,32 +507,35 @@ describe("the old tailscaled at the second update", () => {
   test("remove stops tailscaled under either name and removes its files, state and socket", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     sys.sleep = async () => {};
     const l = launchd(sys, { [`system/${TAILSCALED_LABEL}`]: 11, [`system/${old.tailscaled}`]: 12, [`system/${GUARD_LABEL}`]: 13 }, { lingers: { [`system/${TAILSCALED_LABEL}`]: 2 } });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     mkdirSync(join(p.guardPlist, ".."), { recursive: true });
-    const files = [p.tailscaledPlist, join(p.guardPlist, "..", `${old.tailscaled}.plist`), p.tailscaleSocket];
+    const files = [p.tailscaledPlist, join(p.guardPlist, "..", `${old.tailscaled}.plist`), p.tailscaleSocket, p.oldTailscaleSocket];
     for (const f of files) {
       mkdirSync(join(f, ".."), { recursive: true });
       writeFileSync(f, "x");
     }
     mkdirSync(join(p.tailscaleState, "x"), { recursive: true });
     const said: string[] = [];
-    await remove({ sys, paths: p, uid: 0, say: (s) => said.push(s), ask: async () => "yes" }, { ciUid: 502 });
+    await remove({ sys, paths: p, uid: 0, say: (s) => said.push(s), ask: async () => "yes" }, { serviceUid: 502 });
     expect(l).toEqual({});
-    for (const f of [...files, p.tailscaleState]) expect(existsSync(f)).toBe(false);
+    for (const f of [...files, p.tailscaleState, p.tailscaleSocketDir]) expect(existsSync(f)).toBe(false);
     expect(said.join("\n")).toContain("stopped taskbox's Tailscale");
+    expect(said.join("\n")).toContain("removed Tailscale's socket under its old name");
   });
 
   test("remove keeps tailscaled's files when it won't stop, and says so", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     sys.sleep = async () => {};
     launchd(sys, { [`system/${TAILSCALED_LABEL}`]: 11 }, { bootoutFails: [`system/${TAILSCALED_LABEL}`] });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     mkdirSync(join(p.tailscaleState, "x"), { recursive: true });
     const said: string[] = [];
-    expect(await remove({ sys, paths: p, uid: 0, say: (s) => said.push(s), ask: async () => "yes" }, { ciUid: 502 })).toBe(1);
+    expect(await remove({ sys, paths: p, uid: 0, say: (s) => said.push(s), ask: async () => "yes" }, { serviceUid: 502 })).toBe(1);
     expect(existsSync(p.tailscaleState)).toBe(true);
     expect(said.join("\n")).toContain("taskbox's Tailscale, which didn't stop");
   });
@@ -530,6 +554,41 @@ describe("undo restarts the root services on the code it went back to", () => {
   };
   const kicks = (sys: FakeSys) => sys.calls.filter((c) => c.args[0] === "kickstart").map((c) => c.args.join(" "));
 
+  test("tailscaled's LaunchDaemon goes back to the kept install's, such as one with the old socket name, and is loaded again", async () => {
+    // As logins.test.ts has it: the plist is written back, and a one-shot LaunchDaemon loads it again.
+    const box = () => {
+      const x = new FakeSys();
+      x.sleep = async () => {};
+      servicesObey(x);
+      launchd(x, { [`system/${GUARD_LABEL}`]: 1, [`system/${TAILSCALED_LABEL}`]: 2 });
+      return x;
+    };
+    const sys = box();
+    const { now, was } = installs(true);
+    const d = { sys, paths: paths(tempRoot(), testBox()), uid: 0, say: () => {}, ask: async () => "yes", rootUid: process.getuid!() };
+    const oldPlist = readFileSync(join(import.meta.dir, "../launchd/local.taskbox.tailscaled.plist"), "utf8").replace(TAILSCALE_SOCKET, OLD_TAILSCALE_SOCKET);
+    mkdirSync(join(now, "app/launchd"), { recursive: true });
+    writeFileSync(join(now, "app/launchd", `${TAILSCALED_LABEL}.plist`), oldPlist);
+    mkdirSync(dirname(d.paths.tailscaledPlist), { recursive: true });
+    writeFileSync(d.paths.tailscaledPlist, readFileSync(join(import.meta.dir, "../launchd/local.taskbox.tailscaled.plist")));
+    for (const f of [d.paths.tailscaledLog, reloadToken(d.paths)]) mkdirSync(dirname(f), { recursive: true });
+    const noChown = () => {};
+    expect(await restartServices(d, now, was, noChown)).toContain("tailscaled loads again from this install's plist within a minute");
+    expect(readFileSync(d.paths.tailscaledPlist, "utf8")).toBe(oldPlist);
+    const verbs = sys.calls.filter((c) => c.cmd === "/bin/launchctl" && c.args.join(" ").includes("tailscale")).map((c) => c.args[0]);
+    expect(verbs).toEqual(["print", "bootout", "bootstrap"]);
+    // With a pool account, undo says the socket is back where other accounts can reach it.
+    mkdirSync(dirname(d.paths.poolRecord), { recursive: true });
+    writeFileSync(d.paths.poolRecord, "{}");
+    writeFileSync(d.paths.tailscaledPlist, readFileSync(join(import.meta.dir, "../launchd/local.taskbox.tailscaled.plist")));
+    expect(await restartServices({ ...d, sys: box() }, now, was, noChown)).toContain(`The older install puts tailscaled's socket back at its old path, ${OLD_TAILSCALE_SOCKET}, where other accounts on the box, the workspace account included, can reach it. Type taskbox update to move it back.`);
+    rmSync(d.paths.poolRecord);
+    // The same plist: nothing is reloaded.
+    const again = box();
+    await restartServices({ ...d, sys: again }, now, was, noChown);
+    expect(again.calls.some((c) => c.args[0] === "bootout")).toBe(false);
+  });
+
   test("the guard restarts under the name it runs under; tailscaled only when its binary differs", async () => {
     for (const [loaded, guard, ts] of [
       [{ [`system/${GUARD_LABEL}`]: 1, [`system/${TAILSCALED_LABEL}`]: 2 }, GUARD_LABEL, TAILSCALED_LABEL],
@@ -538,9 +597,10 @@ describe("undo restarts the root services on the code it went back to", () => {
       for (const same of [true, false]) {
         const sys = new FakeSys();
         servicesObey(sys);
+        quietBox(sys);
         launchd(sys, { ...loaded });
         const { now, was } = installs(same);
-        const d = { sys, paths: paths(tempRoot(), "app", OLD), uid: 0, say: () => {}, ask: async () => "yes" };
+        const d = { sys, paths: paths(tempRoot(), testBox(OLD)), uid: 0, say: () => {}, ask: async () => "yes" };
         expect(await restartServices(d, now, was)).toBeUndefined();
         expect(kicks(sys)).toEqual([`kickstart -k system/${guard}`, ...(same ? [] : [`kickstart -k system/${ts}`])]);
       }
@@ -550,30 +610,23 @@ describe("undo restarts the root services on the code it went back to", () => {
   test("a restart that fails is said, with what it means", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     launchd(sys, { [`system/${GUARD_LABEL}`]: 1 });
     sys.responders.unshift((cmd, args) => (cmd === "/bin/launchctl" && args[0] === "kickstart" ? { code: 5, stdout: "", stderr: "" } : undefined));
     const { now, was } = installs(true);
-    const d = { sys, paths: paths(tempRoot(), "app"), uid: 0, say: () => {}, ask: async () => "yes" };
+    const d = { sys, paths: paths(tempRoot(), testBox()), uid: 0, say: () => {}, ask: async () => "yes" };
     expect(await restartServices(d, now, was)).toBe("the guard didn't restart, so it runs the newer code until the Mac restarts.");
   });
 
 });
 
-describe("the install kept for undo", () => {
-  test("an update to the commit already installed keeps the install kept for undo", () => {
-    expect(keepsKept("abc", "abc", "/opt/taskbox-v221")).toBe(true);
-    expect(keepsKept("abc", "def", "/opt/taskbox-v221")).toBe(false);
-    expect(keepsKept("abc", "abc", undefined)).toBe(false);
-    expect(keepsKept(undefined, "abc", undefined)).toBe(false);
-  });
-});
-
 describe("between the two updates that move the names: what the owner is told", () => {
-  const ctx = (sys: FakeSys, prefix?: string) => ({ sys, cfg: CFG, paths: paths(tempRoot(), "app", prefix), uid: 0, ciUid: 502 });
+  const ctx = (sys: FakeSys, prefix?: string) => ({ sys, cfg: CFG, paths: paths(tempRoot(), testBox(prefix)), uid: 0, serviceUid: 502, rootUid: process.getuid!() });
 
   test("check says to update once more while the services run under their old names", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const c = ctx(sys, OLD);
     mkdirSync(join(c.paths.guardPlist, ".."), { recursive: true });
     writeFileSync(join(c.paths.guardPlist, "..", `${old.guard}.plist`), "<plist/>");
@@ -589,6 +642,7 @@ describe("between the two updates that move the names: what the owner is told", 
   test("between the updates, the Tailscale row checks tailscaled under its old name, and passes", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     const c = ctx(sys, OLD);
     const app = join(c.paths.app, "launchd");
     mkdirSync(app, { recursive: true });
@@ -607,6 +661,8 @@ describe("between the two updates that move the names: what the owner is told", 
     });
     mkdirSync(dirname(c.paths.tailscaledLog), { recursive: true });
     writeFileSync(c.paths.tailscaledLog, "", { mode: 0o640 });
+    socketDirOk({ sys, paths: c.paths });
+    tailnetPinned(c.paths);
     const r = await tailscaleRow(c);
     expect([r.status, r.detail]).toEqual(["OK", "signed in as tag:taskbox, with Tailscale SSH, under its old name"]);
     // A different old-named plist from the install's own copy still fails.
@@ -617,9 +673,10 @@ describe("between the two updates that move the names: what the owner is told", 
   test("a daemon that won't stop is an owner step, and says what is true", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     sys.sleep = async () => {};
     launchd(sys, { [`system/${old.tailscaled}`]: 101 }, { lingers: { [`system/${old.tailscaled}`]: 999 } });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     mkdirSync(join(p.guardPlist, ".."), { recursive: true });
     const e = await retirePrevious({ sys, paths: p, say: () => {} }, OLD).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(Stop);
@@ -627,21 +684,12 @@ describe("between the two updates that move the names: what the owner is told", 
     expect((e as Stop).message).not.toContain("runs as before");
   });
 
-  test("the old tailscale address only counts in the copy whose repo it names", () => {
-    const own = { org: "example-org", repo: "taskbox" };
-    const url = "https://api.github.com/repos/example-org/taskbox/releases/assets/7";
-    expect(tailscaleUrlProblem(undefined, own, 7)).toBe(false);
-    expect(tailscaleUrlProblem(url, own, 7)).toBe(false);
-    expect(tailscaleUrlProblem(url, own, 8)).toBe(true);
-    expect(tailscaleUrlProblem(url, { org: "another-org", repo: "taskbox" }, 9)).toBe(false);
-    expect(tailscaleUrlProblem(url, { org: "example-org", repo: "taskbox-fork" }, 9)).toBe(false);
-  });
-
   test("each new plist is written before its old one goes, so a power cut never leaves neither", async () => {
     const sys = new FakeSys();
     servicesObey(sys);
+    quietBox(sys);
     launchd(sys, { [`system/${old.guard}`]: 1, [`system/${old.tailscaled}`]: 2 });
-    const p = paths(tempRoot(), "app", OLD);
+    const p = paths(tempRoot(), testBox(OLD));
     const app = join(p.app, "launchd");
     mkdirSync(app, { recursive: true });
     for (const l of [AGENT_LABEL, GUARD_LABEL, TAILSCALED_LABEL]) writeFileSync(join(app, `${l}.plist`), `<plist>${l}</plist>`);

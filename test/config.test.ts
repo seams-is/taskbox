@@ -17,7 +17,7 @@ function load(over: Record<string, unknown>, linux?: Record<string, unknown>, wa
   const c = base();
   const merged = { ...c, ...over, ...(linux ? { linux: { ...c.linux, ...linux } } : {}) };
   writeFileSync(join(dir, "taskbox.json"), JSON.stringify(merged));
-  return () => loadConfig(dir, warn);
+  return () => loadConfig(dir, undefined, 0, warn);
 }
 
 describe("the settings", () => {
@@ -30,7 +30,7 @@ describe("the settings", () => {
     expect(load({ labels: ["taskbox-macos", "taskbox-macos-merge", "self-hosted"] })).toThrow("every runner has");
     expect(load({ labels: ["taskbox-macos", "taskbox-macos-merge", "a;b"] })).toThrow("labels is 1 to 8");
     // Any label in GitHub's shape, beyond taskbox-: the code names none.
-    expect(labelsFor(load({ labels: ["taskbox-macos", "taskbox-macos-merge", "ios-big"] })(), "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "ios-big"]);
+    expect(labelsFor(load({ labels: ["taskbox-macos", "taskbox-macos-merge", "ios-big"] })(), "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "ios-big", "example-box-macos"]);
   });
   test("sources: one, github-actions on jobsFrom with its own App, or none; the old actionsAppId must agree", () => {
     const c = base();
@@ -81,16 +81,16 @@ describe("the settings", () => {
     const { mergeLabel: _, ...linuxNoMerge } = ex.linux;
     // macOS sets a labels list, and Linux has none of its own.
     const a = cfg({ labels: ["taskbox-macos", "taskbox-macos-merge", "taskbox-macos-big"] }, ex.linux);
-    expect(labelsFor(a, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge"]);
-    expect(labelsFor(a, "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "taskbox-macos-big"]);
+    expect(labelsFor(a, "linux")).toEqual(["taskbox-linux", "taskbox-linux-merge", "example-box-linux"]);
+    expect(labelsFor(a, "macos")).toEqual(["taskbox-macos", "taskbox-macos-merge", "taskbox-macos-big", "example-box-macos"]);
     // Linux leaves mergeLabel out, so it registers only its own label.
     const b = cfg({}, linuxNoMerge);
-    expect(labelsFor(b, "linux")).toEqual(["taskbox-linux"]);
+    expect(labelsFor(b, "linux")).toEqual(["taskbox-linux", "example-box-linux"]);
   });
   test("timings: each a whole number within its bounds, defaults for the rest", () => {
     expect(timingsOf(load({ timings: { giveWayMinutes: 5 } })())).toEqual({ ...DEFAULT_TIMINGS, giveWayMinutes: 5 });
     expect(load({ timings: { giveWayMinutes: 0 } })).toThrow("giveWayMinutes is 1 to 60");
-    // v2.6.1 (docs/v3-design.md §5.7, 3): a key it doesn't know is passed over with a line, so a later
+    // v2.6.1: a key it doesn't know is passed over with a line, so a later
     // release's taskbox.json can add one.
     const said: string[] = [];
     expect(timingsOf(load({ timings: { speed: 1, giveWayMinutes: 5 } }, undefined, (l) => said.push(l))())).toEqual({ ...DEFAULT_TIMINGS, giveWayMinutes: 5 });
@@ -98,9 +98,9 @@ describe("the settings", () => {
     expect(load({ timings: { speed: 1, giveWayMinutes: 0 } })).toThrow("giveWayMinutes is 1 to 60");
   });
   test("releaseRepo and publicRepo (v2.6.1): names in GitHub's shape, and v2 releases read from releaseRepo", () => {
-    const c = load({ releaseRepo: "taskbox-archive", publicRepo: "example-org/taskbox" })();
-    expect(releaseRepoOf(c)).toBe("taskbox-archive");
-    expect(assetUrl(c, 7)).toBe("https://api.github.com/repos/example-org/taskbox-archive/releases/assets/7");
+    const c = load({ releaseRepo: "example-releases", publicRepo: "example-org/taskbox" })();
+    expect(releaseRepoOf(c)).toBe("example-releases");
+    expect(assetUrl(c, 7)).toBe("https://api.github.com/repos/example-org/example-releases/releases/assets/7");
     expect(releaseRepoOf(load({})())).toBe("taskbox");
     expect(load({ releaseRepo: "a/b" })).toThrow("releaseRepo is the name of the repo in org");
     expect(load({ publicRepo: "taskbox" })).toThrow("publicRepo is the public repo");

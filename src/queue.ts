@@ -3,9 +3,11 @@
 // its key could then mint tokens for its source. This App's key can read Actions runs and
 // jobs there, and nothing else.
 // Only labels, statuses and times are used: no job name, branch or log is read or shown.
+import { serviceName } from "./names.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { appJwt } from "./github.ts";
-import { type Config, loadRepoOf, sourceAppId } from "./config.ts";
+import { classify, type GitHubError } from "./ghfail.ts";
+import { type Config, loadRepoOf, sourceAppId, sourceOf } from "./config.ts";
 import type { WaitingItem } from "./source.ts";
 import type { Log } from "./log.ts";
 import type { Sys } from "./sys.ts";
@@ -28,6 +30,7 @@ export class QueueError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly failure?: GitHubError, // the runner chain's class for it (ghfail.ts classify)
   ) {
     super(message);
   }
@@ -41,10 +44,10 @@ export function queueWhy(e: unknown): string {
 }
 
 // Why the second App's key can't be used, or undefined. It sits in root's own folder, outside every
-// install and outside ci's home, so ci can read it but can't replace it or plant a link in its place.
+// install and outside the service's home, so the service can read it but can't replace it or plant a link in its place.
 // The folder: a real folder, root's, not writable by group or others. The file: a plain file, not a
-// link, ci's, mode 600 exactly, one name.
-export function actionsKeyProblem(dir: string, file: string, ciUid: number | undefined, rootUid = 0): string | undefined {
+// link, the service's, mode 600 exactly, one name.
+export function actionsKeyProblem(dir: string, file: string, serviceUid: number | undefined, rootUid = 0): string | undefined {
   let d;
   try {
     d = lstatSync(dir);
@@ -53,7 +56,7 @@ export function actionsKeyProblem(dir: string, file: string, ciUid: number | und
   }
   if (d.isSymbolicLink() || !d.isDirectory()) return `${dir} isn't a folder`;
   if (d.uid !== rootUid) return `${dir} isn't root's`;
-  // Mode 700: only root, and ci through its ACL entry, reach the key's name.
+  // Mode 700: only root, and the service through its ACL entry, reach the key's name.
   if ((d.mode & 0o077) !== 0) return `${dir} is open to other users`;
   let f;
   try {
@@ -62,7 +65,7 @@ export function actionsKeyProblem(dir: string, file: string, ciUid: number | und
     return "the second App's key isn't on the box";
   }
   if (f.isSymbolicLink() || !f.isFile()) return "the second App's key isn't a plain file";
-  if (ciUid === undefined || f.uid !== ciUid) return "the second App's key isn't ci's";
+  if (serviceUid === undefined || f.uid !== serviceUid) return `the second App's key isn't ${serviceName()}'s`;
   if ((f.mode & 0o7777) !== 0o600) return "the second App's key isn't mode 600";
   if (f.nlink !== 1) return "the second App's key has more than one name";
   if (f.size === 0 || f.size > 20_000) return "the second App's key is the wrong size";
@@ -70,8 +73,8 @@ export function actionsKeyProblem(dir: string, file: string, ciUid: number | und
 }
 
 // The key itself, read without following a link, after the checks above.
-export function readActionsKey(dir: string, file: string, ciUid: number | undefined, rootUid = 0): string | undefined {
-  if (actionsKeyProblem(dir, file, ciUid, rootUid)) return undefined;
+export function readActionsKey(dir: string, file: string, serviceUid: number | undefined, rootUid = 0): string | undefined {
+  if (actionsKeyProblem(dir, file, serviceUid, rootUid)) return undefined;
   let fd: number;
   try {
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -80,7 +83,7 @@ export function readActionsKey(dir: string, file: string, ciUid: number | undefi
   }
   try {
     const st = fstatSync(fd);
-    if (!st.isFile() || st.uid !== ciUid || (st.mode & 0o7777) !== 0o600 || st.size > 20_000) return undefined;
+    if (!st.isFile() || st.uid !== serviceUid || (st.mode & 0o7777) !== 0o600 || st.size > 20_000) return undefined;
     return readFileSync(fd, "utf8");
   } finally {
     closeSync(fd);
@@ -91,7 +94,7 @@ export class QueueReader {
   private token?: { value: string; at: number };
   private loadToken?: { value: string; at: number };
   // v2.6.0: whether to read the test repo now (a session on, or ended in the last 2 minutes), and why its last read
-  // failed. Its trouble never hides the real repo's queue (security review, finding 4).
+  // failed. Its trouble never hides the real repo's queue.
   loadWanted: () => boolean = () => true;
   loadProblem?: string;
   private etags = new Map<string, { etag: string; body: unknown }>();
@@ -102,8 +105,15 @@ export class QueueReader {
   private runJobs = new Map<string, { updatedAt?: string; jobs: unknown[] }>();
   // How many GETs went to GitHub, for the load test's report (v2.6.0).
   reads = 0;
+  // The last look's cost to the token's rate limit, and the limit GitHub named, for job timings
+  // (sourcerate.ts). A 304 costs nothing.
+  lastLook?: { counted: number; limit?: number };
+  private counted = 0;
+  private limit?: number;
   // The running look's deadline, which ends its calls themselves.
   private deadline?: AbortSignal;
+  // v3: tokens from the GitHub key keeper (broker.ts), by repo, so the loop holds no key.
+  tokens?: (repo: string) => Promise<string>;
 
   // events: the events the classes name, whose runs are read first (v2.4.0). load: the test repo,
   // read after jobsFrom with a budget of its own, so its runs never crowd out the real repo's (v2.6.0).
@@ -118,7 +128,7 @@ export class QueueReader {
     private deadlineMs = READ_DEADLINE_MS,
   ) {
     const [o, r] = jobsFrom.split("/");
-    if (!o || !r) throw new Error("jobsFrom is owner/repo");
+    if (!o || !r) throw new Error("jobsFrom is org/repo");
     this.owner = o;
     this.repo = r;
   }
@@ -136,7 +146,7 @@ export class QueueReader {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       redirect: "error",
-      signal: this.deadline ? AbortSignal.any([AbortSignal.timeout(15_000), this.deadline]) : AbortSignal.timeout(15_000),
+      signal: this.deadline ? AbortSignal.any([this.sys.timeout(15_000), this.deadline]) : this.sys.timeout(15_000),
     });
   }
 
@@ -145,15 +155,22 @@ export class QueueReader {
     const now = this.sys.now();
     const kept = forLoad ? this.loadToken : this.token;
     if (kept && now - kept.at < TOKEN_KEEP_MS) return kept.value;
+    if (this.tokens) {
+      const token = await this.tokens(forLoad ? this.load! : `${this.owner}/${this.repo}`);
+      this.log.secret(token);
+      if (forLoad) this.loadToken = { value: token, at: now };
+      else this.token = { value: token, at: now };
+      return token;
+    }
     const jwt = appJwt(this.appId, this.pem, now);
     this.log.secret(jwt);
     const inst = await this.call("GET", `/repos/${this.owner}/${this.repo}/installation`, jwt);
-    if (!inst.ok) throw new QueueError(`GitHub answered ${inst.status} for the second App's installation`, inst.status);
+    if (!inst.ok) throw new QueueError(`GitHub answered ${inst.status} for the second App's installation`, inst.status, classify(inst, now, "the installation"));
     const { id } = (await inst.json()) as { id?: unknown };
     if (!Number.isInteger(id)) throw new QueueError("GitHub's answer for the second App's installation had no ID");
     const repositories = [forLoad ? this.load!.split("/")[1]! : this.repo];
     const res = await this.call("POST", `/app/installations/${id}/access_tokens`, jwt, { repositories, permissions: { actions: "read" } });
-    if (!res.ok) throw new QueueError(`GitHub answered ${res.status} for the second App's token`, res.status);
+    if (!res.ok) throw new QueueError(`GitHub answered ${res.status} for the second App's token`, res.status, classify(res, now, "the token"));
     const { token } = (await res.json()) as { token?: unknown };
     if (typeof token !== "string" || !token) throw new QueueError("GitHub's answer for the second App's token had none");
     this.log.secret(token);
@@ -162,12 +179,23 @@ export class QueueReader {
     return token;
   }
 
+  // The job hooks' tokens (core/hooks.ts TokenSource): Actions read on the jobs repo, or on the test repo.
+  // The GitHub key keeper's source token takes this one's place.
+  async actionsRead(repo: string): Promise<string> {
+    if (repo === `${this.owner}/${this.repo}`) return this.tokenNow(false);
+    if (this.load && repo === this.load) return this.tokenNow(true);
+    throw new Error("a token was asked for a repo the job source doesn't read");
+  }
+
   // A GET with the ETag of the last answer, so an unchanged list costs no rate limit.
   private async get<T>(path: string, forLoad = false): Promise<T> {
     const token = await this.tokenNow(forLoad);
     const seen = this.etags.get(path) ?? this.seen.get(path);
     this.reads++;
     const res = await this.call("GET", path, token, undefined, seen?.etag);
+    if (res.status !== 304) this.counted++;
+    const limit = Number(res.headers.get("x-ratelimit-limit"));
+    if (Number.isSafeInteger(limit) && limit > 0) this.limit = limit;
     if (res.status === 304 && seen) {
       this.etags.set(path, seen);
       return seen.body as T;
@@ -176,7 +204,7 @@ export class QueueReader {
       if (forLoad) this.loadToken = undefined;
       else this.token = undefined;
     }
-    if (!res.ok) throw new QueueError(`GitHub answered ${res.status} for ${path.split("?")[0]}`, res.status);
+    if (!res.ok) throw new QueueError(`GitHub answered ${res.status} for ${path.split("?")[0]}`, res.status, classify(res, this.sys.now(), "the queue"));
     const body = (await res.json()) as T;
     const etag = res.headers.get("etag");
     if (etag) this.etags.set(path, { etag, body });
@@ -203,16 +231,17 @@ export class QueueReader {
   // Each waiting job as the scheduler reads it (v2.4.0, source.ts): every label it asks for, as
   // GitHub lists them, when it was queued, and its run's event, which GitHub sets and a workflow
   // can't. A job with a label out of shape, or more than 16, is odd: it fits no kind, so it never
-  // holds a VM (the v2.4.0 security review, finding 1).
+  // holds a VM.
   // Queued jobs sit in queued runs and in runs already in progress, so both are read. The runs of
-  // the events the classes name are read first, so other runs can't push them out of view (finding
-  // 3). A run's jobs are read again only when the run changed since the last look.
+  // the events the classes name are read first, so other runs can't push them out of view. A run's jobs are read again only when the run changed since the last look.
   async items(): Promise<WaitingItem[]> {
-    this.deadline = AbortSignal.timeout(this.deadlineMs);
+    this.deadline = this.sys.timeout(this.deadlineMs);
+    this.counted = 0;
     try {
       return await this.look();
     } finally {
       this.deadline = undefined;
+      this.lastLook = { counted: this.counted, ...(this.limit ? { limit: this.limit } : {}) };
     }
   }
 
@@ -277,12 +306,22 @@ export class QueueReader {
 
 // The reader for this box, or why there is none. cfg.actionsAppId and the key both come from the
 // owner: until the second App exists, the box takes turns.
-export function queueReaderFor(sys: Sys, cfg: Config, keyDir: string, keyPath: string, ciUid: number | undefined, log: Log, rootUid = 0): QueueReader | string {
+// v3: the reader with the keeper's tokens, so the loop holds no key.
+export function brokerQueueReader(sys: Sys, cfg: Config, log: Log, tokens: (repo: string) => Promise<string>): QueueReader | string {
   const appId = sourceAppId(cfg);
   if (!appId) return (cfg.base ?? cfg).sources?.[0]?.type === "none" ? "the job source is none" : "there is no job source App yet";
-  const why = actionsKeyProblem(keyDir, keyPath, ciUid, rootUid);
+  const events = [...new Set(((cfg.base ?? cfg).classes ?? []).flatMap((r) => r.when.event ?? []))].slice(0, 4);
+  const r = new QueueReader(sys, appId, "", cfg.jobsFrom, log, events, loadRepoOf(cfg)?.name);
+  r.tokens = tokens;
+  return r;
+}
+
+export function queueReaderFor(sys: Sys, cfg: Config, keyDir: string, keyPath: string, serviceUid: number | undefined, log: Log, rootUid = 0): QueueReader | string {
+  const appId = sourceAppId(cfg);
+  if (!appId) return (cfg.base ?? cfg).sources?.[0]?.type === "none" ? "the job source is none" : "there is no job source App yet";
+  const why = actionsKeyProblem(keyDir, keyPath, serviceUid, rootUid);
   if (why) return why;
-  const pem = readActionsKey(keyDir, keyPath, ciUid, rootUid);
+  const pem = readActionsKey(keyDir, keyPath, serviceUid, rootUid);
   if (!pem) return "the second App's key couldn't be read";
   log.secret(pem);
   const events = [...new Set(((cfg.base ?? cfg).classes ?? []).flatMap((r) => r.when.event ?? []))].slice(0, 4);
@@ -292,12 +331,15 @@ export function queueReaderFor(sys: Sys, cfg: Config, keyDir: string, keyPath: s
 // taskbox check's row for the second App's key (v2.1.0). SKIP while there is no second App: the box
 // takes turns. FAIL when there is one and its key is missing or isn't held as the loop needs it.
 export const SECOND_KEY_ROW = "Job source App key";
-export async function secondKeyRow(c: { cfg: Config; paths: { actionsKeyDir: string; actionsKey: string }; uid: number; ciUid: number | undefined; rootUid?: number }): Promise<{ status: "OK" | "FAIL" | "SKIP"; detail: string }> {
+export async function secondKeyRow(c: { cfg: Config; paths: { actionsKeyDir: string; actionsKey: string }; uid: number; serviceUid: number | undefined; rootUid?: number }): Promise<{ status: "OK" | "FAIL" | "SKIP"; detail: string }> {
   const appId = sourceAppId(c.cfg);
-  if (!appId) return { status: "SKIP", detail: "no job source App, so the box follows the jobs its VMs take. README, Connect a job source" };
-  // Only root and ci reach the key's folder.
-  if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.ciUid) return { status: "SKIP", detail: "run as ci to check" };
-  const why = actionsKeyProblem(c.paths.actionsKeyDir, c.paths.actionsKey, c.ciUid, c.rootUid ?? 0);
-  if (why) return { status: "FAIL", detail: `${why}, so the box follows the jobs its VMs take. Put the job source App's key in Downloads, then as your admin user type taskbox update` };
-  return { status: "OK", detail: `in root's folder, ci's, mode 600, for App ${appId}` };
+  if (!appId) return { status: "SKIP", detail: "no job source App, so the box follows the jobs its VMs take. To connect one, as your admin user type taskbox connect github" };
+  // Only root and the service reach the key's folder.
+  if (c.uid !== (c.rootUid ?? 0) && c.uid !== c.serviceUid) return { status: "SKIP", detail: `run as ${serviceName()} to check` };
+  const why = actionsKeyProblem(c.paths.actionsKeyDir, c.paths.actionsKey, c.serviceUid, c.rootUid ?? 0);
+  if (why) return { status: "FAIL", detail: `${why}, so the box follows the jobs its VMs take. As your admin user, type taskbox connect github` };
+  const src = sourceOf(c.cfg);
+  const name = src.type === "github-actions" && src.app ? `${src.app} (App ${appId})` : `App ${appId}`;
+  const from = c.cfg.boxKeys?.includes("sources") ? "this box's settings" : "the release's taskbox.json, until the next update keeps it on the box";
+  return { status: "OK", detail: `in root's folder, ${serviceName()}'s, mode 600, for ${name}, from ${from}` };
 }

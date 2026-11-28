@@ -13,18 +13,30 @@
 // unverified wherever it is shown, never makes a login, and never changes one.
 //
 // Who sees what: root and admins see each login: the account, the tailnet user, the device, the
-// address, the time and the length. Anyone else, remote among them, sees counts per kind of account
-// (a person's, ci's, the agent account's), with the latest time: no account names, tailnet users,
+// address, the time and the length. Anyone else, the agent among them, sees counts per kind of account
+// (a person's, the service account's, the agent account's), with the latest time: no account names, tailnet users,
 // devices or addresses. A session with no terminal, such as `ssh box taskbox status`, has a login
 // record too, with tty `tty__` (tried in a Tart test Mac on macOS 27.2), so it is a login like any.
-import { closeSync, constants, fchmodSync, fchownSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fchownSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { ANSWERS, text } from "./answers.ts";
-import { CI_USER, type Config, DEFAULT_REMOTE_USER, LAUNCHCTL_MS, type Paths, previousLabels, TAILSCALED_LABEL } from "./config.ts";
+import { type Config, LAUNCHCTL_MS, type Paths, previousLabels, TAILSCALED_LABEL } from "./config.ts";
 import type { Sys } from "./sys.ts";
 
 // The Tailscale version whose log lines the parser was checked against. A test fails when
 // versions.json pins another, so the lines are read again first.
 export const PARSED_TAILSCALE_VERSION = "1.104.5";
+
+// A sign-in link's code in a log, blanked where it lies: x for each of its characters.
+const LINK_CODE = /https:\/\/login\.tailscale\.com\/a\/([A-Za-z0-9]{6,40})/g;
+export function blankLinks(fd: number, text: string, at: number): number {
+  let n = 0;
+  for (const m of text.matchAll(LINK_CODE)) {
+    const off = Buffer.byteLength(text.slice(0, m.index! + m[0].length - m[1]!.length));
+    writeSync(fd, "x".repeat(m[1]!.length), at + off);
+    n++;
+  }
+  return n;
+}
 // tailscaled's log is emptied once it passes this, with its last part in <file>.0: under 4 MB.
 export const TAILSCALED_LOG_MAX = 2_000_000;
 // A pass reads at most this much of what the log grew by. More is skipped, and said.
@@ -56,6 +68,7 @@ const WHOIS_TRIES_MS = 10 * 60_000;
 
 export type Check = "asked" | "likely";
 export type CheckBasis = "log" | "wait";
+// "ci" is the service account (accounts.service): the key v2.6.0 wrote in the records, kept so they read.
 export type Kind = "person" | "ci" | "agent";
 
 // ---------------------------------------------------------------------------------------------
@@ -421,8 +434,9 @@ export interface SeenRecord {
   logMovedAt?: number; // the guard last moved aside a log every user could read
 }
 
-export function kindOf(acct: string | undefined, agent: string): Kind {
-  return acct === agent ? "agent" : acct === CI_USER ? "ci" : "person";
+// agent: accounts.agent, or "" for none, which no account is.
+export function kindOf(acct: string | undefined, agent: string, service: string): Kind {
+  return acct !== undefined && acct === agent ? "agent" : acct === service ? "ci" : "person";
 }
 
 const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : undefined);
@@ -502,16 +516,16 @@ export function readSeenRecord(path: string, rootUid = 0): SeenRecord | undefine
 }
 
 // The counts every user may read, from the admins' record.
-export function seenOf(r: AdminRecord, agent: string, logMovedAt?: number): SeenRecord {
+export function seenOf(r: AdminRecord, agent: string, service: string, logMovedAt?: number): SeenRecord {
   const empty = (): KindCounts => ({ logins: [], asked: 0, likely: 0, unverified: [] });
   const kinds: Record<Kind, KindCounts> = { person: empty(), ci: empty(), agent: empty() };
   for (const l of r.logins) {
-    const k = kinds[kindOf(l.account, agent)];
+    const k = kinds[kindOf(l.account, agent, service)];
     k.logins.push(l.at);
     if (l.check === "asked") k.asked++;
     if (l.check === "likely") k.likely++;
   }
-  for (const u of r.unverified) if (u.session) kinds[kindOf(u.account, agent)].unverified.push(u.at);
+  for (const u of r.unverified) if (u.session) kinds[kindOf(u.account, agent, service)].unverified.push(u.at);
   for (const k of Object.values(kinds)) {
     k.logins = k.logins.sort((a, b) => a - b).slice(-5000);
     k.unverified = k.unverified.sort((a, b) => a - b).slice(-5000);
@@ -596,7 +610,7 @@ export class LoginsKeeper {
   constructor(
     private sys: Sys,
     private p: KeeperPaths,
-    private cfg: Pick<Config, "remoteUser">,
+    private cfg: Pick<Config, "accounts">,
     private rootUid = 0,
     private max = TAILSCALED_LOG_MAX,
     private chunk = READ_CHUNK,
@@ -629,11 +643,11 @@ export class LoginsKeeper {
     if (!minute) return { ...(said.length ? { said: said.join("; ") } : {}), logins: -1, unverified: -1 };
     this.log.prune(now - RECORD_DAYS * DAY_MS);
     const records = await readLoginRecords(this.sys);
-    const agent = this.cfg.remoteUser ?? DEFAULT_REMOTE_USER;
+    const agent = this.cfg.accounts.agent ?? "";
     const before = readAdminRecord(this.p.loginsRecord, this.rootUid);
     const rec = await this.update(before, records, now, agent);
     const body = JSON.stringify(rec);
-    const seen = JSON.stringify(seenOf(rec, agent, this.logMovedAt));
+    const seen = JSON.stringify(seenOf(rec, agent, this.cfg.accounts.service, this.logMovedAt));
     if (!before || JSON.stringify(before) !== body || JSON.stringify(readSeenRecord(this.p.loginsSeen, this.rootUid)) !== seen) {
       place(this.p.loginsRecord, body, 0o640, ADMIN_GID);
       place(this.p.loginsSeen, seen, 0o644, 0);
@@ -686,12 +700,16 @@ export class LoginsKeeper {
     if (moveAside) await this.moveAside(said, now);
   }
 
-  // The bytes from..end, READ_CHUNK at a time, never all at once.
+  // The bytes from..end, READ_CHUNK at a time, never all at once. A Tailscale sign-in link in them,
+  // which some tailscaled versions log and which is a bearer secret until approved, is blanked in
+  // place, byte for byte, so the log keeps its length and nothing after it moves.
   private feedFrom(fd: number, from: number, end: number): void {
     for (let pos = from; pos < end; pos += this.chunk) {
       const n = Math.min(this.chunk, end - pos);
       this.largestRead = Math.max(this.largestRead, n);
-      this.log.feed(readAll(fd, n, pos));
+      const text = readAll(fd, n, pos);
+      blankLinks(fd, text, pos);
+      this.log.feed(text);
     }
   }
 
@@ -901,7 +919,7 @@ export function adminAnswer(v: AdminView) {
   };
 }
 
-const KIND_WORDS: Record<Kind, string> = { person: "a person's account", ci: "ci", agent: "the agent account" };
+const KIND_WORDS: Record<Kind, string> = { person: "a person's account", ci: "the service account", agent: "the agent account" };
 const within = (ts: number[], from: number) => ts.filter((t) => t >= from);
 
 export function seenScreen(s: SeenRecord | undefined, now: number): string[] {

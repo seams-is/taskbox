@@ -1,5 +1,5 @@
 // v2.5.0: what each job used, sampled through the VM engine, kept in the job line, and shown in
-// taskbox jobs and per label in taskbox timings.
+// taskbox job list and per label in taskbox job timings.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { ANSWERS, jobsAnswer, timingsAnswer } from "../src/answers.ts";
@@ -7,7 +7,7 @@ import { jobLines, type JobRecord, validJob } from "../src/jobs.ts";
 import { oneJob } from "../src/loop.ts";
 import { labelUsage, labelUsageLines, LINUX_USAGE, MACOS_USAGE, parseLinuxUsage, parseMacUsage, plausible, summarise, usageLine, type UsageSample } from "../src/usage.ts";
 import { FakeSys } from "./fake.ts";
-import { loopDeps, tempRoot } from "./helpers.ts";
+import { loopDeps, tempRoot , testBox } from "./helpers.ts";
 
 // vm_stat as current macOS prints it.
 const MAC_OUT = `total 8589934592
@@ -60,7 +60,7 @@ describe("a sample", () => {
   });
 
   test("Linux: MemTotal less MemAvailable; /proc/stat a second apart", () => {
-    expect(parseLinuxUsage(LINUX_OUT)).toEqual({ memUsedMB: 4883, memTotalMB: 7813, cpuBusy: 2, cpus: 4 });
+    expect(parseLinuxUsage(LINUX_OUT)).toEqual({ memUsedMB: 4883, memTotalMB: 7813, cpuBusy: 2, cpus: 4, steal: 0 });
   });
 
   test("anything odd reads as no sample", () => {
@@ -88,7 +88,7 @@ describe("the job line", () => {
     const { writeFileSync } = await import("node:fs");
     const { paths } = await import("../src/config.ts");
     const { tempRoot } = await import("./helpers.ts");
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     mkdirSync(p.shared, { recursive: true });
     const line = { v: 1, startedAt: 1, endedAt: 2, repo: "example-org/app", result: "passed", vmDeleted: true, guard: "ok" };
     writeFileSync(p.jobsFile, [JSON.stringify({ ...line, usage: { samples: 1, memPeakMB: 9e9 } }), JSON.stringify({ ...line, labels: ["a b"] }), JSON.stringify(line)].join("\n") + "\n");
@@ -97,7 +97,7 @@ describe("the job line", () => {
     expect(jobs.every((j) => j.usage === undefined && j.labels === undefined)).toBe(true);
   });
 
-  test("taskbox jobs shows them, and a line with an odd record isn't shown", () => {
+  test("taskbox job list shows them, and a line with an odd record isn't shown", () => {
     const base: JobRecord = { v: 1, startedAt: 1, endedAt: 2, repo: "example-org/app", result: "passed", vmDeleted: true, guard: "ok", labels: ["taskbox-macos"], usage: { samples: 3, memPeakMB: 6246, memP90MB: 5530, memTotalMB: 8192, cpuPeak: 3.8, cpuP90: 2.5, cpus: 4 } };
     expect(validJob(base)).toBe(true);
     expect(jobLines(base).at(-1)).toBe("              Used: memory 6.1 GB at peak, 90% of the time under 5.4 GB, of 8.0 GB; CPUs 3.8 at peak, 90% under 2.5, of 4. 3 samples.");
@@ -109,7 +109,7 @@ describe("the job line", () => {
   });
 });
 
-describe("per label in taskbox timings", () => {
+describe("per label in taskbox job timings", () => {
   test("the median and 90th percentile of each job's peaks, by its first label", () => {
     const u = (mem: number, cpu: number) => ({ samples: 5, memPeakMB: mem, memP90MB: mem, memTotalMB: 8192, cpuPeak: cpu, cpuP90: cpu, cpus: 4 });
     const jobs = [
@@ -185,7 +185,7 @@ describe("during a job", () => {
     const line = JSON.parse(readFileSync(d.paths.jobsFile, "utf8").trim().split("\n").at(-1)!);
     expect(line.usage).toMatchObject({ memPeakMB: 4063, memTotalMB: 8192, cpuPeak: 2, cpus: 4 });
     expect(line.usage.samples).toBeGreaterThan(1);
-    expect(line.labels).toEqual([d.cfg.label]);
+    expect(line.labels).toEqual([d.cfg.label, "taskbox-1-macos"]);
   });
 
   test("a guest that reports more than its VM has is ignored, and its job line stays", async () => {
@@ -207,7 +207,7 @@ describe("during a job", () => {
   });
 });
 
-describe("taskbox timings", () => {
+describe("taskbox job timings", () => {
   test("has a section for what each label's jobs used", async () => {
     const { timingsScreen } = await import("../src/timings.ts");
     const { CFG } = await import("./helpers.ts");

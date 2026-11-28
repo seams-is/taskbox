@@ -10,10 +10,10 @@ import { mirrorLogLine } from "../src/shared.ts";
 import { computeState } from "../src/state.ts";
 import { readLoopState } from "../src/watch.ts";
 import { FakeSys } from "./fake.ts";
-import { PEM, quietBox, tempRoot } from "./helpers.ts";
+import { PEM, tempRoot, testBox, quietBox } from "./helpers.ts";
 
 const box = () => {
-  const p = paths(tempRoot(), "app");
+  const p = paths(tempRoot(), testBox());
   mkdirSync(p.projectState, { recursive: true });
   mkdirSync(p.shared, { recursive: true });
   return p;
@@ -42,7 +42,7 @@ describe("a loop that ends on an error", () => {
     }
   });
   test("still returns when its folder can't be written", () => {
-    const p = paths(tempRoot(), "app");
+    const p = paths(tempRoot(), testBox());
     rmSync(p.projectState, { recursive: true });
     expect(loopStopped(p, new Log(p.log), "a thrown string")).toBe(1);
     expect(existsSync(p.log)).toBe(false);
@@ -61,7 +61,7 @@ describe("the log", () => {
   test("a missing file is no error", () => {
     expect(() => rotate(join(tempRoot(), "none.log"))).not.toThrow();
   });
-  test("taskbox log reads across a move", async () => {
+  test("taskbox logs reads across a move", async () => {
     const p = box();
     const now = Date.parse("2026-11-12T16:00:00Z");
     writeFileSync(`${p.log}.1`, "2026-11-12T14:05:00.000Z pulling img\n");
@@ -71,7 +71,7 @@ describe("the log", () => {
     sys.clock = now;
     sys.responders.push((cmd) => (cmd === "/bin/launchctl" ? { code: 0, stdout: "state = running\n", stderr: "" } : undefined));
     const said: string[] = [];
-    const d: OpsDeps = { sys, paths: p, uid: 502, ciUid: 502, say: (l) => said.push(l), ask: async () => "no" };
+    const d: OpsDeps = { sys, paths: p, uid: 502, serviceUid: 502, say: (l) => said.push(l), ask: async () => "no" };
     await logCommand(d);
     expect(said[0]).toContain("Started downloading img.");
     expect(said[1]).toContain("A job ran and finished.");

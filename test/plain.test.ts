@@ -5,22 +5,24 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CheckContext, LINK_FIX, LINK_FIX_FULL, otherUsers, PRESTART, runChecks } from "../src/checks.ts";
+import { GitHubError } from "../src/ghfail.ts";
 import { CANT_REACH, cantReach, Stop } from "../src/install.ts";
 import { AGENTS_THEN_UPDATE, computeState, headline } from "../src/state.ts";
 import { screen } from "../src/watch.ts";
 import { paths } from "../src/config.ts";
-import { argsProblem, elevation, isAdmin, ROOT_COMMANDS, SUDO, TASKBOX } from "../src/elevate.ts";
+import { elevation, isAdmin, rootPaths, SUDO, TASKBOX } from "../src/elevate.ts";
+import { parseLine } from "../src/registry.ts";
 import { commandLinkProblem, INSTALL_NAME, linkTarget, placeCommandLink, prune, relink, swapIn, updateUnfinished } from "../src/layout.ts";
-import { type OpsDeps, UNLOCK_ASKS, unlock } from "../src/ops.ts";
+import { type OpsDeps, unlockAsks, unlock } from "../src/ops.ts";
 import { FakeSys, NETSTAT_CLEAN } from "./fake.ts";
-import { CFG, quietBox } from "./helpers.ts";
+import { CFG, testBox, quietBox } from "./helpers.ts";
 
 const repo = new URL("..", import.meta.url).pathname;
 const me = process.getuid!();
 
 function root(): { r: string; p: ReturnType<typeof paths>; opt: string } {
   const r = mkdtempSync(join(tmpdir(), "taskbox-plain-"));
-  const p = paths(r, "app");
+  const p = paths(r, testBox());
   mkdirSync(join(r, "opt"));
   mkdirSync(join(r, "usr")); // always there on macOS
   return { r, p, opt: join(r, "opt") };
@@ -40,28 +42,33 @@ describe("a root command typed by someone who isn't root", () => {
     expect(e.argv).toEqual([SUDO, "-p", "Password for %u: ", "--", TASKBOX, "update", "4e101cf"]);
     // Both are whole paths, so nothing is looked up on PATH; taskbox is the installed command.
     expect(SUDO).toStartWith("/");
-    expect(TASKBOX).toBe(join(paths("/", "app").bin, "taskbox"));
+    expect(TASKBOX).toBe(join(paths("/", testBox()).bin, "taskbox"));
   });
 
   test("anyone else gets one line, and nothing runs", () => {
-    for (const cmd of ROOT_COMMANDS) {
+    for (const cmd of rootPaths()) {
       const e = elevation(cmd, [], false);
       expect(e.argv).toBeUndefined();
       expect(e.say).toBe(`Switch to your admin user and type taskbox ${cmd}.`);
     }
   });
 
-  test("update takes one commit or nothing; the others take nothing", () => {
-    expect(argsProblem("update", [])).toBeUndefined();
-    expect(argsProblem("update", ["v2.0.0"])).toBeUndefined();
-    expect(argsProblem("update", ["4e101cf"])).toBeDefined();
-    expect(argsProblem("update", ["main"])).toBeDefined();
-    expect(argsProblem("update", ["v2.0"])).toBeDefined();
-    expect(argsProblem("update", ["v2.0.0", "x"])).toBeDefined();
-    expect(argsProblem("update", ["--preserve-env"])).toBeDefined();
-    expect(argsProblem("undo", [])).toBeUndefined();
-    expect(argsProblem("remove", ["-y"])).toBeDefined();
-    expect(argsProblem("unlock", ["ci"])).toBeDefined();
+  test("update takes one release or nothing; the others take nothing", () => {
+    const ok = (...a: string[]) => parseLine(a).ok;
+    expect(ok("update")).toBe(true);
+    expect(ok("update", "v2.0.0")).toBe(true);
+    expect(ok("update", "--to", "v3.0.0-rc.1")).toBe(true);
+    expect(ok("update", "4e101cf")).toBe(false);
+    expect(ok("update", "main")).toBe(false);
+    expect(ok("update", "v2.0")).toBe(false);
+    expect(ok("update", "v2.0.0", "x")).toBe(false);
+    expect(ok("update", "v2.0.0", "--to", "v2.0.0")).toBe(false);
+    expect(ok("update", "--preserve-env")).toBe(false);
+    expect(ok("rollback")).toBe(true);
+    expect(ok("remove", "-y")).toBe(false);
+    expect(ok("remove", "--keep-images")).toBe(true);
+    expect(ok("remove", "box-1")).toBe(false);
+    expect(ok("unlock", "ci")).toBe(false);
   });
 
   test("admin is dseditgroup's 0 only; 67, an error or an odd name count as not", async () => {
@@ -197,10 +204,10 @@ describe("taskbox unlock", () => {
       return undefined;
     });
     const r = mkdtempSync(join(tmpdir(), "taskbox-unlock-"));
-    const p = paths(r, "app");
+    const p = paths(r, testBox());
     const said: string[] = [];
-    const d: OpsDeps = { sys, paths: p, uid: 0, ciUid: 502, say: (l) => said.push(l), ask: async () => "no" };
-    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, ciUid: 502 };
+    const d: OpsDeps = { sys, paths: p, uid: 0, serviceUid: 502, say: (l) => said.push(l), ask: async () => "no" };
+    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, serviceUid: 502 };
     const ran: string[][] = [];
     return { d, c, said, ran, state };
   }
@@ -209,21 +216,21 @@ describe("taskbox unlock", () => {
     const { d, c, said, ran, state } = setup(false);
     const code = await unlock(d, c, (argv) => (ran.push(argv), (state.unlocks = true), 0));
     expect(code).toBe(0);
-    expect(ran).toEqual([["/usr/bin/fdesetup", "add", "-usertoadd", "ci"]]);
-    expect(said[0]).toBe(UNLOCK_ASKS);
-    expect(said.join("\n")).toContain("Did: ci can now unlock the disk.");
+    expect(ran).toEqual([["/usr/bin/fdesetup", "add", "-usertoadd", "taskbox"]]);
+    expect(said[0]).toBe(unlockAsks("taskbox"));
+    expect(said.join("\n")).toContain("Did: taskbox can now unlock the disk.");
   });
 
   test("fdesetup that didn't add ci says so, and asks for nothing else", async () => {
     const { d, c, said } = setup(false);
     expect(await unlock(d, c, () => 1)).toBe(1);
-    expect(said.join("\n")).toContain("Did: ci still can't unlock the disk (fdesetup ended with 1).");
+    expect(said.join("\n")).toContain("Did: taskbox still can't unlock the disk (fdesetup ended with 1).");
     expect(said.at(-1)).toBe("Next: Type taskbox unlock again.");
   });
 
   test("ci already unlocks, or FileVault is off: nothing runs", async () => {
     for (const [unlocks, fv, line] of [
-      [true, true, "ci can already unlock the disk."],
+      [true, true, "taskbox can already unlock the disk."],
       [false, false, "FileVault is off, so a restart asks for no password."],
     ] as const) {
       const { d, c, said, ran } = setup(unlocks, fv);
@@ -239,11 +246,13 @@ describe("no sudo in what the owner reads", () => {
     expect(readFileSync(join(repo, "README.md"), "utf8")).not.toMatch(/sudo/i);
     const sh = readFileSync(join(repo, "install.sh"), "utf8");
     for (const line of sh.split("\n").filter((l) => /^\s*echo /.test(l))) expect(line).not.toMatch(/sudo/i);
-    for (const f of readdirSync(join(repo, "src"))) {
+    // Every file under src, in its subfolders too.
+    for (const f of readdirSync(join(repo, "src"), { recursive: true, encoding: "utf8" }).filter((f) => lstatSync(join(repo, "src", f)).isFile())) {
       const lines = readFileSync(join(repo, "src", f), "utf8").split("\n");
       for (const [i, line] of lines.entries()) {
         if (/^\s*\/\//.test(line)) continue; // a comment
-        const left = line.replace(/\/usr\/bin\/sudo/g, "").replace(/\bSUDO(_USER)?\b/g, "");
+        // Paths a program names are not words the owner reads: sudo itself, and the agent shell's rule file.
+        const left = line.replace(/\/usr\/bin\/sudo|\/etc\/sudoers\.d\/|\/usr\/sbin\/visudo/g, "").replace(/\bSUDO(_USER|_UID)?\b/g, "");
         if (/sudo/i.test(left)) throw new Error(`src/${f}:${i + 1} says sudo: ${line.trim()}`);
       }
     }
@@ -256,12 +265,22 @@ describe("no sudo in what the owner reads", () => {
     expect(sh).toContain("/usr/sbin/dseditgroup -o checkmember -m");
   });
 
-  test("install.sh stops on a copy with no taskbox.json, before it asks for a password", () => {
+  test("install.sh stops on a release without its signed files, before it asks for a password", () => {
     const sh = readFileSync(join(repo, "install.sh"), "utf8");
-    const check = sh.indexOf('if [ ! -f "$here/taskbox.json" ]; then');
+    const check = sh.indexOf('if [ ! -f "$from/statement.json" ] || [ ! -f "$from/statement.json.sig" ]; then');
     expect(check).toBeGreaterThan(0);
     expect(check).toBeLessThan(sh.indexOf("exec /usr/bin/sudo"));
-    expect(sh.slice(check).split("\n").slice(1, 3).join("\n")).toMatch(/echo "This copy of taskbox has no taskbox\.json\. .*"\n\s+exit 1/);
+    expect(sh.slice(check).split("\n").slice(1, 3).join("\n")).toMatch(/echo "The release isn't complete in .*"\n\s+exit 1/);
+  });
+
+  test("install.sh takes the settings repo, and reads a public one at a commit, by https only", () => {
+    const sh = readFileSync(join(repo, "install.sh"), "utf8");
+    expect(sh).toContain('if [ -z "$settings" ]; then');
+    expect(sh).toContain("--proto '=https' --tlsv1.2");
+    expect(sh).toContain('"https://api.github.com/repos/$settings/commits/HEAD"');
+    expect(sh).toContain('"https://raw.githubusercontent.com/$settings/$sha/taskbox.json"');
+    // Nothing from the admin's Downloads, and no App key.
+    expect(sh).not.toMatch(/Downloads|private-key/);
   });
 });
 
@@ -271,7 +290,7 @@ describe("the check rows for the install", () => {
     setup(p, opt);
     const sys = new FakeSys();
     quietBox(sys);
-    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, ciUid: 502 };
+    const c: CheckContext = { sys, cfg: CFG, paths: p, uid: 0, serviceUid: 502 };
     const all = await runChecks(PRESTART, c);
     return Object.fromEntries(all.filter((k) => ["Installed files match", "taskbox command"].includes(k.name)).map((k) => [k.name, `${k.status} ${k.detail}`]));
   }
@@ -324,6 +343,9 @@ describe("an update that can't reach GitHub", () => {
     expect(cantReach(refused)).toBe(true);
     for (const code of ["ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "ConnectionRefused"]) expect(cantReach(Object.assign(new Error("x"), { code }))).toBe(true);
     expect(cantReach(new Error("x", { cause: Object.assign(new Error("y"), { code: "ENOTFOUND" }) }))).toBe(true);
+    // GitHub's client classes a failed connection as its own error (ghfail.ts).
+    for (const kind of ["network", "timeout"] as const) expect(cantReach(new GitHubError(kind, null, "x"))).toBe(true);
+    expect(cantReach(new GitHubError("refused", 403, "x"))).toBe(false);
     expect(cantReach(new DOMException("t", "TimeoutError"))).toBe(true);
   });
 
@@ -335,7 +357,7 @@ describe("an update that can't reach GitHub", () => {
   });
 
   test("its line is plain and gives the owner the step", () => {
-    expect(CANT_REACH).toBe("taskbox can't reach GitHub. Check the box's network, then type taskbox update again.");
+    expect(CANT_REACH).toBe("taskbox can't reach GitHub. Check the box's network, then run the install again.");
   });
 });
 
@@ -344,7 +366,7 @@ describe("the Other users row", () => {
     const sys = new FakeSys();
     quietBox(sys);
     sys.responders.push((cmd, args) => {
-      if (cmd === "/usr/bin/dscl" && args[1] === "-list") return { code: 0, stdout: "admin 501\nci 502\npat 503\n_www 70\n", stderr: "" };
+      if (cmd === "/usr/bin/dscl" && args[1] === "-list") return { code: 0, stdout: "admin 501\ntaskbox 502\npat 503\n_www 70\n", stderr: "" };
       if (cmd === "/usr/bin/dscl" && args[1] === "-read") return { code: 0, stdout: "GroupMembership: root admin\n", stderr: "" };
       return undefined;
     });
@@ -361,7 +383,7 @@ describe("the command link on a box already on the links", () => {
     relink(p.opt, "taskbox-aaaa0000aaaa-AAAAAA");
     mkdirSync(join(p.commandLink, "..", ".."), { recursive: true });
     mkdirSync(join(p.commandLink, ".."));
-    const c = { sys: new FakeSys(), cfg: CFG, paths: p, uid: me, ciUid: me, rootUid: me } as unknown as CheckContext;
+    const c = { sys: new FakeSys(), cfg: CFG, paths: p, uid: me, serviceUid: me, rootUid: me } as unknown as CheckContext;
     const row = (await runChecks(PRESTART.filter(([n]) => n === "taskbox command"), c))[0]!;
     expect(row.status).toBe("FAIL");
     expect(row.detail).toEndWith("is missing. Switch to your admin user and type /opt/taskbox/bin/taskbox update.");

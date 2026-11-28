@@ -1,10 +1,11 @@
 // The VM engine: everything taskbox asks of the program that runs its VMs (v2.1.0). Tart is the one
 // engine (src/tart.ts). Another, such as Lume, would implement the same interface, and must give
-// the same security boundary first (docs/vm-engines.md). Nothing but this file imports an engine.
+// the same security boundary first. Nothing but this file imports an engine.
 import type { Paths, Versions } from "./config.ts";
 import type { UsageProbe } from "./guest.ts";
 import type { Proc, RunResult, Sys } from "./sys.ts";
 import type { UsageSample } from "./usage.ts";
+import type { Evaluator } from "./net/rules.ts";
 import { TART_KIT } from "./tart.ts";
 
 // IMAGE_GONE lives in imagegone.ts, so tart.ts can use it without importing this file's values.
@@ -18,7 +19,7 @@ export interface VmInfo {
 }
 
 // What a VM may reach, said once for every engine. Each engine turns it into its own rules, and must
-// enforce all of it (docs/vm-engines.md).
+// enforce all of it.
 export interface NetPolicy {
   // Addresses no VM may reach: the box's public address and the tailnet's range.
   block: string[];
@@ -33,6 +34,11 @@ export interface VmEngine {
   clone(image: string, vm: string): Promise<RunResult>;
   size(vm: string, cpus: number, memoryMB: number): Promise<RunResult>; // on the clone, never the image
   start(vm: string, net: NetPolicy): Proc; // runs until stopped
+  // The tool cache's bake (tools/bake.ts): the one boot of a base VM, with one folder shared into it
+  // read-only under tag. No job VM is started this way.
+  startBake(vm: string, net: NetPolicy, share: { path: string; tag: string }): Proc;
+  // Where a VM's disk is, for the hash the bake records.
+  diskPath(vm: string): string;
   exec(vm: string, cmd: string[], stdin?: string | Uint8Array, timeoutMs?: number): Promise<RunResult>; // never over SSH
   execStream(vm: string, cmd: string[], stdin: string, onLine: (l: string) => void): Proc;
   ip(vm: string): Promise<string>;
@@ -47,6 +53,9 @@ export interface VmEngine {
   runtimeProblem(): Promise<{ why: string; halt: boolean } | undefined>;
   // The policy as the engine applied it, for the status file a job reads (box-check reads these).
   netRecord(net: NetPolicy): Record<string, unknown>;
+  // What the engine's own rules let a VM's packet reach, from the very lists it passes (net/rules.ts).
+  // vmIp: the VM's address, for the engine's own address on its network; absent, asked as "@host".
+  evaluator(net: NetPolicy, vmIp?: string): Evaluator;
   // v2.5.0: one sample of what the guest uses, by the guest's own probe, within timeoutMs. Never
   // throws: a sample that fails or can't be read is undefined.
   usage(vm: string, probe: UsageProbe, timeoutMs: number): Promise<UsageSample | undefined>;
@@ -70,11 +79,12 @@ export interface EngineKit {
   place(c: PlaceContext): Promise<void>; // puts its tools in the new install
   inert(sys: Sys, prev: string): Promise<void>; // makes a kept install's tools unusable
   // After the new install folder is root's and read-only, such as Softnet's setuid bit. Undo runs the
-  // same on the kept install, so it is usable again.
-  finish(dir: string, setuid: (path: string) => Promise<void>, run: (cmd: string, args: string[]) => Promise<void>): Promise<void>;
+  // same on the kept install, so it is usable again. service: the one account besides root that may
+  // enter Softnet's folder (accounts.service).
+  finish(dir: string, service: string, setuid: (path: string) => Promise<void>, run: (cmd: string, args: string[]) => Promise<void>): Promise<void>;
   // An install an older release's updater laid out, brought to this layout by the guard (root, on
   // this release's code). true when it changed something.
-  settle(dir: string, run: (cmd: string, args: string[]) => Promise<void>): Promise<boolean>;
+  settle(dir: string, service: string, run: (cmd: string, args: string[]) => Promise<void>): Promise<boolean>;
   checks: [string, EngineCheck][];
   open(sys: Sys, paths: Paths): VmEngine;
 }

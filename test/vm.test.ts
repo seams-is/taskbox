@@ -7,10 +7,11 @@ import { PRESTART } from "../src/checks.ts";
 import { type Config, loadConfig, paths } from "../src/config.ts";
 import { netFor, oneJob, proveLinux, RESTART, runLoop, TAILNET_RANGE } from "../src/loop.ts";
 import type { Proc, RunResult } from "../src/sys.ts";
+import { Evaluator } from "../src/net/rules.ts";
 import { softnetRules, TartEngine } from "../src/tart.ts";
 import { DEFAULT_ENGINE, engineFor, ENGINES, kitFor, type NetPolicy, type VmEngine, type VmInfo } from "../src/vm.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, loopDeps, settingsDir, settingsText, tempRoot } from "./helpers.ts";
+import { CFG, loopDeps, settingsDir, settingsText, tempRoot, testBox } from "./helpers.ts";
 
 const repo = join(import.meta.dir, "..");
 const LINUX_IMAGE = "ghcr.io/cirruslabs/ubuntu-runner-arm64@sha256:" + "1".repeat(64);
@@ -49,6 +50,12 @@ class FakeEngine implements VmEngine {
     this.calls.push("start");
     this.nets.push(net);
     return this.proc();
+  }
+  startBake(): Proc {
+    throw new Error("no job VM is started with a share");
+  }
+  diskPath(vm: string): string {
+    return `/nowhere/${vm}/disk.img`;
   }
   async exec(_vm: string, cmd: string[], stdin?: string | Uint8Array) {
     this.calls.push(`exec ${cmd[0]}`);
@@ -90,6 +97,9 @@ class FakeEngine implements VmEngine {
   }
   netRecord(net: NetPolicy) {
     return { fakeNet: net.block };
+  }
+  evaluator(net: NetPolicy) {
+    return new Evaluator({ block: net.block, allow: [] });
   }
 }
 
@@ -155,7 +165,7 @@ describe("Tart, the one engine", () => {
     const net = netFor(CFG, "203.0.113.7");
     expect(softnetRules(net)).toEqual({ block: ["203.0.113.7/32", "100.64.0.0/10", "@host"], allow: ["out proto udp @host port 53", "out proto tcp @host port 53"] });
     const sys = new FakeSys();
-    const t = new TartEngine(sys, paths("/", "app"));
+    const t = new TartEngine(sys, paths("/", testBox()));
     t.start("vm", net);
     expect(sys.spawned[0]!.args).toContain("--net-softnet-block=203.0.113.7/32,100.64.0.0/10,@host");
     expect(t.netRecord(net)).toEqual({ softnetBlock: ["203.0.113.7/32", "100.64.0.0/10", "@host"], softnetAllow: ["out proto udp @host port 53", "out proto tcp @host port 53"] });
@@ -164,7 +174,7 @@ describe("Tart, the one engine", () => {
   test("Tart's list reads as images and VMs", async () => {
     const sys = new FakeSys();
     sys.responders.push((cmd, args) => (cmd.endsWith("/tart") && args[0] === "list" ? ok(JSON.stringify([{ Name: "ghcr.io/x@sha256:1", Source: "OCI", Size: 77 }, { Name: "job-a", Source: "local" }])) : undefined));
-    expect(await engineFor("tart", sys, paths("/", "app")).list()).toEqual([{ name: "ghcr.io/x@sha256:1", image: true, sizeGB: 77 }, { name: "job-a", image: false, sizeGB: undefined }]);
+    expect(await engineFor("tart", sys, paths("/", testBox())).list()).toEqual([{ name: "ghcr.io/x@sha256:1", image: true, sizeGB: 77 }, { name: "job-a", image: false, sizeGB: undefined }]);
   });
 
   test("the engine's check rows sit where Softnet's always did", () => {
