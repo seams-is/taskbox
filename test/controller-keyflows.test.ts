@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fingerprint } from "../src/approver.ts";
-import { OFFER_HANDLER, trustApprover } from "../src/approverkeys.ts";
+import { OFFER_HANDLER, readOffer, trustApprover, trustRelease } from "../src/approverkeys.ts";
 import { parse } from "../src/command.ts";
 import { applyConfirm } from "../src/confirmapply.ts";
 import { readApprovers, trustFirst, updateApprovers } from "../src/core/approvers.ts";
@@ -19,11 +19,13 @@ import { readPending } from "../src/core/pending.ts";
 import { argsOf, checkSigned, CONTROL_NS, parseStatement, splitSigned, Verified } from "../src/core/statement.ts";
 import { envelope } from "../src/envelope.ts";
 import { handlerFiles } from "../src/handlers/index.ts";
+import { linkPath, readLink, writeLink } from "../src/keyops.ts";
 import { KEY_CODE_HANDLER, readKeyCode, keyCodePath } from "../src/keyrotate.ts";
 import { opJson } from "../src/opcmd.ts";
 import { registry } from "../src/registry.ts";
 import { words } from "../src/shell.ts";
 import { writeConfig } from "../src/controller/home.ts";
+import { trustingPhase } from "../src/controller/keyflows.ts";
 import type { Signer } from "../src/controller/signer.ts";
 import { ADDRESS, CEILING, controllerConfig, deps, INSTALL_ID, pairing, runLine, StandIn, type TestDeps, World } from "./controller-fake.ts";
 import { FakeSys } from "./fake.ts";
@@ -75,7 +77,6 @@ function keyBox() {
     const ws = words(line)!.filter((x, i, all) => x !== "--json" && x !== "--answers" && all[i - 1] !== "--answers");
     if (ws[0] === "nonce") return { stdout: env("nonce", { result: { subject: "box", nonce } }), code: 0 };
     if (ws[0] === "key" && ws[1] === "list") {
-      const { readOffer } = await import("../src/approverkeys.ts");
       const offer = readOffer(state, me, sys.now());
       const keys = [...pinned().map((k) => ({ key: "approver", fingerprint: fingerprint(k) })), ...(offer ? [{ key: "approver", fingerprint: fingerprint(offer.key), offered: b64(offer.key) }] : [])];
       return { stdout: env("key.list", { result: { keys, org: "example-org" } }), code: 0 };
@@ -97,7 +98,6 @@ function keyBox() {
       let op = r.value;
       // A Tailscale rotation's child signs in again and seals the link it gets to the controller's key.
       if (op.type === "key-rotate-tailscale" && op.state === "running") {
-        const { linkPath, readLink, writeLink } = await import("../src/keyops.ts");
         if (!readLink(linkPath(state.dir), op.id, me)) writeLink(linkPath(state.dir), op.id, String(op.params.seal), "https://login.tailscale.com/a/abcdef123456", { rootUid: me });
         return { stdout: env("op.show", { result: { op: opJson(op), sealed: readLink(linkPath(state.dir), op.id, me) } }), code: 0 };
       }
@@ -169,7 +169,6 @@ describe("the controller's key flows, end to end", () => {
     const b = keyBox();
     const k = keyPair();
     const d = controller(b.w, k);
-    const { trustingPhase } = await import("../src/controller/keyflows.ts");
     let polls = 0;
     const real = b.box.hook!;
     b.box.hook = async (line) => {
@@ -188,7 +187,6 @@ describe("the controller's key flows, end to end", () => {
     const first = keyPair();
     const second = keyPair();
     await updateApprovers(b.state.approvers, { rootUid: me }, (s) => trustFirst(s, first.key, b.sys.now(), "screen"));
-    const { trustingPhase } = await import("../src/controller/keyflows.ts");
     const newer = controller(b.w, second);
     newer.tty = false; // no wait here: it offers and says what comes next
     const out: string[] = [];
@@ -208,7 +206,8 @@ describe("the controller's key flows, end to end", () => {
     await updateApprovers(b.state.approvers, { rootUid: me }, (s) => trustFirst(s, k.key, b.sys.now(), "screen"));
     const d = controller(b.w, k);
     const r = await runLine(d, ["key", "rotate", "tailscale"]);
-    expect(r.code).toBe(0);
+    // The lines first, so a failure shows the controller's reason.
+    expect({ code: r.code, lines: r.lines }).toEqual({ code: 0, lines: r.code === 0 ? r.lines : [] });
     expect(d.opened).toEqual(["https://login.tailscale.com/a/abcdef123456"]);
     expect(r.lines.join("\n")).not.toContain("login.tailscale.com");
     expect(b.box.sent.some((l) => l.includes("login.tailscale.com"))).toBe(false);
@@ -240,7 +239,6 @@ describe("the controller's key flows, end to end", () => {
 
 describe("key trust release, at the box", () => {
   test("shows each fingerprint, pins them after a yes, and keeps the revoked list", async () => {
-    const { trustRelease } = await import("../src/approverkeys.ts");
     const b = keyBox();
     const k = keyPair();
     const file = join(b.state.dir, "release.pub");
