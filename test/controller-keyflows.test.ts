@@ -208,7 +208,8 @@ describe("the controller's key flows, end to end", () => {
     await updateApprovers(b.state.approvers, { rootUid: me }, (s) => trustFirst(s, k.key, b.sys.now(), "screen"));
     const d = controller(b.w, k);
     const r = await runLine(d, ["key", "rotate", "tailscale"]);
-    expect(r.code).toBe(0);
+    // The lines first, so a failure shows the controller's reason.
+    expect({ code: r.code, lines: r.lines }).toEqual({ code: 0, lines: r.code === 0 ? r.lines : [] });
     expect(d.opened).toEqual(["https://login.tailscale.com/a/abcdef123456"]);
     expect(r.lines.join("\n")).not.toContain("login.tailscale.com");
     expect(b.box.sent.some((l) => l.includes("login.tailscale.com"))).toBe(false);
