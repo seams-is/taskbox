@@ -9,7 +9,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseStatement as hopParse } from "../src/hop.ts";
-import { channelOf, compareVersions, describeStatement, NAMESPACE, onChannel, parseStatement, signerFingerprint, signerPrints, signersProblem, skFlags, statementText, verifyRelease, type VerifyDeps } from "../src/release.ts";
+import { blobApplication, channelOf, compareVersions, describeStatement, NAMESPACE, onChannel, parseStatement, signerFingerprint, signerPrints, signersProblem, skFlags, statementText, RELEASE_APP, verifyRelease, verifySigned, type VerifyDeps } from "../src/release.ts";
 import { ASSET, realKeygen as real, sha, statementFor, TGZ } from "./release-fixture.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
 
@@ -73,6 +73,23 @@ describe("verifying a release with ssh-keygen", () => {
     expect(await verifyRelease(real, r)).toEqual({ ok: false, code: "signature", why: "the signature doesn't show its signer was present" });
     expect((await verifyRelease(real, release({ flags: 0x01 }))).ok).toBe(true);
     expect(skFlags(release({ flags: 0x05 }).signature)).toBe(0x05);
+  }, 20_000);
+
+  test("a release key made for taskbox's application takes only a signature made with its PIN; the box refuses one with a touch alone", async () => {
+    const yk = keyPair({ app: RELEASE_APP });
+    const touchOnly = release({ signer: yk, pinned: yk.line, flags: 0x01 });
+    // ssh-keygen passes it: its allowed signers file has no PIN rule, so taskbox reads the flag.
+    expect((await real.run("/usr/bin/ssh-keygen", ["-Y", "verify", "-f", touchOnly.signers, "-I", "taskbox-release", "-n", NAMESPACE, "-s", touchOnly.sigPath], { stdin: touchOnly.statement })).code).toBe(0);
+    expect(await verifyRelease(real, touchOnly)).toEqual({ ok: false, code: "signature", why: "the signature doesn't show the security key checked its PIN" });
+    expect(await verifySigned(real, { message: touchOnly.statement, signature: touchOnly.signature, pinned: yk.line, workRoot: touchOnly.workRoot })).toEqual({ ok: false, why: "the signature doesn't show the security key checked its PIN" });
+    expect((await verifyRelease(real, release({ signer: yk, pinned: yk.line, flags: 0x05 }))).ok).toBe(true);
+    // Beside a key made for another application, each keeps its own rule.
+    const se = keyPair();
+    expect((await verifyRelease(real, release({ signer: se, pinned: `${se.line}${yk.line}`, flags: 0x01 }))).ok).toBe(true);
+    expect((await verifyRelease(real, release({ signer: yk, pinned: `${se.line}${yk.line}`, flags: 0x01 }))).ok).toBe(false);
+    expect(blobApplication(yk.blob)).toBe(RELEASE_APP);
+    expect(blobApplication(se.blob)).toBe("ssh:");
+    expect(blobApplication(Buffer.from("odd"))).toBeUndefined();
   }, 20_000);
 
   test("no replay: older fails, the same fails without --repair, and --repair takes only the recorded tarball", async () => {

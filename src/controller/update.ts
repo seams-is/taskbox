@@ -71,7 +71,7 @@ interface BunPin {
   sha256: string;
 }
 
-function bunPin(app: string): BunPin | undefined {
+export function bunPin(app: string): BunPin | undefined {
   try {
     const v = JSON.parse(readFileSync(join(app, "versions.json"), "utf8"))?.bun;
     if (typeof v?.version === "string" && /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v.version) && typeof v.url === "string" && BUN_URL.test(v.url) && v.url.includes(`/bun-v${v.version}/`) && typeof v.sha256 === "string" && /^[0-9a-f]{64}$/.test(v.sha256)) return { version: v.version, url: v.url, sha256: v.sha256 };

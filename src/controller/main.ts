@@ -2,6 +2,7 @@
 // commands go through forward.ts with --box; box, self, statusline and mcp are the controller's own.
 import { existsSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type CommandSpec, EXIT, type GlobalFlag, parse, usage } from "../command.ts";
 import { realClock } from "../clock.ts";
@@ -28,6 +29,8 @@ import { ENV, realRun } from "./run.ts";
 import { footer, header, type Screen } from "./screens.ts";
 import { readSaved, statusLine } from "./statusline.ts";
 import { rollback, update, type UpdateDeps, updateNote } from "./update.ts";
+import { HOME_VAR as SIGN_HOME_VAR, SIGN_ROOT } from "../release/signroot.ts";
+import { SOURCE_TREE } from "../self.ts";
 
 // ssh-keygen for verifyRelease, through the controller's runner: a full path, the fixed environment,
 // the statement as its whole input, and a time limit.
@@ -56,7 +59,7 @@ export const CONTROLLER: CommandSpec[] = [
   spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing. --fix puts right what it can, after one yes.", { flags: ["json"], options: [{ name: "--fix" }] }),
   spec(["self", "events"], "This controller's own event log: pairings, defaults, self updates.", { flags: ["since", "json"] }),
   spec(["self", "trials"], "The trials before rc.1, one after another, each recording its result. Re-run, it goes on from the first not passed.", { flags: ["json"] }),
-  spec(["sign"], "Signs a draft release with this Mac's release key and publishes it, through your GitHub session. --fingerprint shows the pinned keys; --revoke a release's signer change.", { args: { name: "VERSION", min: 0, max: 1, check: (v) => /^v?\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.[1-9]\d{0,3})?$/.test(v) }, options: [{ name: "--fingerprint" }, { name: "--revoke" }, { name: "--key", value: "FILE" }, { name: "--repo", value: "OWNER/NAME", check: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(v) }] }),
+  spec(["sign"], "Signs a draft release with the release key and publishes it, through your GitHub session, from its root-owned install. --install makes that install; --setup-key moves the release key to a security key; --fingerprint shows the pinned keys; --revoke a release's signer change.", { args: { name: "VERSION", min: 0, max: 1, check: (v) => /^v?\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.[1-9]\d{0,3})?$/.test(v) }, options: [{ name: "--fingerprint" }, { name: "--force" }, { name: "--install" }, { name: "--into", value: "DIR", check: (v) => v.startsWith("/") && v.length < 1000 }, { name: "--key", value: "FILE" }, { name: "--repo", value: "OWNER/NAME", check: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(v) }, { name: "--revoke" }, { name: "--setup-key" }] }),
   spec(["self", "setup"], "Sets up the agents user, the projects folder, their sign-ins and notifications. Re-run, it resumes."),
   spec(["agent", "shell"], "A terminal as the agents user, in the projects folder. With -- COMMAND, that command."),
   spec(["statusline"], "One line for Claude Code's status line, from the last status read."),
@@ -340,35 +343,115 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
   }
 }
 
-// taskbox sign (release/sign.ts): the repo is the one this controller updates from, unless named;
-// the key is the release key's handle in this controller's folder, unless named.
-async function signCommand(d: UpdateDeps, version: string | undefined, opts: Record<string, unknown>, io: { out(l: string): void }): Promise<number> {
-  const { existsSync, mkdirSync, readFileSync } = await import("node:fs");
-  const { join } = await import("node:path");
-  const { fingerprints, GH, revokeTransition, sign } = await import("../release/sign.ts");
+// Where taskbox sign runs from, and how this copy hands over to the root-owned one.
+export interface SignEnv {
+  root: string; // the root-owned install (release/signroot.ts)
+  uid: number; // its owner: 0
+  here: string; // this copy's app folder
+  argv: string[]; // this run's words, to hand over
+  pwd?: string; // the folder taskbox was typed in, for --setup-key's checkout
+  elevate: string[];
+  ghPaths: string[];
+  fidoPaths: string[];
+  handOver(argv: string[]): Promise<number>;
+}
+const APP_HERE = SOURCE_TREE ?? "";
+export async function realSignEnv(): Promise<SignEnv> {
+  const { FIDO_KEYGEN, SIGN_ROOT } = await import("../release/signroot.ts");
+  const { GH } = await import("../release/sign.ts");
+  return {
+    root: SIGN_ROOT,
+    uid: 0,
+    here: APP_HERE,
+    argv: process.argv.slice(2),
+    ...(process.env.PWD?.startsWith("/") ? { pwd: process.env.PWD } : {}),
+    elevate: ["/usr/bin/sudo"],
+    ghPaths: GH,
+    fidoPaths: FIDO_KEYGEN,
+    handOver: (argv) => Bun.spawn(argv, { stdin: "inherit", stdout: "inherit", stderr: "inherit" }).exited,
+  };
+}
+
+// taskbox sign (release/sign.ts). --fingerprint and --install run from any copy; everything else runs
+// from the root-owned install only, after it checks itself (signroot.ts), so no process of this user
+// can change what is shown and signed. This user's copy hands over to it.
+export async function signCommand(d: UpdateDeps, version: string | undefined, opts: Record<string, unknown>, io: { out(l: string): void }, env?: SignEnv): Promise<number> {
+  const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+  const { enclaveSigner, fidoSigner, fingerprints, revokeTransition, sign } = await import("../release/sign.ts");
+  const { installProblem, installSigner, layout } = await import("../release/signroot.ts");
+  const { FIDO_HANDLE, setupKey } = await import("../release/setupkey.ts");
+  const { RELEASE_APP, blobApplication, signerFingerprint, signerLines } = await import("../release.ts");
   const { readPin } = await import("./signers.ts");
+  const e = env ?? (await realSignEnv());
   if (opts.fingerprint === true) {
     // This controller's own pin only, never a release's signers file.
     const pin = readPin(d.home);
     for (const l of typeof pin === "string" ? ["  No release key is pinned on this controller."] : fingerprints(pin.pinned)) io.out(l);
     return EXIT.ok;
   }
+  const L = layout(e.root);
+  const installArgs = { root: e.root, uid: e.uid, elevate: e.elevate, ghPaths: e.ghPaths, fidoPaths: e.fidoPaths };
+  if (opts.install === true) return installSigner({ ...d, out: io.out }, installArgs);
+  if (e.here !== L.app) {
+    if (!existsSync(L.wrapper)) {
+      if (opts["setup-key"] !== true) return io.out(`taskbox sign runs only from its root-owned install, and ${e.root} has none. Type taskbox sign --install: it asks for your password once.`), EXIT.failed;
+      const code = await installSigner({ ...d, out: io.out }, installArgs);
+      if (code !== 0) return code;
+    }
+    const words = opts["setup-key"] === true && typeof opts.into !== "string" && e.pwd ? [...e.argv, "--into", e.pwd] : e.argv;
+    return e.handOver([L.wrapper, ...words]);
+  }
   if (!version) return io.out("taskbox sign takes the release's version, such as 3.0.1."), EXIT.usage;
-  const c = readConfig(d.home);
-  const repo = typeof opts.repo === "string" ? opts.repo : c.ok && c.config.source ? `${c.config.source.owner}/${c.config.source.repo}` : undefined;
-  if (!repo) return io.out("taskbox sign needs the public repo: --repo OWNER/NAME."), EXIT.usage;
-  const gh = GH.find((g) => existsSync(g));
-  if (!gh) return io.out("taskbox sign uses your own GitHub session through gh, and gh isn't installed on this Mac."), EXIT.failed;
-  const key = typeof opts.key === "string" ? opts.key : join(d.home.dir, "release-key", "id_ecdsa_sk_rk");
-  if (!existsSync(key)) return io.out(`No release key at ${key}. Name its file with --key.`), EXIT.failed;
   const work = join(d.home.dir, "sign");
   mkdirSync(work, { recursive: true, mode: 0o700 });
-  const sd = { run: d.run, gh, key, repo, work, ask: d.ask, out: io.out, tty: d.tty };
-  return opts.revoke === true ? revokeTransition(sd, version) : sign(sd, version.replace(/^v/, ""));
+  const checked = await installProblem(e.root, e.uid, d.signed, work);
+  if ("why" in checked) return io.out(`taskbox sign won't run from ${e.root}: ${checked.why}. Type taskbox sign --install again.`), EXIT.failed;
+  const repo = checked.record.repo;
+  if (typeof opts.repo === "string" && opts.repo !== repo) return io.out(`This install of taskbox sign signs for ${repo} only.`), EXIT.usage;
+  const keyDir = join(d.home.dir, "release-key");
+  const fido = existsSync(L.keygen) ? (key: string) => fidoSigner({ keygen: L.keygen, helper: L.helper, lib: L.lib }, key) : undefined;
+  const pin = readPin(d.home);
+  const pinned = typeof pin === "string" ? "" : pin.pinned;
+  const appOf = (pubFile: string) => {
+    const b = /^\S+ ([A-Za-z0-9+/]+={0,2})/.exec(existsSync(pubFile) ? readFileSync(pubFile, "utf8") : "")?.[1];
+    return b ? { app: blobApplication(Buffer.from(b, "base64")), line: `taskbox-release namespaces="taskbox-release" sk-ecdsa-sha2-nistp256@openssh.com ${b}` } : undefined;
+  };
+  if (opts["setup-key"] === true) {
+    if (!fido) return io.out("The security key needs OpenSSH with security key support, and this install has none: brew install openssh, then taskbox sign --install again."), EXIT.failed;
+    if (typeof pin === "string") return io.out(pin), EXIT.failed;
+    if (typeof opts.into !== "string") return io.out("taskbox sign --setup-key writes into taskbox's checkout: name it with --into DIR."), EXIT.usage;
+    const today = new Date(d.now()).toISOString().slice(0, 10);
+    mkdirSync(keyDir, { recursive: true, mode: 0o700 });
+    return setupKey({ run: d.run, keygen: fido(join(keyDir, FIDO_HANDLE)).argv, keyDir, oldSigner: enclaveSigner(join(keyDir, "id_ecdsa_sk_rk")), newSigner: fido(join(keyDir, FIDO_HANDLE)), pinned, into: opts.into, version: version.replace(/^v/, ""), force: opts.force === true, work, ask: d.ask, out: io.out, tty: d.tty, signed: d.signed, today });
+  }
+  // The key: --key, else the security key's once this controller pins it, else the Secure Enclave key.
+  const ykPinned = (() => {
+    const k = appOf(join(keyDir, `${FIDO_HANDLE}.pub`));
+    return !!k && k.app === RELEASE_APP && signerLines(pinned).some((l) => signerFingerprint(l) === signerFingerprint(k.line));
+  })();
+  const key = typeof opts.key === "string" ? opts.key : join(keyDir, ykPinned ? FIDO_HANDLE : "id_ecdsa_sk_rk");
+  if (!existsSync(key)) return io.out(`No release key at ${key}. Name its file with --key.`), EXIT.failed;
+  const onKey = appOf(`${key}.pub`)?.app === RELEASE_APP;
+  if (onKey && !fido) return io.out("That key is on a security key, and this install has no OpenSSH for it: brew install openssh, then taskbox sign --install again."), EXIT.failed;
+  const signer = onKey ? fido!(key) : enclaveSigner(key);
+  // gh's token, read once by the install's own gh; then gh runs with it and an empty config.
+  const t = await d.run([L.gh, "auth", "token"], { limitMs: 30_000, maxBytes: 8_000, env: { HOME: d.userHome } });
+  const token = t.stdout.trim();
+  if (t.code !== 0 || !/^[A-Za-z0-9_]{20,255}$/.test(token)) return io.out("gh has no GitHub session on this Mac: type gh auth login, then taskbox sign again."), EXIT.failed;
+  const ghDir = mkdtempSync(join(work, "gh-"));
+  try {
+    const sd = { run: d.run, gh: L.gh, ghEnv: { GH_TOKEN: token, GH_CONFIG_DIR: ghDir, HOME: ghDir }, signer, repo, work, ask: d.ask, out: io.out, tty: d.tty };
+    return opts.revoke === true ? await revokeTransition(sd, version) : await sign(sd, version.replace(/^v/, ""));
+  } finally {
+    rmSync(ghDir, { recursive: true, force: true });
+  }
 }
 
 export function realDeps(): UpdateDeps {
-  const userHome = homedir();
+  // From taskbox sign's root-owned install, bun runs with an empty HOME and the wrapper names the
+  // signing user's (release/signroot.ts).
+  const signHome = process.env[SIGN_HOME_VAR];
+  const userHome = APP_HERE === join(SIGN_ROOT, "app") && signHome?.startsWith("/") ? signHome : homedir();
   const h = home(userHome);
   let lines: AsyncIterator<string> | undefined;
   return {

@@ -25,6 +25,11 @@ At the Mac's screen instead, as your admin user: download `statement.json`, `sta
 - A box updates itself, inside its update window, to the newest signed release on its channel (`update.channel`: `stable` or `beta`).
 - `taskbox update [VERSION]`, as the admin at the box, installs one now. `taskbox rollback` goes back to a kept install.
 - A box on v2.6.1 moves to v3 with `taskbox update v3.0.0-rc.1`. The steps are in the [release notes](docs/release-v3.0.0-rc.1.md).
+- Unset, `update.delayHours` is 24 on `stable` and 0 on `beta`. The controller posts each release published, with its commit.
+
+## Sign a release
+
+On the Mac that holds the release key, `taskbox sign --install` puts `taskbox sign` in a folder of root's, and `taskbox sign VERSION` runs only from there. `taskbox sign --setup-key VERSION`, in taskbox's checkout, moves the release key to a security key: each signature then needs its PIN and a touch. It needs OpenSSH with security key support (`brew install openssh`), since macOS's own takes none.
 
 ## Commands
 

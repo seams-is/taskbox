@@ -93,6 +93,11 @@ describe("what proves a release", () => {
 describe("the update settings", () => {
   test("defaults, and each key checked", () => {
     expect(updateOf({})).toEqual(DEFAULT_UPDATE);
+    // Unset, a stable box waits a day after publishing and a beta box takes a release at once.
+    expect(updateOf({}).delayHours).toBe(24);
+    expect(updateOf({ update: { channel: "beta" } } as never).delayHours).toBe(0);
+    expect(updateOf({ update: { channel: "beta", delayHours: 6 } } as never).delayHours).toBe(6);
+    expect(updateOf({ update: { delayHours: 0 } } as never).delayHours).toBe(0);
     expect(updateOf({ update: { channel: "beta" } }).channel).toBe("beta");
     for (const bad of [{ auto: "yes" }, { window: "2-5" }, { window: "02:00-02:00" }, { channel: "nightly" }, { delayHours: -1 }, { proveMinutes: 500 }, { other: 1 }, { constructor: 1 }, { toString: 1 }, { hasOwnProperty: 1 }]) expect(() => checkUpdate({ update: bad as never })).toThrow();
     expect(() => checkUpdate({ update: { window: "22:00-04:00", delayHours: 24 } })).not.toThrow();

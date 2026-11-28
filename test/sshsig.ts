@@ -23,25 +23,28 @@ const mpint = (b: Buffer) => {
 };
 const sha = (alg: string, b: Uint8Array) => createHash(alg).update(b).digest();
 
-export function keyPair() {
+// app: the key's application, as -O application= names it. verifyRequired: the line pins it with
+// verify-required, as the release key on a security key is pinned.
+export function keyPair(o: { app?: string; verifyRequired?: boolean } = {}) {
+  const app = o.app ?? APP;
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const jwk = publicKey.export({ format: "jwk" });
   const q = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x!, "base64url"), Buffer.from(jwk.y!, "base64url")]);
-  const blob = Buffer.concat([str(SK), str("nistp256"), str(q), str(APP)]);
+  const blob = Buffer.concat([str(SK), str("nistp256"), str(q), str(app)]);
   // key: the public key; line: the same as a signers file pins a release key.
-  return { privateKey, blob, key: `${SK} ${blob.toString("base64")}`, line: `taskbox-release namespaces="${RELEASE_NAMESPACE}" ${SK} ${blob.toString("base64")}\n` };
+  return { privateKey, blob, app, key: `${SK} ${blob.toString("base64")}`, line: `taskbox-release namespaces="${RELEASE_NAMESPACE}"${o.verifyRequired ? ",verify-required" : ""} ${SK} ${blob.toString("base64")}\n` };
 }
 
 // An armoured SSH signature of message by a security key, as ssh-keygen -Y sign writes it. flags 1 is
 // user presence, 4 user verification. blobNamespace, for tests of ssh-keygen's own namespace check:
 // the namespace the armour says, when it isn't the one signed.
-export function sshsig(k: { privateKey: KeyObject; blob: Buffer }, message: Uint8Array, o: { namespace?: string; flags?: number; blobNamespace?: string } = {}): string {
+export function sshsig(k: { privateKey: KeyObject; blob: Buffer; app?: string }, message: Uint8Array, o: { namespace?: string; flags?: number; blobNamespace?: string } = {}): string {
   const namespace = o.namespace ?? NAMESPACE;
   const flags = o.flags ?? 0x05;
   const signed = Buffer.concat([Buffer.from("SSHSIG"), str(namespace), str(""), str("sha512"), str(sha("sha512", message))]);
   const counter = Buffer.alloc(4);
   counter.writeUInt32BE(1);
-  const sk = Buffer.concat([sha("sha256", Buffer.from(APP)), Buffer.from([flags]), counter, sha("sha256", signed)]);
+  const sk = Buffer.concat([sha("sha256", Buffer.from(k.app ?? APP)), Buffer.from([flags]), counter, sha("sha256", signed)]);
   const rs = ecSign("sha256", sk, { key: k.privateKey, dsaEncoding: "ieee-p1363" });
   const sig = Buffer.concat([str(SK), str(Buffer.concat([mpint(rs.subarray(0, 32)), mpint(rs.subarray(32))])), Buffer.from([flags]), counter]);
   const ver = Buffer.alloc(4);

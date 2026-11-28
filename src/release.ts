@@ -10,7 +10,7 @@
 // statement of any other `v` is refused, so a later format can never be read as this one.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { skFlags as readFlags } from "./core/sshsig.ts";
+import { parseSshsig, skFlags as readFlags } from "./core/sshsig.ts";
 import { inVerifyFolder } from "./core/verifyfolder.ts";
 import { EMBEDDED } from "./embedded.ts";
 import type { RunResult } from "./sys.ts";
@@ -160,6 +160,32 @@ export function signerFingerprint(line: string): string | undefined {
 }
 export const signerPrints = (text: string) => signerLines(text).map(signerFingerprint).filter((f): f is string => !!f);
 
+// The release key on a security key is made for this application, with verify-required
+// (taskbox sign --setup-key). The application is part of the key itself, so a pinned key made for it
+// is taken only with a signature that shows the key checked its PIN. ssh-keygen's allowed signers
+// file has no option for that, so taskbox reads the flag. Any other key needs presence only.
+export const RELEASE_APP = "ssh:taskbox-release";
+// A security key's public blob: its type, curve, point and application, as SSH wire strings.
+export function blobApplication(blob: Buffer): string | undefined {
+  try {
+    let off = 0;
+    const str = () => {
+      const n = blob.readUInt32BE(off);
+      const v = blob.subarray(off + 4, off + 4 + n);
+      if (v.length !== n) throw new Error("short");
+      off += 4 + n;
+      return v;
+    };
+    if (str().toString("latin1") !== "sk-ecdsa-sha2-nistp256@openssh.com") return undefined;
+    str();
+    str();
+    const app = str().toString("latin1");
+    return off === blob.length ? app : undefined;
+  } catch {
+    return undefined;
+  }
+}
+export const needsPin = (blob: Buffer) => blobApplication(blob) === RELEASE_APP;
 // The flags a security key's signature carries (PROTOCOL.u2f): 1, the user was present; 4, the
 // user was verified. ssh-keygen -Y verify accepts a signature whatever its flags, so taskbox reads them.
 export function skFlags(armoured: Uint8Array): number | undefined {
@@ -223,8 +249,9 @@ export async function verifySigned(d: VerifyDeps, o: { message: Uint8Array; sign
     return { ok: false, why: "taskbox couldn't write the files ssh-keygen checks" };
   }
   if (r.code !== 0) return { ok: false, why: "the release isn't signed by a pinned release key" };
-  const flags = skFlags(o.signature);
-  if (flags === undefined || (flags & 0x01) === 0) return { ok: false, why: "the signature doesn't show its signer was present" };
+  const sig = parseSshsig(o.signature);
+  if (!sig || (sig.flags & 0x01) === 0) return { ok: false, why: "the signature doesn't show its signer was present" };
+  if (needsPin(sig.blob) && (sig.flags & 0x04) === 0) return { ok: false, why: "the signature doesn't show the security key checked its PIN" };
   const signer = goodSignature(r.stdout + r.stderr);
   return { ok: true, ...(signer ? { signer } : {}) };
 }

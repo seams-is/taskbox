@@ -36,6 +36,31 @@ describe("taskbox notify", () => {
     expect(readMemory(d.home).id).toBe(m.id);
   }, CEILING);
 
+  test("each release published on the repo it updates from is said once, with its commit; the first read only remembers", async () => {
+    const { d, now } = v3();
+    writeConfig(d.home, { ...controllerConfig([pairing()]), source: { owner: "example-org", repo: "taskbox-public" } });
+    const api = "https://api.github.com/repos/example-org/taskbox-public/releases?per_page=30";
+    const rel = (tag: string, draft = false) => ({ tag_name: tag, draft, assets: [{ name: "statement.json", browser_download_url: `https://github.com/example-org/taskbox-public/releases/download/${tag}/statement.json` }] });
+    const { statementFor } = await import("./release-fixture.ts");
+    const { statementText } = await import("../src/release.ts");
+    d.web.set(api, { status: 200, body: JSON.stringify([rel("v3.0.0")]) });
+    const said = async () => (await notifyOnce(d)).filter((n) => n.title.startsWith("taskbox v"));
+    expect(await said()).toEqual([]);
+    d.web.set(api, { status: 200, body: JSON.stringify([rel("v3.0.2", true), rel("v3.0.1"), rel("v3.0.0")]) });
+    d.web.set("https://github.com/example-org/taskbox-public/releases/download/v3.0.1/statement.json", { status: 200, body: statementText(statementFor("3.0.1", { commit: "a".repeat(40) })) });
+    // Read once an hour.
+    expect(await said()).toEqual([]);
+    now.t += 60 * 60_000;
+    expect(await said()).toEqual([{ box: "", title: "taskbox v3.0.1 published", body: "Commit aaaaaaa, on example-org/taskbox-public. Not signed here? Look before the boxes take it." }]);
+    now.t += 60 * 60_000;
+    expect(await said()).toEqual([]);
+    // GitHub not answering keeps what was seen.
+    d.web.delete(api);
+    now.t += 60 * 60_000;
+    expect(await said()).toEqual([]);
+    expect(readMemory(d.home).releases?.seen).toEqual(["v3.0.1", "v3.0.0"]);
+  }, CEILING);
+
   test("a box not reached for 5 minutes is said once, and again when it is back", async () => {
     const { w, d, now } = v3();
     await notifyOnce(d);

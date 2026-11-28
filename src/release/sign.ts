@@ -7,17 +7,19 @@
 //    GitHub must say the commit is on main and is the merge of the PR the statement names, and that
 //    the release workflow made the draft from a push of this tag at this commit;
 // 4. what is signed is shown, and the owner types yes;
-// 5. ssh-keygen -Y sign -n taskbox-release with the release key (Touch ID), over the exact bytes shown;
+// 5. ssh-keygen -Y sign -n taskbox-release with the release key, over the exact bytes shown: the
+//    security key's PIN and a touch, or Touch ID for the Secure Enclave key;
 // 6. the signature is verified against the signers file the tag carries, presence flag included;
 // 7. the tag is read again, so a tag moved while the owner read is refused; then statement.json.sig
 //    is uploaded, and the draft published: a prerelease for a beta version, so
 //    GitHub's latest is always the newest stable.
 // --fingerprint prints the pinned keys' fingerprints. --revoke signs a revoke of the signer
-// transition a release carries, and uploads it to that release.
+// transition a release carries, and uploads it to that release. It runs from the root-owned install
+// (signroot.ts), with that install's own gh and OpenSSH.
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Runner } from "../controller/run.ts";
+import type { RunOptions, Runner } from "../controller/run.ts";
 import { readTar, Refused } from "../controller/unpack.ts";
 import { gitTreeSha } from "../hop.ts";
 import { describeStatement, NAMESPACE, parseStatement, signerPrints, type Statement, tagOf, verifySigned } from "../release.ts";
@@ -28,10 +30,23 @@ export const GH = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
 export const SK_PROVIDER = "/usr/lib/ssh-keychain.dylib";
 const KEYGEN = "/usr/bin/ssh-keygen";
 
+// The ssh-keygen that signs with a key: the program and its settings before -Y sign, the key's
+// handle file (ssh-keygen -K), and what the owner is told before the PIN or touch.
+export interface KeySigner {
+  argv: string[];
+  key: string;
+  touch: string;
+}
+// The Secure Enclave key, through macOS's own ssh-keygen and its keychain provider.
+export const enclaveSigner = (key: string): KeySigner => ({ argv: ["/usr/bin/env", `SSH_SK_PROVIDER=${SK_PROVIDER}`, KEYGEN], key, touch: "Touch ID asks next, for the release key." });
+// A key on a security key, through the install's copy of OpenSSH, which talks to it over USB.
+export const fidoSigner = (o: { keygen: string; helper: string; lib: string }, key: string): KeySigner => ({ argv: ["/usr/bin/env", `DYLD_LIBRARY_PATH=${o.lib}`, `SSH_SK_HELPER=${o.helper}`, o.keygen], key, touch: "The security key asks for its PIN next, then a touch. Touch it once: a second request isn't taskbox's, so pull the key out." });
+
 export interface SignDeps {
   run: Runner;
-  gh: string; // the owner's gh
-  key: string; // the release key's handle file (ssh-keygen -K)
+  gh: string; // the install's copy of gh
+  ghEnv?: RunOptions["env"]; // its token, and a config folder of its own
+  signer: KeySigner;
   repo: string; // owner/name of the public repo
   work: string; // a folder of the controller's own
   ask(prompt: string): Promise<string>;
@@ -44,12 +59,12 @@ class Stop extends Error {}
 const clean = (t: string) => t.replace(/[^\x20-\x7e]/g, " ").trim().slice(0, 160);
 
 async function gh(d: SignDeps, args: string[], o: { maxBytes?: number; limitMs?: number } = {}): Promise<string> {
-  const r = await d.run([d.gh, ...args, "--repo", d.repo], { limitMs: o.limitMs ?? 120_000, maxBytes: o.maxBytes ?? 4_000_000 });
+  const r = await d.run([d.gh, ...args, "--repo", d.repo], { limitMs: o.limitMs ?? 120_000, maxBytes: o.maxBytes ?? 4_000_000, ...(d.ghEnv ? { env: d.ghEnv } : {}) });
   if (r.code !== 0) throw new Stop(`gh ${args[0]} ${args[1] ?? ""} failed: ${clean(r.stderr) || `exit ${r.code}`}`);
   return r.stdout;
 }
 async function api(d: SignDeps, path: string): Promise<Record<string, unknown>> {
-  const r = await d.run([d.gh, "api", path], { limitMs: 60_000, maxBytes: 4_000_000 });
+  const r = await d.run([d.gh, "api", path], { limitMs: 60_000, maxBytes: 4_000_000, ...(d.ghEnv ? { env: d.ghEnv } : {}) });
   if (r.code !== 0) throw new Stop(`GitHub's ${path.split("/").slice(-2).join("/")} couldn't be read: ${clean(r.stderr)}`);
   return JSON.parse(r.stdout) as Record<string, unknown>;
 }
@@ -84,7 +99,7 @@ async function provenance(d: SignDeps, s: Statement): Promise<{ title: string; a
 // The draft's revoke list must hold every revoke the latest published release's list holds, so no
 // revoke is dropped between releases. A latest release from before revoke lists has none to keep.
 async function keptRevokes(d: SignDeps, list: RevokeList, dir: string): Promise<void> {
-  const r = await d.run([d.gh, "api", `repos/${d.repo}/releases/latest`], { limitMs: 60_000, maxBytes: 4_000_000 });
+  const r = await d.run([d.gh, "api", `repos/${d.repo}/releases/latest`], { limitMs: 60_000, maxBytes: 4_000_000, ...(d.ghEnv ? { env: d.ghEnv } : {}) });
   if (r.code !== 0) {
     if (/HTTP 404/.test(r.stderr)) return; // no release published yet
     throw new Stop(`the latest release couldn't be read: ${clean(r.stderr)}`);
@@ -118,9 +133,10 @@ async function download(d: SignDeps, tag: string, name: string, dir: string): Pr
   return new Uint8Array(readFileSync(join(dir, name)));
 }
 
-async function signFile(d: SignDeps, file: string): Promise<Uint8Array> {
+export async function signFile(d: { run: Runner; signer: KeySigner; out(line: string): void }, file: string): Promise<Uint8Array> {
   rmSync(`${file}.sig`, { force: true });
-  const r = await d.run(["/usr/bin/env", `SSH_SK_PROVIDER=${SK_PROVIDER}`, KEYGEN, "-Y", "sign", "-n", NAMESPACE, "-f", d.key, file], { limitMs: 120_000, maxBytes: 64_000 });
+  d.out(d.signer.touch);
+  const r = await d.run([...d.signer.argv, "-Y", "sign", "-n", NAMESPACE, "-f", d.signer.key, file], { limitMs: 120_000, maxBytes: 64_000 });
   if (r.code !== 0) throw new Stop(`ssh-keygen didn't sign: ${clean(r.stderr) || `exit ${r.code}`}`);
   return new Uint8Array(readFileSync(`${file}.sig`));
 }

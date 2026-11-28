@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { RunResult, Runner } from "../src/controller/run.ts";
 import { gitTreeSha } from "../src/hop.ts";
 import { NAMESPACE, parseStatement, type Statement, statementText } from "../src/release.ts";
-import { revokeTransition, sign } from "../src/release/sign.ts";
+import { enclaveSigner, revokeTransition, sign } from "../src/release/sign.ts";
 import { REVOKES, revokeListText } from "../src/release/revokes.ts";
 import { sha, statementFor } from "./release-fixture.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
@@ -74,7 +74,7 @@ function world(o: { draft?: boolean; commit?: string; treeOverride?: string; ans
     if (a[0] === "release" && (a[1] === "upload" || a[1] === "edit")) return ok();
     return { code: 1, stdout: "", stderr: `unexpected ${argv.join(" ")}`, timedOut: false, tooBig: false };
   };
-  const d = { run, gh: "/opt/homebrew/bin/gh", key: "/k/id_ecdsa_sk_rk", repo: REPO, work: mkdtempSync(join(tmpdir(), "taskbox-sign-work-")), ask: async () => o.answer ?? "yes", out: (l: string) => void said.push(l), tty: o.tty ?? true };
+  const d = { run, gh: "/opt/homebrew/bin/gh", signer: enclaveSigner("/k/id_ecdsa_sk_rk"), repo: REPO, work: mkdtempSync(join(tmpdir(), "taskbox-sign-work-")), ask: async () => o.answer ?? "yes", out: (l: string) => void said.push(l), tty: o.tty ?? true };
   return { d, calls, said, st };
 }
 

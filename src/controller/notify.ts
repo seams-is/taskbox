@@ -5,7 +5,9 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cleanLine } from "../envelope.ts";
 import { endLease, type Gh, type LeaseMemory, leaseDone, leaseStep, writeLease } from "../hold.ts";
-import { type Home, type Paired, readSmall, writePrivateFile } from "./home.ts";
+import { parseStatement } from "../release.ts";
+import { type Home, type Paired, readSmall, type Source, writePrivateFile } from "./home.ts";
+import { API, type Fetch, get, MAX, RELEASE_TAG, STATEMENT } from "./releases.ts";
 import { configOrStop, connectBox, type Deps, isStop, sshDeps, tailnetOrStop } from "./reach.ts";
 import { readAnswer } from "./schema.ts";
 import { boxCall, remoteLine } from "./ssh.ts";
@@ -33,6 +35,13 @@ export interface Memory {
   id: string; // this controller's id, which its polls carry, kept in a file of its own
   boxes: Record<string, BoxMemory>;
   self?: BoxMemory; // notes about this Mac itself
+  releases?: ReleaseMemory;
+}
+// The public repo's published releases, as last read: each tag seen, and when the list was read.
+interface ReleaseMemory {
+  repo: string;
+  seen: string[];
+  readAt: number;
 }
 
 // This controller's id, made once and kept apart from the notes' memory, so a lost notify.json
@@ -58,6 +67,39 @@ export function readMemory(h: Home): Memory {
 
 export interface NotifyDeps extends Deps {
   gh?: Gh; // the owner's own gh, for the hold lease
+  fetch?: Fetch; // GitHub's public API, for the releases
+}
+
+// Each release published on the repo this controller updates from is said once, with the commit its
+// statement names, so a release nobody here meant to publish is seen before the boxes take it. The
+// list is read once an hour, inside GitHub's limit for a caller with no token. The first read only
+// remembers what is there.
+export const RELEASES_EVERY_MS = 60 * 60_000;
+async function newReleases(d: NotifyDeps, src: Source, kept: ReleaseMemory | undefined, now: number, notes: Note[]): Promise<ReleaseMemory | undefined> {
+  const prev = kept && typeof kept.repo === "string" && Array.isArray(kept.seen) && kept.seen.every((t) => typeof t === "string") && Number.isSafeInteger(kept.readAt) ? kept : undefined;
+  const repo = `${src.owner}/${src.repo}`;
+  if (prev?.repo === repo && now - prev.readAt < RELEASES_EVERY_MS && now >= prev.readAt) return prev;
+  const r = d.fetch ? await get(d.fetch, `${API}/repos/${repo}/releases?per_page=30`, 4_000_000, 15_000) : undefined;
+  if (!r?.ok) return prev;
+  let list: Record<string, unknown>[];
+  try {
+    const v = JSON.parse(new TextDecoder().decode(r.value)) as unknown;
+    list = Array.isArray(v) ? (v as Record<string, unknown>[]) : [];
+  } catch {
+    return prev;
+  }
+  const published = list.filter((x) => x && x.draft === false && typeof x.tag_name === "string" && RELEASE_TAG.test(x.tag_name));
+  const tags = published.map((x) => x.tag_name as string);
+  if (!prev || prev.repo !== repo) return { repo, seen: tags.slice(0, 50), readAt: now };
+  for (const x of published.filter((y) => !prev.seen.includes(y.tag_name as string)).reverse()) {
+    const tag = x.tag_name as string;
+    const link = (Array.isArray(x.assets) ? (x.assets as Record<string, unknown>[]) : []).find((a) => a?.name === STATEMENT)?.browser_download_url;
+    const got = link === `https://github.com/${repo}/releases/download/${tag}/${STATEMENT}` ? await get(d.fetch!, link, MAX[STATEMENT], 15_000) : undefined;
+    const st = got?.ok ? parseStatement(new TextDecoder().decode(got.value)) : undefined;
+    const commit = st && st.tag === tag ? `Commit ${st.commit.slice(0, 7)}` : "No statement taskbox reads";
+    notes.push({ box: "", title: `taskbox ${tag} published`, body: `${commit}, on ${repo}. Not signed here? Look before the boxes take it.` });
+  }
+  return { repo, seen: [...new Set([...tags, ...prev.seen])].slice(0, 50), readAt: now };
 }
 
 // The hold the box reports in its status, and whether it names this controller as the lease's writer.
@@ -145,7 +187,8 @@ export async function notifyOnce(d: NotifyDeps): Promise<Note[]> {
       }),
     );
   }
-  writePrivateFile(d.home.notify, `${JSON.stringify({ v: 1, id: mem.id, boxes: kept, self: mem.self ?? {} })}\n`);
+  const releases = cfg.config.source ? await newReleases(d, cfg.config.source, mem.releases, d.now(), notes) : undefined;
+  writePrivateFile(d.home.notify, `${JSON.stringify({ v: 1, id: mem.id, boxes: kept, self: mem.self ?? {}, ...(releases ? { releases } : {}) })}\n`);
   return notes.map((n) => ({ box: n.box, title: cleanLine(n.title).slice(0, 80), body: cleanLine(n.body) }));
 }
 
