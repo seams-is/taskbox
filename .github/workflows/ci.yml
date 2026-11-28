@@ -240,9 +240,15 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           NAME_SEARCH: ${{ secrets.NAME_SEARCH }}
         # The search runs from the base commit's own tree, in that folder, so a PR can't change the
-        # script, or a bunfig preload, to print the secret words.
+        # script, or a bunfig preload, to print the secret words. A base with no script yet (the
+        # first PR that brings it) runs the PR's own script without the secret words.
         run: |
           set -euo pipefail
           git worktree add --detach "$RUNNER_TEMP/base" "$BASE"
           git diff --unified=0 "$BASE...$HEAD" > "$RUNNER_TEMP/pr.diff"
-          cd "$RUNNER_TEMP/base" && bun release/namesearch.ts < "$RUNNER_TEMP/pr.diff"
+          if [ -f "$RUNNER_TEMP/base/release/namesearch.ts" ]; then
+            cd "$RUNNER_TEMP/base" && bun release/namesearch.ts < "$RUNNER_TEMP/pr.diff"
+          else
+            echo "::notice::the base has no name search yet; running this PR's own, on its fixed rules only"
+            NAME_SEARCH= bun release/namesearch.ts < "$RUNNER_TEMP/pr.diff"
+          fi
