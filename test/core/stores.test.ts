@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addKey, findKey, fromPin, noApprovers, parseApprovers, pinnedKeys, readApprovers, removeKey, replaceKey, resetKeys, trustFirst, updateApprovers } from "../../src/core/approvers.ts";
+import { addKey, findKey, fromPin, noApprovers, parseApprovers, pinnedKeys, readApprovers, replaceKey, resetKeys, trustFirst, updateApprovers } from "../../src/core/approvers.ts";
 import { currentNonce, emptyNonces, type Nonces, readNonces, rotated as rotateNonce, SUBJECTS_MAX, updateNonces, withNonce as nonceFor, withoutSubject as dropNonce } from "../../src/core/nonces.ts";
 import { answer, drop, LAPSE_MS, lapse, noPending, PENDING_MAX, readPending, raise, updatePending, waiting } from "../../src/core/pending.ts";
 import { readOwnedText, writeOwnedText } from "../../src/core/rootfile.ts";
@@ -122,15 +122,6 @@ describe("approvers", () => {
     expect(r.ok && findKey(r.state, fingerprint(b))?.how).toBe("rotate");
     expect(replaceKey(first(), fingerprint(c), b, T).ok).toBe(false);
   });
-  test("a key removes another at once, never itself", () => {
-    const two = addKey(first(), b, T);
-    if (!two.ok) throw new Error();
-    expect(removeKey(two.state, fingerprint(a), fingerprint(a)).ok).toBe(false);
-    expect(removeKey(two.state, fingerprint(a), fingerprint(c)).ok).toBe(false);
-    const r = removeKey(two.state, fingerprint(a), fingerprint(b));
-    if (!r.ok) throw new Error(r.why);
-    expect(pinnedKeys(r.state)).toEqual([b]);
-  });
   test("a reset clears every key for good", () => {
     const r = resetKeys(first());
     if (!r.ok) throw new Error();
@@ -195,8 +186,11 @@ describe("the pending store for confirm", () => {
     }
     expect(raise(s, { ...ask, payload: { i: "more" } }, mo(T))).toMatchObject({ ok: false });
     expect(raise(noPending(), { ...ask, payload: { t: "ghs_abcdefghijklmnopqrstuvwxyz0123" } }, mo(T))).toMatchObject({ ok: false, why: expect.stringContaining("secret") });
+    // A long line is wrapped, never cut; more lines than confirm shows are refused.
     const long = raise(noPending(), { ...ask, shows: ["x".repeat(500)] }, mo(T));
-    expect(long.ok && long.item.shows[0]!.length).toBe(120);
+    expect(long.ok && long.item.shows.join("").replace(/ {4}/g, "")).toBe("x".repeat(500));
+    expect(long.ok && long.item.shows.every((l) => l.length <= 120)).toBe(true);
+    expect(raise(noPending(), { ...ask, shows: Array.from({ length: 201 }, (_, i) => `line ${i}`) }, mo(T))).toMatchObject({ ok: false, why: expect.stringContaining("confirm shows at most 200") });
   });
   test("round trip; an edited payload no longer matches its digest and reads as bad", async () => {
     const p = join(tmp(), "pending.json");
@@ -246,19 +240,7 @@ describe("nonces, approvers, pending", () => {
     expect(nonceFor(emptyNonces(), "nova-3", T, nonce, (s) => s === "nova-3").changed).toBe(true);
     expect(nonceFor(emptyNonces(), "box", T, nonce).changed).toBe(true);
   });
-  test("a signed removal takes the key out without banning it; only a reset bans", () => {
-    const a = keyPair().key;
-    const b = keyPair().key;
-    const one = trustFirst(noApprovers(), a, T, "screen");
-    if (!one.ok) throw new Error();
-    const two = addKey(one.state, b, T);
-    if (!two.ok) throw new Error();
-    const r = removeKey(two.state, fingerprint(a), fingerprint(b));
-    if (!r.ok) throw new Error();
-    expect(r.state.cleared).toEqual([]);
-    expect(addKey(r.state, a, T).ok).toBe(true);
-  });
-  const ask = { kind: "channel" as const, subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { a: 1, b: 2 } };
+  const ask = { kind: "rule" as const, subject: "channel", shows: ["Move to beta."], actor: "owner", payload: { a: 1, b: 2 } };
   test("the same change with its keys in another order is one entry", () => {
     const r = raise(noPending(), ask, mo(T));
     if (!r.ok) throw new Error();

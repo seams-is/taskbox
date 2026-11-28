@@ -68,7 +68,7 @@ describe("the acceptance criteria", () => {
     expect(byId(acceptance(C2, jobs, gave, now, false), "give-ways").status).toBe("PASS");
     expect(byId(c, "vms-deleted")).toMatchObject({ status: "FAIL", value: "1 not deleted" });
     expect(byId(c, "box-failures")).toMatchObject({ status: "FAIL", value: "33.3%" });
-    expect(acceptanceLines(c)[0]).toBe("Acceptance (v2.4.0), the last 48 h:");
+    expect(acceptanceLines(c)[0]).toBe("Acceptance, the last 48 h:");
   });
   test("only the last 48 h count", () => {
     const old = [line({ at: -60 * 3600_000, run: M, vmDeleted: false })];

@@ -60,7 +60,7 @@ async function run(argv: string[], who: Caller, o: { root?: string; sys?: FakeSy
 
 describe("the root commands", () => {
   // Each as it is typed: workspace clear names the agent.
-  const typed = (cmd: string) => [...cmd.split(" "), ...(cmd === "workspace clear" ? ["builder"] : [])];
+  const typed = (cmd: string) => [...cmd.split(" "), ...(cmd === "workspace clear" ? ["builder"] : cmd === "key trust release" ? ["/Users/boss/release.pub"] : [])];
   test("an admin's command runs again through sudo, which asks for the admin's password", async () => {
     for (const cmd of rootPaths()) {
       const r = await run(typed(cmd), CALLERS.admin);
@@ -99,7 +99,7 @@ describe("the root commands", () => {
   test("install by anyone but root names install.sh", async () => {
     for (const who of [CALLERS.admin, CALLERS["a standard user"], CALLERS.ci]) {
       const r = await run(["install"], who);
-      expect([r.code, r.said, r.ttys]).toEqual([1, ["Type sh ~/Downloads/taskbox-main/install.sh."], []]);
+      expect([r.code, r.said, r.ttys]).toEqual([1, ["Type sh taskbox/install.sh --settings ORG/REPO, in the folder the release is in."], []]);
     }
   });
 });

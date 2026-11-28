@@ -483,7 +483,7 @@ export async function reopen(d: { sys: Pick<Sys, "now" | "sleep">; paths: RootPa
 // One line for status and check: the state, the count and the way on. shown false: status leaves it
 // out (trial, nothing counted, Screen Sharing off).
 export function pfLine(p: RootPaths & LoopPaths, rootUid: number, cfg: Pick<Config, "vmnetPfProven">, sharing: boolean): { line: string; closed: boolean; shown: boolean } {
-  if (cfg.vmnetPfProven === true) return { line: "vmnetPfProven is set, so VMs start whatever the guard's rules did at a start", closed: false, shown: sharing };
+  if (cfg.vmnetPfProven === true) return { line: "vmnetPfProven is set, so VMs start with Screen Sharing on whatever the guard's rules did at a start. It is a guarded key: only a signed settings apply and confirm at the box set it, and a commit without it takes it away", closed: false, shown: true };
   const st = pfState(p, rootUid);
   if (st.kind === "fresh") return { line: "closed until the guard's first pass, which puts the box on trial", closed: true, shown: true };
   if (st.kind === "broken") return { line: `closed: ${st.why}. ${WAY_ON_CLOSED}`, closed: true, shown: true };
@@ -497,6 +497,8 @@ export function pfLine(p: RootPaths & LoopPaths, rootUid: number, cfg: Pick<Conf
 export async function pfStartsRow(c: CheckContext): Promise<Omit<Check, "name">> {
   const sharing = await screenSharingOn(c.sys);
   const l = pfLine(c.paths, c.rootUid ?? 0, c.cfg, sharing);
+  // The closure lifted by a setting, not by the box's own proof: it warns for as long as it is set.
+  if (c.cfg.vmnetPfProven === true) return { status: "WARN", detail: l.line };
   if (!l.closed) return { status: "OK", detail: l.line };
   return sharing ? { status: "FAIL", detail: l.line } : { status: "OK", detail: `Screen Sharing is off, so VMs start. ${l.line}` };
 }

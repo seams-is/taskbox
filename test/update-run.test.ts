@@ -5,7 +5,7 @@ import type { Report } from "../src/core/child.ts";
 import type { Statement, Verdict } from "../src/release.ts";
 import type { Signals } from "../src/update/prove.ts";
 import { noMarks, type InstallRecord, type Marks } from "../src/update/records.ts";
-import { type Downloaded, type RollbackEnv, runRollback, runUpdate } from "../src/update/run.ts";
+import { type Downloaded, HELD_MS, type RollbackEnv, runRollback, runUpdate } from "../src/update/run.ts";
 import { statementFor } from "./release-fixture.ts";
 
 const L = (version: string) => ({ version, publishedAt: 0 });
@@ -114,11 +114,24 @@ describe("the update op", () => {
     expect(x.did).toContain("drain force");
   });
 
-  test("a workspace holding the box delays the install until it is saved or ended", async () => {
-    const x = env({ held: 3 });
+  test("a workspace holding the box delays the drain until it is saved or ended; past the deadline the update ends and the box resumes", async () => {
+    let x = env({ held: 3 });
     expect(await runUpdate(x.e, {}, { proveMs: 0 })).toMatchObject({ state: "succeeded" });
-    expect(x.reports.some((r) => r.progress?.text === "held by workspace nova-1 (active), until it is saved or ended")).toBe(true);
+    expect(x.reports.some((r) => r.progress?.text === "update 3.0.1 held by workspace nova-1 (active)")).toBe(true);
     expect(x.time()).toBeGreaterThanOrEqual(3 * 5_000);
+    // Held from the start: the box is never paused, and the hold's deadline ends it.
+    x = env({ held: 10_000 });
+    const why = "update 3.0.1 held by workspace nova-1 (active) past its deadline, so nothing changed. taskbox workspace end nova-1 gives the box back.";
+    expect(await runUpdate(x.e, {}, { proveMs: 0 })).toEqual({ state: "failed", why });
+    expect(x.did).not.toContain("drain");
+    expect(x.time()).toBeGreaterThanOrEqual(HELD_MS);
+    // Held once the drain began: the box resumes at the deadline.
+    let calls = 0;
+    x = env({ drain: Array<"draining">(10_000).fill("draining") });
+    x.e.hold = () => (calls++ > 0 ? "workspace nova-1 (ready)" : undefined);
+    expect(await runUpdate(x.e, { timeout: "10m" }, { proveMs: 0 })).toMatchObject({ state: "failed" });
+    expect(x.did.slice(-2)).toEqual(["drain", "resume"]);
+    expect(x.time()).toBeLessThan(HELD_MS);
   });
 
   test("a failed proof after the swap goes back, marks the release bad, and ends failed naming why", async () => {
@@ -169,6 +182,12 @@ describe("the rollback op", () => {
     expect(end).toMatchObject({ state: "succeeded", result: { installed: "3.0.0", from: "3.0.1" } });
     expect(x.phases()).toEqual(["draining", "swap", "proving", "rolled-back"]);
     expect(x.did).toEqual(["drain", "settings of 3.0.0", "go back to /opt/taskbox-3.0.0-aaaaaa: taskbox rollback to 3.0.0", 'marks {"bad":[],"held":"3.0.1"}', "resume"]);
+  });
+
+  test("the owner's signed rollback sets no hold, so the next window goes forward again", async () => {
+    const x = env({ installed: "3.0.1", kept: [{ version: "3.0.0", dir: "/opt/taskbox-3.0.0-aaaaaa", record: rec }] });
+    expect(await runRollback(x.e, { signed: true })).toMatchObject({ state: "succeeded", result: { installed: "3.0.0" } });
+    expect(x.did.some((l) => l.startsWith("marks"))).toBe(false);
   });
 
   test("--to a kept version; one that isn't kept is refused before anything moves", async () => {

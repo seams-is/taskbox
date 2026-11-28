@@ -6,8 +6,9 @@ import { findNames } from "../src/release/names.ts";
 
 describe("the draft's statement", () => {
   test("is one the box reads, its channel from its version, with what this release reads", () => {
-    const text = draftStatement({ version: "3.0.0-rc.2", commit: "c".repeat(40), tree: "a".repeat(40), sha256: "b".repeat(64), assets: { "tailscale-v1.104.5.tar.gz": "e".repeat(64) }, pr: 61, mergedAt: "2026-11-30T10:00:00.000Z", notes: "line one\nline two" });
+    const text = draftStatement({ version: "3.0.0-rc.2", commit: "c".repeat(40), tree: "a".repeat(40), sha256: "b".repeat(64), assets: { "tailscale-v1.104.5.tar.gz": "e".repeat(64), "signers-revokes.json": "f".repeat(64) }, pr: 61, mergedAt: "2026-11-30T10:00:00.000Z", notes: "line one\nline two" });
     expect(parseStatement(text)).toMatchObject({ v: 1, channel: "beta", tag: "v3.0.0-rc.2", tarball: "taskbox-v3.0.0-rc.2.tar.gz", minFrom: "2.6.1", settingsSchema: [4, 4], answers: [3, 4], mergedAt: "2026-11-30T10:00:00Z", notes: "line one line two" });
+    expect(() => draftStatement({ version: "3.0.0", commit: "c".repeat(40), tree: "a".repeat(40), sha256: "b".repeat(64), assets: {}, pr: 61, mergedAt: "2026-11-30T10:00:00Z", notes: "" })).toThrow("the release carries no signers-revokes.json");
     expect(() => draftStatement({ version: "main", commit: "c".repeat(40), tree: "a".repeat(40), sha256: "b".repeat(64), assets: {}, pr: 61, mergedAt: "2026-11-30T10:00:00Z", notes: "" })).toThrow();
   });
 });

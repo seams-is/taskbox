@@ -8,7 +8,7 @@ import { fingerprint } from "../approver.ts";
 import { argsOf, signedWord, statementFor, statementText } from "../core/statement.ts";
 import { parseAsk } from "../connectflow.ts";
 import { keyOf } from "../approverkeys.ts";
-import { openSealed, SEALED_LINE, sealPair } from "../tsrotate.ts";
+import { LOGIN, openSealed, sealPair } from "../tsrotate.ts";
 
 export type Signed = { ok: true; signature: string } | { ok: false; why: string };
 export type Signer = (message: Uint8Array) => Promise<Signed>;
@@ -16,6 +16,7 @@ export type Answer = { exit: number; result?: Record<string, unknown> | null; er
 export interface BoxLink {
   name: string;
   installId: string;
+  paired?: import("./home.ts").Paired; // the pairing it reaches, for a signer chosen per box
   run(words: string[]): Promise<Answer | undefined>; // undefined: the box can't be reached
 }
 export interface Deps {
@@ -67,6 +68,16 @@ export async function rotateApprover(d: Deps & { boxes: BoxLink[]; makeNew(): Pr
   d.say(`The new key is ${fp}. The old key signs it in on each box: Touch ID asks for each.`);
   const out: BoxState[] = [];
   for (const box of d.boxes) {
+    // A box that pins the new key already (confirmed since the last run) is signed nothing.
+    const p = await pins(box);
+    if (!p) {
+      out.push({ box: box.name, state: "offline", why: `${box.name} can't be reached` });
+      continue;
+    }
+    if (p.pinned.includes(fp)) {
+      out.push({ box: box.name, state: "pinned" });
+      continue;
+    }
     const a = await signedRun(d, box, ["key", "rotate"], ["approver"], { new: b64 });
     if ("why" in a) out.push({ box: box.name, state: /reached/.test(a.why) ? "offline" : "refused", why: a.why });
     else if (a.error?.code === "needs-confirm") out.push({ box: box.name, state: "waiting", ...(typeof a.result?.op === "string" ? { op: a.result.op } : {}) });
@@ -92,8 +103,10 @@ export async function offerAndWait(d: Deps & { box: BoxLink; key: string; waitMs
   d.say(fresh.pinned.length
     ? `${d.box.name} pins another controller's key. On that controller: taskbox key add approver --box ${d.box.name}. Then at the box, as your admin user: taskbox confirm, and check it shows ${fp}.`
     : `At the box, as your admin user: taskbox key trust approver. Check its screen shows ${fp} before you type yes.`);
-  const until = d.now() + (d.waitMs ?? 30 * 60_000);
-  while (d.now() < until) {
+  const limit = d.waitMs ?? 30 * 60_000;
+  const until = d.now() + limit;
+  // Counted as well as timed, so a clock that stands still never holds it.
+  for (let polls = 0; d.now() < until && polls * 5_000 < limit; polls++) {
     await d.sleep(5_000);
     const p = await pins(d.box);
     if (p?.pinned.includes(fp)) return (d.say(`${d.box.name} pins ${fp}.`), true);
@@ -128,18 +141,31 @@ export async function approveSecond(d: Deps & { box: BoxLink }): Promise<boolean
 
 // ---- key rotate tailscale ----
 // The box seals its sign-in link to a key made here for this request; only this process opens it.
-export async function rotateTailscale(d: Deps & { box: BoxLink; open(url: string): void }): Promise<Answer | { why: string }> {
+// The box answers at once with the op, then drains and signs in again; the sealed link comes back
+// through op show once it has one.
+export async function rotateTailscale(d: Deps & { box: BoxLink; open(url: string): void; waitMs?: number }): Promise<Answer | { why: string }> {
   const k = sealPair();
   const a = await signedRun(d, d.box, ["key", "rotate"], ["tailscale"], { seal: k.pub });
   if ("why" in a) return a;
   const op = a.result?.op;
-  const said = typeof a.result?.said === "string" ? SEALED_LINE.exec(a.result.said) : null;
-  if (a.exit !== 0 || typeof op !== "string" || !said) return { why: a.error?.message ?? "the box gave no sign-in link" };
-  const url = openSealed(k.priv, op, said[1]!);
-  if (!url) return { why: "the box's sealed link doesn't open with this request's key" };
-  d.say(`Your browser opens Tailscale's page for ${d.box.name}: approve it there. Its op is ${op}; taskbox op show ${op} -w --box ${d.box.name} follows it.`);
-  d.open(url);
-  return a;
+  if (a.exit !== 0 || typeof op !== "string") return { why: a.error?.message ?? "the box started no rotation" };
+  d.say(`${d.box.name} drains and stops its job VMs, then signs in to Tailscale again. Its op is ${op}; taskbox op show ${op} -w --box ${d.box.name} follows it.`);
+  const until = d.now() + (d.waitMs ?? 20 * 60_000);
+  while (d.now() < until) {
+    const s = await d.box.run(["op", "show", op, "--json"]);
+    const rec = s?.result?.op as Record<string, unknown> | undefined;
+    if (rec && rec.state !== "running") return { why: `the rotation ${rec.state}${typeof rec.why === "string" ? `: ${rec.why}` : ""}` };
+    const sealed = s?.result?.sealed;
+    if (typeof sealed === "string" && /^[A-Za-z0-9_-]{80,300}$/.test(sealed)) {
+      const url = openSealed(k.priv, op, sealed);
+      if (!url || !LOGIN.test(url)) return { why: "the box's sealed link doesn't open with this request's key" };
+      d.say(`Your browser opens Tailscale's page for ${d.box.name}: approve it there.`);
+      d.open(url);
+      return a;
+    }
+    await d.sleep(3_000);
+  }
+  return { why: `no sign-in link came within 20 minutes. The rotation carries on: taskbox op show ${op} -w --box ${d.box.name}` };
 }
 
 // ---- key rotate runner and source ----
@@ -152,10 +178,11 @@ export async function rotateAppKey(d: Deps & { box: BoxLink; role: "runner" | "s
   if ("why" in a) return (d.say(`Not rotated: ${a.why}`), false);
   const op = a.result?.op;
   if (a.exit !== 0 || typeof op !== "string") return (d.say(a.error?.message ?? "The box started no rotation."), false);
-  const until = d.now() + (d.waitMs ?? 60 * 60_000);
+  const limit = d.waitMs ?? 60 * 60_000;
+  const until = d.now() + limit;
   let gave = false;
   let opened = "";
-  while (d.now() < until) {
+  for (let polls = 0; d.now() < until && polls * 3_000 < limit; polls++) {
     const s = await d.box.run(["op", "show", op, "--json"]);
     const rec = s?.result?.op as Record<string, unknown> | undefined;
     if (rec && rec.state !== "running") return (d.say(`The ${d.role} rotation ${rec.state}.`), rec.state === "succeeded");

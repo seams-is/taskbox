@@ -12,7 +12,7 @@
 // signed requests whose signature fails the in-process check go first, then the other kinds, and a
 // signed request that could be the owner's goes last. Every request root removes unread gets an
 // outcome that says so, so its asker never takes it for applied.
-import { chmodSync, lchownSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, lchownSync, lstatSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readInstallId } from "../answers.ts";
 import { bootId, monoNow } from "../core/boot.ts";

@@ -7,14 +7,14 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { AGENT_LABEL, assetUrl, boxNames, GUARD_LABEL, LABEL_PREFIX, loadConfig, paths, previousLabels, OLD_TAILSCALE_SOCKET, TAILSCALE_SOCKET, TAILSCALED_LABEL } from "../src/config.ts";
-import { BOOTOUT_WAIT_S, keepsKept, labelsBack, retirePrevious, Stop, tailscaleUrlProblem } from "../src/install.ts";
+import { BOOTOUT_WAIT_S, labelsBack, retirePrevious, Stop } from "../src/install.ts";
 import { CHECK_EXTRA, serviceNamesRow, tailscaleRow } from "../src/checks.ts";
 import { handOver, relabelDue, RESTART, underOldLabel } from "../src/loop.ts";
 import { Log } from "../src/log.ts";
 import { reloadToken, remove, restartServices } from "../src/ops.ts";
 import { startHere as start, stopHere as stop } from "../src/availability.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, quietBox, servicesObey, socketDirOk, tempRoot, testBox } from "./helpers.ts";
+import { CFG, quietBox, servicesObey, socketDirOk, tailnetPinned, tempRoot, testBox } from "./helpers.ts";
 
 const OLD = "org.example.taskbox";
 const old = previousLabels(OLD);
@@ -620,15 +620,6 @@ describe("undo restarts the root services on the code it went back to", () => {
 
 });
 
-describe("the install kept for undo", () => {
-  test("an update to the commit already installed keeps the install kept for undo", () => {
-    expect(keepsKept("abc", "abc", "/opt/taskbox-v221")).toBe(true);
-    expect(keepsKept("abc", "def", "/opt/taskbox-v221")).toBe(false);
-    expect(keepsKept("abc", "abc", undefined)).toBe(false);
-    expect(keepsKept(undefined, "abc", undefined)).toBe(false);
-  });
-});
-
 describe("between the two updates that move the names: what the owner is told", () => {
   const ctx = (sys: FakeSys, prefix?: string) => ({ sys, cfg: CFG, paths: paths(tempRoot(), testBox(prefix)), uid: 0, serviceUid: 502, rootUid: process.getuid!() });
 
@@ -671,6 +662,7 @@ describe("between the two updates that move the names: what the owner is told", 
     mkdirSync(dirname(c.paths.tailscaledLog), { recursive: true });
     writeFileSync(c.paths.tailscaledLog, "", { mode: 0o640 });
     socketDirOk({ sys, paths: c.paths });
+    tailnetPinned(c.paths);
     const r = await tailscaleRow(c);
     expect([r.status, r.detail]).toEqual(["OK", "signed in as tag:taskbox, with Tailscale SSH, under its old name"]);
     // A different old-named plist from the install's own copy still fails.
@@ -690,16 +682,6 @@ describe("between the two updates that move the names: what the owner is told", 
     expect(e).toBeInstanceOf(Stop);
     expect((e as Stop).owner).toBe(true);
     expect((e as Stop).message).not.toContain("runs as before");
-  });
-
-  test("the old tailscale address only counts in the copy whose repo it names", () => {
-    const own = { org: "example-org", repo: "taskbox" };
-    const url = "https://api.github.com/repos/example-org/taskbox/releases/assets/7";
-    expect(tailscaleUrlProblem(undefined, own, 7)).toBe(false);
-    expect(tailscaleUrlProblem(url, own, 7)).toBe(false);
-    expect(tailscaleUrlProblem(url, own, 8)).toBe(true);
-    expect(tailscaleUrlProblem(url, { org: "another-org", repo: "taskbox" }, 9)).toBe(false);
-    expect(tailscaleUrlProblem(url, { org: "example-org", repo: "taskbox-fork" }, 9)).toBe(false);
   });
 
   test("each new plist is written before its old one goes, so a power cut never leaves neither", async () => {

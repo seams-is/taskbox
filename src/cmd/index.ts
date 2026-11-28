@@ -13,6 +13,7 @@ import * as confirm from "./confirm.ts";
 import * as connect from "./connect.ts";
 import * as daemons from "./daemons.ts";
 import * as drain from "./drain.ts";
+import * as events from "./events.ts";
 import * as guardwatch from "./guardwatch.ts";
 import * as hello from "./hello.ts";
 import * as image from "./image.ts";
@@ -33,6 +34,7 @@ import * as release from "./release.ts";
 import * as remove from "./remove.ts";
 import * as resume from "./resume.ts";
 import * as rollback from "./rollback.ts";
+import * as selftest from "./selftest.ts";
 import * as settings from "./settings.ts";
 import * as size from "./size.ts";
 import * as source from "./source.ts";
@@ -52,6 +54,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "connect.ts", module: connect },
   { file: "daemons.ts", module: daemons },
   { file: "drain.ts", module: drain },
+  { file: "events.ts", module: events },
   { file: "guardwatch.ts", module: guardwatch },
   { file: "hello.ts", module: hello },
   { file: "image.ts", module: image },
@@ -72,6 +75,7 @@ export const commandFiles: readonly CommandFile[] = [
   { file: "remove.ts", module: remove },
   { file: "resume.ts", module: resume },
   { file: "rollback.ts", module: rollback },
+  { file: "selftest.ts", module: selftest },
   { file: "settings.ts", module: settings },
   { file: "size.ts", module: size },
   { file: "source.ts", module: source },

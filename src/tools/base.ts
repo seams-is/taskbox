@@ -1,7 +1,7 @@
 // Each kind's base VM: the pinned image with one generation of the tools baked in. Job VMs are
 // copy-on-write clones of it, so none has a share into the box. A base VM is never booted again once
 // baked; its record says what it holds, and its disk's hash as the bake left it.
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Kind } from "../settings/kinds.ts";
 import type { VmInfo } from "../vm.ts";
@@ -125,11 +125,3 @@ export function cloneSourceOf(o: { enabled: boolean; kind: Kind; image: string; 
   return kept ? { source: kept.name, base: kept } : { source: o.image };
 }
 
-// Whether a name is a base VM's record that is still on disk, for cleanup's own reads.
-export function hasRecord(s: Store, name: string): boolean {
-  try {
-    return lstatSync(recordFile(s, name)).isFile();
-  } catch {
-    return false;
-  }
-}

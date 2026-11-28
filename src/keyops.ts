@@ -12,7 +12,9 @@ import type { Json } from "./core/statement.ts";
 import { appOpRunning, HEX64, ROTATE_APP_MS } from "./keyrotate.ts";
 import { opType } from "./optypes/index.ts";
 import { ROTATE, type Which } from "./optypes/keys.ts";
-import { draftTailscale, SEAL_KEY, seal, sealedLine, TS_ROTATE_MS, tailnetPinPath, type TsDeps } from "./tsrotate.ts";
+import { join } from "node:path";
+import { isObj, readOwnedJson, writeOwnedText, type WriteRules } from "./core/rootfile.ts";
+import { SEAL_KEY, seal, TS_ROTATE_MS } from "./tsrotate.ts";
 
 export const CHILD_FILE = "/opt/taskbox/app/src/keychild.ts";
 export const EVENTS = ["key.", "connect."];
@@ -65,31 +67,27 @@ async function started(c: HandlerCtx, op: Op, run: typeof runChild, said: string
   return { ok: true, said, op: op.id };
 }
 
-// The guard's start of a tailscale rotation the controller asked for: drafting here, within the
-// handler's time, then the child follows the sign-in. The link goes back sealed, and only so.
-export async function startTsRotation(c: HandlerCtx, sealTo: string, actor: string, o: { ts: Pick<TsDeps, "tailscale" | "socket" | "tag" | "hostname">; run?: typeof runChild }): Promise<Answer> {
+// The guard's start of a tailscale rotation the controller asked for: the op and its child, at once,
+// so nothing slow runs in the handler's time. The child drains the box, locks tailscaled's socket and
+// signs in again (tsrotate.ts); the link goes back sealed to the controller's key through the link
+// file (linkPath), which op show reads, and only so.
+export async function startTsRotation(c: HandlerCtx, sealTo: string, actor: string, o: { run?: typeof runChild } = {}): Promise<Answer> {
   const ops = folder(c);
-  const b = begin(listOps(ops).ops, opType(ROTATE.tailscale), { subject: "box", params: { from: "controller" }, actor, deadline: c.now + TS_ROTATE_MS }, c.now);
+  const b = begin(listOps(ops).ops, opType(ROTATE.tailscale), { subject: "box", params: { from: "controller", seal: sealTo }, actor, deadline: c.now + TS_ROTATE_MS }, c.now);
   if (b.kind === "busy") return { ok: false, code: "busy", said: b.why, op: b.op.id };
   if (b.kind === "attach") return { ok: false, code: "busy", said: `A Tailscale rotation (${b.op.id}) is running, and its link went to the controller that asked. taskbox op cancel ${b.op.id} ends it.`, op: b.op.id };
-  let op = b.op;
-  writeOp(ops, op);
-  const ev = opEvent(undefined, op);
-  if (ev) c.events.write(ev);
-  const fail = (why: string): Answer => {
-    const next = end(op, "failed", c.sys.now(), { why });
-    writeOp(ops, next);
-    const e = opEvent(op, next);
-    if (e) c.events.write(e);
-    return { ok: false, code: "failed", said: `Not rotated: ${why}.`, op: op.id };
-  };
-  const said: string[] = [];
-  const d: TsDeps = { sys: c.sys, ...o.ts, pinFile: tailnetPinPath(c.state.dir), rootUid: c.rootUid, ...(c.chown ? { chown: c.chown } : {}), say: (l) => said.push(l), phase: () => {}, event: (type, text, data) => c.events.write({ type, text, op: op.id, actor, subject: "box", ...(data ? { data } : {}) }) };
-  const r = await draftTailscale(d);
-  if ("why" in r) return fail(r.why);
-  op = { ...op, params: { ...op.params, node: r.node as Json } };
-  const a = await started(c, op, o.run ?? runChild, sealedLine(seal(sealTo, op.id, r.url)));
-  return a;
+  return started(c, b.op, o.run ?? runChild, "The Tailscale rotation started: the box drains, then signs in again. Its sign-in link comes back to this controller alone.");
+}
+
+// The sealed link, for the controller that asked: ciphertext only, root's, readable by the agent
+// account that op show runs as. Gone when the rotation ends.
+export const linkPath = (stateDir: string) => join(stateDir, "tailscale-link.json");
+export function writeLink(path: string, op: string, sealTo: string, url: string, o: { rootUid?: number; chown?: WriteRules["chown"] }): void {
+  writeOwnedText(path, `${JSON.stringify({ v: 1, op, sealed: seal(sealTo, op, url) })}\n`, { mode: 0o644, owner: o.rootUid ?? 0, ...(o.chown ? { chown: o.chown } : {}) });
+}
+export function readLink(path: string, op: string, rootUid = 0): string | undefined {
+  const r = readOwnedJson(path, { owner: rootUid, max: 2048 }, (v) => (isObj(v) && v.v === 1 && v.op === op && typeof v.sealed === "string" && /^[A-Za-z0-9_-]{80,300}$/.test(v.sealed) ? { sealed: v.sealed } : "not this op's link"));
+  return r.kind === "ok" ? r.value.sealed : undefined;
 }
 
 // ---- At the box ----

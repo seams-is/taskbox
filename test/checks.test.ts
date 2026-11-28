@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type CheckContext, serviceUnlocksDisk, consoleUsers, diskNeed, loginSessions, otherLogins, CHECK_EXTRA, PUBLIC_FIX, publicIPv4, runnerGroupRow, sessionOwners, sharingOff, tcpListeners } from "../src/checks.ts";
+import { type CheckContext, serviceUnlocksDisk, consoleUsers, diskNeed, loginSessions, otherLogins, CHECK_EXTRA, PUBLIC_FIX, publicAddresses, runnerGroupRow, sessionOwners, sharingOff, tcpListeners } from "../src/checks.ts";
 import { loadConfig, paths } from "../src/config.ts";
 import { FakeSys, githubRoutes, json, NETSTAT_CLEAN } from "./fake.ts";
 import { CFG, PEM, tempRoot, testBox, quietBox } from "./helpers.ts";
@@ -204,6 +204,7 @@ describe("who is logged in", () => {
 });
 
 describe("the box's public address", () => {
+  const publicIPv4 = async (sys: FakeSys) => (await publicAddresses(sys)).addresses[0] ?? null;
   const sysWith = (body: string, status = 200) => {
     const sys = new FakeSys();
     quietBox(sys);

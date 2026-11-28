@@ -3,7 +3,6 @@
 // and where: at the box, from away, or nothing. Rows that need ci or root show, for anyone else, the
 // loop's last recorded result, and never name a user.
 import { lstatSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { beatState } from "./beat.ts";
 import { bootId, monoNow } from "./core/boot.ts";
 import { rootStateOf } from "./core/paths.ts";

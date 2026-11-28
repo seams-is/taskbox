@@ -2,12 +2,15 @@ import { spyOn } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import * as fs from "node:fs";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { Check } from "../src/checks.ts";
 import { assetUrl, type BoxNames, type Config, paths } from "../src/config.ts";
 import type { InstallDeps } from "../src/install.ts";
+import { gitTreeSha } from "../src/hop.ts";
+import { NAMESPACE as RELEASE_NAMESPACE, type VerifyDeps } from "../src/release.ts";
+import { keyPair, sshsig } from "./sshsig.ts";
 import { GitHub } from "../src/github.ts";
 import { Log } from "../src/log.ts";
 import type { LoopDeps } from "../src/loop.ts";
@@ -226,17 +229,50 @@ export function healthyBox(sys: FakeSys): Dir {
 
 // The install's deps on a temp root, a Mac's own folders in it: the owner's Downloads holds the App
 // key, and the bootstrap folder the downloaded taskbox.json.
+// The release keys the install tests pin: a fixture key, never the repo's signers file.
+export const RELEASE_KEY = keyPair();
+export const RELEASE_PIN = `# the tests' release key\n${RELEASE_KEY.line}`;
+export const SETTINGS_REPO = "example-org/settings";
+export const SETTINGS_SHA = "5e77135e77135e77135e77135e77135e77135e77";
+export const RELEASE_VERSION = "3.0.0";
+// ssh-keygen itself, run straight: it only reads.
+export const testKeygen: VerifyDeps = {
+  run: async (cmd, args, opts = {}) => {
+    const p = Bun.spawn([cmd, ...args], { env: { PATH: "/usr/bin:/bin" }, stdin: opts.stdin === undefined ? "ignore" : new Blob([opts.stdin]), stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    return { code, stdout, stderr };
+  },
+};
+
+// What stageRelease made for a FakeSys, and the release folder installDeps made for it, so either
+// may come first: each writes the release's files into the folder once both are there.
+type Staged = { files: Record<string, Uint8Array | string> };
+const staged = new WeakMap<FakeSys, Staged>();
+const folders = new WeakMap<FakeSys, string[]>();
+function placeRelease(sys: FakeSys): void {
+  const st = staged.get(sys);
+  for (const dir of st ? (folders.get(sys) ?? []) : []) {
+    for (const n of readdirSync(dir)) if (/^taskbox-v.*\.tar\.gz$/.test(n)) fs.rmSync(join(dir, n));
+    for (const [name, body] of Object.entries(st!.files)) writeFileSync(join(dir, name), body);
+  }
+}
+// The settings beside the release, as box install or install.sh puts them there.
+export function writeSettings(dir: string, cfg: unknown = CFG, sha = SETTINGS_SHA): void {
+  writeFileSync(join(dir, "taskbox.json"), JSON.stringify(cfg));
+  writeFileSync(join(dir, "taskbox.json.commit"), `${sha}\n`);
+}
+
 export function installDeps(sys: FakeSys, answer: string, root = mkdtempSync(join(tmpdir(), "taskbox-install-"))): { d: InstallDeps; said: string[]; root: string } {
   // The folders every Mac has.
   for (const f of ["usr", "Library/LaunchAgents", "Library/LaunchDaemons"]) mkdirSync(join(root, f), { recursive: true });
   // /private/var is on every Mac: the agent's home goes there.
   mkdirSync(join(root, "private/var"), { recursive: true });
   const ownerHome = join(root, "Users/owner");
-  mkdirSync(join(ownerHome, "Downloads"), { recursive: true });
-  writeFileSync(join(ownerHome, "Downloads/example-taskbox.2026-11-12.private-key.pem"), PEM);
-  const configDir = join(root, "bootstrap");
-  mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, "taskbox.json"), JSON.stringify(CFG));
+  mkdirSync(ownerHome, { recursive: true });
+  const release = mkdtempSync(join(root, "release-"));
+  writeSettings(release);
+  folders.set(sys, [...(folders.get(sys) ?? []), release]);
+  placeRelease(sys);
   const said: string[] = [];
   const d: InstallDeps = {
     sys,
@@ -249,8 +285,10 @@ export function installDeps(sys: FakeSys, answer: string, root = mkdtempSync(joi
     owner: "owner",
     ownerHome,
     workRoot: root,
-    configDir,
-    bootstrap: configDir,
+    release,
+    settingsRepo: SETTINGS_REPO,
+    signers: RELEASE_PIN,
+    keygen: testKeygen,
     rootUid: process.getuid!(),
   };
   // A first install makes the service's home when it has never logged in.
@@ -259,21 +297,22 @@ export function installDeps(sys: FakeSys, answer: string, root = mkdtempSync(joi
 }
 
 const REPO = join(import.meta.dir, "..");
-const sha256 = (data: string) => createHash("sha256").update(data).digest("hex");
-export const TAILSCALE_ASSET = 123;
+const sha256 = (data: string | Uint8Array<ArrayBuffer>) => createHash("sha256").update(data).digest("hex");
+export const TAILSCALE_URL = "https://api.github.com/repos/example-org/taskbox/releases/assets/123";
 
-// A release on the fake GitHub. The commit's tarball is this repo with cfg as its taskbox.json, and
-// each tool's download is a fake archive its test pin matches. The fake tar and ditto unpack each
-// archive by its bytes, so nothing real is unpacked. edit changes versions.json after the pins.
-// extra: more files in the release's tree, such as a v3 release's signers file (hop.test.ts).
 // The repo's files into dir, less node_modules, .git and skip, one top-level entry at a time. The
 // tests' temp folders are under node_modules/.cache (test/setup.ts), and cpSync refuses to copy a
 // folder into one inside it, even where its filter would leave that one out.
 export function copyRepo(dir: string, skip: string[] = []): void {
-  for (const name of fs.readdirSync(REPO)) if (![".git", "node_modules", ...skip].includes(name)) cpSync(join(REPO, name), join(dir, name), { recursive: true });
+  for (const name of fs.readdirSync(REPO)) if (![".git", "node_modules", ".tmp", ...skip].includes(name)) cpSync(join(REPO, name), join(dir, name), { recursive: true });
 }
 
-export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<string, any>) => void = () => {}, extra: (dir: string) => void = () => {}): void {
+// A signed release in install.sh's folder: its statement, signed by the tests' release key, and a
+// gzip tarball that the fake tar unpacks to this repo's tree, with the tests' pin as its signers and
+// each tool's pin matching a fake archive the fake web serves. The fake tar and ditto unpack each
+// archive by its bytes, so nothing real is unpacked. edit changes versions.json after the pins;
+// extra adds files to the tree; statement changes the statement before it is signed.
+export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<string, any>) => void = () => {}, extra: (dir: string) => void = () => {}, statement: (s: Record<string, unknown>) => void = () => {}): { tree: string } {
   const unpack = new Map<string, (dir: string) => void>();
   const archive = (name: string, into: (dir: string) => void) => {
     const bytes = `fake archive: ${name}`;
@@ -299,23 +338,38 @@ export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<s
     served.set(v[name].url, bytes);
   }
   const ts = archive("tailscale", (dir) => (file("tailscale", "tailscale binary")(dir), file("tailscaled", "tailscaled binary")(dir)));
-  v.tailscale = { version: v.tailscale.version, asset: TAILSCALE_ASSET, sha256: sha256(ts), files: { tailscale: sha256("tailscale binary"), tailscaled: sha256("tailscaled binary") } };
-  served.set(assetUrl(cfg, TAILSCALE_ASSET), ts);
+  v.tailscale = { version: v.tailscale.version, asset: 123, url: TAILSCALE_URL, sha256: sha256(ts), files: { tailscale: sha256("tailscale binary"), tailscaled: sha256("tailscaled binary") } };
+  served.set(TAILSCALE_URL, ts);
   edit(v);
-  const src = archive("src", (dir) => {
-    // The commit's files, less test/ and docs/: the install reads none of them, and they are half
-    // the tree, which each install copies, then copies and hashes again.
-    copyRepo(dir, ["test", "docs"]);
-    writeFileSync(join(dir, "taskbox.json"), JSON.stringify(cfg));
-    writeFileSync(join(dir, "versions.json"), JSON.stringify(v));
-    extra(dir);
-  });
-  sys.routes.unshift((_m, url) => (url.includes("/tarball/") ? new Response(src) : served.has(url) ? new Response(served.get(url)) : undefined));
+  // The release's tree, made once: the repo's files less test/ and docs/, which the install reads
+  // none of and which are half the tree.
+  const tree = mkdtempSync(join(tmpdir(), "taskbox-tree-"));
+  copyRepo(tree, ["test", "docs"]);
+  writeFileSync(join(tree, "versions.json"), JSON.stringify(v));
+  writeFileSync(join(tree, "signers/allowed_signers"), RELEASE_PIN);
+  extra(tree);
+  const tgz = new Uint8Array(Bun.gzipSync(Buffer.from(`the release tarball ${tree}`)));
+  const tarball = `taskbox-v${RELEASE_VERSION}.tar.gz`;
+  const s: Record<string, unknown> = { v: 1, name: "taskbox", version: RELEASE_VERSION, channel: "stable", tag: `v${RELEASE_VERSION}`, tarball, sha256: sha256(tgz), tree: gitTreeSha(tree), assets: { "tailscale-1.104.5.tar.gz": sha256(ts) }, minFrom: "2.6.1", settingsSchema: [4, 4], answers: [3, 4], pr: 61, mergedAt: "2026-11-30T10:00:00Z", commit: "abc1234def5678abc1234def5678abc1234def56", notes: "" };
+  statement(s);
+  const text = `${JSON.stringify(s)}\n`;
+  const st = new TextEncoder().encode(text);
+  staged.set(sys, { files: { "statement.json": text, "statement.json.sig": sshsig(RELEASE_KEY, st, { namespace: RELEASE_NAMESPACE, flags: 0x05 }), [tarball]: tgz } });
+  placeRelease(sys);
+  sys.routes.unshift((_m, url) => (served.has(url) ? new Response(served.get(url)) : undefined));
+  // tar -tvzf <tarball>, as tar lists one: a plain file and a folder.
+  sys.responders.push((cmd, args) => (cmd === "/usr/bin/tar" && args[0] === "-tvzf" && args[1]!.endsWith(".tar.gz") && readFileSync(args[1]!).equals(Buffer.from(tgz)) ? out("drwxr-xr-x  0 root   wheel       0 Nov 30 10:00 taskbox/\n-rw-r--r--  0 root   wheel    1000 Nov 30 10:00 taskbox/README.md\n") : undefined));
   // tar -xzf <file> -C <dir> and ditto -x -k <file> <dir>.
   sys.responders.push((cmd, args) => {
     const at = cmd === "/usr/bin/tar" && args[0] === "-xzf" ? [args[1]!, args[3]!] : cmd === "/usr/bin/ditto" && args.slice(0, 2).join(" ") === "-x -k" ? [args[2]!, args[3]!] : undefined;
     if (!at) return undefined;
-    const into = unpack.get(readFileSync(at[0]!, "utf8"));
+    const bytes = readFileSync(at[0]!);
+    if (bytes.equals(Buffer.from(tgz))) {
+      mkdirSync(at[1]!, { recursive: true });
+      cpSync(tree, at[1]!, { recursive: true });
+      return out("");
+    }
+    const into = unpack.get(bytes.toString("utf8"));
     if (!into) return { code: 1, stdout: "", stderr: "tar: Unrecognized archive format\n" };
     mkdirSync(at[1]!, { recursive: true });
     into(at[1]!);
@@ -334,6 +388,7 @@ export function stageRelease(sys: FakeSys, cfg: Config = CFG, edit: (v: Record<s
     const r = Bun.spawnSync(["/bin/chmod", args[0]!, args[1]!], { env: {} });
     return { code: r.exitCode ?? 1, stdout: "", stderr: r.stderr.toString() };
   });
+  return { tree };
 }
 
 // launchd: what is loaded, by label. bootstrap loads a plist, bootout ends a service, print says
@@ -403,6 +458,14 @@ export function socketDirOk(c: { sys: FakeSys; paths: { tailscaleSocketDir: stri
   c.sys.responders.unshift((cmd, args) => (cmd === "/bin/ls" && args[1] === c.paths.tailscaleSocketDir ? { code: 0, stdout: `drwx------+ 2 root wheel 64 Nov 20 16:16 ${args[1]}\n 0: user:${c.paths.service} allow search\n`, stderr: "" } : undefined));
 }
 
+// The tailnet pinned, as the install's Tailscale step leaves it (tsrotate.ts pinTailnet).
+export function tailnetPinned(p: { installId: string }, tailnet = "example.ts.net"): void {
+  const { mkdirSync, writeFileSync } = require("node:fs") as typeof import("node:fs");
+  const { dirname, join } = require("node:path") as typeof import("node:path");
+  mkdirSync(dirname(p.installId), { recursive: true });
+  writeFileSync(join(dirname(p.installId), "tailnet.json"), JSON.stringify({ v: 1, tailnet }));
+}
+
 // The guard's record of VM starts, on trial, as its first pass leaves it (pfstarts.ts): without one
 // the loop reads the box as closed while Screen Sharing is on.
 export function pfOpen(p: { installId: string; guardState: string }): void {
@@ -414,4 +477,16 @@ export function pfOpen(p: { installId: string; guardState: string }): void {
   writeFileSync(markFile(p), JSON.stringify({ v: 1, seq: 1, firstAt: 0 }), { mode: 0o644 });
   writeFileSync(witnessFile(p), JSON.stringify({ v: 1, seq: 1 }), { mode: 0o644 });
   writeFileSync(beganFile(p), JSON.stringify({ v: 1, at: 0 }), { mode: 0o644 });
+}
+
+// An approver key pinned in approvers.json, as key trust approver leaves it: the box then makes and
+// keeps its pool accounts (core/approvers.ts poolTrust).
+export async function approverPinned(p: { installId: string }): Promise<void> {
+  const { mkdirSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const { trustFirst, updateApprovers } = await import("../src/core/approvers.ts");
+  const { rootStateOf } = await import("../src/core/paths.ts");
+  const { keyPair } = await import("./sshsig.ts");
+  mkdirSync(dirname(p.installId), { recursive: true });
+  await updateApprovers(rootStateOf(p).approvers, { rootUid: process.getuid!() }, (a) => trustFirst(a, keyPair().key, 1_800_000_000_000, "screen"));
 }

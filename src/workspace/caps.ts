@@ -1,5 +1,6 @@
 // The caps a Light or Heavy workspace runs under, on the guard's 2 s tick:
-// - memory, enforced: the resident memory of the pool account's processes, summed. Over the size for
+// - memory, enforced: the pool account's processes' footprint (proc_pid_rusage's phys_footprint,
+//   which counts compressed and swapped pages that resident memory leaves out), summed. Over the size for
 //   60 s, the card warns; at 125% for 60 s, the guard asks it to save (and pauses it after
 //   saveMinutes, by the core's time rule); at 150%, or at macOS's highest memory pressure, every
 //   process of the account is stopped at once, with no grace, so CI's VMs and the guard aren't
@@ -17,6 +18,7 @@ import { freeze } from "./flows.ts";
 import { find, move, OPEN, put, SIZE_WORD, type Size, type Step, type Workspace, type WsState } from "./model.ts";
 import { readStateFile } from "./read.ts";
 import { change } from "./write.ts";
+import { type Footprint, rusageFootprint } from "../measure.ts";
 
 export const OVER_MS = 60_000;
 export const SAVE_AT = 1.25;
@@ -52,24 +54,27 @@ export function capStep(m: CapMemory, o: { size: Size; capMB: number; usedMB: nu
   return { mem, act: { do: "none" } };
 }
 
-// ps's rss (KB) and %cpu of every process of one user ID, summed: MB and CPUs.
-export function parsePs(out: string): { memoryMB: number; cpu: number } {
-  let kb = 0;
+// ps's lines: pid, rss (KB) and %cpu of every process of one user ID. Each process counts at its
+// footprint when the kernel gives it, else its resident memory, so a compressed or swapped page
+// counts as much as a resident one. MB and CPUs.
+export function parsePs(out: string, footprint: Footprint = () => undefined): { memoryMB: number; cpu: number } {
+  let bytes = 0;
   let pc = 0;
   for (const l of out.split("\n")) {
-    const m = /^\s*(\d+)\s+([\d.]+)\s*$/.exec(l);
+    const m = /^\s*(\d+)\s+(\d+)\s+([\d.]+)\s*$/.exec(l);
     if (!m) continue;
-    kb += Number(m[1]);
-    pc += Number(m[2]);
+    const fp = footprint(Number(m[1]));
+    bytes += fp !== undefined && Number.isFinite(fp) && fp >= 0 ? Math.max(fp, Number(m[2]) * 1024) : Number(m[2]) * 1024;
+    pc += Number(m[3]);
   }
-  return { memoryMB: Math.round(kb / 1024), cpu: Math.round(pc) / 100 };
+  return { memoryMB: Math.round(bytes / 1024 / 1024), cpu: Math.round(pc) / 100 };
 }
 
-export async function sample(sys: Sys, uid: number): Promise<{ memoryMB: number; cpu: number } | undefined> {
-  const r = await sys.run("/bin/ps", ["-U", String(uid), "-o", "rss=,%cpu="], { timeoutMs: 5_000 }).catch(() => undefined);
+export async function sample(sys: Sys, uid: number, footprint: Footprint = rusageFootprint): Promise<{ memoryMB: number; cpu: number } | undefined> {
+  const r = await sys.run("/bin/ps", ["-U", String(uid), "-o", "pid=,rss=,%cpu="], { timeoutMs: 5_000 }).catch(() => undefined);
   // ps exits 1 when the user runs nothing.
   if (!r || (r.code !== 0 && r.code !== 1)) return undefined;
-  return parsePs(r.stdout);
+  return parsePs(r.stdout, footprint);
 }
 
 export async function highestPressure(sys: Sys): Promise<boolean> {
@@ -80,8 +85,9 @@ export async function highestPressure(sys: Sys): Promise<boolean> {
 // Every process of the account stopped at once, or continued. pkill takes a numeric user ID.
 export const stopAllNow = (sys: Sys, uid: number) => sys.run("/usr/bin/pkill", ["-STOP", "-U", String(uid)], { timeoutMs: 5_000 }).catch(() => undefined);
 export const continueAll = (sys: Sys, uid: number) => sys.run("/usr/bin/pkill", ["-CONT", "-U", String(uid)], { timeoutMs: 5_000 }).catch(() => undefined);
-// The size's nice on every process of the account; new ones get it on the next tick.
-export const reniceAll = (sys: Sys, user: string, nice: number) => sys.run("/usr/bin/renice", ["-n", String(nice), "-u", user], { timeoutMs: 5_000 }).catch(() => undefined);
+// The size's nice on every process of the account, absolute (renice's -n would add to it each tick);
+// new ones get it from the gate, and any that drifted on the next tick.
+export const reniceAll = (sys: Sys, user: string, nice: number) => sys.run("/usr/bin/renice", [String(nice), "-u", user], { timeoutMs: 5_000 }).catch(() => undefined);
 
 export interface CapsDeps {
   sys: Sys;
@@ -90,6 +96,7 @@ export interface CapsDeps {
   rootUid?: number;
   chown?: (path: string, uid: number, gid: number) => void;
   events?: { write(e: { type: string; subject: string; actor: string; text: string }): unknown };
+  footprint?: Footprint; // one process's phys_footprint; tests give their own
 }
 
 export interface CapsRun {
@@ -149,7 +156,7 @@ export async function capsTick(d: CapsDeps, run: CapsRun): Promise<string[]> {
     const uid = uids.get(w.user!)!;
     const nice = w.size === "whole" ? sizes.whole.nice : sizes[w.size].nice;
     if (nice > 0) await reniceAll(d.sys, w.user!, nice);
-    const u = await sample(d.sys, uid);
+    const u = await sample(d.sys, uid, d.footprint);
     if (!u) continue;
     const cap = w.size === "whole" ? 0 : sizes[w.size].memoryGB * 1024;
     const step = capStep(run.mem.get(w.name) ?? {}, { size: w.size, capMB: cap, usedMB: u.memoryMB, highest: top, saving: w.state === "saving", now });

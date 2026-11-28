@@ -276,7 +276,7 @@ describe("the Tailnet policy row, from the box's own netmap", () => {
   test("differences: a user let in that the settings don't name, a wrong mode, a missing one, any user", () => {
     const want = { accept: ["taskbox-agent"], check: ["pat"] };
     expect(policyDiff(liveSshUsers(netmap([accept(["taskbox-agent"]), check(["pat"])]))!, want)).toEqual([]);
-    expect(policyDiff(liveSshUsers(netmap([accept(["taskbox-agent", "pat", "root"])]))!, want)).toEqual(["pat is let in by accept, not check alone", "root is let in, and the settings name nobody by that name"]);
+    expect(policyDiff(liveSshUsers(netmap([accept(["taskbox-agent", "pat", "root"])]))!, want)).toEqual(["pat is let in by accept, where the settings say check alone", "root is let in, and the settings name nobody by that name"]);
     expect(policyDiff(liveSshUsers(netmap([check(["pat"])]))!, want)).toEqual(["taskbox-agent isn't let in"]);
     expect(policyDiff(liveSshUsers(netmap([accept(["*"])]))!, want)).toContain("a rule lets any user in");
   });
@@ -393,6 +393,8 @@ describe("the Tailnet policy row and accounts taskbox didn't make", () => {
     const c = checkCtx(agentDir().user("test1", { uid: 501, attrs: { UserShell: "/bin/zsh" } }), { cfg: { accounts: validateAccounts({ service: "taskbox", agent: "taskbox-agent", people: [], workspaces: { pool: "test", size: 1 } }), approverKey: key } });
     withAgent(c);
     writePin({ chown: () => {}, rootUid: ME }, c.paths.approverPin, { key, gen: 1, cleared: [] });
+    const { approverPinned } = await import("./helpers.ts");
+    await approverPinned(c.paths);
     c.sys.responders.unshift((cmd, args) => (cmd === c.paths.tailscale && args.includes("netmap") ? { code: 0, stdout: JSON.stringify({ SSHPolicy: { rules: [{ sshUsers: { "taskbox-agent": "=", test1: "=" }, action: { accept: true } }] } }), stderr: "" } : undefined));
     const r = await tailnetPolicyRow(c);
     expect(r.status).toBe("FAIL");

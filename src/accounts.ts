@@ -154,9 +154,11 @@ export async function planService(d: Pick<AccountDeps, "sys">, name: string, rec
 
 // After the yes: makes the service account. sysadminctl asks for its password itself, at the
 // terminal, so it is never on a command line (not checked: that "-password -" asks, without echo).
-export async function makeService(d: AccountDeps, name: string, recordPath: string): Promise<number | string> {
-  d.say(`Making the account ${name}, which runs jobs. Type its password when asked, and keep it: you type it once after each restart. The next step asks for it again, which catches a typo.`);
-  const code = d.tty(["/usr/sbin/sysadminctl", "-addUser", name, "-fullName", "taskbox", "-password", "-"]);
+// guestPassword: install.sh --guest-test in a throwaway VM, where nobody types: a random password on
+// sysadminctl's command line, seen only inside that VM, which is deleted after.
+export async function makeService(d: AccountDeps, name: string, recordPath: string, guestPassword?: string): Promise<number | string> {
+  d.say(guestPassword ? `Making the account ${name}, which runs jobs, with a random password: this is a guest test.` : `Making the account ${name}, which runs jobs. Type its password when asked, and keep it: you type it once after each restart. The next step asks for it again, which catches a typo.`);
+  const code = guestPassword ? (await d.sys.run("/usr/sbin/sysadminctl", ["-addUser", name, "-fullName", "taskbox", "-password", guestPassword], { timeoutMs: 120_000 })).code : d.tty(["/usr/sbin/sysadminctl", "-addUser", name, "-fullName", "taskbox", "-password", "-"]);
   const uid = await uidOf(d.sys, name);
   if (code !== 0 || uid === undefined) return `sysadminctl didn't make ${name} (exit ${code}). Nothing else was changed. ${againOf(d)}, or make ${name} in System Settings, Users & Groups, as a Standard user, then run it again.`;
   // Recorded at once, so a failed step after this still leaves the account taskbox's to remove.
@@ -365,7 +367,6 @@ export async function removable(sys: Sys, rec: AccountsRecord, people: readonly 
   }
   return out;
 }
-
 
 // Screen Sharing's "Only these users" list. macOS keeps it in this group; with no group, every user
 // may use Screen Sharing (read: checks.ts screenSharingAccess). Not checked on a Mac: that adding
@@ -796,12 +797,6 @@ export async function removeGroup(sys: Sys, rec: PoolRecord, group: string): Pro
   if (now !== g.gid) return `${group} (its ID isn't the one taskbox made)`;
   const r = await sys.run("/usr/bin/dscl", [".", "-delete", `/Groups/${group}`], { timeoutMs: 10_000 });
   return r.code === 0 && (await groupGid(sys, group)) === undefined ? undefined : `${group} (dscl couldn't delete it)`;
-}
-
-// remove: whether the pool account is a record dscl has that never got its ID: made by an install
-// that stopped half way. Only such a record pool.json names is offered.
-export async function halfMade(sys: Sys, name: string): Promise<boolean> {
-  return (await halfMadeState(sys, name)) === "half";
 }
 
 // "half": a record with no UniqueID; "none": dscl says there is no such record; "unknown": dscl

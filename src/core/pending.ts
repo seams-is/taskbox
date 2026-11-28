@@ -5,7 +5,7 @@
 //
 // `shows` is the box's own text for the change, made when it is raised from the checked request,
 // never text a controller or an agent sent. `payload` is what the guard applies on the yes; the kind's
-// owner (keys, rules, settings, channel, rollback) reads it. Nothing secret goes in either: the file
+// owner (keys, rules, settings, signers) reads it. Nothing secret goes in either: the file
 // is readable by every account on the box.
 import { createHash } from "node:crypto";
 import { looksSecret } from "./events.ts";
@@ -17,16 +17,18 @@ import { isObj, plain, readOwnedJson, type Read, time, updateOwnedJson, type Wri
 export const PENDING_V = 1;
 export const LAPSE_MS = 24 * 3600_000;
 export const PENDING_MAX = 20;
-export const SHOWS_MAX = 10;
+// confirm shows every line, paged; a change with more lines than this is refused when raised, never cut.
+export const SHOWS_MAX = 200;
+export const LINE_MAX = 120;
 export const PAYLOAD_MAX = 8 * 1024;
-export const PENDING_MAX_BYTES = 256 * 1024;
-export const KINDS = ["approver-add", "approver-rotate", "rule", "settings", "channel", "rollback-v2", "signers"] as const;
+export const PENDING_MAX_BYTES = 1024 * 1024;
+export const KINDS = ["approver-add", "approver-rotate", "rule", "settings", "signers"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export interface Pending {
   id: string; // pc_<ULID>
   kind: Kind;
-  subject: string; // what it changes: a key's fingerprint, a rule's id, "settings", "channel", "rollback"
+  subject: string; // what it changes: a key's fingerprint, a rule's id, "settings", "signers"
   shows: string[]; // the lines `confirm` shows, the box's own words
   actor: string; // who asked, as events say it
   askedAt: number;
@@ -74,7 +76,7 @@ function itemProblem(p: unknown): string | undefined {
   if (!isId("pc", p.id)) return "an item's id isn't one taskbox reads";
   if (!(KINDS as readonly unknown[]).includes(p.kind)) return "an item's kind isn't one taskbox confirms";
   if (!plain(p.subject, 80) || !plain(p.actor, 120)) return "an item's subject or actor isn't a short line";
-  if (!Array.isArray(p.shows) || p.shows.length < 1 || p.shows.length > SHOWS_MAX || !p.shows.every((l) => plain(l, 120))) return "an item's lines aren't ones taskbox shows";
+  if (!Array.isArray(p.shows) || p.shows.length < 1 || p.shows.length > SHOWS_MAX || !p.shows.every((l) => plain(l, LINE_MAX))) return "an item's lines aren't ones taskbox shows";
   if (!time(p.askedAt) || !time(p.lapsesAt) || (p.lapsesAt as number) - (p.askedAt as number) !== LAPSE_MS) return "an item's times aren't ones taskbox reads";
   if (p.op !== undefined && !isId("op", p.op)) return "an item's op isn't an op id";
   if ((p.boot !== undefined && !isBootId(p.boot)) || (p.monoAt !== undefined && !Number.isSafeInteger(p.monoAt))) return "an item's boot or clock isn't one taskbox reads";
@@ -104,6 +106,18 @@ export interface Ask {
   payload: unknown;
 }
 
+// Lines as confirm shows them: anything not printable as ?, each line wrapped at LINE_MAX with the
+// rest indented. Nothing is cut.
+export function showLines(lines: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of lines) {
+    const l = String(raw).replace(/[^\x20-\x7e]/g, "?");
+    out.push(l.slice(0, LINE_MAX));
+    for (let i = LINE_MAX; i < l.length; i += LINE_MAX - 4) out.push(`    ${l.slice(i, i + LINE_MAX - 4)}`);
+  }
+  return out;
+}
+
 export type Raised = { ok: true; state: PendingState; item: Pending; again: boolean } | { ok: false; why: string };
 
 // Raises a change to wait for confirm. The same change asked again, while it waits, is the same
@@ -114,11 +128,15 @@ export function raise(s: PendingState, a: Ask, at: Moment, rand: Rand = realRand
   if (m.mono === undefined || m.boot === undefined) return { ok: false, why: "The box's clock can't be read now, so nothing can wait for confirm. Ask again in a minute." };
   const digest = digestOf(a.kind, a.subject, a.payload);
   if (!digest) return { ok: false, why: "The change's payload isn't one taskbox keeps." };
+  // What confirm shows is what applies, so a line is never cut: a long one is wrapped, and a change
+  // with more lines than confirm shows is refused.
+  const shows = showLines(a.shows);
+  if (shows.length < 1 || shows.length > SHOWS_MAX) return { ok: false, why: `The change takes ${shows.length} lines to show, and confirm shows at most ${SHOWS_MAX}, so it can't wait for confirm. Make it smaller.` };
   const same = s.items.find((p) => live(p, at) && p.digest === digest);
   if (same) return { ok: true, state: s, item: same, again: true };
   // Every item counts, lapsed ones too until the keeping pass removes them: the file holds PENDING_MAX.
   if (s.items.length >= PENDING_MAX) return { ok: false, why: `${PENDING_MAX} changes are waiting or lapsed. Type taskbox confirm at the box, or wait a minute for the lapsed ones to go.` };
-  const item: Pending = { id: idOf("pc", now, rand), kind: a.kind, subject: a.subject, shows: a.shows.map((l) => l.replace(/[^\x20-\x7e]/g, " ").slice(0, 120)).slice(0, SHOWS_MAX), actor: a.actor, askedAt: now, lapsesAt: now + LAPSE_MS, ...(a.op !== undefined ? { op: a.op } : {}), ...(m.boot !== undefined ? { boot: m.boot } : {}), ...(m.mono !== undefined ? { monoAt: m.mono } : {}), payload: a.payload, digest };
+  const item: Pending = { id: idOf("pc", now, rand), kind: a.kind, subject: a.subject, shows, actor: a.actor, askedAt: now, lapsesAt: now + LAPSE_MS, ...(a.op !== undefined ? { op: a.op } : {}), ...(m.boot !== undefined ? { boot: m.boot } : {}), ...(m.mono !== undefined ? { monoAt: m.mono } : {}), payload: a.payload, digest };
   const why = itemProblem(item);
   if (why) return { ok: false, why };
   return { ok: true, state: { v: 1, items: [...s.items, item] }, item, again: false };

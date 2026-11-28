@@ -32,7 +32,8 @@ import { linkTarget, relink, withUpdateLock } from "../layout.ts";
 import { installedCommit, readProof } from "../proof.ts";
 import { undo } from "../ops.ts";
 import { bare, NAMESPACE, PRINCIPAL, signerLines, SSH_KEYGEN, type Statement, signersProblem, verifyRelease, type VerifyDeps, verifySigned } from "../release.ts";
-import { meet, parseSignerState, type SignerState, TRANSITION, TRANSITION_SIG } from "../release/signers.ts";
+import { listOf, listProblem, REVOKES, REVOKES_MAX, takeList } from "../release/revokes.ts";
+import { meet, parseSignerState, type SignerState, TRANSITION, TRANSITION_SIG, waitingOf } from "../release/signers.ts";
 import { readInForce, settingsFiles } from "../settings/inforce.ts";
 import { updateOf } from "../settings/update.ts";
 import { rollbackSettings } from "./narrow.ts";
@@ -91,6 +92,7 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
   const events = eventLog("guard", { dir: d.state.events, owner: root, ...own }, d.sys);
   const ctl = { sys: d.sys, state: d.state, rootUid: root, ...own, events, log: d.log };
   let before: string | undefined; // the availability before the update's drain
+  let verifiedBy: string | undefined; // the pinned key that signed the statement verified
   let beatsBefore: Record<string, number | undefined> = {};
   const runningNow = () => runningOf(d.p, root);
   const pinFallback = () => readFileSync(join(runningNow().dir, "app/signers/allowed_signers"), "utf8");
@@ -136,11 +138,15 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
       progress(0);
       const tarballSha256 = await rel.assetToFile(`taskbox-v${version}.tar.gz`, TARBALL_LIMIT, tarball);
       progress(lstatSync(tarball).size);
-      return { statement: rel.statement, signature: rel.signature, tarball, tarballSha256, assets: {} };
+      // The revoke list its statement names: one that can't be read is refused at the stage.
+      const revokes = await rel.asset(REVOKES, REVOKES_MAX).catch(() => undefined);
+      return { statement: rel.statement, signature: rel.signature, tarball, tarballSha256, assets: {}, ...(revokes ? { revokes } : {}) };
     },
     async verify(dl, o) {
       const cur = runningNow();
-      return verifyRelease(nobody(d.sys), { statement: dl.statement, signature: dl.signature, pinned: signers().pinned, workRoot: f.dir, installed: { version: cur.version, ...(cur.record ? { sha256: cur.record.sha256 } : {}) }, repair: o.repair, want: o.want, channel: u.channel, tarballSha256: dl.tarballSha256 });
+      const v = await verifyRelease(nobody(d.sys), { statement: dl.statement, signature: dl.signature, pinned: signers().pinned, workRoot: f.dir, installed: { version: cur.version, ...(cur.record ? { sha256: cur.record.sha256 } : {}) }, repair: o.repair, want: o.want, channel: u.channel, tarballSha256: dl.tarballSha256 });
+      verifiedBy = v.ok ? v.signer : undefined;
+      return v;
     },
     async stage(dl, s) {
       const listing = await d.sys.run("/usr/bin/tar", ["-tvzf", dl.tarball], { timeoutMs: 120_000 });
@@ -159,17 +165,24 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
         return { why: (e as Error).message.slice(0, 120) };
       }
       if (tree !== s.tree) return { why: "the unpacked tree isn't the one its statement names" };
+      // The revoke list: a release whose list can't be read isn't installed, and status says why.
+      const list = listOf(s, dl.revokes);
+      if (typeof list === "string") {
+        saveSigners(listProblem(signers(), list));
+        return { why: list };
+      }
+      saveSigners(takeList(signers(), list, verifiedBy, d.sys.now()).state);
       // The release keys: the same as ours, or a change ours signed, which waits as signers.ts says.
       const st = signers();
       const carried = readFileSync(join(dir, "signers/allowed_signers"), "utf8");
       if (signersProblem(carried)) return { why: "its signers file isn't one taskbox reads" };
       const same = (a: string, b: string) => signerLines(a).sort().join("\n") === signerLines(b).sort().join("\n");
-      if (!same(carried, st.pinned) && !(st.pending && same(carried, st.pending.newText))) {
+      if (!same(carried, st.pinned) && !waitingOf(st).some((p) => same(carried, p.newText))) {
         if (!existsSync(join(dir, TRANSITION)) || !existsSync(join(dir, TRANSITION_SIG))) return { why: "it pins other release keys and carries no signed transition" };
         const text = readFileSync(join(dir, TRANSITION), "utf8");
         const ok = await verifySigned(nobody(d.sys), { message: new TextEncoder().encode(text), signature: new Uint8Array(readFileSync(join(dir, TRANSITION_SIG))), pinned: st.pinned, workRoot: f.dir }).catch(() => undefined);
         if (!ok?.ok) return { why: "its signer transition isn't signed by a pinned release key" };
-        const m = meet(st, text, s.version, d.sys.now());
+        const m = meet(st, text, s.version, { wall: d.sys.now(), mono: await monoNow(d.sys), boot: await bootId(d.sys) });
         if ("why" in m) return { why: m.why };
         saveSigners(m.state);
         if (m.said) d.report({ event: { type: "update.signers", text: `WARN ${m.said}`.slice(0, 240) } });
@@ -190,7 +203,7 @@ export function boxEnv(d: BoxEnvDeps): RollbackEnv {
       const r = await changeControl(ctl, requestOf("drain", { reason: `${d.type} ${d.op}`, ...(o.force && o.deadline ? { force: true, timeout: `${Math.max(1, Math.ceil((o.deadline - d.sys.now()) / 1000))}s` } : {}) }, actor));
       return r.ok ? undefined : r.said;
     },
-    hold: () => workspaceHold(d.p.workspaces, root),
+    hold: () => workspaceHold(d.p.workspaces, root, d.sys.now()),
     drained() {
       const c = readControl(d.state.control, root);
       if (c.kind !== "ok") return "gone";

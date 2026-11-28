@@ -1,10 +1,9 @@
 // taskbox job list: one record per VM, readable by every user, and nothing a job controls shown raw.
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { paths } from "../src/config.ts";
 import { placeShared } from "../src/install.ts";
-import { removeRequests } from "../src/requests.ts";
 import { appendJob, type JobRecord, jobLines, jobListScreen, readJobs, runnerResult, viewOfRecord } from "../src/jobs.ts";
 const jobsOnly = (all: JobRecord[] | undefined) => all ?? [];
 import { jobRecordResult, oneJob } from "../src/loop.ts";
@@ -193,20 +192,6 @@ describe("the install's folder for it", () => {
     const chowned: string[] = [];
     placeShared(p, me, (path) => void chowned.push(path));
     expect(chowned).toEqual([dirname(p.shared), p.shared]);
-    // The requests folder went with hold in v2.2.0: none is made, and one left from before goes.
-    expect(existsSync(p.requests)).toBe(false);
-    // No folder at all counts as removed, so no install says another user kept something in it.
-    expect(removeRequests(p.requests)).toEqual({ removed: true, left: 0 });
-    mkdirSync(p.requests);
-    writeFileSync(join(p.requests, "left"), "x");
-    removeRequests(p.requests);
-    expect(existsSync(p.requests)).toBe(false);
-    // A link in its place goes, and what it points to stays.
-    const keep = join(dirname(p.shared), "keep");
-    mkdirSync(keep);
-    symlinkSync(keep, p.requests);
-    removeRequests(p.requests);
-    expect([existsSync(p.requests), existsSync(keep)]).toEqual([false, true]);
     const q = paths(tempRoot(), testBox());
     mkdirSync(dirname(dirname(q.shared)), { recursive: true });
     symlinkSync("/tmp", dirname(q.shared));

@@ -61,7 +61,7 @@ describe("verifying a release with ssh-keygen", () => {
   }, 20_000);
 
   test("a statement for another version, or off the box's channel, fails", async () => {
-    expect(await verifyRelease(real, { ...release(), want: "3.0.2" })).toEqual({ ok: false, code: "statement", why: "the signed statement is for 3.0.1, not 3.0.2" });
+    expect(await verifyRelease(real, { ...release(), want: "3.0.2" })).toEqual({ ok: false, code: "statement", why: "the signed statement is for 3.0.1, and this asks for 3.0.2" });
     const rc = release({ statement: statementText(statementFor("3.1.0-rc.1")) });
     expect(await verifyRelease(real, { ...rc, channel: "stable" })).toEqual({ ok: false, code: "channel", why: "3.1.0-rc.1 is a beta release, and this box is on stable" });
     expect((await verifyRelease(real, { ...rc, channel: "beta" })).ok).toBe(true);

@@ -17,7 +17,7 @@
 // (a person's, the service account's, the agent account's), with the latest time: no account names, tailnet users,
 // devices or addresses. A session with no terminal, such as `ssh box taskbox status`, has a login
 // record too, with tty `tty__` (tried in a Tart test Mac on macOS 27.2), so it is a login like any.
-import { closeSync, constants, fchmodSync, fchownSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fchownSync, fstatSync, ftruncateSync, lstatSync, openSync, readSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { ANSWERS, text } from "./answers.ts";
 import { type Config, LAUNCHCTL_MS, type Paths, previousLabels, TAILSCALED_LABEL } from "./config.ts";
 import type { Sys } from "./sys.ts";
@@ -25,6 +25,18 @@ import type { Sys } from "./sys.ts";
 // The Tailscale version whose log lines the parser was checked against. A test fails when
 // versions.json pins another, so the lines are read again first.
 export const PARSED_TAILSCALE_VERSION = "1.104.5";
+
+// A sign-in link's code in a log, blanked where it lies: x for each of its characters.
+const LINK_CODE = /https:\/\/login\.tailscale\.com\/a\/([A-Za-z0-9]{6,40})/g;
+export function blankLinks(fd: number, text: string, at: number): number {
+  let n = 0;
+  for (const m of text.matchAll(LINK_CODE)) {
+    const off = Buffer.byteLength(text.slice(0, m.index! + m[0].length - m[1]!.length));
+    writeSync(fd, "x".repeat(m[1]!.length), at + off);
+    n++;
+  }
+  return n;
+}
 // tailscaled's log is emptied once it passes this, with its last part in <file>.0: under 4 MB.
 export const TAILSCALED_LOG_MAX = 2_000_000;
 // A pass reads at most this much of what the log grew by. More is skipped, and said.
@@ -688,12 +700,16 @@ export class LoginsKeeper {
     if (moveAside) await this.moveAside(said, now);
   }
 
-  // The bytes from..end, READ_CHUNK at a time, never all at once.
+  // The bytes from..end, READ_CHUNK at a time, never all at once. A Tailscale sign-in link in them,
+  // which some tailscaled versions log and which is a bearer secret until approved, is blanked in
+  // place, byte for byte, so the log keeps its length and nothing after it moves.
   private feedFrom(fd: number, from: number, end: number): void {
     for (let pos = from; pos < end; pos += this.chunk) {
       const n = Math.min(this.chunk, end - pos);
       this.largestRead = Math.max(this.largestRead, n);
-      this.log.feed(readAll(fd, n, pos));
+      const text = readAll(fd, n, pos);
+      blankLinks(fd, text, pos);
+      this.log.feed(text);
     }
   }
 

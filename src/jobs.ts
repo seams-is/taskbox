@@ -177,7 +177,6 @@ export function readJobs(p: Paths, serviceUid: number | undefined, maxBytes = 5_
     for (const line of lines) {
       try {
         const r: unknown = JSON.parse(line);
-        // A hold line from before v2.2.0 isn't a job (its kind is set), so it is left out.
         // Phases out of their shape go; the line stays.
         if (r && typeof r === "object" && "phases" in r && !validPhases((r as { phases?: unknown }).phases)) delete (r as { phases?: unknown }).phases;
         // v2.5.0: so do a use record or labels out of their shape: a guest that lied can't hide its job.
@@ -208,7 +207,7 @@ const pad = (s: string, n: number) => (s.length >= n ? `${s} ` : s.padEnd(n));
 
 const WHY: Record<string, string> = {
   ceiling: "The job reached its ceiling, so the box stopped it.",
-  "held-back": "The box deleted the VM before a job came: memory, disk, the guard or another slot's start said wait, or, before v2.2.0, a hold.",
+  "held-back": "The box deleted the VM before a job came: memory, disk, the guard or another slot's start said wait.",
   update: "An update arrived before any job started, so the box deleted the waiting VM.",
   "no-guest": "The VM never came up, so the box deleted it.",
   "softnet-root": "Softnet ran as root, so the box stopped and deleted the VM.",

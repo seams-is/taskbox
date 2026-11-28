@@ -20,7 +20,6 @@ export const VERIFY_EVERY_MS = 24 * 3600_000;
 export const RETRY_MS = 30 * 60_000;
 // A bake that fails again waits twice as long each time, up to this, and alarms from the third.
 export const BAKE_BACKOFF_MAX_MS = 6 * 3600_000;
-export const BAKE_ALARM_AFTER = 3;
 // How long one pass may spend fetching, so a slow server never holds a slot for long.
 export const FETCH_PHASE_MS = 20 * 60_000;
 

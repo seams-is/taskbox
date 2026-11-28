@@ -32,6 +32,7 @@ export interface UpdateParams {
   auto?: boolean;
 }
 export interface RollbackParams {
+  signed?: boolean; // the owner's signed request: no hold is set
   to?: string; // a kept version; else the install before
   force?: boolean;
   timeout?: string;
@@ -45,6 +46,7 @@ export interface Downloaded {
   tarball: string;
   tarballSha256: string;
   assets: Record<string, { path: string; sha256: string }>;
+  revokes?: Uint8Array; // the release's revoke list (release/revokes.ts), when it could be read
 }
 
 export interface Running {
@@ -122,19 +124,38 @@ function checkLive(e: UpdateEnv, resumeAfter: boolean): Promise<void> | void {
   })();
 }
 
+// How long a workspace's hold may keep an update or rollback waiting when no --timeout says.
+export const HELD_MS = 60 * 60_000;
+
+// A workspace holding the box: waited for before the box is paused, so CI runs on meanwhile, and
+// again while it drains. Past the deadline the op ends and the box resumes as it was.
+async function heldPast(e: UpdateEnv, what: string, until: number, paused: boolean): Promise<boolean> {
+  const held = e.hold();
+  if (!held) return false;
+  say(e, `${what} held by ${held}`);
+  if (e.clock() < until) return true;
+  if (paused) await e.resume();
+  const ws = /^workspace ([A-Za-z0-9-]+)/.exec(held)?.[1];
+  return fail(`${what} held by ${held} past its deadline, so nothing changed.${ws ? ` taskbox workspace end ${ws} gives the box back.` : ""}`);
+}
+
 // The drain. With --force the box stops what is left at the deadline (availability's forced drain);
 // a plain --timeout bounds only the command's watching. An auto-update gives up at its deadline
 // instead, resumes, and tries at the next window: it never stops a running job.
-async function drainPhase(e: UpdateEnv, o: { force?: boolean; timeout?: number; giveUp?: boolean }): Promise<void> {
+async function drainPhase(e: UpdateEnv, what: string, o: { force?: boolean; timeout?: number; giveUp?: boolean }): Promise<void> {
   const deadline = o.timeout !== undefined ? e.clock() + o.timeout : undefined;
+  const until = o.timeout ? e.clock() + o.timeout : e.clock() + HELD_MS;
+  while (await heldPast(e, what, until, false)) {
+    await checkLive(e, false);
+    await e.sleep(DRAIN_POLL_MS);
+  }
   const why = await e.drain({ force: o.force === true, ...(deadline !== undefined ? { deadline } : {}) });
   if (why) fail(`the box couldn't drain: ${why}`);
   for (;;) {
     await checkLive(e, true);
     const d = e.drained();
-    const held = e.hold();
+    const held = await heldPast(e, what, until, true);
     if (d === "drained" && !held) return;
-    if (held) say(e, `held by ${held}, until it is saved or ended`);
     if (d === "gone") {
       // Someone resumed the box: the drain this update began is over, so is the update.
       throw new Stop({ state: "cancelled", why: "the box was resumed during the update's drain" });
@@ -188,7 +209,7 @@ export async function runUpdate(e: UpdateEnv, p: UpdateParams, o: { proveMs: num
     await checkLive(e, false);
     phase(e, "draining", "pausing, then waiting for running jobs");
     const timeout = p.timeout !== undefined ? durationMs(p.timeout) : undefined;
-    await drainPhase(e, { ...(p.force ? { force: true } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(p.auto ? { giveUp: true } : {}) });
+    await drainPhase(e, `update ${version}`, { ...(p.force ? { force: true } : {}), ...(timeout !== undefined ? { timeout } : {}), ...(p.auto ? { giveUp: true } : {}) });
     await checkLive(e, true);
     phase(e, "installing", `installing ${version}`);
     let dir: string;
@@ -253,7 +274,7 @@ export async function runRollback(e: RollbackEnv, p: RollbackParams): Promise<En
     const t = target!;
     phase(e, "draining", `pausing, then waiting for running jobs, to go back to ${t.version}`);
     const timeout = p.timeout !== undefined ? durationMs(p.timeout) : undefined;
-    await drainPhase(e, { ...(p.force ? { force: true } : {}), ...(timeout !== undefined ? { timeout } : {}) });
+    await drainPhase(e, `rollback to ${t.version}`, { ...(p.force ? { force: true } : {}), ...(timeout !== undefined ? { timeout } : {}) });
     await checkLive(e, true);
     phase(e, "swap", `moving the box back to ${t.version}`);
     const settled = await e.rollbackSettings(t.record);
@@ -266,14 +287,16 @@ export async function runRollback(e: RollbackEnv, p: RollbackParams): Promise<En
       await e.resume();
       fail(`going back to ${t.version} failed: ${back}`);
     }
-    e.saveMarks(holdAfterRollback(e.marks(), cur.version));
+    // An admin's rollback at the box holds auto-update below the release left; a signed one doesn't,
+    // so the next window goes forward again.
+    if (!p.signed) e.saveMarks(holdAfterRollback(e.marks(), cur.version));
     if (cur.record) e.ended(cur.dir, "rolled-back", `rolled back to ${t.version}`);
     phase(e, "proving", `waiting for ${t.version}'s guard and loop to beat`);
     const swappedAt = e.clock();
     const proof = await provePhase(e, { swappedAt, before: {}, proveMs: 0 });
     phase(e, "rolled-back", proof.kind === "pass" ? `${t.version} runs` : `${t.version} runs, but ${(proof as { why: string }).why}`);
     await e.resume();
-    event(e, "update.rolled-back", `The box went back from ${cur.version} to ${t.version}. Auto-update holds it until a release newer than ${cur.version}.`, { from: cur.version, to: t.version });
+    event(e, "update.rolled-back", `The box went back from ${cur.version} to ${t.version}. ${p.signed ? "Auto-update takes the newest release again in its next window." : `Auto-update holds it until a release newer than ${cur.version}.`}`, { from: cur.version, to: t.version });
     return { state: proof.kind === "pass" ? "succeeded" : "failed", ...(proof.kind === "pass" ? {} : { why: `back on ${t.version}, but ${(proof as { why: string }).why}` }), result: { installed: t.version, from: cur.version } };
   } catch (x) {
     if (x instanceof Stop) return x.end;

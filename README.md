@@ -6,12 +6,19 @@ Every job on a box is untrusted code. A box never runs a job that holds secrets:
 
 ## Install
 
-Every org installs this repo's signed releases. Its own settings live in its private settings repo: `taskbox.json`, from `taskbox.example.json`, and `boxes/<box>.json` for each box.
+1. Make a private settings repo in your organisation. Copy `taskbox.example.json` to `taskbox.json` there and fill in your values: `org`, `jobsFrom` (the one repo whose jobs the box runs) and `runnerGroup` are yours. The rest have defaults. Everything that makes a setup your own lives in that repo; the code comes from this repo's signed releases.
+2. Make a runner group, limited to selected private repos, that lists the one repo.
+3. Install taskbox for the controller on your own Mac, from the [release page](https://github.com/seams-is/taskbox/releases).
 
-- The controller: unpack this repo's newest release in Downloads, then type `sh ~/Downloads/taskbox/install-controller.sh <org>/<repo>`, naming this repo.
-- A box: at the box, on Ethernet, as your admin user, unpack the same release in Downloads and type `sh ~/Downloads/taskbox-main/install.sh`. Type `yes` once the release it shows matches the release page. Its prompts cover the service account, the Tailscale policy entry ([docs](docs/tailnet-policy.md)) and the service account's login.
+## Set up a box
 
-Then `taskbox check`: every line should say OK.
+From the controller, with Remote Login on at the new Mac (System Settings, General, Sharing):
+
+`taskbox box install ADMIN@MAC --settings ORG/REPO`
+
+It fetches the signed release and checks it, reads `taskbox.json` through your own GitHub session, copies both to the Mac, and runs the install there over ssh: each password is asked in your terminal. The install verifies the release again against the keys it pins, shows the release, the key that signed it and the settings commit, and takes your `yes`. Then it turns Remote Login off and restarts the Mac. At its screen, unlock the disk with the service account's password, log in as your admin user and type `taskbox confirm`: type `yes` to each release key only if `taskbox sign --fingerprint` on the signing Mac shows the same. Until then the box takes no update and starts no workspace. Back at the controller, press Return: it runs `taskbox box add` and `taskbox connect github`.
+
+At the Mac's screen instead, as your admin user: download `statement.json`, `statement.json.sig` and `taskbox-vX.Y.Z.tar.gz` from the release page into one folder, unpack the tarball there, and type `sh taskbox/install.sh --settings ORG/REPO`. It reads a public settings repo itself; a private one goes through `taskbox box install`. Then `taskbox confirm` there, to check the release keys, and from the controller `taskbox box add` and `taskbox connect github`.
 
 ## Update
 
@@ -34,11 +41,11 @@ As the service account:
 - `taskbox load start --pattern burst|day|merge`, on the controller, runs a load test in the test repo the box's settings name.
 
 As your admin user:
-- `taskbox update [VERSION]` installs the newest release, or the one named.
+- `taskbox update [--to VERSION]` installs the newest release, or the one named.
 - `taskbox rollback` goes back to the kept install.
 - `taskbox connect github` makes the box's two GitHub Apps true. `taskbox connect status` shows them. `taskbox disconnect github` takes the job source off.
 - `taskbox remove` takes taskbox off the box.
 
-Type `taskbox help` for all commands, and a command with `--help` for its flags. Agents log in as the agent account. Its shell runs the read commands and the workspace requests (`queue`, `wait`, `progress`) only.
+Type `taskbox help` for all commands, and a command with `--help` for its flags. Agents log in as the agent account. Its shell runs the read commands and the workspace requests (`workspace request`, `wait`, `progress`) only.
 
 On the controller, agents run as their own user, `taskbox-agents`, with a projects folder that is theirs alone. Their work reaches you as PRs; work in your own clones.

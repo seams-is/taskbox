@@ -239,6 +239,10 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           NAME_SEARCH: ${{ secrets.NAME_SEARCH }}
+        # The search runs from the base commit's own tree, in that folder, so a PR can't change the
+        # script, or a bunfig preload, to print the secret words.
         run: |
           set -euo pipefail
-          git diff --unified=0 "$BASE...$HEAD" | bun release/namesearch.ts
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE"
+          git diff --unified=0 "$BASE...$HEAD" > "$RUNNER_TEMP/pr.diff"
+          cd "$RUNNER_TEMP/base" && bun release/namesearch.ts < "$RUNNER_TEMP/pr.diff"

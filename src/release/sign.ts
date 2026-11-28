@@ -4,10 +4,13 @@
 // 2. its statement and tarball are downloaded, and each asset the statement names, and hashed;
 // 3. the statement must read strictly, name this tag, and hash the tarball and assets; the tag's
 //    commit must be the statement's, its tree the statement's, and the tarball's files that tree;
+//    GitHub must say the commit is on main and is the merge of the PR the statement names, and that
+//    the release workflow made the draft from a push of this tag at this commit;
 // 4. what is signed is shown, and the owner types yes;
 // 5. ssh-keygen -Y sign -n taskbox-release with the release key (Touch ID), over the exact bytes shown;
 // 6. the signature is verified against the signers file the tag carries, presence flag included;
-// 7. statement.json.sig is uploaded, and the draft published: a prerelease for a beta version, so
+// 7. the tag is read again, so a tag moved while the owner read is refused; then statement.json.sig
+//    is uploaded, and the draft published: a prerelease for a beta version, so
 //    GitHub's latest is always the newest stable.
 // --fingerprint prints the pinned keys' fingerprints. --revoke signs a revoke of the signer
 // transition a release carries, and uploads it to that release.
@@ -18,6 +21,7 @@ import type { Runner } from "../controller/run.ts";
 import { readTar, Refused } from "../controller/unpack.ts";
 import { gitTreeSha } from "../hop.ts";
 import { describeStatement, NAMESPACE, parseStatement, signerPrints, type Statement, tagOf, verifySigned } from "../release.ts";
+import { listOf, REVOKES, type RevokeList } from "./revokes.ts";
 import { shaOf, TRANSITION } from "./signers.ts";
 
 export const GH = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
@@ -58,6 +62,44 @@ async function tagCommit(d: SignDeps, tag: string): Promise<string> {
   return o.sha;
 }
 
+// What GitHub says of the statement's PR and commit, or why it can't be signed: the PR merged into
+// main, with this commit as its merge; the commit on main; and the release workflow's run, from a push
+// of this tag at this commit, that made the draft. The title and author shown come from here.
+export const MAIN = "main";
+export const WORKFLOW = ".github/workflows/release.yml";
+async function provenance(d: SignDeps, s: Statement): Promise<{ title: string; author: string }> {
+  const pr = await api(d, `repos/${d.repo}/pulls/${s.pr}`);
+  if (pr.merged !== true) throw new Stop(`PR #${s.pr} isn't merged`);
+  if ((pr.base as { ref?: unknown } | undefined)?.ref !== MAIN) throw new Stop(`PR #${s.pr} didn't merge into ${MAIN}`);
+  if (pr.merge_commit_sha !== s.commit) throw new Stop(`the tag's commit ${s.commit.slice(0, 7)} isn't the merge of PR #${s.pr}`);
+  const cmp = await api(d, `repos/${d.repo}/compare/${MAIN}...${s.commit}`);
+  if (cmp.status !== "identical" && cmp.status !== "behind") throw new Stop(`the commit ${s.commit.slice(0, 7)} isn't on ${MAIN}`);
+  const runs = await api(d, `repos/${d.repo}/actions/workflows/release.yml/runs?head_sha=${s.commit}&event=push&per_page=20`);
+  const list = Array.isArray(runs.workflow_runs) ? (runs.workflow_runs as Record<string, unknown>[]) : [];
+  if (!list.some((r) => r.head_branch === s.tag && r.head_sha === s.commit && r.path === WORKFLOW && r.event === "push" && r.conclusion === "success")) throw new Stop(`no release run from a push of ${s.tag} at ${s.commit.slice(0, 7)} made this draft`);
+  const author = (pr.user as { login?: unknown } | undefined)?.login;
+  return { title: clean(typeof pr.title === "string" ? pr.title : ""), author: clean(typeof author === "string" ? author : "") };
+}
+
+// The draft's revoke list must hold every revoke the latest published release's list holds, so no
+// revoke is dropped between releases. A latest release from before revoke lists has none to keep.
+async function keptRevokes(d: SignDeps, list: RevokeList, dir: string): Promise<void> {
+  const r = await d.run([d.gh, "api", `repos/${d.repo}/releases/latest`], { limitMs: 60_000, maxBytes: 4_000_000 });
+  if (r.code !== 0) {
+    if (/HTTP 404/.test(r.stderr)) return; // no release published yet
+    throw new Stop(`the latest release couldn't be read: ${clean(r.stderr)}`);
+  }
+  const latest = JSON.parse(r.stdout) as { tag_name?: unknown; assets?: { name?: unknown }[] };
+  if (typeof latest.tag_name !== "string" || !(latest.assets ?? []).some((a) => a.name === REVOKES)) return;
+  const at = join(dir, "latest");
+  mkdirSync(at);
+  const prev = parseStatement(new TextDecoder().decode(await download(d, latest.tag_name, "statement.json", at)));
+  const had = prev ? listOf(prev, await download(d, latest.tag_name, REVOKES, at)) : "its statement isn't one taskbox reads";
+  if (typeof had === "string") throw new Stop(`the latest release ${clean(latest.tag_name)}: ${had}`);
+  const lost = had.transitions.filter((t) => !list.transitions.includes(t));
+  if (lost.length) throw new Stop(`the draft's revoke list drops ${lost.length} revoke${lost.length === 1 ? "" : "s"} the latest release holds`);
+}
+
 // The tarball's files under its one top folder, written to a folder, and their git tree ID.
 function treeOf(tgz: Uint8Array, dir: string): string {
   for (const e of readTar(tgz)) {
@@ -96,6 +138,9 @@ export async function sign(d: SignDeps, version: string): Promise<number> {
     const tgz = await download(d, tag, s.tarball, dir);
     if (sha(tgz) !== s.sha256) throw new Stop("the draft's tarball isn't the one its statement names");
     for (const [name, h] of Object.entries(s.assets)) if (sha(await download(d, tag, name, dir)) !== h) throw new Stop(`the draft's ${name} isn't the one its statement names`);
+    const list = listOf(s, s.assets[REVOKES] === undefined ? undefined : new Uint8Array(readFileSync(join(dir, REVOKES))));
+    if (typeof list === "string") throw new Stop(list.replace(`${s.version}'s`, "the draft's"));
+    await keptRevokes(d, list, dir);
     const commit = await tagCommit(d, tag);
     if (commit !== s.commit) throw new Stop(`the tag ${tag} names ${commit.slice(0, 7)}, and the statement ${s.commit.slice(0, 7)}`);
     const tree = ((await api(d, `repos/${d.repo}/git/commits/${commit}`)).tree as { sha?: string })?.sha;
@@ -107,9 +152,14 @@ export async function sign(d: SignDeps, version: string): Promise<number> {
       throw new Stop(e instanceof Refused ? `the tarball: ${e.message}` : "the tarball's files couldn't be read");
     }
     if (built !== s.tree) throw new Stop("the tarball's files aren't the tag's tree");
+    const from = await provenance(d, s);
     d.out(`This signs and publishes taskbox ${s.version} on ${d.repo}:`);
     for (const l of describeStatement(s)) d.out(l);
+    d.out(`  Title:   ${from.title} (from GitHub)`);
+    d.out(`  Author:  ${from.author} (from GitHub)`);
+    d.out(`  On ${MAIN}: the merge of PR #${s.pr}, made a draft by the release run for ${tag}`);
     d.out(`  Tree:    ${s.tree}, the tag's, and the tarball's files`);
+    d.out(`  Revokes: ${list.transitions.length} signer change${list.transitions.length === 1 ? "" : "s"} revoked, every one the latest release lists`);
     if ((await d.ask("Type yes to sign it: ")).trim().toLowerCase() !== "yes") throw new Stop("Not signed: you didn't type yes.");
     const file = join(dir, "statement.json");
     writeFileSync(file, text);
@@ -117,6 +167,8 @@ export async function sign(d: SignDeps, version: string): Promise<number> {
     const pinned = readFileSync(join(dir, "tree", "signers", "allowed_signers"), "utf8");
     const v = await verifySigned({ run: (cmd, args, o) => d.run([cmd, ...args], { limitMs: o?.timeoutMs ?? 20_000, maxBytes: 64_000, ...(o?.stdin !== undefined ? { stdin: typeof o.stdin === "string" ? new TextEncoder().encode(o.stdin) : o.stdin } : {}) }).then((r) => ({ code: r.code ?? -1, stdout: r.stdout, stderr: r.stderr })) }, { message: new TextEncoder().encode(text), signature: sig, pinned, workRoot: dir });
     if (!v.ok) throw new Stop(`the signature doesn't verify against the keys ${tag} pins: ${v.why}`);
+    // A tag moved while the owner read is refused before anything is uploaded.
+    if ((await tagCommit(d, tag)) !== s.commit) throw new Stop(`the tag ${tag} moved while you read`);
     await gh(d, ["release", "upload", tag, file, `${file}.sig`, "--clobber"]);
     await gh(d, ["release", "edit", tag, "--draft=false", `--prerelease=${s.channel === "beta"}`, `--latest=${s.channel === "stable"}`]);
     d.out(`Signed by ${v.signer ?? "the release key"} and published ${tag}${s.channel === "beta" ? " as a prerelease" : ""}.`);
@@ -135,6 +187,7 @@ export async function revokeTransition(d: SignDeps, version: string): Promise<nu
   const tag = tagOf(version);
   const dir = mkdtempSync(join(d.work, "revoke-"));
   try {
+    if (!d.tty) throw new Stop("taskbox sign --revoke asks you to type yes, so it runs only in your own terminal.");
     const s = parseStatement(new TextDecoder().decode(await download(d, tag, "statement.json", dir)));
     if (!s) throw new Stop("its statement isn't one taskbox reads");
     const files = readTar(await download(d, tag, s.tarball, dir));
@@ -148,7 +201,7 @@ export async function revokeTransition(d: SignDeps, version: string): Promise<nu
     writeFileSync(file, body);
     await signFile(d, file);
     await gh(d, ["release", "upload", tag, file, `${file}.sig`, "--clobber"]);
-    d.out(`Revoked. Each box drops the change at its next hourly read of ${tag}.`);
+    d.out(`Revoked. Each box drops the change at its next hourly read of ${tag}, and the next release's revoke list carries it.`);
     return 0;
   } catch (e) {
     if (!(e instanceof Stop)) throw e;

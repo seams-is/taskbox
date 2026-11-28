@@ -15,6 +15,7 @@ export interface Paired {
   agent: string; // the box's agent account, which every command reaches it as
   pairedAt: number;
   jobsRepo?: string; // the jobs repo, as box add was told, where the hold lease goes
+  loadRepo?: string; // the load test's repo, as box add was told: the only repo load start writes to
 }
 
 // The public repo the controller installs and updates from, set at install.
@@ -136,8 +137,9 @@ function paired(v: unknown): Paired | null | undefined {
     typeof b.hostKey === "string" && isEd25519(b.hostKey) &&
     typeof b.agent === "string" && agentProblem(b.agent) === undefined &&
     Number.isSafeInteger(b.pairedAt) &&
-    (b.jobsRepo === undefined || (typeof b.jobsRepo === "string" && REPO.test(b.jobsRepo)));
-  return ok ? { name: b.name as string, node: b.node as string, installId: b.installId as string, hostKey: b.hostKey as string, agent: b.agent as string, pairedAt: b.pairedAt as number, ...(typeof b.jobsRepo === "string" ? { jobsRepo: b.jobsRepo } : {}) } : undefined;
+    (b.jobsRepo === undefined || (typeof b.jobsRepo === "string" && REPO.test(b.jobsRepo))) &&
+    (b.loadRepo === undefined || (typeof b.loadRepo === "string" && REPO.test(b.loadRepo)));
+  return ok ? { name: b.name as string, node: b.node as string, installId: b.installId as string, hostKey: b.hostKey as string, agent: b.agent as string, pairedAt: b.pairedAt as number, ...(typeof b.jobsRepo === "string" ? { jobsRepo: b.jobsRepo } : {}), ...(typeof b.loadRepo === "string" ? { loadRepo: b.loadRepo } : {}) } : undefined;
 }
 
 export type ConfigRead = { ok: true; config: Config; mode: number } | { ok: false; why: "missing" | "not-a-file" | "unreadable" | "not-controller" };

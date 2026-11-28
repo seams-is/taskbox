@@ -10,7 +10,7 @@
 //   while the delete runs; find -x stays on one volume and follows no link.
 // The guard keeps an op of type workspace-clear for each, so op list shows it, and a restart carries
 // the delete on.
-import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, type Stats } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, renameSync, type Stats, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Sys } from "../sys.ts";
 
@@ -70,7 +70,37 @@ export function clearedDir(d: HandoverDeps): string | undefined {
   return isRoots(d, dir, 0o700) ? dir : undefined;
 }
 
-// The home as taskbox makes it: a real folder of the account's, mode 700. False when it isn't.
+// ~/Library/LaunchAgents as a root-owned empty file, so the account can't put a launch agent there
+// (the bootout at pause is the main bar; this is the second). Made with the home. False when it can't.
+export function launchAgentsPlaceholder(d: HandoverDeps, a: Account, home: string): boolean {
+  const look = d.lstat ?? lstatSync;
+  const lib = join(home, "Library");
+  const la = join(lib, "LaunchAgents");
+  try {
+    try {
+      look(lib);
+    } catch {
+      mkdirSync(lib, { mode: 0o700 });
+      d.chown(lib, a.uid, a.gid);
+    }
+    const l = look(lib);
+    if (l.isSymbolicLink() || !l.isDirectory()) return false;
+    try {
+      look(la);
+    } catch {
+      writeFileSync(la, "", { mode: 0o444, flag: "wx" });
+      d.chown(la, d.rootUid ?? 0, 0);
+      chmodSync(la, 0o444);
+    }
+    const f = look(la);
+    return f.isFile() && !f.isSymbolicLink() && f.uid === (d.rootUid ?? 0) && f.size === 0;
+  } catch {
+    return false;
+  }
+}
+
+// The home as taskbox makes it: a real folder of the account's, mode 700, with the LaunchAgents
+// placeholder in it. False when it isn't.
 export function remakeHome(d: HandoverDeps, a: Account, home: string): boolean {
   const look = d.lstat ?? lstatSync;
   let st;
@@ -88,7 +118,7 @@ export function remakeHome(d: HandoverDeps, a: Account, home: string): boolean {
   d.chown(home, a.uid, a.gid);
   chmodSync(home, 0o700);
   const back = look(home);
-  return back.isDirectory() && back.uid === a.uid && (back.mode & 0o7777) === 0o700;
+  return back.isDirectory() && back.uid === a.uid && (back.mode & 0o7777) === 0o700 && launchAgentsPlaceholder(d, a, home);
 }
 
 // The account's home moved into the root-only folder and made again, empty. The account must run

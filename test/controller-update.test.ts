@@ -2,17 +2,19 @@
 // verifyRelease. The tarballs are built here in the export's own form. Nothing real is downloaded.
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readConfig, writeConfig } from "../src/controller/home.ts";
 import { keygen } from "../src/controller/main.ts";
-import { NAMESPACE, statementText, verifyRelease } from "../src/release.ts";
+import { NAMESPACE, signerFingerprint, statementText, verifyRelease } from "../src/release.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
 import { findRelease, newer } from "../src/controller/releases.ts";
 import { realRun } from "../src/controller/run.ts";
 import { readTar, Refused, unpack } from "../src/controller/unpack.ts";
 import { rollback, type Statement, update, updateNote, wrapper } from "../src/controller/update.ts";
 import { readEvents } from "../src/controller/events.ts";
+import { EMPTY_REVOKES, REVOKES, revokeListText } from "../src/release/revokes.ts";
+import type { SignerState } from "../src/release/signers.ts";
 import { CEILING, deps, runLine, type TestDeps, World } from "./controller-fake.ts";
 import { statementFor } from "./release-fixture.ts";
 
@@ -20,6 +22,8 @@ const SRC = { owner: "example-org", repo: "taskbox-public" };
 const LIST = `https://api.github.com/repos/${SRC.owner}/${SRC.repo}/releases?per_page=100`;
 const sha = (b: Uint8Array | string) => createHash("sha256").update(b).digest("hex");
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+// The release key every test release pins, and the controller with it.
+const OWNER = keyPair();
 
 // A ustar entry as the export writes it.
 function header(name: string, size: number, type: string, over: Partial<{ magic: string; prefix: string }> = {}): Uint8Array {
@@ -67,13 +71,14 @@ function bunZip(): Uint8Array {
 const ZIP = bunZip();
 const BUN_URL = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.9/bun-darwin-aarch64.zip";
 
-function releaseFiles(tag: string, bunSha = sha(ZIP)) {
+function releaseFiles(tag: string, bunSha = sha(ZIP), keys = OWNER.line, extra: { name: string; body: string }[] = []) {
   const versions = JSON.stringify({ bun: { version: "1.4.9", url: BUN_URL, sha256: bunSha } });
   return tgz([
     { name: "taskbox/" },
     { name: "taskbox/bunfig.run.toml", body: "" },
     { name: "taskbox/signers/" },
-    { name: "taskbox/signers/allowed_signers", body: `# release ${tag}\n` },
+    { name: "taskbox/signers/allowed_signers", body: `# release ${tag}\n${keys}` },
+    ...extra,
     { name: "taskbox/src/" },
     { name: "taskbox/src/controller/" },
     { name: "taskbox/src/controller/main.ts", body: `// ${tag}\n` },
@@ -82,14 +87,16 @@ function releaseFiles(tag: string, bunSha = sha(ZIP)) {
 }
 
 // Serves a release on the fake GitHub, and sets the fake verifyRelease to pass it.
-function publish(d: TestDeps, tag: string, o: { tarball?: Uint8Array; draft?: boolean; link?: string } = {}) {
+function publish(d: TestDeps, tag: string, o: { tarball?: Uint8Array; draft?: boolean; link?: string; list?: string | null; served?: string } = {}) {
   const base = `https://github.com/${SRC.owner}/${SRC.repo}/releases/download/${tag}`;
   const tarball = o.tarball ?? releaseFiles(tag);
-  const names = ["statement.json", "statement.json.sig", `taskbox-${tag}.tar.gz`];
+  const list = o.list === undefined ? EMPTY_REVOKES : o.list;
+  const names = ["statement.json", "statement.json.sig", `taskbox-${tag}.tar.gz`, ...(list === null ? [] : [REVOKES])];
   const rel = { tag_name: tag, draft: o.draft ?? false, prerelease: tag.includes("-rc."), assets: names.map((n) => ({ name: n, browser_download_url: o.link ?? `${base}/${n}` })) };
   d.web.set(LIST, { status: 200, body: JSON.stringify([rel]) });
   d.web.set(`https://api.github.com/repos/${SRC.owner}/${SRC.repo}/releases/tags/${tag}`, { status: 200, body: JSON.stringify(rel) });
-  const statement: Statement = { ...statementFor(tag.slice(1), { pr: 42, mergedAt: "2026-11-17T09:30:00Z", commit: COMMIT, minFrom: "2.0.0" }), sha256: sha(tarball) };
+  const statement: Statement = { ...statementFor(tag.slice(1), { pr: 42, mergedAt: "2026-11-17T09:30:00Z", commit: COMMIT, minFrom: "2.0.0", assets: list === null ? {} : { [REVOKES]: sha(list) } }), sha256: sha(tarball) };
+  if (list !== null) d.web.set(`${base}/${REVOKES}`, { status: 200, body: o.served ?? list });
   d.web.set(`${base}/statement.json`, { status: 200, body: `${JSON.stringify(statement)}\n` });
   d.web.set(`${base}/statement.json.sig`, { status: 200, body: "-----BEGIN SSH SIGNATURE-----\nfake\n-----END SSH SIGNATURE-----\n" });
   d.web.set(`${base}/taskbox-${tag}.tar.gz`, { status: 200, body: tarball });
@@ -104,7 +111,8 @@ function installed(answers: string[] = ["yes"]): TestDeps {
   writeConfig(d.home, { role: "controller", boxes: [], source: SRC, default: null, channel: "stable" });
   const app = join(d.home.releases, "v2.1.0", "app");
   mkdirSync(join(app, "signers"), { recursive: true });
-  writeFileSync(join(app, "signers", "allowed_signers"), "# pinned\n");
+  writeFileSync(join(app, "signers", "allowed_signers"), OWNER.line);
+  writeFileSync(join(d.home.dir, "allowed_signers"), OWNER.line); // the first install's copy
   writeFileSync(join(d.home.releases, "v2.1.0", "bun"), "old bun");
   writeFileSync(join(d.home.releases, "v2.1.0", "bun.sha256"), `${"0".repeat(64)}\n`);
   mkdirSync(join(d.home.releases, "v2.0.9"));
@@ -123,7 +131,7 @@ describe("taskbox update", () => {
     const v = d.verified[0]!;
     expect(v.want).toBe("v2.2.0");
     expect(v.installed).toEqual({ version: "v2.1.0" });
-    expect(v.signers).toBe(join(d.home.current, "app", "signers", "allowed_signers"));
+    expect(v.pinned).toBe(OWNER.line);
     expect(new TextDecoder().decode(v.signature)).toContain("SSH SIGNATURE");
     expect(d.printed.slice(1)).toEqual(["This updates this controller from taskbox v2.1.0 to v2.2.0:", "  Release: 2.2.0 (stable)", "  PR:      #42 on taskbox's repo", "  Merged:  2026-11-17 09:30 UTC", `  Commit:  0123456 (${COMMIT})`]);
     expect(d.asked).toEqual(["Type yes to install it: "]);
@@ -217,7 +225,7 @@ describe("taskbox update", () => {
     const d = deps(new World(), ["yes"]);
     d.run = realRun;
     const boot = mkdtempSync(join(process.env.HOME!, "download-"));
-    const owner = keyPair();
+    const owner = OWNER;
     mkdirSync(join(boot, "signers"));
     writeFileSync(join(boot, "signers", "allowed_signers"), `# the owner's key\n${owner.line}`);
     publish(d, "v2.1.0");
@@ -225,7 +233,7 @@ describe("taskbox update", () => {
     expect(s.code).toBe(0);
     // Trust on first use: the release key's fingerprint is shown, to compare with the signing Mac's.
     expect(d.printed).toContain(`  Release key: SHA256:${createHash("sha256").update(owner.blob).digest("base64").replace(/=+$/, "")}`);
-    expect(d.verified[0]!.signers).toBe(join(boot, "signers", "allowed_signers"));
+    expect(d.verified[0]!.pinned).toBe(`# the owner's key\n${owner.line}`);
     expect(d.verified[0]!.installed).toBeNull();
     expect(readConfig(d.home)).toMatchObject({ ok: true, config: { role: "controller", source: SRC } });
     expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.1.0"));
@@ -322,12 +330,82 @@ describe("channels and the daily run", () => {
     expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.1.0"));
   }, CEILING);
 
-  test("the controller's own pin, once made, is what verifies; a release never moves it", async () => {
+  test("the controller's own pin is what verifies; a release that pins other keys with no signed transition is refused", async () => {
     const d = installed();
-    writeFileSync(join(d.home.dir, "allowed_signers"), "# the controller's own pin\n");
+    writeFileSync(join(d.home.releases, "v2.1.0", "app", "signers", "allowed_signers"), keyPair().line);
+    publish(d, "v2.2.0", { tarball: releaseFiles("v2.2.0", sha(ZIP), keyPair().line) });
+    const s = await update(d);
+    expect(d.verified[0]!.pinned).toBe(OWNER.line);
+    expect(s.lines[1]).toBe("Not installed: it pins other release keys and carries no signed transition.");
+    expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.1.0"));
+  }, CEILING);
+
+  test("with no pin copy of its own, the controller refuses, and never takes the release in use's file", async () => {
+    const d = installed();
+    rmSync(join(d.home.dir, "allowed_signers"));
     publish(d, "v2.2.0");
+    const s = await update(d);
+    expect(s.lines[1]).toBe("This controller has no copy of its release keys, so no release can be checked. Install taskbox for a controller again, from its release page.");
+    expect(d.verified).toEqual([]);
+  }, CEILING);
+});
+
+describe("the controller's release signers, as a box keeps them", () => {
+  const other = keyPair();
+  const fp = (k: ReturnType<typeof keyPair>) => signerFingerprint(k.line.trim())!;
+  // A release whose tree pins `keys` and carries `transition`, signed (the fake says) by a pinned key.
+  const withTransition = (d: TestDeps, tag: string, keys: string, transition: string) => {
+    publish(d, tag, { tarball: releaseFiles(tag, sha(ZIP), keys, [{ name: "taskbox/signers/transition.json", body: transition }, { name: "taskbox/signers/transition.json.sig", body: "sig" }]) });
+    d.signedVerdict = { ok: true, signer: fp(OWNER) };
+  };
+
+  test("a release key removed waits for the owner's typed yes here; then the pin drops it", async () => {
+    const d = installed(["yes", "yes", "yes"]);
+    writeFileSync(join(d.home.dir, "allowed_signers"), `${OWNER.line}${other.line}`);
+    const t = `${JSON.stringify({ v: 1, type: "signers", old: [fp(OWNER), fp(other)].sort(), new: [OWNER.line.trim()], fromVersion: "2.2.0" })}\n`;
+    withTransition(d, "v2.2.0", OWNER.line, t);
+    expect((await update(d)).code).toBe(0);
+    expect(d.printed).toContain(`Release signers: release signers change: removes ${fp(other)} (waits for your yes at taskbox self update).`);
+    let st = JSON.parse(readFileSync(join(d.home.dir, "signers.json"), "utf8")) as SignerState;
+    expect(st.waiting?.[0]?.removes).toEqual([fp(other)]);
+    expect(st.pinned).toContain(other.line.trim());
+    // The next self update asks for the yes, and the pin moves.
+    publish(d, "v2.3.0");
+    expect((await update(d)).code).toBe(0);
+    expect(d.asked).toContain("Type yes to confirm the removal on this controller: ");
+    st = JSON.parse(readFileSync(join(d.home.dir, "signers.json"), "utf8")) as SignerState;
+    expect(st.waiting).toBeUndefined();
+    expect(st.pinned.trim()).toBe(OWNER.line.trim());
+    // --auto never confirms a removal.
+  }, CEILING);
+
+  test("a key add waits; its carrying release with no readable revoke list keeps it waiting, and the screen says so", async () => {
+    const d = installed(["yes", "yes"]);
+    const t = `${JSON.stringify({ v: 1, type: "signers", old: [fp(OWNER)], new: [OWNER.line.trim(), other.line.trim()], fromVersion: "2.2.0" })}\n`;
+    withTransition(d, "v2.2.0", `${OWNER.line}${other.line}`, t);
+    expect((await update(d)).code).toBe(0);
+    // Past the 7 days the carrying release's list is gone: the add waits.
+    d.now = () => Date.UTC(2026, 10, 30, 12, 0);
+    d.web.delete(`https://github.com/${SRC.owner}/${SRC.repo}/releases/download/v2.2.0/${REVOKES}`);
+    publish(d, "v2.3.0", { tarball: releaseFiles("v2.3.0", sha(ZIP), `${OWNER.line}${other.line}`) });
     await update(d);
-    expect(d.verified[0]!.signers).toBe(join(d.home.dir, "allowed_signers"));
+    expect(d.printed).toContain("Release signers: FAIL 2.2.0's revoke list can't be read. No key is added until it can be read.");
+    const st = JSON.parse(readFileSync(join(d.home.dir, "signers.json"), "utf8")) as SignerState;
+    expect(st.pinned.trim()).toBe(OWNER.line.trim());
+    expect(st.waiting?.[0]?.adds).toEqual([fp(other)]);
+  }, CEILING);
+
+  test("a release whose revoke list is gone or isn't its statement's isn't installed", async () => {
+    for (const [o, why] of [
+      [{ list: null }, "Not installed: 2.2.0's statement names no revoke list."],
+      [{ served: revokeListText(["9".repeat(64)]) }, "Not installed: 2.2.0's revoke list isn't the one its statement names."],
+    ] as const) {
+      const d = installed();
+      publish(d, "v2.2.0", o);
+      const s = await update(d);
+      expect(s.lines[1]).toBe(why);
+      expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.1.0"));
+    }
   }, CEILING);
 });
 
@@ -394,8 +472,7 @@ describe("taskbox update with the real verifyRelease", () => {
   // A controller whose installed release pins `pinned`, and a release on the fake GitHub signed by `signer`.
   function signed(o: { tamper?: boolean; other?: boolean; flags?: number } = {}) {
     const d = installed();
-    const owner = keyPair();
-    writeFileSync(join(d.home.releases, "v2.1.0", "app", "signers", "allowed_signers"), `# the owner's key\n${owner.line}`);
+    const owner = OWNER;
     publish(d, "v2.2.0");
     const base = `https://github.com/${SRC.owner}/${SRC.repo}/releases/download/v2.2.0`;
     const st = new TextEncoder().encode(statementText(d.verdict.ok ? d.verdict.statement : (undefined as never)));
@@ -429,20 +506,37 @@ describe("taskbox update with the real verifyRelease", () => {
   }, CEILING);
 });
 describe("self rollback", () => {
-  test("moves current to the kept release, and says so in the controller's events", () => {
-    const d = deps(new World());
+  // Kept releases, each with the signed statement its install kept; current at `at`.
+  const kept = (answers: string[], at: string, minFrom = "2.0.0") => {
+    const d = deps(new World(), answers);
     for (const t of ["v2.1.0", "v2.2.0"]) {
       mkdirSync(join(d.home.releases, t, "app", "src", "controller"), { recursive: true });
       writeFileSync(join(d.home.releases, t, "bun"), "");
       writeFileSync(join(d.home.releases, t, "app", "src", "controller", "main.ts"), "");
+      writeFileSync(join(d.home.releases, t, "statement.json"), statementText(statementFor(t.slice(1), { minFrom })));
     }
-    symlinkSync(join("releases", "v2.2.0"), d.home.current);
-    const s = rollback(d);
+    symlinkSync(join("releases", at), d.home.current);
+    return d;
+  };
+
+  test("after a typed yes, moves current to the kept release, and says so in the controller's events", async () => {
+    const d = kept(["yes"], "v2.2.0");
+    const s = await rollback(d);
     expect(s.code).toBe(0);
+    expect(d.asked).toEqual(["Type yes to roll back: "]);
     expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.1.0"));
     expect(readEvents(d.home).map((e) => e.type)).toEqual(["self.rolled-back"]);
-    // Nothing else kept: nothing to roll back to.
-    expect(rollback(d).code).toBe(0);
-    expect(rollback(deps(new World())).lines[1]).toBe("This controller's taskbox has no release in use taskbox can read.");
+    expect((await rollback(deps(new World()))).lines[1]).toBe("This controller's taskbox has no release in use taskbox can read.");
+  }, CEILING);
+
+  test("needs a terminal and a yes, and never goes below the minFrom of the release in use", async () => {
+    const no = kept(["no"], "v2.2.0");
+    expect((await rollback(no)).lines[1]).toBe("Not rolled back: you didn't type yes.");
+    const away = kept(["yes"], "v2.2.0");
+    away.tty = false;
+    expect((await rollback(away)).lines[1]).toBe("taskbox self rollback asks you to type yes, so it runs only in your own terminal.");
+    const floor = kept(["yes"], "v2.2.0", "2.2.0");
+    expect((await rollback(floor)).lines[1]).toBe("v2.1.0 is older than 2.2.0, the oldest release v2.2.0 may come from, so taskbox won't go back to it.");
+    for (const d of [no, away, floor]) expect(readlinkSync(d.home.current)).toBe(join("releases", "v2.2.0"));
   }, CEILING);
 });

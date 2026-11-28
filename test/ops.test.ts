@@ -81,9 +81,7 @@ describe("the state word", () => {
     expect(computeState({ ...base, loopRunning: false, stoppedAt: NOW, others: ["pat"] }).detail).not.toContain("pat");
   });
 
-  test("a wait reads Waiting with its reason; a slot left as held from before v2.2.0 reads no Held", () => {
-    const s = computeState({ ...base, loopRunning: true, loop: { slot: "held", waitingFor: "x" } });
-    expect([s.word, s.detail]).toEqual(["Waiting", "a hold from before v2.2.0, which ends when the loop restarts after the update"]);
+  test("a wait reads Waiting with its reason", () => {
     const w = computeState({ ...base, loopRunning: true, loop: { slot: "waiting", waitingFor: "memory pressure is high, so the box starts no new VM" } });
     expect([w.word, w.detail]).toEqual(["Waiting", "memory pressure is high, so the box starts no new VM"]);
     // A job already running shows as Running, with its size, and pat alongside.
@@ -112,7 +110,7 @@ describe("taskbox status", () => {
     linked(p);
     expect(await status(d)).toBe(0);
     expect(said[0]).toBe("app: Ready. Waiting for a job.");
-    expect(said.join("\n")).toContain("Commands: check, drain, image, job, key, load, logins, logs, op, pause, policy, prune, release, resume, rollback, settings, withdraw, size, connect, start, status, stop, template, tool, update");
+    expect(said.join("\n")).toContain("Commands: check, drain, events, image, job, key, load, logins, logs, op, pause, policy, prune, release, resume, rollback, selftest, settings, withdraw, size, connect, start, status, stop, template, tool, update");
     expect(tail(said)).toEqual(["Now: Ready. Waiting for a job.", "Did: Nothing changed.", "Next: Nothing to do."]);
   });
 
@@ -153,6 +151,7 @@ describe("taskbox status", () => {
     expect(commandList()).toBe(says([
       "check",
       "drain",
+      "events",
       "image",
       "job",
       "key",
@@ -166,6 +165,7 @@ describe("taskbox status", () => {
       "release",
       "resume",
       "rollback",
+      "selftest",
       "settings",
       "withdraw",
       "size",
@@ -187,7 +187,9 @@ describe("taskbox status", () => {
     ]));
     expect(commandsFor(notCi, { remote: true, admin: false })).toBe(says([
       "check",
+      "connect",
       "drain",
+      "events",
       "hello",
       "image",
       "job",
@@ -198,10 +200,12 @@ describe("taskbox status", () => {
       "nonce",
       "op",
       "pause",
+      "policy",
       "poll",
       "release",
       "resume",
       "rollback",
+      "selftest",
       "settings",
       "withdraw",
       "size",
@@ -215,6 +219,7 @@ describe("taskbox status", () => {
     ]));
     expect(commandsFor(notCi, { remote: false, admin: true })).toBe(says([
       "check",
+      "events",
       "image",
       "job",
       "key",
@@ -224,6 +229,7 @@ describe("taskbox status", () => {
       "op",
       "policy",
       "release",
+      "selftest",
       "settings",
       "size",
       "connect",
@@ -241,6 +247,7 @@ describe("taskbox status", () => {
     ]));
     expect(commandsFor(notCi, { remote: false, admin: false })).toBe(says([
       "check",
+      "events",
       "image",
       "job",
       "key",
@@ -250,6 +257,7 @@ describe("taskbox status", () => {
       "op",
       "policy",
       "release",
+      "selftest",
       "settings",
       "size",
       "connect",
@@ -521,7 +529,6 @@ describe("taskbox remove", () => {
     symlinkSync(join(p.bin, "taskbox"), p.commandLink);
     mkdirSync(p.shared, { recursive: true });
     writeFileSync(join(p.shared, "jobs.jsonl"), "{}\n");
-    mkdirSync(p.requests);
     writeFileSync(p.installId, `${"a".repeat(32)}\n`, { mode: 0o444 });
     // The service's rm, as the box runs it.
     sys.responders.unshift((cmd, args) => {
@@ -556,10 +563,9 @@ describe("taskbox remove", () => {
     expect(sys.calls.some((c) => c.cmd === "/bin/launchctl" && c.args.join(" ") === "bootout system/local.taskbox.guard")).toBe(true);
     expect(sys.calls.some((c) => c.cmd === "/sbin/pfctl" && c.args.join(" ") === "-a com.apple/250.taskbox -F rules")).toBe(true);
     expect(said.at(-1)).toContain("Next: Turn Screen Sharing off in System Settings, General, Sharing");
-    // The job history is emptied as ci, then root removes the empty folder and the requests folder.
+    // The job history is emptied as ci, then root removes the empty folder.
     expect(sys.calls.some((c) => c.cmd === "/usr/bin/sudo" && c.args.join(" ") === `-n -u #502 -- /usr/bin/find ${p.shared} -mindepth 1 -delete`)).toBe(true);
     expect(existsSync(p.shared)).toBe(false);
-    expect(existsSync(p.requests)).toBe(false);
   });
 
   // v2.2.2: remove left tailscaled running, with its plist, state and socket (ran: a Tart test).

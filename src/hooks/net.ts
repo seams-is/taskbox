@@ -154,5 +154,3 @@ function summary(d: HookDeps, me: Job, ip: string, from: number, to: number, aft
   });
 }
 
-// For tests: what the hook holds between a job's points.
-export const netHookJobs = () => jobs;

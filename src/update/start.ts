@@ -12,6 +12,7 @@ import { duration } from "../command.ts";
 import { rollbackWatchState } from "../hop.ts";
 import { opType } from "../optypes/index.ts";
 import { parseVersion } from "../release.ts";
+import { trustWaiting } from "../trust.ts";
 
 export const UPDATE_KINDS = ["update", "rollback"] as const;
 export type UpdateKind = (typeof UPDATE_KINDS)[number];
@@ -32,15 +33,21 @@ export function updateArgsProblem(kind: UpdateKind, args: Record<string, unknown
   return undefined;
 }
 
-export async function startUpdateOp(c: HandlerCtx, kind: UpdateKind, args: Record<string, unknown>, actor: string, o: { auto?: boolean } = {}): Promise<Answer> {
+// signed: a request the owner signed. A signed rollback sets no hold, so one swapped statement can't
+// keep a box below a fix until the next release; an admin's rollback at the box does.
+export async function startUpdateOp(c: HandlerCtx, kind: UpdateKind, args: Record<string, unknown>, actor: string, o: { auto?: boolean; signed?: boolean } = {}): Promise<Answer> {
   const bad = updateArgsProblem(kind, args, o);
   if (bad) return { ok: false, code: "usage", said: `${bad[0]!.toUpperCase()}${bad.slice(1)}.` };
+  // A fresh box takes no update until an admin at its screen checked the release keys (trust.ts).
+  const trust = kind === "update" ? trustWaiting(c.p, c.rootUid) : undefined;
+  if (trust) return { ok: false, code: "busy", said: `No update yet: ${trust}.` };
   // The last update's proof first: while a watch stands, nothing moves the links.
   const w = rollbackWatchState(c.p);
   if (w.kind !== "gone" && !(w.kind === "read" && w.w.proved === true)) return { ok: false, code: "busy", said: "The last update is still being proved, and nothing installs until it is. taskbox status follows it." };
   const ops = { dir: c.state.ops, owner: c.rootUid, ...(c.chown ? { chown: c.chown } : {}) };
   const params: Record<string, Json> = {};
   for (const k of TAKES[kind]) if (args[k] !== undefined) params[k] = (k === "to" ? String(args[k]).replace(/^v/, "") : args[k]) as Json;
+  if (kind === "rollback" && o.signed) params.signed = true;
   const b = begin(listOps(ops).ops, opType(kind), { subject: "box", params, actor }, c.now);
   if (b.kind === "busy") return { ok: false, code: "busy", said: b.why, op: b.op.id };
   if (b.kind === "attach") return { ok: true, said: `The ${kind} ${b.op.id} is running already.`, op: b.op.id };

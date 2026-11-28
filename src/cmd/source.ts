@@ -7,6 +7,8 @@ export const commands: CommandSpec[] = [
     summary: "Both GitHub Apps, their keys' ages, and an unfinished connect.",
     who: ["anyone"],
     flags: ["json"],
+    // The agent account's shell runs it, so the controller reads it (box add's connecting phase).
+    shell: true,
     did: "Showed the GitHub Apps.",
     async run(c) {
       const { dirname, join } = await import("node:path");
@@ -24,7 +26,8 @@ export const commands: CommandSpec[] = [
         else c.say(`${name}: ${a.slug ?? `App ${a.appId}`} (App ${a.appId}), key ${a.key === "unseen" ? "with the GitHub key keeper, which this user can't list" : a.key}${a.keyAgeDays !== undefined ? `, ${a.keyAgeDays} days old` : ""}.`);
         if (a.pending) c.say(`  Unfinished: ${a.pending.slug} (App ${a.pending.appId}) waits for its install. taskbox connect github finishes it.`);
       }
-      return { exit: 0, result: { apps: s.apps, unfinished: s.unfinished } };
+      // The org, so a controller's own browser makes a missing App there.
+      return { exit: 0, result: { apps: s.apps, unfinished: s.unfinished, org: cfg.org } };
     },
   },
 ];

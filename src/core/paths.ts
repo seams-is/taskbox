@@ -17,7 +17,6 @@ export interface RootState {
   agentSpool: string; // the agent account's, 700 (spool.ts)
   serviceSpool: string; // the service account's, 700
   adminSpool: string; // root's, 700: an admin's requests at the box, run as root
-  poolSpool: (n: number) => string; // each pool account's, 700
 }
 
 export const rootState = (root: string): RootState => rootStateIn(join(root, "opt/taskbox-state"));
@@ -42,10 +41,6 @@ export function rootStateIn(dir: string): RootState {
     agentSpool: join(dir, "agent-spool"),
     serviceSpool: join(dir, "service-spool"),
     adminSpool: join(dir, "admin-spool"),
-    poolSpool: (n: number) => {
-      if (!Number.isSafeInteger(n) || n < 1 || n > 99) throw new Error("not a pool account's number");
-      return join(dir, "pool-spool", String(n));
-    },
   };
 }
 

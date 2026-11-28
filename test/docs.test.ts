@@ -2,6 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { CONTROLLER } from "../src/controller/main.ts";
 import { parseLine } from "../src/registry.ts";
 
 const repo = join(import.meta.dir, "..");
@@ -63,7 +64,9 @@ describe("the docs", () => {
       for (const [, line] of readFileSync(f, "utf8").matchAll(/`taskbox ([a-z][a-z -]*)/g)) {
         const words = line!.trim().split(" ").filter((w) => /^[a-z]/.test(w));
         // The longest run of words that is a command: prose after a command's name is the doc's own.
-        const known = ["help", "hold", "share"].includes(words[0]!) || words.some((_, k) => parseLine(words.slice(0, words.length - k)).ok || (parseLine(words.slice(0, words.length - k)) as { usage?: string }).usage !== undefined);
+        // The controller's own commands count too, such as box install and box add.
+        const controller = CONTROLLER.some((c) => c.path.every((w, i) => words[i] === w));
+        const known = controller || ["help", "hold", "share"].includes(words[0]!) || words.some((_, k) => parseLine(words.slice(0, words.length - k)).ok || (parseLine(words.slice(0, words.length - k)) as { usage?: string }).usage !== undefined);
         expect({ f, line, known }).toEqual({ f, line, known: true });
       }
       expect({ f, pair: /taskbox pair/.test(readFileSync(f, "utf8")) }).toEqual({ f, pair: false });
@@ -71,11 +74,9 @@ describe("the docs", () => {
   });
 
   test("The key messages name GitHub's key steps one way, as GitHub's docs do", () => {
-    // connect github says the key steps now; keys.ts says none, but
-    // never the old way either.
+    // connect github says the key steps; the install and keys.ts say none, and never the old way.
     for (const f of ["src/install.ts", "src/connectflow.ts", "src/keys.ts"]) {
       const text = readFileSync(join(repo, f), "utf8");
-      if (f === "src/install.ts") expect(text).toContain("Key pairs");
       expect(text).not.toMatch(/Generate a private key|under Private keys/);
     }
   });

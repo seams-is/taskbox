@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { approve, assign, emptyState, ready, request, type Result, type Rules, start, type WsState } from "../src/workspace/model.ts";
 import type { RunResult } from "../src/sys.ts";
+import { type ClaimAction, makeClaim, proofWord, signProof, signRequest } from "../src/workspace/claim.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
 import { lasting } from "./tmpclean.ts";
 
@@ -94,3 +95,25 @@ export function poolQuiet(sys: { fallbacks: ((cmd: string, args: string[]) => Ru
 }
 
 export { emptyState };
+
+// An agent's request as the requesting side sends it: its claim key (the one given, else one per
+// agent, kept for the test) and a proof by it over the box's claims nonce. The agent's later steps
+// sign with the same key: claimProof gives the proof for one.
+export type ClaimKey = { pub: string; pem: string };
+export function claimKeys() {
+  const keys = new Map<string, ClaimKey>();
+  let n = 0;
+  const keyOf = (agent: string) => keys.get(agent) ?? (keys.set(agent, makeClaim()), keys.get(agent)!);
+  return {
+    keyOf,
+    async request(nonce: () => Promise<string>, body: Record<string, unknown>, at: number): Promise<Record<string, unknown>> {
+      if (body.proof !== undefined || typeof body.agent !== "string") return body;
+      const { claimKey, ...rest } = body as { claimKey?: ClaimKey };
+      const k = claimKey ?? keyOf(body.agent);
+      return { ...rest, claim: k.pub, proof: signRequest(k.pem, body.agent, String(body.size), await nonce(), at) };
+    },
+    proof(action: ClaimAction, name: string, at: number, k?: ClaimKey): string {
+      return proofWord(signProof((k ?? keyOf(name.slice(0, name.lastIndexOf("-")))).pem, action, name, at + ++n, at));
+    },
+  };
+}

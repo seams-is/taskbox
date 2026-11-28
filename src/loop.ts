@@ -1,7 +1,7 @@
 // The runner loop. One fresh VM per job, deleted after it.
 // It runs as ci, in ci's login session, from the LaunchAgent.
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { within } from "./clock.ts";
 import { GUARD_TICK_MS, type GuardRecord, readGuard, tunAddress } from "./guard.ts";
@@ -34,8 +34,18 @@ import { readKick } from "./loopwatch.ts";
 import { deployedRow, WORKFLOWS_CHECK_MS } from "./watchdog.ts";
 import type { Log } from "./log.ts";
 import { type Memory, memoryShort, memoryShortWhileUp, type Pressure, pressureWord, readLogicalCpus, readMemory } from "./memory.ts";
-import { clean, mirrorPull, PullRecorder, writeReady } from "./progress.ts";
-import { clearRequests } from "./requests.ts";
+import { clean, mirrorPull, PullRecorder, pullLine, readPull, writeReady } from "./progress.ts";
+import { askLoop, type AskSteps, readAsk, takeAsk } from "./loopask.ts";
+import { trialOf } from "./trialresult.ts";
+import { listedReleases, pick } from "./update/pick.ts";
+import { channelOf } from "./release.ts";
+import { type TrialEnv, type TrialResult, tryRelease } from "./trial.ts";
+import { publicRelease, TARBALL_LIMIT } from "./hop.ts";
+import { verifyRelease, type VerifyDeps } from "./release.ts";
+import { readInstallRecord } from "./update/records.ts";
+import { linkTarget } from "./layout.ts";
+import { readInForce, settingsFilesForApp } from "./settings/inforce.ts";
+import { updateOf } from "./settings/update.ts";
 import { groupSetupWrong, LOAD_JOB_MAX_MS, loadFailed, loadNow, noteSeen } from "./load.ts";
 import { sourceStep } from "./sourcefail.ts";
 import type { Snapshot } from "./source.ts";
@@ -73,6 +83,8 @@ export interface LoopDeps {
   source?: JobSource;
   // Tests replace the Linux Softnet proof.
   proveLinux?: () => Promise<{ ok: boolean; detail: string }>;
+  // A release trial (trial.ts), for tests: the version in, the result out.
+  tryRelease?: (version: string) => Promise<TrialResult>;
   // The slots this loop runs (v2.2.0): who holds each, the gate VM starts take one at a time, and
   // the times VMs started and stopped, for the guard. Absent: one slot, as before.
   box?: Slots;
@@ -212,8 +224,6 @@ export class Slots {
   fatal: unknown;
   // The GB a download between VMs may still write, counted in every other slot's disk check.
   downloadGB = 0;
-  // Whether this loop run has ended a hold kept from before v2.2.0 (endOldHold).
-  oldHoldEnded = false;
   // The slots that are empty and waiting on a drain (taskbox drain). All of them: drained.
   readonly drained = new Set<number>();
   emptyFor: number | undefined; // the control gen the loop last said every slot was empty for
@@ -427,7 +437,8 @@ function recordName(d: LoopDeps, ref: string, name: string): void {
 
 // Only the pinned image stays. A finished image that isn't the pin is deleted once the pin is
 // ready. Each removal gets a line the owner sees in watch and check.
-export async function removeOldImages(d: LoopDeps): Promise<string[]> {
+// dry: names each one that would go, and removes nothing.
+export async function removeOldImages(d: LoopDeps, dry = false): Promise<string[]> {
   const notes: string[] = [];
   const t = engineOf(d);
   let vms;
@@ -439,14 +450,19 @@ export async function removeOldImages(d: LoopDeps): Promise<string[]> {
   const names = readNames(d);
   for (const vm of vms) {
     if (!vm.image || kindsOf(d.cfg).some((k) => forKind(d.cfg, k).image === vm.name)) continue;
+    // Its name from when this loop pulled it; an image an older loop pulled is named by its repo.
+    const name = clean(names[vm.name] ?? `${vm.name.replace(/@sha256:.*/, "").replace(/^ghcr\.io\/cirruslabs\//, "")}, an older image`);
+    // The engine's size is whole gigabytes, rounded down.
+    const gb = vm.sizeGB ? `, about ${vm.sizeGB} GB` : "";
+    if (dry) {
+      notes.push(`Old image ${name}${gb}.`);
+      continue;
+    }
     const del = await t.delete(vm.name);
     if (del.code !== 0) continue;
-    // Its name from when this loop pulled it; an image an older loop pulled is named by its repo.
-    const name = names[vm.name] ?? `${vm.name.replace(/@sha256:.*/, "").replace(/^ghcr\.io\/cirruslabs\//, "")}, an older image`;
-    // The engine's size is whole gigabytes, rounded down.
-    notes.push(`Removed old image ${clean(name)}${vm.sizeGB ? `, about ${vm.sizeGB} GB freed` : ""}.`);
+    notes.push(`Removed old image ${name}${gb ? `${gb} freed` : ""}.`);
   }
-  if (notes.length) {
+  if (notes.length && !dry) {
     writeState(d, { cleanup: notes.join(" "), cleanupAt: d.sys.now() });
     for (const n of notes) d.log.write(n);
   }
@@ -706,28 +722,6 @@ export function netFor(cfg: Config, pub: string | string[]): NetPolicy {
 // A job's ceiling: its own time limit plus 10 min.
 export const ceilingMs = (cfg: Config) => (cfg.jobTimeoutMinutes + 10) * 60_000;
 
-// hold and share are gone in v2.2.0. A hold kept in the state from before, and any request
-// left in the old requests folder, end at the loop's first read after the update, with one log line. The
-// folder is ci's, so ci may remove what anyone left there; the next install removes the folder.
-export function endOldHold(d: LoopDeps): void {
-  const st = readState(d);
-  const h = st.hold as { until?: unknown; by?: unknown } | undefined;
-  const kept = h && typeof h === "object" && typeof h.until === "number" && h.until > d.sys.now() && typeof h.by === "string" ? { until: h.until, by: h.by } : undefined;
-  // Never walks into what someone else left (requests.ts).
-  const cleared = clearRequests(d.paths.requests);
-  const left = cleared.files;
-  if (st.hold !== undefined || st.holdUse !== undefined) writeState(d, { hold: undefined, holdUse: undefined });
-  if (kept || left) {
-    const what = [kept ? `${clean(kept.by).slice(0, 32)}'s hold until ${new Date(kept.until).toISOString()}` : "", left ? `${left} request${left > 1 ? "s" : ""} left for one` : ""].filter(Boolean).join(" and ");
-    d.log.write(`hold: ${what} ended: hold is gone in v2.2.0`);
-  }
-  // A folder someone left there with files in it stays, and the install can't remove the folder.
-  if (cleared.left && !st.requestsLeftSaid) {
-    d.log.write(`the old requests folder keeps ${cleared.left} name${cleared.left > 1 ? "s" : ""} another user left, so it stays. Nothing reads it`);
-    writeState(d, { requestsLeftSaid: true });
-  }
-}
-
 // The memory of the other slots' VMs, in MB: each one's own size.
 function othersMB(d: LoopDeps): number {
   return (d.box?.othersUp(d.slot) ?? []).reduce((n, o) => n + (o.memoryMB ?? sizeOf(d.cfg, o.kind, o.size).vmMemoryMB), 0);
@@ -794,11 +788,6 @@ function drainOrHold(d: LoopDeps): { key: string; text: string } | undefined {
 // Why the box starts no VM now, or undefined. A drain or a hold first, then the guard, then memory.
 // up: this slot's VM is already up and waits for a job, so its own memory is in use already.
 export async function whyWait(d: LoopDeps, up = false): Promise<{ key: string; text: string } | undefined> {
-  // Once per loop run, so files someone keeps leaving in the old folder can't fill the log.
-  if (!d.box?.oldHoldEnded) {
-    endOldHold(d);
-    if (d.box) d.box.oldHoldEnded = true;
-  }
   const hold = drainOrHold(d);
   if (hold) return hold;
   // A waiting VM that no longer fits beside what Lights and Heavies hold gives way to them.
@@ -831,6 +820,114 @@ export const PROOF_INFRA_FAST = 4;
 // infra (v2.5.0): the proof couldn't run, so it says nothing about Softnet and tries again soon.
 export type ProofRun = { ok: boolean; detail: string; notRun?: boolean; peers?: number; infra?: boolean };
 // It runs at the smallest Linux size: its network rules don't depend on size.
+// The loop's ops folder, where selftest run and image pull leave their asks (loopask.ts).
+export const loopAsks = (d: Pick<LoopDeps, "paths">) => ({ dir: loopState(d.paths.state).ops, owner: process.getuid?.() ?? 0 });
+// One selftest run's event, for selftest list and events --type selftest. Never throws.
+function selftestEvent(d: Pick<LoopDeps, "paths" | "sys">, result: "passed" | "failed" | "not-run", text: string, data: { why: string; ms: number; version?: string }, op?: string): void {
+  try {
+    eventLog("loop", { dir: loopState(d.paths.state).events, owner: process.getuid?.() ?? 0 }, d.sys).write({ type: `selftest.${result}`, actor: "taskbox", subject: "selftest", text: text.slice(0, 200), data, ...(op ? { op } : {}) });
+  } catch {}
+}
+
+// The loop's own trial ask: hourly it reads the public repo's releases with no token, and the release
+// an auto-update would take next, when it is a trial (rc) release with no trial result yet, is asked
+// for as selftest run --release would ask. A trial that didn't run is asked again the next hour.
+const trialChecked = new WeakMap<object, number>();
+export const TRIAL_CHECK_MS = 3_600_000;
+export async function autoTrial(d: LoopDeps, box: object): Promise<string | undefined> {
+  const now = d.sys.now();
+  if (now - (trialChecked.get(box) ?? -Infinity) < TRIAL_CHECK_MS) return undefined;
+  trialChecked.set(box, now);
+  const repo = d.cfg.publicRepo;
+  const dir = linkTarget(d.paths.opt);
+  const rec = dir ? readInstallRecord(dir, d.checks.rootUid ?? 0) : undefined;
+  if (!repo || rec?.kind !== "ok") return undefined;
+  const res = await d.sys.fetch(`https://api.github.com/repos/${repo}/releases?per_page=100`, { redirect: "error", signal: d.sys.timeout(30_000), headers: { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "taskbox" } });
+  if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+  const p = pick({ listed: listedReleases(await res.json()), installed: rec.value.version, channel: updateOf(d.cfg).channel, marks: { v: 1, bad: [] } });
+  if (p.kind !== "take" || channelOf(p.version) !== "beta") return undefined;
+  const ev = loopState(d.paths.state).events;
+  if (trialOf({ dir: ev, owner: process.getuid?.() ?? 0 }, p.version) !== "none") return undefined;
+  const asked = askLoop(loopAsks(d), "selftest-run", "release", { release: p.version }, now, "taskbox");
+  if ("busy" in asked) return undefined;
+  d.log.write(`release ${p.version} is new on this box's channel: trying it in taskbox's own VM before it installs (${asked.op.id})`);
+  return p.version;
+}
+
+// One asked release trial, from its ask to its event. Never throws.
+export async function releaseTrialStep(d: LoopDeps): Promise<void> {
+  const asked = takeAsk(loopAsks(d), "release", () => d.sys.now());
+  if (!asked) return;
+  const version = typeof asked.op.params.release === "string" ? asked.op.params.release : "";
+  const began = d.sys.now();
+  asked.phase("proving", `trying ${version} in a macOS VM`);
+  writeState(d, { slot: `trying ${version}`, slotAt: d.sys.now(), vmKind: "macos" });
+  let r: TrialResult;
+  try {
+    r = await (d.tryRelease ?? ((v: string) => tryRelease(trialEnv(d, (t) => asked.progress(t), () => asked.cancelled()), v)))(version);
+  } catch (e) {
+    r = { ok: false, notRun: true, detail: `the trial errored: ${String((e as Error)?.message ?? e).slice(0, 120)}` };
+  }
+  const result = r.ok ? "passed" : r.notRun ? "not-run" : "failed";
+  d.log.write(`release trial of ${version}: ${result}: ${r.detail}`);
+  selftestEvent(d, result, `The trial of ${version} ${r.ok ? "passed" : r.notRun ? "didn't run" : "failed"}: ${r.detail}.`, { why: "release", ms: d.sys.now() - began, version }, asked.op.id);
+  if (r.ok) asked.done({ detail: r.detail.slice(0, 200), version });
+  else asked.fail(r.detail, { detail: r.detail.slice(0, 200), version });
+  writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
+}
+
+// The trial's environment on the box: the public repo with no token, ssh-keygen as this account
+// against the release keys this engine pins, the macOS kind's image under a job's network rules,
+// and the settings in force.
+function trialEnv(d: LoopDeps, progress: (t: string) => void, cancelled: () => boolean): TrialEnv {
+  const mac = forKind(d.cfg, "macos");
+  const t = engineOf(d);
+  const repo = d.cfg.publicRepo;
+  const vm = vmName(d.sys);
+  const settings = (() => {
+    const f = readInForce(settingsFilesForApp(d.paths.app));
+    if (f.kind === "ok") return { text: JSON.stringify(f.value.doc), sha: f.value.sha };
+    return { text: readFileSync(join(d.paths.app, "taskbox.json"), "utf8"), sha: "0".repeat(40) };
+  })();
+  let net: NetPolicy | undefined;
+  return {
+    engine: {
+      clone: (image, name) => t.clone(image, name),
+      size: (name, cpus, mem) => t.size(name, cpus, mem),
+      start: (name, n) => t.start(name, net ?? n),
+      exec: (name, cmd, stdin, ms) => t.exec(name, cmd, stdin, ms),
+      stop: (name, s) => t.stop(name, s),
+      delete: (name) => t.delete(name),
+    },
+    image: mac.image,
+    cpus: mac.vmCpus,
+    memoryMB: mac.vmMemoryMB,
+    get net() {
+      return net ?? netFor(d.cfg, []);
+    },
+    vm,
+    async fetch(version) {
+      if (!repo) throw new Error("taskbox.json names no publicRepo");
+      net = netFor(d.cfg, (await publicAddresses(d.sys, awayOf(d.cfg).publicAddress)).addresses);
+      const rel = await publicRelease(d.sys, repo, `v${version}`);
+      return { statement: rel.statement, signature: rel.signature, tarball: await rel.asset(`taskbox-v${version}.tar.gz`, TARBALL_LIMIT) };
+    },
+    async verify(r, version) {
+      const dir = linkTarget(d.paths.opt);
+      const rec = dir ? readInstallRecord(dir, d.checks.rootUid ?? 0) : undefined;
+      const installed = rec?.kind === "ok" ? { version: rec.value.version, sha256: rec.value.sha256 } : null;
+      const keygen: VerifyDeps = { run: (cmd, args, o) => d.sys.run(cmd, args, o) };
+      const workRoot = join(d.paths.projectState, "trial");
+      mkdirSync(workRoot, { recursive: true, mode: 0o700 });
+      return verifyRelease(keygen, { statement: r.statement, signature: r.signature, workRoot, installed, want: version, channel: updateOf(d.cfg).channel, tarballSha256: createHash("sha256").update(r.tarball).digest("hex") });
+    },
+    settings: { ...settings, repo: d.cfg.settingsRepo ?? "example-org/settings" },
+    ready: (name, exited) => guestReady(d, name, `trying a release`, exited),
+    progress,
+    cancelled,
+  };
+}
+
 export async function proveLinux(d0: LoopDeps): Promise<ProofRun> {
   const d = kindDeps(d0, "linux", smallestSize(d0.cfg, "linux").name);
   const t = engineOf(d);
@@ -1704,7 +1801,8 @@ export async function runLoop(d: LoopDeps): Promise<number> {
     // The proof, once Linux's image and runner are in place, and again 6 hours after a failure.
     // With more than one slot, a pass that tried no other job VM is proved again once one is up, so
     // the box shows one job VM can't reach another. Linux jobs run meanwhile: the pass still holds.
-    proofDue: () => !gateOf(d).wait && heldNow({ ...d, box }) === 0 && c.held.has("linux") && servedKinds(d).includes("linux") && d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()),
+    // An asked run (taskbox selftest run) goes in the next free slot, whatever the schedule says.
+    proofDue: () => !gateOf(d).wait && heldNow({ ...d, box }) === 0 && c.held.has("linux") && servedKinds(d).includes("linux") && (readAsk(loopAsks(d), "selftest") !== undefined || (d.sys.now() >= c.nextProof && (!proven() ? peerReady() : n > 1 && c.peerTries < PEER_TRIES && !readProof(d.paths.projectState)?.peers && peerUp()))),
     served: () => servedKinds(d).filter((k) => c.held.has(k) && (k !== "linux" || proven())),
     choose:
       d.chooseKind ??
@@ -1839,7 +1937,10 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
       c.box.missing.delete(k);
       c.refetch.add(k);
     }
-    const due = kindsOf(d.cfg).filter((k) => !c.held.has(k) && (c.nextPull.get(k) ?? 0) <= d.sys.now());
+    // An asked pull (taskbox image pull) is due now; one of an image already held ends at once.
+    const askedPull = (k: Kind) => readAsk(loopAsks(d), `image-${k}`) !== undefined;
+    for (const k of kindsOf(d.cfg)) if (c.held.has(k) && askedPull(k)) takeAsk(loopAsks(d), `image-${k}`, () => d.sys.now())?.done({ text: "it was held already" });
+    const due = kindsOf(d.cfg).filter((k) => !c.held.has(k) && ((c.nextPull.get(k) ?? 0) <= d.sys.now() || askedPull(k)));
     let stoppedToWait = false;
     if (due.length && !c.pulling) {
       c.pulling = true;
@@ -1848,7 +1949,19 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const onDisk = (k: Kind) => (listed.has(forKind(d.cfg, k).image) ? 0 : 1);
         for (const k of due.sort((a, b) => onDisk(a) - onDisk(b))) {
           c.box.downloadGB = forKind(d.cfg, k).imageGB ?? 0;
-          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (gateOf(d).wait && "the box isn't active (taskbox pause, drain or stop); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after"))
+          const asked: AskSteps | undefined = takeAsk(loopAsks(d), `image-${k}`, () => d.sys.now());
+          asked?.phase("downloading", "starting");
+          let cancelled = false;
+          let said = "";
+          // The asked op's progress is the pull file's line, said again when it changes.
+          const onPull = () => {
+            if (!asked) return false;
+            if (asked.cancelled()) return (cancelled = true), "the pull was cancelled";
+            const line = pullLine(readPull(kindDeps(d, k).paths.pull), d.sys.now()).slice(0, 120);
+            if (line !== said) asked.progress((said = line));
+            return false;
+          };
+          const got = await ensureImage(kindDeps({ ...d, checks: { ...d.checks, vmsRunning: c.box.othersUp(d.slot).length } }, k), () => c.updated() || c.box.halt !== undefined || (gateOf(d).wait && "the box isn't active (taskbox pause, drain or stop); it starts again after") || (slotHeld(d) && "a workspace holds the box; it starts again after") || onPull())
             .finally(() => (c.box.downloadGB = 0))
             .catch((e: Error) => {
               const why = `the ${KIND_WORD[k]} image: ${e.message}`;
@@ -1856,6 +1969,12 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
               c.pullWhy.set(k, why);
               return "failed" as const;
             });
+          if (got === "failed") asked?.fail(c.pullWhy.get(k) ?? "the download failed");
+          // A cancelled pull keeps its bytes; the loop's own schedule takes it up again later.
+          if (got === "stopped" && cancelled) {
+            c.nextPull.set(k, d.sys.now() + 10 * 60_000);
+            continue;
+          }
           // A drain or a hold stops a download, and the slot then waits on it at the top, like the others.
           if (got === "stopped" && c.box.halt === undefined && !c.updated() && (gateOf(d).wait || slotHeld(d))) {
             stoppedToWait = true;
@@ -1877,6 +1996,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
             writeState(d, { imageBroken: undefined });
           }
           if (got === "ready") {
+            asked?.done({ text: forKind(d.cfg, k).image.split("@")[0]! });
             c.held.add(k);
             c.pullWhy.delete(k);
             await removeOldImages(d);
@@ -1889,9 +2009,31 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
     if (stoppedToWait) continue;
     // The tool cache: fetch, build and bake between VMs (tools/inloop.ts). A bake holds this slot.
     if (toolsOn(d.cfg) && (await toolsStep(d, c))) continue;
+    // A new trial release on the box's channel is tried before the box installs it: the loop asks
+    // itself, at most hourly (autoTrial).
+    if (!c.proving && c.held.has("macos")) await autoTrial(d, c.box).catch((e: Error) => d.log.write(`the release trial check failed: ${String(e?.message ?? e).slice(0, 120)}`));
+    // A signed release tried in taskbox's own macOS VM (selftest run --release, trial.ts): asked
+    // by the command or by autoTrial, in a free slot, one at a time with the Linux proof.
+    if (!c.proving && readAsk(loopAsks(d), "release") !== undefined && !gateOf(d).wait && heldNow({ ...d, box: c.box }) === 0 && c.held.has("macos")) {
+      c.proving = true;
+      const mac = forKind(d.cfg, "macos");
+      c.box.held.set(d.slot, { slot: d.slot, kind: "macos", labels: [], job: true, up: true, size: DEFAULT_SIZE, memoryMB: mac.vmMemoryMB, cpus: mac.vmCpus });
+      try {
+        await releaseTrialStep(d);
+      } finally {
+        c.box.release(d.slot, d.sys.now());
+        c.proving = false;
+      }
+      continue;
+    }
     // The Linux proof takes this slot, one proof at a time.
     if (c.proofDue() && !c.proving) {
       c.proving = true;
+      const asked = takeAsk(loopAsks(d), "selftest", () => d.sys.now());
+      const why = asked ? "asked" : "scheduled";
+      const began = d.sys.now();
+      const ms = () => d.sys.now() - began;
+      asked?.phase("proving", "starting a Linux VM under a job's network rules");
       const small = smallestSize(d.cfg, "linux");
       c.box.held.set(d.slot, { slot: d.slot, kind: "linux", labels: [], job: true, up: true, size: small.name, memoryMB: small.vmMemoryMB, cpus: small.vmCpus });
       try {
@@ -1901,6 +2043,7 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const pre = await (dl.prestart ? dl.prestart(ctx) : runChecks(rows("prestart", ctx), ctx)).catch(() => [{ name: "Pre-start check", status: "FAIL" as const, detail: "errored" }]);
         if (!allOk(pre)) {
           d.log.write(`no Linux proof: a check failed (${pre.filter((x) => x.status === "FAIL").map((x) => x.name).join(", ")})`);
+          asked?.fail(`a check failed before the VM started: ${pre.filter((x) => x.status === "FAIL").map((x) => x.name).join(", ")}`);
           // 10 minutes, so a waiting macOS VM isn't made to give way every minute (v2.1.1).
           c.nextProof = d.sys.now() + 10 * 60_000;
           await d.sys.sleep(60_000);
@@ -1911,6 +2054,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const r: ProofRun = await (d.proveLinux ?? (() => proveLinux(d)))().catch((e: Error) => ({ ok: false, detail: `the proof errored: ${e.message}`, infra: true }));
         if (r.notRun) {
           d.log.write(`no Linux proof yet: ${r.detail}`);
+          selftestEvent(d, "not-run", `The selftest didn't run: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+          asked?.fail(`it didn't run: ${r.detail}`);
           writeState(d, { slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
           c.nextProof = d.sys.now() + 10 * 60_000;
           continue;
@@ -1922,6 +2067,8 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
           const wait = c.proofInfra > PROOF_INFRA_FAST ? 3600_000 : awayOf(d.cfg).proofRetryMinutes * 60_000;
           c.nextProof = d.sys.now() + wait;
           d.log.write(`the Linux proof couldn't run: ${r.detail}`);
+          selftestEvent(d, "not-run", `The selftest couldn't run: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+          asked?.fail(`it couldn't run: ${r.detail}`);
           // A pass that still holds keeps its line: Linux jobs run on it meanwhile.
           const held = proofHolds(readProof(d.paths.projectState), forKind(d.cfg, "linux").image, installedCommit(d.paths.installed));
           writeState(d, { ...infraProofLine(held, r.detail, c.nextProof), slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
@@ -1931,6 +2078,11 @@ async function slotWorker(d: LoopDeps, c: LoopShared): Promise<number> {
         const image = forKind(d.cfg, "linux").image;
         writeProof(d.paths.projectState, { v: 1, at: d.sys.now(), ok: r.ok, image, commit: installedCommit(d.paths.installed), detail: r.detail, ...(r.peers !== undefined ? { peers: r.peers } : {}) });
         d.log.write(`${r.ok ? "Linux proof passed" : "FAIL: Linux proof"}: ${r.detail}`);
+        selftestEvent(d, r.ok ? "passed" : "failed", `The selftest ${r.ok ? "passed" : "failed"}: ${r.detail}.`, { why, ms: ms() }, asked?.op.id);
+        if (asked) {
+          if (r.ok) asked.done({ detail: r.detail.slice(0, 200) });
+          else asked.fail(r.detail, { detail: r.detail.slice(0, 200) });
+        }
         writeState(d, { linuxProof: `${r.ok ? "passed" : "FAIL"}: ${r.detail}`, slot: "idle", slotAt: d.sys.now(), vmKind: undefined });
         if (!r.ok) c.nextProof = d.sys.now() + PROOF_RETRY_MS;
         // A pass that tried no other job VM, with more than one slot, is tried again at most every

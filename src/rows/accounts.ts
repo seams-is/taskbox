@@ -3,11 +3,12 @@
 import { openWindow } from "../settings/adminssh.ts";
 import { poolOf, SYSTEM_USERS } from "../access.ts";
 import { idsShared, otherTaskboxShells, ownAccess, readRecord, systemProblem, uidOf } from "../accounts.ts";
-import { trustedKey } from "../approver.ts";
+import { poolTrust } from "../core/approvers.ts";
+import { rootStateOf } from "../core/paths.ts";
 import type { Check, CheckContext } from "../checks.ts";
 import { REMOTE_SHELL, tagOf } from "../config.ts";
 import type { Row } from "../core/rows.ts";
-import { readPin, readPoolRecord } from "../pin.ts";
+import { readPoolRecord } from "../pin.ts";
 import { policyFor } from "../policy.ts";
 
 type Out = Omit<Check, "name">;
@@ -93,7 +94,7 @@ export function policyDiff(live: Map<string, Set<"accept" | "check">>, want: { a
     const should = want.accept.includes(user) ? "accept" : want.check.includes(user) ? "check" : undefined;
     if (user === "*") out.push("a rule lets any user in");
     else if (!should) out.push(`${shown(user)} is let in, and the settings name nobody by that name`);
-    else if (modes.size > 1 || !modes.has(should)) out.push(`${shown(user)} is let in by ${[...modes].sort().join(" and ")}, not ${should} alone`);
+    else if (modes.size > 1 || !modes.has(should)) out.push(`${shown(user)} is let in by ${[...modes].sort().join(" and ")}, where the settings say ${should} alone`);
   }
   for (const user of [...want.accept, ...want.check]) if (!live.has(user)) out.push(`${shown(user)} isn't let in`);
   return out;
@@ -111,7 +112,7 @@ export async function tailnetPolicyRow(c: CheckContext): Promise<Out> {
   const live = liveSshUsers(netmap);
   if (!live) return skip("taskbox can't see the tailnet's SSH rules for this box, so it can't compare them with the settings. On the controller, type taskbox policy show --box all, and check what you pasted");
   // Only the accounts taskbox made get accept, as in policy show.
-  const own = await ownAccess(c.sys, c.cfg.accounts.agent, poolOf(c.cfg.accounts, trustedKey(c.cfg.approverKey, readPin(c.paths.approverPin, c.rootUid ?? 0))), readRecord(c.paths.accountsRecord), readPoolRecord(c.paths.poolRecord, c.rootUid ?? 0));
+  const own = await ownAccess(c.sys, c.cfg.accounts.agent, poolOf(c.cfg.accounts, poolTrust(rootStateOf(c.paths).approvers, c.rootUid ?? 0)), readRecord(c.paths.accountsRecord), readPoolRecord(c.paths.poolRecord, c.rootUid ?? 0));
   if ("refuse" in own) return fail(`${own.refuse}. As your admin user, type taskbox update`);
   const accounts = { ...c.cfg.accounts };
   if (own.agent === undefined) delete accounts.agent;

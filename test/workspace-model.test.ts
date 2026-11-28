@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { CFG } from "./helpers.ts";
 import { checkWorkspaces } from "../src/settings/workspaces.ts";
-import { approve, assign, boxPause, cleared, closedUsers, deny, doFor, emptyState, end, ended, find, held, MAX_WORKSPACES, onBoot, openFor, pause, progress, request, resume, saved, type State, start, stateLine, tick, whyNotStart, type WsState } from "../src/workspace/model.ts";
+import { approve, assign, boxPause, cleared, deny, doFor, emptyState, end, ended, find, held, MAX_WORKSPACES, onBoot, openFor, pause, progress, request, resume, saved, type State, start, stateLine, tick, whyNotStart, type WsState } from "../src/workspace/model.ts";
 import { fitsAtOnce, overSet, rulesOf } from "../src/workspace/rules.ts";
 import { approved, asked, BOOT1, BOOT2, HOUR, MIN, ok, OWNER, POOL, readyIn, readyState, RULES, started, T } from "./ws-helpers.ts";
 
@@ -107,7 +107,7 @@ describe("a request", () => {
   });
   test("a deny keeps its reason, unsigned", () => {
     const d = ok(deny(asked(emptyState()), { name: "nova-1", reason: "after 6pm" }, T));
-    expect(stateLine(find(d, "nova-1")!)).toBe("denied: after 6pm");
+    expect(stateLine(find(d, "nova-1")!)).toBe("denied (unsigned): after 6pm");
   });
 });
 
@@ -312,9 +312,8 @@ describe("restarts and the box's own pauses", () => {
     expect(boxPause(s, "disk", T).state.workspaces.map((w) => w.state)).toEqual(["paused", "approved"]);
     expect(boxPause(s, "off", T).state.workspaces.map((w) => w.state)).toEqual(["paused", "paused"]);
   });
-  test("closed accounts, and the gate's word", () => {
+  test("the gate's word", () => {
     const s = { ...readyState(), beat: T };
-    expect(closedUsers(s, POOL)).toEqual(["taskbox-ws2"]);
     expect(openFor(s, "taskbox-ws1", BOOT1, T)).toHaveProperty("ws");
     expect(openFor(s, "taskbox-ws1", BOOT2, T)).toEqual({ why: "nova-1 went ready before the last restart." });
     expect(openFor(s, "taskbox-ws1", BOOT1, T + 4 * MIN)).toHaveProperty("why");

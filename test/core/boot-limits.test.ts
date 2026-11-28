@@ -124,7 +124,7 @@ describe("limits, lapses and numbering on the monotonic clock", () => {
     closeSync(l);
   });
   test("a lapse needs the wall clock, the monotonic clock and the boot; an unread clock lapses", () => {
-    const ask = { kind: "channel" as const, subject: "c", shows: ["x"], actor: "owner", payload: {} };
+    const ask = { kind: "rule" as const, subject: "c", shows: ["x"], actor: "owner", payload: {} };
     const r = raise(noPending(), ask, { wall: T, mono: 5, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" });
     if (!r.ok) throw new Error();
     expect(lapse(r.state, { wall: T + 1, mono: 6, boot: "7C4F5A0E-3B1D-4E8A-9F21-6D0B2C8E4A17" }).lapsed).toHaveLength(0);

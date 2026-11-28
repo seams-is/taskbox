@@ -4,8 +4,9 @@
 // and running the same command again watches again. With the guard down, stop --force and start act
 // on the loop here. From the controller, the same commands come signed, and the cli sends them on.
 import { type Action, argsProblem, readControl, running, startHere, stopHere } from "./availability.ts";
-import type { BoxCtx, ErrorBody, Outcome } from "./command.ts";
+import type { BoxCtx, Outcome } from "./command.ts";
 import { duration, EXIT } from "./command.ts";
+import { err } from "./cmdkit.ts";
 import { rootState } from "./core/paths.ts";
 import { argsOf } from "./core/statement.ts";
 import { readStateJson } from "./config.ts";
@@ -13,7 +14,6 @@ import { askGuard, followOp, guardDown, type Interrupt, onInterrupt, WATCH_MS } 
 
 export const FIRST_LINE = "stop now drains first; stop --force ends running jobs now.";
 
-const err = (code: ErrorBody["code"], message: string, who: ErrorBody["who"] = null): ErrorBody => ({ code, message, fix: null, who });
 const NEXT: Record<Action, string> = { pause: "taskbox resume", drain: "taskbox resume", stop: "taskbox start", resume: "taskbox status", start: "taskbox status" };
 const DID: Record<Action, string> = { pause: "Paused the box.", drain: "Started a drain.", stop: "Started a stop.", resume: "Resumed the box.", start: "Started the box." };
 const DONE = { drain: "Drained: no job runs, and none starts until taskbox resume.", stop: "Stopped: the loop is down until taskbox start." };

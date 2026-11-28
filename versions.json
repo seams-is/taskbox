@@ -18,7 +18,7 @@
     "sha256": "5a2e8ef779f0a2169b88d273ee806c0d64321ec7714c0dc99bf217523ae9b008"
   },
   "tailscale": {
-    "$comment": "tailscale and tailscaled v1.104.5, built twice by build-tailscale.yml, the two builds identical, and attached to the published release tailscale-v1.104.5-2 of the box's release repo (org, repo and releaseRepo in taskbox.json) as this asset. The install reads the asset with the App's token, then checks the tarball and each binary against these. url is the same asset, kept only for installs from before asset, which run the next update.",
+    "$comment": "tailscale and tailscaled v1.104.5, built twice by build-tailscale.yml, the two builds identical, and attached to the published release tailscale-v1.104.5-2 of taskbox's public repo as this asset. The install reads url, its public API address, with no token, then checks the tarball and each binary against these. asset is the same asset by its ID, as v2.6.1 reads it.",
     "version": "1.104.5",
     "asset": 791295447,
     "url": "https://api.github.com/repos/seams-is/taskbox/releases/assets/791295447",

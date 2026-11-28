@@ -8,7 +8,7 @@ import { type Config, loadConfig, paths } from "../src/config.ts";
 import { ANCHOR, anchorRules, expectedLoaded, GUARD_FRESH_MS, guardOnce, inTailnet, loadedMatches, PFCTL, readGuard, screenSharingPeers, tunAddresses, writeGuard } from "../src/guard.ts";
 import { oneJob } from "../src/loop.ts";
 import { FakeSys } from "./fake.ts";
-import { CFG, loopDeps, quietBox, quietLogins, servicesObey, socketDirOk, tempRoot, testBox } from "./helpers.ts";
+import { CFG, loopDeps, quietBox, quietLogins, servicesObey, socketDirOk, tailnetPinned, tempRoot, testBox } from "./helpers.ts";
 
 const me = process.getuid!();
 const HEAD = "Active Internet connections (including servers)\nProto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n";
@@ -769,6 +769,7 @@ describe("the Tailscale row", () => {
     // The socket's folder first: missing, it fails before tailscaled is asked anything.
     expect((await tailscaleRow(c)).detail).toContain("taskbox-tailscale is missing, so other accounts on the box may reach tailscaled");
     socketDirOk(c);
+    tailnetPinned(c.paths);
     expect((await tailscaleRow(c)).detail).toContain("tailscaled's LaunchDaemon isn't taskbox's");
     writeFileSync(c.paths.tailscaledPlist, daemon.replace(/\s*<key>TS_SSH_DISABLE_SFTP<\/key>\s*<string>true<\/string>/, ""));
     expect((await tailscaleRow(c)).detail).toContain("may allow file copying");
@@ -886,7 +887,8 @@ describe("the Tailscale row", () => {
     const said: string[] = [];
     await tailscaleUp({ sys, paths: paths(tempRoot(), testBox()), say: (l: string) => said.push(l) } as never, "taskbox-1");
     expect(sys.spawned).toEqual([]);
-    expect(reads).toBe(3);
+    // Three while it starts, and one more to pin the tailnet it is on.
+    expect(reads).toBe(4);
     expect(said.join("\n")).not.toContain("Sign the box in");
   });
   test("a box still starting after the wait isn't asked to sign in, and is told to update again", async () => {

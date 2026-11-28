@@ -291,18 +291,6 @@ export function listGenerations(s: Store): { ids: string[]; leftovers: string[] 
   return { ids, leftovers };
 }
 
-// The bytes the store holds in blobs, for maxGB and the status line.
-export function blobBytes(s: Store): number {
-  let n = 0;
-  for (const name of readdirSync(s.blobs)) {
-    try {
-      const st = lstatSync(join(s.blobs, name));
-      if (st.isFile()) n += st.size;
-    } catch {}
-  }
-  return n;
-}
-
 // What the store takes on disk: each file in blobs and in every generation once by inode, so a
 // generation that still holds a blob no pin names is counted.
 export function storeBytes(s: Store): number {

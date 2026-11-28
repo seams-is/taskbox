@@ -2,6 +2,7 @@
 // is theirs alone, with their own GitHub and Claude Code sign-ins. Your user has no access to the
 // folder: their work reaches you through PRs, in your own clones, so nothing they write runs as you.
 // Each step says whether it is done; a re-run resumes at the first that isn't. self check reads them.
+import { DEFAULT_POOL } from "../access.ts";
 import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ACCOUNT, GH_LOGIN, type Home, readConfig, REPO, writeConfig } from "./home.ts";
@@ -119,14 +120,20 @@ const first = (d: SetupDeps, paths: string[]) => paths.find((p) => d.exists(p));
 // Your own gh, in your own home.
 const ownerGh = (_d: SetupDeps, gh: string, args: string[]) => [gh, ...args];
 
+// The taskbox repo this controller updates from: the agents' account never gets access to it.
+const isTaskboxRepo = (r: string, src: { owner: string; repo: string } | null | undefined) => !!src && r.toLowerCase() === `${src.owner}/${src.repo}`.toLowerCase();
+
 // The deny rules in the agents user's Claude Code settings: no shell reaching a box's agent account
-// by ssh behind taskbox's back, for each paired box's account.
+// or a workspace account by ssh behind taskbox's back, for each paired box's account. Advisory only.
 export function denyRules(accounts: string[]): string[] {
   const out: string[] = [];
   for (const a of [...new Set(accounts)].sort()) {
     if (!ACCOUNT.test(a)) continue;
     out.push(`Bash(*ssh *${a}@*)`, `Bash(*ssh *-l ${a}*)`, `Bash(*ssh *-l${a}*)`, `Bash(*ssh *User=${a}*)`, `Bash(*tailscale ssh *${a}@*)`);
   }
+  // The workspace accounts too, by the default pool's name with any number after it.
+  const w = DEFAULT_POOL;
+  out.push(`Bash(*ssh *${w}*@*)`, `Bash(*ssh *-l ${w}*)`, `Bash(*ssh *-l${w}*)`, `Bash(*ssh *User=${w}*)`, `Bash(*tailscale ssh *${w}*@*)`);
   return out;
 }
 const accounts = (d: SetupDeps) => {
@@ -217,41 +224,42 @@ export const STEPS: Step[] = [
     },
   },
   {
-    name: "The agents' GitHub account in your repos",
+    name: "The agents' GitHub account in your settings repo",
     signIn: true,
+    // Read on the org's settings repo, and nothing else: never push, and never the taskbox repo.
     async done(d) {
       const c = readConfig(d.home);
       const a = c.ok ? c.config.agents : undefined;
       const gh = first(d, GH);
-      if (!a || !gh) return false;
-      for (const r of a.repos) if (!(await ok(d, ownerGh(d, gh, ["api", `repos/${r}/collaborators/${a.login}`])))) return false;
-      return true;
+      if (!a || !gh || a.repos.length !== 1 || (c.ok && isTaskboxRepo(a.repos[0]!, c.config.source))) return false;
+      const role = (await out(d, ownerGh(d, gh, ["api", `repos/${a.repos[0]}/collaborators/${a.login}/permission`, "--jq", ".role_name"])))?.trim();
+      return role === "read";
     },
-    // Your own gh session invites the agents' machine account to each repo, with push (Contents and
-    // Pull requests write): it can open PRs, never merge where a ruleset stands. The account accepts
-    // each invitation itself, in a private window, so your own browser session stays as it is.
+    // Your own gh session invites the agents' machine account to the settings repo with read, as the
+    // spec needs: the agents read the org's settings, and open their work as PRs from their own forks.
+    // An earlier, wider invitation to that repo is brought down to read. The account accepts the
+    // invitation itself, in a private window, so your own browser session stays as it is.
     async run(d) {
       const gh = first(d, GH);
       if (!gh) return "gh isn't installed: brew install gh";
       const c = readConfig(d.home);
       if (!c.ok) return "the controller's config can't be read";
       let a = c.config.agents;
-      if (!a) {
-        const login = (await d.ask?.("The agents' GitHub machine account (a GitHub account you keep for them, never your own): "))?.trim() ?? "";
-        const repos = ((await d.ask?.("The repos they work in, as org/repo, separated by spaces: ")) ?? "").trim().split(/\s+/).filter(Boolean);
-        if (!GH_LOGIN.test(login) || !repos.length || repos.some((r) => !REPO.test(r))) return "that isn't a GitHub login and a list of org/repo";
+      if (!a || a.repos.length !== 1 || isTaskboxRepo(a.repos[0]!, c.config.source)) {
+        const login = (a?.login ?? (await d.ask?.("The agents' GitHub machine account (a GitHub account you keep for them, never your own): "))?.trim()) ?? "";
+        const repo = ((await d.ask?.("Your org's taskbox settings repo, as org/repo (the agents get read on it, nothing more): ")) ?? "").trim();
+        if (!GH_LOGIN.test(login) || !REPO.test(repo)) return "that isn't a GitHub login and one org/repo";
+        if (isTaskboxRepo(repo, c.config.source)) return "that is the taskbox repo itself; the agents get no access to it";
         const me = (await out(d, ownerGh(d, gh, ["api", "user", "--jq", ".login"])))?.trim();
         if (me && me.toLowerCase() === login.toLowerCase()) return "that is your own GitHub account; the agents need one of their own";
-        a = { login, repos };
+        a = { login, repos: [repo] };
         writeConfig(d.home, { ...c.config, agents: a });
       }
-      for (const r of a.repos) {
-        if (await ok(d, ownerGh(d, gh, ["api", `repos/${r}/collaborators/${a.login}`]))) continue;
-        const inv = await d.run(ownerGh(d, gh, ["api", "--method", "PUT", `repos/${r}/collaborators/${a.login}`, "-f", "permission=push"]), { limitMs: 30_000, maxBytes: 64_000, env: { HOME: d.userHome } });
-        if (inv.code !== 0) return `GitHub didn't take the invitation to ${r}`;
-        d.say(`Invited ${a.login} to ${r}. In a private window signed in as ${a.login}, accept it: https://github.com/${r}/invitations`);
-      }
-      await d.ask?.("Press Return once each invitation is accepted: ");
+      const r = a.repos[0]!;
+      const inv = await d.run(ownerGh(d, gh, ["api", "--method", "PUT", `repos/${r}/collaborators/${a.login}`, "-f", "permission=pull"]), { limitMs: 30_000, maxBytes: 64_000, env: { HOME: d.userHome } });
+      if (inv.code !== 0) return `GitHub didn't take the invitation to ${r}`;
+      d.say(`Invited ${a.login} to ${r}, read only. In a private window signed in as ${a.login}, accept it if GitHub asks: https://github.com/${r}/invitations`);
+      await d.ask?.("Press Return once the invitation is accepted: ");
       return undefined;
     },
   },

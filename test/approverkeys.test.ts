@@ -126,6 +126,21 @@ describe("key rotate approver: signed by the old key, held for confirm at the bo
     expect(b.eventsText()).toContain("key.pinned");
   });
 
+  test("a second, different rotation while one waits is busy; a signed withdraw of the wait ends its op", async () => {
+    const { b, old } = await pinned();
+    const r = await raiseApproverRotate(b.hc, b64(keyPair().key), actorOf(old));
+    expect(await raiseApproverRotate(b.hc, b64(keyPair().key), actorOf(old))).toMatchObject({ ok: false, code: "busy", op: r.op });
+    const p = readPending(b.state.pending, me);
+    expect(p.kind === "ok" && p.value.items.length).toBe(1);
+    const { handlers } = await import("../src/handlers/settings.ts");
+    const withdraw = handlers.signed.find((h) => h.action === "withdraw")!;
+    const id = p.kind === "ok" ? p.value.items[0]!.id : "";
+    expect(await withdraw.apply(b.hc, { id: "rq_x", statement: { args: { words: [id] } } as never, by: Verified.signer(fingerprint(old)) })).toMatchObject({ ok: true });
+    expect(readOp({ dir: b.state.ops, owner: me }, r.op!)).toMatchObject({ kind: "ok", value: { state: "cancelled", why: "withdrawn by an approver" } });
+    // The next rotation isn't busy.
+    expect(await raiseApproverRotate(b.hc, b64(keyPair().key), actorOf(old))).toMatchObject({ code: "needs-confirm" });
+  });
+
   test("confirm's no keeps the old key; a key not pinned can't ask; a cleared key is refused", async () => {
     const { b, old } = await pinned();
     const nu = keyPair().key;
@@ -251,6 +266,12 @@ describe("the controller's rotation: one new key, the old key signing it in on e
     }
     expect(readPending(boxes[1]!.state.pending, me).kind).toBe("missing");
     expect(said.join("\n")).toContain(`At box-a, as your admin user: taskbox confirm, and check it shows ${fingerprint(nu.key)}`);
+    // box-a confirms; run again, box-a is signed nothing, and box-c, still waiting, attaches.
+    boxes[0]!.answers.push("yes");
+    expect(await confirm(boxes[0]!.at)).toBe(0);
+    const again = await rotateApprover({ boxes: [links[0]!, links[2]!], signer, say: (l) => said.push(l), now: () => sys.now(), sleep: (ms) => sys.sleep(ms), makeNew: async () => ({ key: nu.key }) });
+    expect(again.boxes.map((x) => [x.box, x.state])).toEqual([["box-a", "pinned"], ["box-c", "waiting"]]);
+    expect(touches).toBe(3);
   });
 
   test("the new controller offers its key and says what to do at the box; a paired one approves it", async () => {
@@ -265,5 +286,19 @@ describe("the controller's rotation: one new key, the old key signing it in on e
     // With no offer to read, the paired controller signs nothing.
     expect(await approveSecond({ ...d, box: link })).toBe(false);
     expect(said.at(-1)).toMatch(/No controller offered a key/);
+  });
+});
+
+describe("the controller's key commands", () => {
+  test("key rotate and key add run on the controller, and take no key material typed in", async () => {
+    const { isKeyFlow, keyMain } = await import("../src/controller/keyflows.ts");
+    expect(isKeyFlow(["key", "rotate", "runner"])).toBe(true);
+    expect(isKeyFlow(["key", "list"])).toBe(false);
+    const out: string[] = [];
+    const d = {} as never;
+    expect(await keyMain(d, ["key", "rotate", "tailscale", "--seal", "x"], { out: (l) => out.push(l) })).toBe(2);
+    expect(await keyMain(d, ["key", "rotate", "release"], { out: (l) => out.push(l) })).toBe(2);
+    expect(await keyMain(d, ["key", "add", "runner"], { out: (l) => out.push(l) })).toBe(2);
+    expect(out[0]).toMatch(/this controller makes what the box needs/);
   });
 });

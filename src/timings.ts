@@ -3,7 +3,7 @@
 // a job waited, how long it ran and how long the cleanup took. Then each timing setting beside what
 // the numbers suggest. It suggests; the owner, or an agent's PR, changes taskbox.json. The box never
 // changes its own settings, so what it does stays predictable and in git.
-import { type Config, DEFAULT_TIMINGS, type Kind, KIND_WORD, kindsOf, timingsOf, type Timings, vmsAtMostOf } from "./config.ts";
+import { type Config, type Kind, KIND_WORD, kindsOf, timingsOf, type Timings, vmsAtMostOf } from "./config.ts";
 import type { JobRecord } from "./jobs.ts";
 import { labelUsage, labelUsageLines } from "./usage.ts";
 import { LAST_CLASS } from "./classes.ts";
@@ -175,7 +175,7 @@ const line = (name: string, x?: Spread) => `  ${name.padEnd(9)}${x ? `median ${f
 
 export function timingsScreen(cfg: Config, jobs: JobRecord[], gaveWay: Partial<Record<Kind, number>> = {}, accept?: Criterion[], rate: RateLook[] = []): string[] {
   const all = kindsOf(cfg).map((k) => kindTimings(jobs, k));
-  const out = [`taskbox job timings: each kind's last ${TIMINGS_JOBS} jobs with phases. Jobs from before v2.4.0 have none.`, ""];
+  const out = [`taskbox job timings: each kind's last ${TIMINGS_JOBS} jobs with phases.`, ""];
   for (const k of all) {
     out.push(`${KIND_WORD[k.kind]}: ${k.jobs} jobs measured${gaveWay[k.kind] ? `, ${gaveWay[k.kind]} VMs gave way since the loop started` : ""}`);
     out.push(line("boot", k.boot), line("wait", k.wait), line("ready", k.ready), line("run", k.run), line("cleanup", k.cleanup), "");
@@ -229,7 +229,6 @@ const queuedAt = (j: JobRecord) => {
 };
 
 export function acceptance(cfg: Config, jobs: JobRecord[], gaveWayLog: { at: number }[], now: number, withSource: boolean): Criterion[] {
-  const t = timingsOf(cfg);
   const recent = jobs.filter((j) => now - j.endedAt <= ACCEPT_WINDOW_MS);
   const ran = recent.filter((j) => j.jobAt !== undefined);
   const out: Criterion[] = [];
@@ -288,5 +287,5 @@ export function acceptance(cfg: Config, jobs: JobRecord[], gaveWayLog: { at: num
 }
 
 export function acceptanceLines(c: Criterion[]): string[] {
-  return ["Acceptance (v2.4.0), the last 48 h:", ...c.map((x) => `  ${x.status.padEnd(13)}${x.name}: ${x.value}, ${x.id === "linux-burst" ? "at least" : "at most"} ${x.limit}`)];
+  return ["Acceptance, the last 48 h:", ...c.map((x) => `  ${x.status.padEnd(13)}${x.name}: ${x.value}, ${x.id === "linux-burst" ? "at least" : "at most"} ${x.limit}`)];
 }

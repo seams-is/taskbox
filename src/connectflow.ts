@@ -16,9 +16,8 @@ import { readRequest, readSpoolFile } from "./core/spool.ts";
 import type { Json } from "./core/statement.ts";
 import { CLOCK_LIMIT_S, clockOffsetS } from "./ghfail.ts";
 import { AppClient, apiCall, bodyOf, revokeToken, runnerGroupsOf, tokenCall, tokenRepos } from "./github.ts";
-import { dropKey, keyFileName, listKeys, placePending, placeSourceKey, promoteKey, proveActionsKey, readAdoptedKey, readHeldKey } from "./keys.ts";
+import { dropKey, keyFileName, listKeys, placePending, promoteKey, readAdoptedKey, readHeldKey } from "./keys.ts";
 import type { Log } from "./log.ts";
-import { readActionsKey } from "./queue.ts";
 import { runnerAppId, settingsRepoOf } from "./settings/connect.ts";
 import { servedRepos, sourceKeyPath, sourceOf } from "./settings/scheduling.ts";
 import type { Sys } from "./sys.ts";
@@ -490,9 +489,11 @@ async function loadOff(d: FlowDeps, w: Wants): Promise<number> {
 type NoCode = Omit<FlowDeps, "code" | "phase" | "since" | "box" | "open">;
 
 // taskbox disconnect github: the source App uninstalled with its own key, none kept, its key gone.
-export async function disconnectGithub(d: NoCode): Promise<number> {
+// yes: the typed yes, asked once there is an App to disconnect.
+export async function disconnectGithub(d: NoCode, yes: (app: string) => Promise<boolean> = async () => true): Promise<number> {
   const kept = keptApp(d.cfg, "source");
   if (!kept) return (d.say("This box has no job source App. Nothing changed."), 0);
+  if (!(await yes(kept.slug ?? `App ${kept.appId}`))) return (d.say("Not disconnected. Nothing changed."), 1);
   const pem = heldKey(d, "source", kept.appId);
   const app = pem ? clientFor(d, kept.appId, pem) : undefined;
   const slug = kept.slug ?? (app ? await slugOf(app) : undefined);
@@ -683,48 +684,16 @@ export function connectStatus(d: Pick<FlowDeps, "cfg" | "keys" | "pendingFile" |
   return { apps, unfinished: !!(f.apps.runner || f.apps.source) };
 }
 
-// ---- v2's update path ----
-// v2's install code keeps a release's source in box.json before the new release, which may drop it, is
-// used. It reads the key where v2 placed it.
-export interface ReleaseSourceDeps {
-  sys: Sys;
-  log: Log;
-  paths: Paths;
-  cfg: Config;
-  chown(path: string, uid: number, gid: number): void;
-  rootUid?: number;
-  serviceUid: number;
-}
-
-export async function adoptSource(d: ReleaseSourceDeps, cfg: Config = d.cfg): Promise<{ slug: string } | { why: string }> {
-  const box = readBoxFile(d.paths.boxSettings, d.rootUid ?? 0);
-  if (box.settings && "sources" in box.settings) return { why: "this box keeps its own source already" };
-  const src = sourceOf(d.cfg);
-  if (src.type !== "github-actions") return { why: "the release names no job source App" };
-  const pem = readActionsKey(d.paths.actionsKeyDir, sourceKeyPath(d.paths, src.appId), d.serviceUid, d.rootUid ?? 0);
-  if (!pem) return { why: "the job source App's key isn't on this box" };
-  const proof = await proveActionsKey(d, cfg, pem, src.appId);
-  if (proof) return { why: proof.why };
-  const slug = (await slugOf(clientFor(d, src.appId, pem))) ?? `app-${src.appId}`;
-  // Also under its App's ID; the old file stays for an undo to a release that reads only it.
-  if (sourceKeyPath(d.paths, src.appId) !== join(d.paths.actionsKeyDir, `actions-${src.appId}.pem`)) {
-    const why = await placeSourceKey(d, pem, src.appId, d.serviceUid);
-    if (why) return { why };
-  }
-  const s = sourceOf(cfg);
-  const load = s.type === "github-actions" ? s.repos.filter((r): r is LoadRepo => typeof r === "object") : [];
-  writeOwnedText(d.paths.boxSettings, `${JSON.stringify({ sources: [{ type: "github-actions", appId: src.appId, app: slug, repos: [cfg.jobsFrom, ...load] }] }, null, 2)}\n`, { mode: 0o644, owner: d.rootUid ?? 0, chown: d.chown });
-  return { slug };
-}
-
 // ---- The op ----
 // At the box the admin's command runs the flow and writes the op's first record; from then on it holds
 // the lease and sends reports, and the guard's follow is the record's only writer. from: "box" or
 // "controller", which says where the code comes from.
-export function openConnectOp(o: { ops: OpFolder; now: number; boot: string; actor: string; params: Record<string, Json> }): { op: Op; send: (r: Report) => void } | { why: string } {
-  const b = begin(listOps(o.ops).ops, opType(CONNECT_OP.type), { subject: "box", params: o.params, actor: o.actor, deadline: o.now + CONNECT_MS }, o.now);
+// limitMs: --timeout, at most CONNECT_MS, the manifest code's life on GitHub.
+export function openConnectOp(o: { ops: OpFolder; now: number; boot: string; actor: string; limitMs?: number; params: Record<string, Json> }): { op: Op; send: (r: Report) => void } | { why: string } {
+  const limitMs = Math.min(o.limitMs ?? CONNECT_MS, CONNECT_MS);
+  const b = begin(listOps(o.ops).ops, opType(CONNECT_OP.type), { subject: "box", params: o.params, actor: o.actor, deadline: o.now + limitMs }, o.now);
   if (b.kind !== "start") return { why: b.kind === "busy" ? b.why : `A connect (${b.op.id}) is running already. taskbox op show ${b.op.id} -w follows it.` };
-  const op = { ...b.op, child: { label: jobLabel(b.op.id), boot: o.boot, spawnedAt: o.now, applied: 0, events: ["connect."], limitMs: CONNECT_MS } };
+  const op = { ...b.op, child: { label: jobLabel(b.op.id), boot: o.boot, spawnedAt: o.now, applied: 0, events: ["connect."], limitMs } };
   writeOp(o.ops, op);
   const r = reporter({ op: op.id, reports: reportsPath(o.ops, op.id), progress: progressPath(o.ops, op.id), lease: leasePath(o.ops, op.id), exit: (c) => process.exit(c) });
   return { op, send: (x) => r.send(x) };

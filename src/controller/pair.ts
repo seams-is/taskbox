@@ -16,6 +16,7 @@ export interface AddAsk {
   agent?: string; // the box's agent account; taskbox-agent when left out
   yes?: boolean; // -y: no typed yes
   jobsRepo?: string; // --jobs-repo: where the notifier keeps this box's hold lease
+  loadRepo?: string; // --load-repo: the load test's repo, the only one load start writes to
 }
 
 // What box add does after pairing, as box commands the controller runs. Each is in the registry already,
@@ -95,7 +96,7 @@ export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fres
     const bad = helloStop(peer.name, h, null);
     if (bad) return none(bad.stop, bad.next);
     // Re-run on a box paired the same way: nothing to pair, and the later phases run again.
-    if (before && before.hostKey === peer.hostKeys[0] && before.installId === h.installId && before.agent === agent && (a.jobsRepo === undefined || a.jobsRepo === before.jobsRepo)) {
+    if (before && before.hostKey === peer.hostKeys[0] && before.installId === h.installId && before.agent === agent && (a.jobsRepo === undefined || a.jobsRepo === before.jobsRepo) && (a.loadRepo === undefined || a.loadRepo === before.loadRepo)) {
       d.out(`${peer.name} is paired already, as ${agent}.`);
       return { box: before, fresh: false };
     }
@@ -113,7 +114,8 @@ export async function pair(d: Deps, a: AddAsk = {}): Promise<{ box: Paired; fres
       if (yes !== "yes") return none("Not paired: you didn't type yes.", "Nothing to do.");
     }
     const jobsRepo = a.jobsRepo ?? before?.jobsRepo;
-    const entry: Paired = { name: peer.name, node: peer.node, installId: h.installId!, hostKey: peer.hostKeys[0]!, agent, pairedAt: d.now(), ...(jobsRepo ? { jobsRepo } : {}) };
+    const loadRepo = a.loadRepo ?? before?.loadRepo;
+    const entry: Paired = { name: peer.name, node: peer.node, installId: h.installId!, hostKey: peer.hostKeys[0]!, agent, pairedAt: d.now(), ...(jobsRepo ? { jobsRepo } : {}), ...(loadRepo ? { loadRepo } : {}) };
     // The config is read again here: another box add or box remove may have changed it during the prompts.
     const now = readConfig(d.home);
     if (!now.ok) return none("taskbox's config changed during pairing and can't be read.", "Type taskbox self check.");

@@ -21,7 +21,7 @@ import { readStateFile } from "../src/workspace/read.ts";
 import { FakeSys } from "./fake.ts";
 import { CFG, tempRoot, testBox } from "./helpers.ts";
 import { keyPair, sshsig } from "./sshsig.ts";
-import { HOUR, INSTALL_ID, T, verifyDeps } from "./ws-helpers.ts";
+import { claimKeys, HOUR, INSTALL_ID, T, verifyDeps } from "./ws-helpers.ts";
 
 const me = process.getuid!();
 const owner = keyPair();
@@ -53,7 +53,14 @@ async function box(o: { pin?: boolean; pool?: boolean } = {}) {
     return r.state;
   };
   const events = () => readEvents([{ dir: s.events, owner: me, writer: "guard" }]).events;
-  const send = async (kind: string, body: Record<string, unknown>) => {
+  // The requesting side's claim keys: a request carries its key and a proof over the claims nonce,
+  // and the agent's steps a proof by it, unless the test gives its own.
+  const claims = claimKeys();
+  const send = async (kind: string, body0: Record<string, unknown>) => {
+    let body = body0;
+    if (kind === "workspace-request") body = await claims.request(async () => ((await nonceOf(d, "claims")) as { ok: true; nonce: string }).nonce, body0, sys.clock);
+    const action = ({ "workspace-progress": "progress", "workspace-end": "end", "workspace-connect": "connect" } as const)[kind];
+    if (action && body.proof === undefined && typeof body.name === "string" && typeof body.agent === "string") body = { ...body, proof: claims.proof(action, body.name, sys.clock, claims.keyOf(body.agent)) };
     const r = await ask(d, kind, body);
     if ("no" in r || !r.outcome) throw new Error(`no outcome: ${JSON.stringify(r)}`);
     return r.outcome;
@@ -66,7 +73,7 @@ async function box(o: { pin?: boolean; pool?: boolean } = {}) {
     const word = signedWord(st, sshsig(o.key ?? owner, new TextEncoder().encode(statementText(st)), { namespace: CONTROL_NS }));
     return { word, nonce: n, outcome: await send("signed", { word, action, args }) };
   };
-  return { root, p, sys, d, state, events, send, signed, logs, handlers };
+  return { root, p, sys, d, state, events, send, signed, logs, handlers, claims };
 }
 
 describe("the handlers", () => {
@@ -74,7 +81,7 @@ describe("the handlers", () => {
     const h = handlersFor({ state: "/x", rootUid: 0 });
     expect(handlersProblem(h)).toBeUndefined();
     expect(h.unsigned.map((u) => u.kind)).toEqual(["workspace-request", "workspace-progress", "workspace-end", "workspace-deny", "workspace-connect"]);
-    expect(h.signed.map((s) => s.action)).toEqual(["workspace.approve", "workspace.pause", "workspace.resume", "workspace.end", "workspace.jump", "workspace.rush", "workspace.clear", "workspace.rule.add", "workspace.rule.delete"]);
+    expect(h.signed.map((s) => s.action)).toEqual(["workspace.approve", "workspace.pause", "workspace.resume", "workspace.end", "workspace.jump", "workspace.rush", "workspace.request", "workspace.clear", "workspace.rule.add", "workspace.rule.delete"]);
   });
 });
 

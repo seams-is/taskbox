@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { type BoxLink, rotateAppKey, rotateTailscale } from "../src/controller/keys.ts";
 import { parseStatement, splitSigned } from "../src/core/statement.ts";
-import { seal, sealedLine } from "../src/tsrotate.ts";
+import { seal } from "../src/tsrotate.ts";
 import { FakeSys } from "./fake.ts";
 
 const OP = "op_01JD8Q4ZZZZZZZZZZZZZZZZZZZ";
@@ -13,15 +13,18 @@ const deps = (said: string[]) => ({ signer: async () => ({ ok: true as const, si
 const argsOfLine = (words: string[]) => parseStatement(splitSigned(words[words.indexOf("--signed") + 1]!)!.statement)!.args;
 
 describe("key rotate tailscale from the controller", () => {
-  test("the box's sealed link opens with this request's key alone, and the browser gets it", async () => {
+  test("the box answers with the op at once; its sealed link, through op show, opens with this request's key alone, and the browser gets it", async () => {
     let signedArgs: Record<string, unknown> = {};
+    let polls = 0;
     const box: BoxLink = {
       name: "box-a",
       installId: "a".repeat(32),
       async run(words) {
         if (words[0] === "nonce") return { exit: 0, result: { nonce: "0".repeat(32) } };
+        // The box drains first: the link comes at the second look.
+        if (words[0] === "op") return { exit: 0, result: { op: { id: OP, state: "running", phase: "drafting" }, ...(++polls > 1 ? { sealed: seal(signedArgs.seal as string, OP, "https://login.tailscale.com/a/abcdef123") } : {}) } };
         signedArgs = argsOfLine(words);
-        return { exit: 0, result: { op: OP, said: sealedLine(seal(signedArgs.seal as string, OP, "https://login.tailscale.com/a/abcdef123")) } };
+        return { exit: 0, result: { op: OP, said: "The Tailscale rotation started." } };
       },
     };
     const opened: string[] = [];

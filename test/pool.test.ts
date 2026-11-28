@@ -9,7 +9,7 @@ import { POOL_USER } from "../src/access.ts";
 import { type AccountDeps, denyIn, groupsProblem, listsUser, placePool, planPool, poolProblem, undenyIn } from "../src/accounts.ts";
 import { type PoolRecord, readPin, readPoolRecord, writePin, writePoolRecord } from "../src/pin.ts";
 import { GATE_SHELL, paths } from "../src/config.ts";
-import { approverReset, type OpsDeps, remove } from "../src/ops.ts";
+import { type OpsDeps, remove } from "../src/ops.ts";
 import { approverRow, type CheckContext, poolRow } from "../src/checks.ts";
 import { fingerprint } from "../src/approver.ts";
 import { FakeSys } from "./fake.ts";
@@ -409,7 +409,7 @@ describe("remove and the pool account", () => {
 
 const keyOf = (fill: number) => `sk-ecdsa-sha2-nistp256@openssh.com ${Buffer.concat([Buffer.from([0, 0, 0, 34]), Buffer.from("sk-ecdsa-sha2-nistp256@openssh.com"), Buffer.from([0, 0, 0, 8]), Buffer.from("nistp256"), Buffer.from([0, 0, 0, 65, 4]), Buffer.alloc(64, fill), Buffer.from([0, 0, 0, 4]), Buffer.from("ssh:")]).toString("base64")}`;
 
-describe("taskbox key reset approver", () => {
+describe("the approver pin", () => {
   const KEY = keyOf(3);
   function resetSetup(answers: string[], pin?: string | { key: string | null; gen: number; cleared: string[] }) {
     const root = tempRoot();
@@ -424,37 +424,6 @@ describe("taskbox key reset approver", () => {
     const d: OpsDeps = { sys, paths: p, uid: 0, serviceUid: 502, rootUid: ME, say: (l) => said.push(l), ask: async () => answers.shift() ?? "no" };
     return { p, d, said };
   }
-  test("at the box, after a typed yes, it clears the key, keeps its generation, and remembers it as cleared", async () => {
-    const { p, d, said } = resetSetup(["yes"], { key: KEY, gen: 4, cleared: [] });
-    expect(await approverReset(d, { overSsh: false })).toBe(0);
-    expect(readPin(p.approverPin, ME)).toEqual({ state: "cleared", gen: 4, cleared: [fingerprint(KEY)] });
-    expect(said[0]).toBe(`This box trusts the approver key ${fingerprint(KEY)}.`);
-    expect(said.join("\n")).toContain("Cleared the approver key. Workspaces are off.");
-  });
-  test("anything but yes keeps it", async () => {
-    const { p, d } = resetSetup(["y"], { key: KEY, gen: 1, cleared: [] });
-    expect(await approverReset(d, { overSsh: false })).toBe(1);
-    expect(readPin(p.approverPin, ME)).toEqual({ state: "pinned", key: KEY, gen: 1, cleared: [] });
-  });
-  test("over SSH it is refused, before anything is read", async () => {
-    const { p, d, said } = resetSetup(["yes"], { key: KEY, gen: 1, cleared: [] });
-    expect(await approverReset(d, { overSsh: true })).toBe(1);
-    expect(readPin(p.approverPin, ME).state).toBe("pinned");
-    expect(said[0]).toMatch(/runs at the box only/);
-  });
-  test("a pin that can't be read is cleared too, with a generation past any it held", async () => {
-    const { p, d, said } = resetSetup(["yes"], "not json");
-    expect(await approverReset(d, { overSsh: false })).toBe(0);
-    expect(said[0]).toBe("This box's pinned approver key isn't root's plain file.");
-    expect(readPin(p.approverPin, ME)).toEqual({ state: "cleared", gen: Math.floor(d.sys.now() / 1000), cleared: [] });
-  });
-  test("no pin, or one cleared already: nothing to clear", async () => {
-    for (const pin of [undefined, { key: null, gen: 2, cleared: [fingerprint(KEY)] }]) {
-      const { d, said } = resetSetup([], pin);
-      expect(await approverReset(d, { overSsh: false })).toBe(0);
-      expect(said.join("\n")).toContain("No approver key is pinned on this box. Nothing changed.");
-    }
-  });
   test("readPin: only root's plain file, closed to others' writes; a second link, which anyone may make, changes nothing", () => {
     const { p } = resetSetup([], { key: KEY, gen: 1, cleared: [] });
     expect(readPin(p.approverPin, ME).state).toBe("pinned");

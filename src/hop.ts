@@ -55,7 +55,7 @@ import type { Statement } from "./release.ts";
 
 // Why the statement can't be installed over the release in place, or undefined.
 export function statementProblem(s: Statement, tag: string, installed: string | undefined): string | undefined {
-  if (s.tag !== tag) return `the signed statement is for ${s.tag}, not ${tag}`;
+  if (s.tag !== tag) return `the signed statement is for ${s.tag}, and this is ${tag}`;
   if (!installed || !RELEASE_TAG.test(installed)) return "the release in place has no version taskbox reads, so it can't be compared";
   if (compareTags(s.tag, installed) <= 0) return `${s.tag} isn't newer than ${installed}, the installed release`;
   const major = (t: string) => Number(RELEASE_TAG.exec(t)![1]);

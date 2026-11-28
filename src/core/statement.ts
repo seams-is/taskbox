@@ -21,8 +21,6 @@ import { badKey, isObj, safeParse } from "./rootfile.ts";
 import { NONCE, SUBJECT } from "./nonces.ts";
 
 export const CONTROL_NS = "taskbox-control";
-// taskbox has exactly two namespaces; release.ts verifies the other.
-export const RELEASE_NS = "taskbox-release";
 export const SIGNED_FOR_MS = 5 * 60_000;
 export const STATEMENT_MAX = 2048;
 export const SIGNATURE_MAX = 2000;

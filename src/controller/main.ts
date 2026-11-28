@@ -7,9 +7,10 @@ import { type CommandSpec, EXIT, type GlobalFlag, parse, usage } from "../comman
 import { realClock } from "../clock.ts";
 import { envelope } from "../envelope.ts";
 import { commandList, registry, shellCommands, firstWords } from "../registry.ts";
-import { verifyRelease } from "../release.ts";
+import { verifyRelease, verifySigned } from "../release.ts";
 import { check } from "./check.ts";
 import { grouped, makeKey } from "./signer.ts";
+import { isKeyFlow, keyMain, trustingPhase } from "./keyflows.ts";
 import { ghAt, notifyOnce, postArgv } from "./notify.ts";
 import { ownerScreen } from "./screen.ts";
 import { agentShellArgv, fix, setup } from "./setup.ts";
@@ -18,6 +19,10 @@ import { asciiJson, forward } from "./forward.ts";
 import { agentProblem, findBox, GITHUB_NAME, home, NAME, ownVersion, readConfig, REPO } from "./home.ts";
 import { readLines, serve } from "./mcp.ts";
 import { AFTER, boxRemove, boxUse, pair } from "./pair.ts";
+import { boxInstall, HOST } from "./boxinstall.ts";
+import { connectScreen } from "./screenshare.ts";
+import { templateApply } from "./templates.ts";
+import { selfTrials } from "./trials.ts";
 import { configOrStop, connectBox, type Deps, isStop, tailnetOrStop } from "./reach.ts";
 import { ENV, realRun } from "./run.ts";
 import { footer, header, type Screen } from "./screens.ts";
@@ -39,15 +44,18 @@ const spec = (path: string[], summary: string, o: Partial<CommandSpec> = {}): Co
 
 // The controller's own commands. The box's are in src/cmd/, and run here with --box.
 export const CONTROLLER: CommandSpec[] = [
-  spec(["box", "add"], "Pairs a box tagged tag:taskbox in this controller's Tailscale, then reads what it still needs.", { args: { name: "NAME", min: 0, max: 1, check: NAME_WORD.check }, options: [{ name: "--agent", value: "ACCOUNT", check: (v) => agentProblem(v) === undefined }, { name: "--jobs-repo", value: "REPO", check: (v) => REPO.test(v) }], flags: ["yes"] }),
+  spec(["box", "add"], "Pairs a box tagged tag:taskbox in this controller's Tailscale, then reads what it still needs.", { args: { name: "NAME", min: 0, max: 1, check: NAME_WORD.check }, options: [{ name: "--agent", value: "ACCOUNT", check: (v) => agentProblem(v) === undefined }, { name: "--jobs-repo", value: "REPO", check: (v) => REPO.test(v) }, { name: "--load-repo", value: "REPO", check: (v) => REPO.test(v) }], flags: ["yes"] }),
   spec(["box", "list"], "The paired boxes: name, Tailscale ID, install ID, agent account, release, reachable.", { flags: ["json"] }),
   spec(["box", "show"], "One pairing, and its last status.", { args: NAME_WORD, flags: ["json"] }),
   spec(["box", "use"], "Sets the box a command goes to when it names none.", { args: NAME_WORD }),
   spec(["box", "remove"], "Forgets a pairing, after its name is typed. Nothing changes on the box.", { args: NAME_WORD }),
+  spec(["box", "install"], "Sets up a fresh Mac over LAN SSH, in this terminal: ADMIN@HOST. Run it again to finish an interrupted one.", { args: { name: "ADMIN@HOST", min: 1, max: 1, check: (v) => HOST.test(v) }, options: [{ name: "--settings", value: "REPO", check: (v) => REPO.test(v) }], flags: ["json"] }),
+  spec(["template", "apply"], "Opens one pull request in the jobs repo, through your GitHub session, that brings the box's workflows up to date.", { flags: ["json"] }),
   spec(["self", "update"], "Updates this controller's taskbox from signed releases on its channel.", { options: [{ name: "--check" }, { name: "--to", value: "VERSION" }, { name: "--auto" }], flags: ["json"] }),
   spec(["self", "rollback"], "Back to the release kept beside the one in use."),
   spec(["self", "check"], "This controller's own checks, Tailscale first, and each pairing. --fix puts right what it can, after one yes.", { flags: ["json"], options: [{ name: "--fix" }] }),
   spec(["self", "events"], "This controller's own event log: pairings, defaults, self updates.", { flags: ["since", "json"] }),
+  spec(["self", "trials"], "The trials before rc.1, one after another, each recording its result. Re-run, it goes on from the first not passed.", { flags: ["json"] }),
   spec(["sign"], "Signs a draft release with this Mac's release key and publishes it, through your GitHub session. --fingerprint shows the pinned keys; --revoke a release's signer change.", { args: { name: "VERSION", min: 0, max: 1, check: (v) => /^v?\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.[1-9]\d{0,3})?$/.test(v) }, options: [{ name: "--fingerprint" }, { name: "--revoke" }, { name: "--key", value: "FILE" }, { name: "--repo", value: "OWNER/NAME", check: (v) => /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/.test(v) }] }),
   spec(["self", "setup"], "Sets up the agents user, the projects folder, their sign-ins and notifications. Re-run, it resumes."),
   spec(["agent", "shell"], "A terminal as the agents user, in the projects folder. With -- COMMAND, that command."),
@@ -105,7 +113,7 @@ function boxShow(d: Deps, sel: string): Screen & { result?: Record<string, unkno
 
 // box add: pairing, then what the box still needs, as the box's own commands.
 async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknown>, yes: boolean, io: { out: (l: string) => void; draw: (l: string[]) => void }): Promise<number> {
-  const p = await pair(d, { name: args[0], agent: typeof opts.agent === "string" ? opts.agent : undefined, yes, ...(typeof opts["jobs-repo"] === "string" ? { jobsRepo: opts["jobs-repo"] } : {}) });
+  const p = await pair(d, { name: args[0], agent: typeof opts.agent === "string" ? opts.agent : undefined, yes, ...(typeof opts["jobs-repo"] === "string" ? { jobsRepo: opts["jobs-repo"] } : {}), ...(typeof opts["load-repo"] === "string" ? { loadRepo: opts["load-repo"] } : {}) });
   if (!("box" in p)) {
     for (const l of p.lines) io.out(l);
     return p.code;
@@ -121,17 +129,13 @@ async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknow
     // controller shows the whole fingerprint the same way, and waits while the two are compared.
     io.out(`Approver key: ${grouped(k.fingerprint)}`);
     io.out(`trusting: ${p.box.name} takes signed commands once an admin pins this key at the box's own screen, after checking it shows every group above.`);
-    if (d.tty) await d.ask("Press Return once you have compared the fingerprint at the box, or now to do it later: ");
+    // The key is offered to the box, which shows it at key trust approver, or, pinning another
+    // controller's key, waits for that controller's key add approver and confirm at its screen.
+    await trustingPhase(d, p.box.name, k.key, io.out);
   }
   let exit = 0;
   let ran = 0;
   for (const step of AFTER) {
-    // A later release adds these commands; until the box runs them, the phase is skipped and says so.
-    const known = parse(registry(), step.argv);
-    if (!known.ok || !known.spec.shell) {
-      io.out(`${step.phase}: skipped: this release has no taskbox ${step.argv.join(" ")}.`);
-      continue;
-    }
     io.out(`${step.phase}: taskbox ${step.argv.join(" ")} --box ${p.box.name}`);
     ran++;
     if ((await forward(d, [...step.argv, "--box", p.box.name], io)) !== 0) exit = 1;
@@ -143,6 +147,7 @@ async function boxAdd(d: UpdateDeps, args: string[], opts: Record<string, unknow
 export interface Io {
   out: (line: string) => void;
   draw: (lines: string[]) => void;
+  err?: (line: string) => void; // human text in --json mode: stderr
   rounds?: number;
   keys?: AsyncIterator<string>; // key presses, at a terminal: the owner's screen reads them
 }
@@ -152,6 +157,33 @@ export interface More {
   user: string;
   term(argv: string[]): Promise<number>;
   exists(path: string): boolean;
+}
+
+// A controller flow run with --json: its own lines go to stderr, the box's envelopes it read are kept,
+// and one envelope of the controller's making goes to stdout at the end, with the box's last result.
+export async function asOneEnvelope(d: Deps, command: string, io: Io, flow: (jio: Io) => Promise<number>): Promise<number> {
+  const lines: string[] = [];
+  let fromBox: Record<string, unknown> | null = null;
+  const err = io.err ?? (() => {});
+  const jio: Io = {
+    out: (l) => {
+      if (l.startsWith('{"answers":')) {
+        try {
+          const e = JSON.parse(l) as { result?: unknown };
+          fromBox = e.result && typeof e.result === "object" ? (e.result as Record<string, unknown>) : null;
+          return;
+        } catch {}
+      }
+      lines.push(l);
+      err(l);
+    },
+    draw: (ls) => ls.forEach(err),
+    ...(io.rounds !== undefined ? { rounds: io.rounds } : {}),
+  };
+  const code = await flow(jio);
+  const last = lines.findLast((l) => l.trim() !== "" && !l.startsWith("Next: ")) ?? "";
+  io.out(asciiJson(envelope({ command, box: null, at: d.now(), exit: code, lines, result: { box: fromBox }, error: code ? { code: code === EXIT.usage ? "usage" : code === EXIT.denied ? "denied" : "failed", message: last.slice(0, 120) || "It stopped.", fix: lines.find((l) => l.startsWith("Next: "))?.slice(6) ?? null, who: null } : null })));
+  return code;
 }
 
 // The controller's own answer as an envelope, for --json.
@@ -175,13 +207,34 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     for (const l of help(d.version)) io.out(l);
     return EXIT.ok;
   }
-  // The load test's start and stop do more on the controller than the box's own commands.
-  if (argv[0] === "load" && (argv[1] === "start" || argv[1] === "stop") && !argv.includes("--help") && !argv.includes("--json")) {
+  // The load test's start and stop do more on the controller than the box's own commands: the
+  // dispatch and the cancels go through the owner's GitHub session, with --json too.
+  if (argv[0] === "load" && (argv[1] === "start" || argv[1] === "stop") && !argv.includes("--help")) {
     const { loadStart, loadStop, ownerGh } = await import("./load.ts");
     const gh = (d as { gh?: import("../hold.ts").Gh }).gh ?? ownerGh(d);
-    return (argv[1] === "start" ? loadStart : loadStop)({ ...d, ...(gh ? { gh } : {}) }, argv, io);
+    const run = argv[1] === "start" ? loadStart : loadStop;
+    const ld = { ...d, ...(gh ? { gh } : {}) };
+    if (!argv.includes("--json")) return run(ld, argv, io);
+    return asOneEnvelope(d, `load.${argv[1]}`, io, (jio) => run(ld, argv, jio));
   }
-  const mine = CONTROLLER.some((s) => s.path[0] === argv[0]);
+  // key rotate and key add: this controller makes and signs what the box needs (keyflows.ts).
+  if (isKeyFlow(argv)) return keyMain(d, argv, io);
+  // connect github from here: this controller's browser makes the box's Apps (connect.ts).
+  if (argv[0] === "connect" && argv[1] === "github" && !argv.includes("--help")) {
+    const { connectFromController } = await import("./connect.ts");
+    if (!argv.includes("--json")) return connectFromController(d, argv, io.out);
+    return asOneEnvelope(d, "connect.github", io, (jio) => connectFromController(d, argv, jio.out));
+  }
+  // workspace connect --screen opens Screen Sharing here, from the account the box names.
+  if (argv[0] === "workspace" && argv[1] === "connect" && argv.includes("--screen") && !argv.includes("--help")) {
+    const p = parse(registry(), argv);
+    if (!p.ok) return io.out(p.line), io.out(p.usage ?? "Type taskbox help."), EXIT.usage;
+    const box = typeof p.flags.box === "string" ? p.flags.box : undefined;
+    if (!argv.includes("--json")) return connectScreen(d, p.args[0]!, box, io.out);
+    return asOneEnvelope(d, "workspace.connect", io, (jio) => connectScreen(d, p.args[0]!, box, jio.out));
+  }
+  // The controller's own: a command it names whole, or a word only it has (box, self).
+  const mine = CONTROLLER.some((s) => s.path.every((w, i) => argv[i] === w)) || (CONTROLLER.some((s) => s.path[0] === argv[0]) && !registry().some((s) => s.path[0] === argv[0]));
   if (!mine) return forward(d, argv, io);
   const p = parse(CONTROLLER, argv);
   const json = argv.includes("--json");
@@ -194,7 +247,8 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
     io.out(usage(p.spec));
     return EXIT.ok;
   }
-  if (p.flags.box !== undefined) {
+  // template apply reads one box's values; the rest are this controller's alone.
+  if (p.flags.box !== undefined && p.path.join(" ") !== "template apply") {
     io.out(`taskbox ${p.spec.path.join(" ")} runs on this controller, and takes no --box.`);
     return EXIT.usage;
   }
@@ -212,10 +266,34 @@ export async function dispatch(d: UpdateDeps & Partial<More>, argv: string[], io
       return print(boxUse(d, p.args[0]!));
     case "box remove":
       return print(await boxRemove(d, p.args[0]!));
+    case "box install": {
+      const settings = typeof p.opts.settings === "string" ? p.opts.settings : undefined;
+      // Then box add for the new box, and connect github from this controller's browser.
+      const after = async (name: string, out: (l: string) => void) => {
+        const added = await boxAdd(d, [name], {}, false, { ...io, out });
+        if (added !== EXIT.ok) return added;
+        const { connectFromController } = await import("./connect.ts");
+        return connectFromController(d, ["connect", "github", "--box", name], out);
+      };
+      const bd = { ...d, after };
+      if (!json) return boxInstall(bd, p.args[0]!, settings, io.out);
+      return asOneEnvelope(d, "box.install", io, (jio) => boxInstall(bd, p.args[0]!, settings, jio.out));
+    }
+    case "template apply":
+    {
+      const box = typeof f("box") === "string" ? (f("box") as string) : undefined;
+      if (!json) return templateApply(d, box, io.out);
+      return asOneEnvelope(d, "template.apply", io, (jio) => templateApply(d, box, jio.out));
+    }
+    case "self trials": {
+      const t = await selfTrials(d, json, io.out);
+      if (json) io.out(own(d, "self.trials", { lines: t.lines, code: t.code, result: t.result }));
+      return t.code;
+    }
     case "self update":
       return answer(await update(d, { tag: typeof p.opts.to === "string" ? (p.opts.to.startsWith("v") ? p.opts.to : `v${p.opts.to}`) : undefined, check: p.opts.check === true, auto: p.opts.auto === true }));
     case "self rollback":
-      return print(rollback(d));
+      return print(await rollback(d));
     case "self check":
       const sd = d.term && d.user && d.exists ? { run: d.run, home: d.home, user: d.user, uid: d.uid ?? -1, userHome: d.userHome, term: d.term, exists: d.exists, say: io.out, ask: d.ask } : undefined;
       if (p.opts.fix) return sd ? fix(sd, d.ask, d.tty) : (io.out("taskbox self check --fix needs a terminal."), EXIT.usage);
@@ -268,10 +346,11 @@ async function signCommand(d: UpdateDeps, version: string | undefined, opts: Rec
   const { existsSync, mkdirSync, readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { fingerprints, GH, revokeTransition, sign } = await import("../release/sign.ts");
-  const { pinFile, signersIn } = await import("./update.ts");
+  const { readPin } = await import("./signers.ts");
   if (opts.fingerprint === true) {
-    const file = existsSync(pinFile(d.home)) ? pinFile(d.home) : signersIn(join(d.home.current, "app"));
-    for (const l of existsSync(file) ? fingerprints(readFileSync(file, "utf8")) : ["  No release key is pinned on this controller."]) io.out(l);
+    // This controller's own pin only, never a release's signers file.
+    const pin = readPin(d.home);
+    for (const l of typeof pin === "string" ? ["  No release key is pinned on this controller."] : fingerprints(pin.pinned)) io.out(l);
     return EXIT.ok;
   }
   if (!version) return io.out("taskbox sign takes the release's version, such as 3.0.1."), EXIT.usage;
@@ -311,9 +390,47 @@ export function realDeps(): UpdateDeps {
     tty: process.stdin.isTTY === true,
     fetch: (url, init) => fetch(url, init),
     verify: (o) => verifyRelease(keygen, o),
+    signed: (o) => verifySigned(keygen, o),
     arch: process.arch,
     uid: process.getuid?.() ?? -1,
   };
+}
+
+// The commands that follow an op on the box until it ends, and the command that cancels each.
+const FOLLOWS: Record<string, string> = {
+  drain: "taskbox resume",
+  stop: "taskbox start",
+  "load start": "taskbox load stop",
+  update: "taskbox op cancel ID",
+  rollback: "taskbox op cancel ID",
+  "connect github": "taskbox op cancel ID",
+  "key rotate": "taskbox op cancel ID",
+  "tool refresh": "taskbox op cancel ID",
+  "image pull": "taskbox op cancel ID",
+  "selftest run": "taskbox op cancel ID",
+  "box add": "",
+};
+
+// What Ctrl-C does on this controller: the bare screen quits with 0; a command that watches the box
+// stops watching only, with 130, naming the command that watches again and the one that cancels.
+// Undefined: Node's own.
+export function interrupted(argv: readonly string[]): { line: string; exit: number } | undefined {
+  if (!argv.length) return { line: "", exit: EXIT.ok };
+  if (argv.includes("--detach")) return undefined;
+  const path = argv.slice(0, 2).join(" ");
+  const verb = path in FOLLOWS ? path : argv[0]!;
+  const watches = argv.some((a) => ["-w", "--watch", "-f", "--follow"].includes(a));
+  if (!(verb in FOLLOWS) && !watches) return undefined;
+  const plain = argv.every((a) => /^[A-Za-z0-9][\w@.:/=-]{0,80}$|^-{1,2}[a-z-]{1,20}$/.test(a));
+  const again = plain ? `taskbox ${argv.join(" ")}` : "The same command";
+  const at = argv.indexOf("--box");
+  const box = plain && at >= 0 && argv[at + 1] ? ` --box ${argv[at + 1]}` : "";
+  // op show ID -w: that op's own cancel.
+  const id = argv[0] === "op" && argv[1] === "show" && plain ? argv[2] : undefined;
+  const opposite = id ? `taskbox op cancel ${id}` : FOLLOWS[verb];
+  const undo = !opposite ? "" : opposite.endsWith(" ID") ? `; ${opposite}${box} cancels it, and taskbox op list${box} shows the ID` : `; ${opposite}${box} cancels it`;
+  const what = id || verb in FOLLOWS ? " What it started carries on at the box." : "";
+  return { line: `Stopped watching.${what} ${again} watches again${undo}.`, exit: EXIT.interrupted };
 }
 
 // Key presses from a terminal in raw mode, one each, until the screen quits.
@@ -340,13 +457,13 @@ export async function controllerMain(argv: string[]): Promise<number> {
   }
   // A watched view redraws the whole screen each time; the clear is the controller's own, never the box's.
   const draw = (l: string[]) => process.stdout.write(`\x1b[H\x1b[2J${l.join("\n")}\n`);
-  // Ctrl-C while watching stops the watching only.
-  // A signed drain or stop is followed here after it is sent, and Ctrl-C stops the following only.
-  const watching = !argv.length || argv.some((a) => ["-w", "--watch"].includes(a)) || ["drain", "stop"].includes(argv[0] ?? "");
-  if (watching)
+  const stop = interrupted(argv);
+  const watching = stop !== undefined;
+  if (stop)
     process.on("SIGINT", () => {
-      console.log("\nStopped watching. What the box was doing carries on.");
-      process.exit(EXIT.interrupted);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      if (stop.line) console.log(`\n${stop.line}`);
+      process.exit(stop.exit);
     });
   // When taskbox starts, it looks for a newer release alongside the command, and says so after.
   const quiet = !argv.length || ["self", "install", "statusline", "notify", "mcp"].includes(argv[0]!) || argv.includes("--json") || watching;
@@ -359,7 +476,7 @@ export async function controllerMain(argv: string[]): Promise<number> {
   };
   // The owner's screen reads key presses at a terminal.
   const keys = !argv.length && process.stdin.isTTY ? rawKeys() : undefined;
-  const code = await dispatch({ ...d, ...more }, argv, { out: (l) => console.log(l), draw, ...(keys ? { keys } : {}) });
+  const code = await dispatch({ ...d, ...more }, argv, { out: (l) => console.log(l), draw, err: (l) => console.error(l), ...(keys ? { keys } : {}) });
   const n = await note;
   if (n) console.log(n);
   return code;

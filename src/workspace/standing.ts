@@ -49,7 +49,7 @@ export function askRule(o: { agent: string; key: string | undefined; size: strin
 }
 
 export function showsOf(r: RuleAsk): string[] {
-  return [`A standing rule for ${r.agent}: its ${SIZE_WORD[r.size]} requests approve themselves, with no touch.`, `Claim key: ${r.key}`, `Window: ${windowWord(r.window)}, in the box's time`, `Expires: ${new Date(r.expiresAt).toISOString().slice(0, 16)}Z`, `Signed by ${r.by.slice(0, 80)}`];
+  return [`A standing rule for ${r.agent}: its ${SIZE_WORD[r.size]} requests approve themselves, with no touch.`, `Claim key: ${r.key}`, "The controller printed the fingerprint of the key it keeps when the rule was signed: say no if they differ.", `Window: ${windowWord(r.window)}, in the box's time`, `Expires: ${new Date(r.expiresAt).toISOString().slice(0, 16)}Z`, `Signed by ${r.by.slice(0, 80)}`];
 }
 
 export function ruleProblem(v: unknown): string | undefined {

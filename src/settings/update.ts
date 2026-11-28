@@ -22,7 +22,7 @@ export function checkUpdate(c: Pick<Config, "update">): void {
   if (!("update" in c) || c.update === undefined) return;
   const u = c.update as Record<string, unknown>;
   if (!u || typeof u !== "object" || Array.isArray(u)) throw new Error("taskbox.json: update is the update settings");
-  for (const k of Object.keys(u)) if (!(k in DEFAULT_UPDATE)) throw new Error(`taskbox.json: update.${k.replace(/[^\x20-\x7e]/g, "").slice(0, 40)} isn't an update setting`);
+  for (const k of Object.keys(u)) if (!Object.hasOwn(DEFAULT_UPDATE, k)) throw new Error(`taskbox.json: update.${k.replace(/[^\x20-\x7e]/g, "").slice(0, 40)} isn't an update setting`);
   if ("auto" in u && typeof u.auto !== "boolean") throw new Error("taskbox.json: update.auto is true or false");
   if ("window" in u && (typeof u.window !== "string" || !WINDOW.test(u.window) || windowOf(u.window).from === windowOf(u.window).to)) throw new Error("taskbox.json: update.window is a time range in the box's own time, such as 02:00-05:00");
   if ("channel" in u && u.channel !== "stable" && u.channel !== "beta") throw new Error("taskbox.json: update.channel is stable or beta");

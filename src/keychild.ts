@@ -10,12 +10,14 @@ import type { Report } from "./core/child.ts";
 import { readOp } from "./core/ops.ts";
 import { rootStateIn } from "./core/paths.ts";
 import { keyCodePath, keyCodeWaiter, retiredPath, rotateApp } from "./keyrotate.ts";
-import { opReader, recorded } from "./keyops.ts";
+import { linkPath, opReader, recorded, writeLink } from "./keyops.ts";
 import { BROKER_ACCOUNT, brokerPathsOf } from "./keys.ts";
 import { Log } from "./log.ts";
 import { ROTATE } from "./optypes/keys.ts";
 import type { Sys } from "./sys.ts";
-import { followTailscale, tailnetPinPath } from "./tsrotate.ts";
+import { rotateTailscale, SEAL_KEY, tailnetPinPath } from "./tsrotate.ts";
+import { tsBox } from "./tsbox.ts";
+import { rmSync } from "node:fs";
 
 export interface KeyChildRun {
   sys: Sys;
@@ -42,8 +44,16 @@ export async function runKeyChild(c: KeyChildRun): Promise<number> {
   const event = (type: string, text: string, data?: Record<string, string | number | boolean>) => c.send({ event: { type, text: text.slice(0, 240), ...(data ? { data } : {}) } });
   let exit: number;
   if (op.type === ROTATE.tailscale) {
-    const node = typeof op.params.node === "string" ? op.params.node : "";
-    exit = await followTailscale({ sys: c.sys, tailscale: p.tailscale, socket: p.tailscaleSocket, tag: tagOf(cfg), hostname: cfg.runnerNamePrefix, pinFile: tailnetPinPath(state.dir), ...(c.rootUid !== undefined ? { rootUid: c.rootUid } : {}), say: c.out, phase, event, live }, node);
+    const sealTo = typeof op.params.seal === "string" && SEAL_KEY.test(op.params.seal) ? op.params.seal : undefined;
+    if (!sealTo) return fail("the rotation names no key to seal its link to");
+    const root = c.rootUid ?? 0;
+    const box = tsBox({ sys: c.sys, p, state, rootUid: root, op: op.id, event: (type, text) => event(type, text), log: c.out });
+    const link = linkPath(state.dir);
+    try {
+      exit = await rotateTailscale({ sys: c.sys, tailscale: p.tailscale, socket: p.tailscaleSocket, tag: tagOf(cfg), hostname: cfg.runnerNamePrefix, pinFile: tailnetPinPath(state.dir), rootUid: root, say: c.out, phase, event, live, ...box }, (url) => writeLink(link, op.id, sealTo, url, { rootUid: root }));
+    } finally {
+      rmSync(link, { force: true });
+    }
   } else if (op.type === ROTATE.runner || op.type === ROTATE.source) {
     if (!c.keeper) return fail(`the GitHub key keeper's account, ${BROKER_ACCOUNT}, isn't on this Mac`);
     const role = op.type === ROTATE.runner ? "runner" : "source";

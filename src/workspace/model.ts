@@ -110,6 +110,7 @@ export interface Workspace {
   rule?: string | null; // the standing rule that approved it
   usage?: { memoryMB: number; cpu: number; at: number } | null; // its account's last sample (caps.ts)
   reach?: { at: number } | null; // its agent's last connect with a claim proof: the gate opens within REACH_MS of it
+  own?: true | null; // the owner's own Whole, in a person account: no pool account, no fence (scenario 19)
 }
 
 // What the guard last found of the fence (fence.ts), and its last proof before ready (probe.ts),
@@ -269,7 +270,7 @@ export function deny(s: WsState, o: { name: string; reason: string }, now: numbe
   const reason = o.reason === "" ? "" : cleanWords(o.reason);
   if (reason === undefined) return no(`A reason takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`, "usage");
   const st = put(s, move(w, "denied", now, { reason }));
-  return yes(st, w.name, `${w.name} denied${reason ? `: ${reason}` : ""}.`, [{ name: w.name, type: "denied", text: `${w.name} denied, unsigned${reason ? `: ${reason}` : ""}` }]);
+  return yes(st, w.name, `${w.name} denied (unsigned)${reason ? `: ${reason}` : ""}.`, [{ name: w.name, type: "denied", text: `${w.name} denied, unsigned${reason ? `: ${reason}` : ""}` }]);
 }
 
 // An end, by the agent (its own, by name) or the owner (signed). Before ready it is withdrawn. While
@@ -277,7 +278,7 @@ export function deny(s: WsState, o: { name: string; reason: string }, now: numbe
 export function end(s: WsState, o: { name: string; by: "owner" | "agent"; agent?: string }, now: number): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
-  if (o.by === "agent" && o.agent !== w.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (o.by === "agent" && o.agent !== w.agent) return no(`${w.name} is ${w.agent}'s. ${o.agent} can't act on it.`);
   if (isFinal(w)) return no(`${w.name} is ${w.state} already.`);
   if (w.state === "ending") return no(`${w.name} is ending already: its processes are stopping.`);
   const who = o.by === "owner" ? "an approver" : w.agent;
@@ -316,7 +317,7 @@ export function pausedNow(s: WsState, w: Workspace, by: PausedBy, now: number, s
 export function saved(s: WsState, o: { name: string; agent: string }, now: number): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
-  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s. ${o.agent} can't act on it.`);
   if (w.state !== "saving") return no(`${w.name} is ${w.state}. --saved answers a save the box asked for.`);
   const r = pausedNow(s, w, w.pausedBy ?? "owner", now, true);
   return r.ok ? { ...r, said: `${w.name} saved and paused. CI has its room back.` } : r;
@@ -346,7 +347,7 @@ export function doFor(w: Workspace | undefined): Do {
 export function progress(s: WsState, o: { name: string; agent: string; text: string; step: { n: number; m: number } | null }, now: number): Result {
   const w = find(s, o.name);
   if (!w) return no(`No workspace ${o.name}.`, "not-found");
-  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s, not ${o.agent}'s.`);
+  if (w.agent !== o.agent) return no(`${w.name} is ${w.agent}'s. ${o.agent} can't act on it.`);
   const text = cleanWords(o.text);
   if (!text) return no(`The words take letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`, "usage");
   if (o.step && !(Number.isSafeInteger(o.step.n) && Number.isSafeInteger(o.step.m) && o.step.n >= 0 && o.step.m >= 1 && o.step.n <= o.step.m && o.step.m <= STEP_MAX)) return no("--step is N/M: whole numbers, N at most M.", "usage");
@@ -378,6 +379,35 @@ export function assign(s: WsState, pool: readonly string[], now: number): { stat
     steps.push({ name: w.name, type: "account", text: `${w.name} given ${user}${clear ? `; clears ${prev!.agent}'s files in ${user} before it opens` : ""}` });
   }
   return { state: st, steps };
+}
+
+// ---- The owner's own Whole (scenario 19) ----
+// Signed with Touch ID, it approves itself with the same touch. It runs in a person account from
+// accounts.people, at the owner's own screen, with no pool fence; it keeps the drain, the hold, the
+// card, end and the power-cut words. Its quiet rule reads the account's own activity (seen).
+export const OWNER_AGENT = "owner";
+export const PERSON = /^[a-z_][a-z0-9_.-]{0,31}$/;
+export function ownWhole(s: WsState, o: { user: string; why: string; by: string; rq?: string }, r: Rules, now: number): Result {
+  if (!PERSON.test(o.user)) return no("That isn't a person account's name.", "usage");
+  const why = cleanWords(o.why);
+  if (!why) return no(`The why takes letters, digits, spaces and plain punctuation, at most ${WORDS_MAX} characters.`, "usage");
+  if (s.workspaces.some((w) => w.own && !isFinal(w))) return no("The owner's own Whole is live on this box already: end it first.", "busy");
+  if (s.workspaces.filter((w) => !isFinal(w)).length >= MAX_WORKSPACES) return no(`${MAX_WORKSPACES} workspaces are live on this box already.`, "busy");
+  const n = s.nameSeq + 1;
+  if (n > NAME_SEQ_MAX) return no("taskbox has used every workspace number on this box.", "busy");
+  const w: Workspace = { name: `${OWNER_AGENT}-${n}`, agent: OWNER_AGENT, asked: "whole", size: "whole", why, state: "approved", user: o.user, clear: false, hold: null, at: now, changedAt: now, approvedAt: now, by: o.by.slice(0, 120), order: s.orderSeq + 1, saveAskedAt: null, pausedBy: null, saved: null, reason: null, endedBy: null, boot: null, word: null, rq: o.rq !== undefined && RQ.test(o.rq) ? o.rq : null, own: true };
+  const st = trim({ ...s, nameSeq: n, orderSeq: s.orderSeq + 1, workspaces: [...s.workspaces, w] });
+  void r;
+  return yes(st, w.name, `${w.name} (Whole) approved in ${o.user}, the owner's own account. It starts once CI's jobs finish.`, [{ name: w.name, type: "approved", text: `${w.name} (Whole), the owner's own in ${o.user}, approved by ${o.by}`.slice(0, 240) }]);
+}
+
+// The owner's own Whole is in use: Screen Sharing connected, or its account's processes using CPU.
+// It counts as the agent's word does for the quiet rule.
+export function seen(s: WsState, name: string, text: string, now: number): WsState {
+  const w = find(s, name);
+  if (!w?.own || !OPEN.includes(w.state)) return s;
+  if (w.word && now - w.word.at < 60_000) return s;
+  return put(s, { ...w, word: { at: now, text: cleanWords(text) ?? "in use", step: null } });
 }
 
 // The account's last agent's files are gone (the guard cleared them): it may open.
@@ -452,7 +482,7 @@ export function start(s: WsState, r: Rules, now: number): { state: WsState; step
 export function ready(s: WsState, name: string, boot: string, now: number): Result {
   const w = find(s, name);
   if (!w) return no(`No workspace ${name}.`, "not-found");
-  if (w.state !== "starting") return no(`${w.name} is ${w.state}, not starting.`);
+  if (w.state !== "starting") return no(`${w.name} is ${w.state}. It goes ready only from starting.`);
   if (w.clear) return no(`${w.name}'s account still holds another agent's files.`);
   const st = put(s, move(w, "ready", now, { boot, word: null }));
   return yes(st, w.name, `${w.name} is ready.`, [{ name: w.name, type: "ready", text: `${label(w)} ready in ${w.user}` }]);
@@ -553,12 +583,6 @@ export function boxPause(s: WsState, by: "disk" | "off" | "noboot", now: number)
   return { state: st, steps };
 }
 
-// The pool accounts whose processes the guard stops: every one with no open workspace.
-export function closedUsers(s: WsState, pool: readonly string[]): string[] {
-  const open = new Set(s.workspaces.filter((w) => w.user && OPEN.includes(w.state)).map((w) => w.user!));
-  return pool.filter((u) => !open.has(u));
-}
-
 // The workspace the gate may open for this account in this boot, or why not.
 export function openFor(s: WsState, user: string, boot: string, now: number): { ws: Workspace } | { why: string } {
   if (!fresh(s, now)) return { why: "The workspaces state is stale: the guard hasn't made a pass for 3 minutes." };
@@ -592,7 +616,9 @@ export function stateLine(w: Workspace): string {
   if (w.state === "paused" && w.frozen) return `paused: stopped at once, ${w.frozen.text}`;
   if (w.state === "paused" && w.pausedBy) return `paused ${PAUSED_WORD[w.pausedBy]}${w.saved === false ? ", unsaved" : ""}`;
   if (w.state === "saving") return w.to ? "saving: asked to drop to Light" : w.pausedBy === "quiet" ? "saving: no word from its agent" : w.pausedBy === "memory" ? "saving: over its memory" : w.rushFor ? `saving: making room for ${w.rushFor}` : "saving: an approver asked";
-  if ((w.state === "denied" || w.state === "expired" || w.state === "failed") && w.reason) return `${w.state}: ${w.reason}`;
+  // A denial is unsigned (anyone in the agent account can send one), so its words say so.
+  if (w.state === "denied") return `denied (unsigned)${w.reason ? `: ${w.reason}` : ""}`;
+  if ((w.state === "expired" || w.state === "failed") && w.reason) return `${w.state}: ${w.reason}`;
   if (w.state === "ended" || w.state === "withdrawn") return `${w.state} by ${w.endedBy === "owner" ? "an approver" : w.agent}`;
   if (w.state === "approved" && w.size !== w.asked) return `approved as ${w.size} (asked for ${w.asked})`;
   return w.state;

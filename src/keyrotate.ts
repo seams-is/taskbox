@@ -6,7 +6,8 @@
 // is listed (retired.json) with its delete link, for the Retired Apps row and key list.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
-import { type AppRole, deleteLine, ROLE_NAME } from "./connect.ts";
+import { appPage, type AppRole, deleteLine, installationsOf, ROLE_NAME } from "./connect.ts";
+import { bodyOf } from "./github.ts";
 import { clientFor, type CodeGot, Ended, fixable, fixPage, type FlowDeps, heldKey, keptApp, makeApp, proveApp, readPendingFile, repoWants, sourceSettings, uninstallAll, waitTrue, wantsOf, writeBoxKeys, writePendingFile } from "./connectflow.ts";
 import type { UnsignedHandler } from "./core/dispatch.ts";
 import { listOps, type Op, type OpFolder } from "./core/ops.ts";
@@ -51,6 +52,8 @@ export async function rotateApp(d: RotateDeps, role: AppRole): Promise<number> {
 }
 
 async function rotateOnce(d: RotateDeps, role: AppRole): Promise<number> {
+  const left = await finishRetired(d, role);
+  if (left !== undefined) return left;
   const f = asFlow(d);
   const kept = keptApp(d.cfg, role);
   if (!kept?.inBox) return (d.say(`This box keeps no ${ROLE_NAME[role]} of its own yet, so there is no key to rotate. Type taskbox connect github first.`), 1);
@@ -104,25 +107,72 @@ async function rotateOnce(d: RotateDeps, role: AppRole): Promise<number> {
   writePendingFile(d, file);
   d.event("key.switched", `${cap(ROLE_NAME[role])} is now ${done.slug}, in place of App ${kept.appId}.`, { role, app: target.id, slug: done.slug, from: kept.appId });
   d.say(`Switched: ${ROLE_NAME[role]} is now ${done.slug}. The loop takes it once no job runs.`);
-  // retiring: the old App uninstalled with its own key, then its key goes.
+  // retiring: the old App uninstalled with its own key and proved gone, then its key goes.
   d.phase("retiring");
-  const gone = await uninstallAll(clientFor(d, kept.appId, oldPem)).catch(() => false);
-  dropKey(d.keys.dir, role, kept.appId);
-  const oldSlug = kept.slug ?? `app-${kept.appId}`;
-  addRetired(d.retiredFile, { role, appId: kept.appId, slug: oldSlug, at: d.sys.now() }, { owner: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}) });
-  d.event("key.retired", `The old ${ROLE_NAME[role]} (App ${kept.appId}) is ${gone ? "uninstalled" : "left installed"}, and its key is deleted.`, { role, app: kept.appId, uninstalled: gone });
-  d.say(`${gone ? `The old App ${oldSlug} is uninstalled` : `The old App ${oldSlug} couldn't be uninstalled with its key: uninstall it on GitHub`}, and its key is deleted from this box. ${deleteLine(d.cfg.org, oldSlug)}`);
+  return retire(d, role, { appId: kept.appId, slug: kept.slug ?? `app-${kept.appId}` }, oldPem);
+}
+
+export const RETIRE_TRIES = 5;
+// The old App uninstalled with its own key, tried a few times, then proved gone: GitHub lists no
+// installation of it, or no longer takes its key (the App or the key deleted). Only then is the old
+// key deleted and the rotation a success. Otherwise the key is kept, so the next try can still
+// uninstall with it, the App is recorded as still installed (a FAIL row with no expiry), and the
+// rotation fails, saying what is left and how to finish.
+async function retire(d: RotateDeps, role: AppRole, old: { appId: number; slug: string }, pem: string): Promise<number> {
+  const app = clientFor(d, old.appId, pem);
+  let gone = false;
+  for (let i = 0; i < RETIRE_TRIES && !gone; i++) {
+    if (i) await d.sys.sleep(15_000 * i);
+    await uninstallAll(app).catch(() => false);
+    gone = await provedGone(app);
+  }
+  const own = { owner: d.rootUid ?? 0, ...(d.chown ? { chown: d.chown } : {}) };
+  addRetired(d.retiredFile, { role, appId: old.appId, slug: old.slug, at: d.sys.now(), uninstalled: gone }, own);
+  if (!gone) {
+    d.event("key.retired", `The old ${ROLE_NAME[role]} (App ${old.appId}) couldn't be proved uninstalled, so its key is kept to try again.`, { role, app: old.appId, uninstalled: false });
+    d.say(`Switched, not finished: the old App ${old.slug} is still installed, and a copy of its key still works. Uninstall it on GitHub (${appPage(d.cfg.org, old.slug)}/installations), or type taskbox key rotate ${role} again, which tries once more with its key. ${deleteLine(d.cfg.org, old.slug)}`);
+    return 1;
+  }
+  dropKey(d.keys.dir, role, old.appId);
+  d.event("key.retired", `The old ${ROLE_NAME[role]} (App ${old.appId}) is uninstalled, proved gone, and its key is deleted.`, { role, app: old.appId, uninstalled: true });
+  d.say(`The old App ${old.slug} is uninstalled, and its key is deleted from this box. ${deleteLine(d.cfg.org, old.slug)}`);
   return 0;
+}
+
+async function provedGone(app: ReturnType<typeof clientFor>): Promise<boolean> {
+  const r = await app.installations().catch(() => undefined);
+  if (!r) return false;
+  if (r.status === 401 || r.status === 404) return true;
+  if (!r.ok) return false;
+  const list = installationsOf(await bodyOf(r));
+  return list !== undefined && list.length === 0;
+}
+
+// A rotation that switched and left its old App installed: finished first, with the key it kept.
+// undefined when none is left for this role.
+async function finishRetired(d: RotateDeps, role: AppRole): Promise<number | undefined> {
+  const left = readRetired(d.retiredFile, d.rootUid ?? 0).find((r) => r.role === role && r.uninstalled === false);
+  if (!left) return undefined;
+  const pem = heldKey(d, role, left.appId);
+  if (!pem) {
+    // No key kept to try with: only GitHub can finish it, and the row says so until it is marked gone.
+    d.say(`The old App ${left.slug} a rotation left installed has no key on this box to uninstall it with. Uninstall it on GitHub: ${appPage(d.cfg.org, left.slug)}/installations. ${deleteLine(d.cfg.org, left.slug)}`);
+    return 1;
+  }
+  d.phase("retiring");
+  return retire(d, role, left, pem);
 }
 
 // ---- Retired Apps: left on GitHub until the owner deletes them ----
 // GitHub can't tell the box when an App is deleted (a private App's page is 404 to the box either
 // way), so each is listed for RETIRED_DAYS, then dropped from the list.
-export type Retired = { role: AppRole; appId: number; slug: string; at: number };
+// uninstalled false: switched from, but not proved uninstalled; its key is kept to try again, and the
+// row fails until it is, with no expiry.
+export type Retired = { role: AppRole; appId: number; slug: string; at: number; uninstalled?: boolean };
 export const RETIRED_MAX = 20;
 export const RETIRED_DAYS = 30;
 const SLUG = /^[a-z0-9][a-z0-9-]{0,33}$/;
-const retiredOk = (v: unknown): v is Retired => isObj(v) && (v.role === "runner" || v.role === "source") && Number.isSafeInteger(v.appId) && (v.appId as number) > 0 && typeof v.slug === "string" && SLUG.test(v.slug) && Number.isSafeInteger(v.at);
+const retiredOk = (v: unknown): v is Retired => isObj(v) && (v.role === "runner" || v.role === "source") && Number.isSafeInteger(v.appId) && (v.appId as number) > 0 && typeof v.slug === "string" && SLUG.test(v.slug) && Number.isSafeInteger(v.at) && (v.uninstalled === undefined || typeof v.uninstalled === "boolean");
 
 export function readRetired(path: string, rootUid = 0): Retired[] {
   const r = readOwnedJson(path, { owner: rootUid, max: 16 * 1024 }, (v) => (isObj(v) && v.v === 1 && Array.isArray(v.apps) ? (v.apps.filter(retiredOk) as Retired[]) : "not a retired list"));

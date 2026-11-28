@@ -1,7 +1,6 @@
 // Every Tart command taskbox runs, in one place, and the Tart engine (src/vm.ts) built on them:
 // Softnet's flags, Tart's cache layout and the digest check stay in this file.
 // Each call is Tart 2.41.1's own command line, run as the service with the pinned binary.
-import { serviceName } from "./names.ts";
 import { createHash } from "node:crypto";
 import { closeSync, constants, copyFileSync, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -215,7 +214,6 @@ export async function softnetRootProblem(sys: Sys, service: string): Promise<{ w
   }
   return undefined;
 }
-export const softnetAsRoot = async (sys: Sys, service: string): Promise<boolean> => (await softnetRootProblem(sys, service))?.halt === true;
 
 // The VmEngine on Tart and Softnet.
 export class TartEngine implements VmEngine {

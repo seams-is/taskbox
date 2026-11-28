@@ -11,6 +11,7 @@ export const commands: CommandSpec[] = [
     who: ["admin"],
     root: true,
     typed: true,
+    flags: ["json"],
     options: [{ name: "--keep-images" }],
     async run(c) {
       const { loadConfig } = await import("../config.ts");

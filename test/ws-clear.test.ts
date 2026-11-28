@@ -43,7 +43,7 @@ function clearBox(o: { state?: WsState | string | null; procs?: string; pgrepCod
   const runs: { cmd: string; args: string[]; cwd?: string; group?: boolean; homeEmpty: boolean }[] = [];
   sys.responders.push((cmd, args, opts) => {
     const out = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
-    if (cmd === "/usr/bin/find" || cmd === "/usr/bin/chflags") runs.push({ cmd, args, cwd: opts?.cwd, group: opts?.group, homeEmpty: existsSync(home) && readdirSync(home).length === 0 });
+    if (cmd === "/usr/bin/find" || cmd === "/usr/bin/chflags") runs.push({ cmd, args, cwd: opts?.cwd, group: opts?.group, homeEmpty: existsSync(home) && readdirSync(home).every((n) => n === "Library") });
     if (cmd === "/usr/bin/id" && args[0] === "-u" && args[1] === "taskbox-ws1") return out(`${o.uid ?? POOL_UID}\n`);
     if (cmd === "/usr/bin/pgrep") return o.procs ? out(o.procs) : out("", o.pgrepCode ?? 1);
     if (cmd === "/usr/bin/du") return out(o.du ?? `12051880\t${args.at(-1)}\n`);
@@ -57,7 +57,8 @@ function clearBox(o: { state?: WsState | string | null; procs?: string; pgrepCod
   // The home reads as the pool account's: lstat with this user's ID read as 471, outside root's folder.
   const lstat = (p: string): Stats => {
     const s = lstatSync(p);
-    const mine = s.uid === me && !p.includes(CLEARED);
+    // Root's LaunchAgents placeholder reads as root's.
+    const mine = s.uid === me && !p.includes(CLEARED) && !p.endsWith("/Library/LaunchAgents");
     return Object.assign(Object.create(Object.getPrototypeOf(s)), s, { uid: mine ? POOL_UID : s.uid });
   };
   chmodSync(users, 0o755);
@@ -88,9 +89,12 @@ describe("taskbox workspace clear", () => {
     ]);
     for (const r of b.runs) expect([r.cwd, r.group, r.homeEmpty]).toEqual(["/", true, true]);
     expect(existsSync(aside)).toBe(false);
-    expect(readdirSync(b.home)).toEqual([]);
+    expect(readdirSync(b.home)).toEqual(["Library"]);
     expect(lstatSync(b.home).mode & 0o7777).toBe(0o700);
-    expect(b.chowns).toEqual([`${join(b.users, CLEARED)} ${me}:0`, `${b.home} ${POOL_UID}:${POOL_UID}`]);
+    expect(b.chowns).toEqual([`${join(b.users, CLEARED)} ${me}:0`, `${b.home} ${POOL_UID}:${POOL_UID}`, `${join(b.home, "Library")} ${POOL_UID}:${POOL_UID}`, `${join(b.home, "Library", "LaunchAgents")} ${me}:0`]);
+    // ~/Library/LaunchAgents is a root-owned empty file, so the account can't put a launch agent there.
+    expect(lstatSync(join(b.home, "Library", "LaunchAgents")).isFile()).toBe(true);
+    expect(lstatSync(join(b.home, "Library", "LaunchAgents")).size).toBe(0);
     expect(b.said.at(-1)).toBe(`Cleared 12.3 GB. ${b.home} is empty, taskbox-ws1's own, at mode 700.`);
   });
 
@@ -186,7 +190,7 @@ describe("taskbox workspace clear", () => {
     b.answers.push("yes 12.3 GB");
     expect(await clear(b.d, "nova")).toBe(1);
     expect(b.said.at(-1)).toMatch(/is empty again, at mode 700, but some of the old files couldn't be deleted yet: .*\.taskbox-cleared\/taskbox-ws1-.*Nobody but root can reach them/);
-    expect(readdirSync(b.home)).toEqual([]);
+    expect(readdirSync(b.home)).toEqual(["Library"]);
     b.sys.responders.shift();
     b.answers.push("yes 24.7 GB");
     expect(await clear(b.d, "nova")).toBe(0);

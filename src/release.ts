@@ -254,7 +254,7 @@ export async function verifyRelease(d: VerifyDeps, o: VerifyInput): Promise<Verd
   if (sv !== undefined && sv !== STATEMENT_V) return no("statement", `the signed statement is version ${sv}, which this release doesn't read`);
   const s = parseStatement(text);
   if (!s) return no("statement", "the signed statement isn't one taskbox reads");
-  if (o.want !== undefined && s.version !== bare(o.want)) return no("statement", `the signed statement is for ${s.version}, not ${bare(o.want)}`);
+  if (o.want !== undefined && s.version !== bare(o.want)) return no("statement", `the signed statement is for ${s.version}, and this asks for ${bare(o.want)}`);
   if (o.channel && !onChannel(s.version, o.channel)) return no("channel", `${s.version} is a beta release, and this box is on stable`);
   if (o.installed) {
     const inst = bare(o.installed.version);

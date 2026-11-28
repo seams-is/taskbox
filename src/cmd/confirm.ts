@@ -8,6 +8,17 @@
 import type { BoxCtx, CommandSpec, Outcome } from "../command.ts";
 
 const PENDING_ID = /^pc_[0-9A-HJKMNP-TV-Z]{26}$/;
+const PAGE = 20;
+
+// Every line of a change, a page at a time: the yes comes only after the last line, so nothing that
+// applies goes unshown.
+export async function showAll(c: BoxCtx, lines: readonly string[], paged: boolean): Promise<void> {
+  for (let i = 0; i < lines.length; i += PAGE) {
+    for (const l of lines.slice(i, i + PAGE)) c.say(`  ${l}`);
+    const left = lines.length - i - PAGE;
+    if (paged && left > 0) await c.ask(`  (${left} more line${left === 1 ? "" : "s"} of this change. Press return to see them.) `);
+  }
+}
 
 // The closure of VM starts while Screen Sharing is on: shown, and on a yes put on trial. undefined
 // when the box isn't closed or --refuse names something else.
@@ -45,6 +56,32 @@ async function closure(c: BoxCtx, refuse: string | undefined): Promise<{ exit: n
   }
 }
 
+// The first install's release keys (trust.ts): each fingerprint shown, a typed yes for each. Until
+// all are yes, the box takes no update and starts no workspace. undefined when none wait.
+export const TRUST_ID = "release-keys";
+export async function firstTrust(c: BoxCtx, refuse: string | undefined): Promise<{ exit: number; done: boolean } | undefined> {
+  const { readTrust, writeTrust } = await import("../trust.ts");
+  const root = c.ops.rootUid ?? 0;
+  const r = readTrust(c.p, root);
+  if (r.kind !== "ok" || r.value.confirmed || (refuse !== undefined && refuse !== TRUST_ID)) return undefined;
+  if (refuse !== undefined) {
+    c.say("Left waiting: the box takes no update and starts no workspace until the release keys are checked here.");
+    return { exit: 0, done: false };
+  }
+  c.say(`${TRUST_ID}: the release keys this box pins. On the signing Mac, taskbox sign --fingerprint shows the same.`);
+  for (const fp of r.value.signers) {
+    c.say(`  ${fp}`);
+    if ((await c.ask(`Type yes if that is a key taskbox sign --fingerprint shows: `)).trim().toLowerCase() !== "yes") {
+      c.say("Left waiting: the box takes no update and starts no workspace until each key is checked. If a key isn't yours, take taskbox off with taskbox remove.");
+      return { exit: 1, done: false };
+    }
+  }
+  const by = (c.env.SUDO_USER || "admin").replace(/[^a-z0-9_.-]/g, "").slice(0, 32) || "admin";
+  writeTrust(c.p, { ...r.value, confirmed: { at: c.ops.sys.now(), by } }, { rootUid: root, ...(c.chown ? { chown: c.chown } : {}) });
+  c.say("Checked: the box takes updates and starts workspaces from now on.");
+  return { exit: 0, done: true };
+}
+
 async function confirm(c: BoxCtx): Promise<Outcome> {
   const { atBoxScreen } = await import("../ops.ts");
   const screen = await atBoxScreen(c.ops.sys, c.env);
@@ -58,13 +95,16 @@ async function confirm(c: BoxCtx): Promise<Outcome> {
   const { rootStateOf } = await import("../core/paths.ts");
   const { readPending, waiting } = await import("../core/pending.ts");
   const { askGuard } = await import("../opcmd.ts");
-  const { APPLIES } = await import("../confirmapply.ts");
   const { readState, settingsFiles } = await import("../settings/inforce.ts");
   const sys = c.ops.sys;
   const root = c.ops.rootUid ?? 0;
   const admin = (c.env.SUDO_USER || "admin").replace(/[^a-z0-9_.-]/g, "").slice(0, 32) || "admin";
   const refuse = typeof c.opts.refuse === "string" ? c.opts.refuse : undefined;
-  const pf = await closure(c, refuse);
+  const ft = await firstTrust(c, refuse);
+  if (ft && (refuse !== undefined || ft.exit !== 0)) return ft.exit;
+  const pf0 = await closure(c, refuse);
+  // The two box gates read as one for what follows: either shown makes "nothing waits" untrue.
+  const pf = pf0 ?? (ft ? { exit: ft.exit, done: ft.done } : undefined);
   if (pf && refuse !== undefined) return pf.exit;
   const pend = readPending(rootStateOf(c.own).pending, root);
   if (pend.kind === "bad") c.say(`The waiting changes can't be read (${pend.why}), so ${pf ? "only the box's own closure was shown" : "nothing changed"}. taskbox check says more.`);
@@ -80,12 +120,8 @@ async function confirm(c: BoxCtx): Promise<Outcome> {
   let done = 0;
   let settings = false;
   for (const item of items) {
-    c.say(`${item.id}, asked by ${item.actor}:`);
-    for (const l of item.shows) c.say(`  ${l}`);
-    if (!refuse && !APPLIES.includes(item.kind)) {
-      c.say("  This release can't apply that kind of change. It waits until it lapses.");
-      continue;
-    }
+    c.say(`${item.id}, asked by ${item.actor}${item.shows.length > PAGE ? `, ${item.shows.length} lines` : ""}:`);
+    await showAll(c, item.shows, !refuse);
     const yes = refuse ? false : (await c.ask("Type yes to make this change, anything else to leave it: ")).trim().toLowerCase() === "yes";
     if (!yes && !refuse) {
       c.say(`  Left waiting. taskbox confirm --refuse ${item.id} says no to it.`);
