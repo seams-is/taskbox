@@ -14,7 +14,11 @@ export interface UpdateSettings {
   channel: Channel;
 }
 
-export const DEFAULT_UPDATE: UpdateSettings = { auto: true, window: "02:00-05:00", delayHours: 0, drainMinutes: 60, proveMinutes: 60, channel: "stable" };
+// delayHours, unset: a box on stable waits a day after a release is published, a box on beta takes it
+// at once. So a beta box tries each release first, and a release nobody meant to publish is seen
+// (the controller says each one) before the stable boxes take it.
+export const DEFAULT_DELAY_HOURS = { stable: 24, beta: 0 } as const;
+export const DEFAULT_UPDATE: UpdateSettings = { auto: true, window: "02:00-05:00", delayHours: DEFAULT_DELAY_HOURS.stable, drainMinutes: 60, proveMinutes: 60, channel: "stable" };
 const WINDOW = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
 const BOUNDS = { delayHours: [0, 720], drainMinutes: [1, 600], proveMinutes: [5, 120] } as const;
 
@@ -31,7 +35,11 @@ export function checkUpdate(c: Pick<Config, "update">): void {
   }
 }
 
-export const updateOf = (c: Pick<Config, "update"> | undefined): UpdateSettings => ({ ...DEFAULT_UPDATE, ...((c?.update ?? {}) as Partial<UpdateSettings>) });
+export function updateOf(c: Pick<Config, "update"> | undefined): UpdateSettings {
+  const set = (c?.update ?? {}) as Partial<UpdateSettings>;
+  const u = { ...DEFAULT_UPDATE, ...set };
+  return set.delayHours === undefined ? { ...u, delayHours: DEFAULT_DELAY_HOURS[u.channel] } : u;
+}
 
 // Minutes of the day.
 export function windowOf(w: string): { from: number; to: number } {

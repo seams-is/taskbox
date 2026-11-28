@@ -19,7 +19,7 @@ export interface RunOptions {
   maxBytes: number;
   stdin?: Uint8Array; // the program's whole input; with none it gets no input
   // The few settings a program needs beyond PATH and TERM, from a fixed list: ssh-keygen's security
-  // key provider and HOME. Anything else is refused.
+  // key provider, HOME, and gh's token and config folder for taskbox sign. Anything else is refused.
   env?: Partial<Record<(typeof EXTRA)[number], string>>;
   cwd?: string; // a folder of the controller's own, for a program that writes where it runs
   onLine?: (line: string) => void; // each line of stdout as it comes, for a stream; none is kept
@@ -28,7 +28,7 @@ export interface RunOptions {
 // A line longer than this is dropped whole, so a stream can't fill this Mac's memory.
 export const STREAM_LINE_MAX = 1_100_000;
 
-export const EXTRA = ["SSH_SK_PROVIDER", "HOME"] as const;
+export const EXTRA = ["SSH_SK_PROVIDER", "HOME", "GH_TOKEN", "GH_CONFIG_DIR"] as const;
 
 export type Runner = (argv: string[], o: RunOptions) => Promise<RunResult>;
 
